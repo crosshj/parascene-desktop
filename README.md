@@ -42,27 +42,24 @@ Matches [Log in with Parascene](https://www.parascene.com/help/developer/login-w
 5. Access/refresh tokens + userinfo are stored in the **macOS Keychain**
 6. Further Parascene API calls go through `src/sdk/parascene.ts`
 
-## CI artifacts
+## Releases / CI
 
 GitHub Actions workflow: `.github/workflows/macos-desktop.yml`
 
-- Triggers: `workflow_dispatch`, `desktop-v*` tags, and path-filtered pushes/PRs
-- Produces unsigned **DMG** / `.app` artifacts (Apple Silicon runner `macos-14`)
-- Tag builds attach assets to a GitHub Release
+- **Releases page:** pushes to `main` update a prerelease **Desktop — latest main** (`desktop-latest` tag) with the DMG.- **Versioned:** push a `desktop-v*` tag for a proper release.
+- Also uploads workflow **Artifacts** on PRs/pushes; prefer the Releases DMG for sharing.
+- Builds are unsigned Apple Silicon (`macos-14`).
 
 ### Unsigned installs / Gatekeeper
 
-Unsigned builds may be blocked by Gatekeeper. Typical unblock:
+After downloading the Release DMG, macOS often shows **“Parascene” is damaged and can’t be opened** — Gatekeeper quarantine, not a corrupt file.
 
-- Right-click the app → **Open**, or
-- `xattr -cr /path/to/Parascene.app`
+```bash
+xattr -cr /Applications/Parascene.app
+```
 
-### Future signing (not required for this pass)
-
-- Apple Developer Team ID
-- `APPLE_CERTIFICATE` / certificate password
-- `APPLE_ID` / app-specific password or API key for notarization
-- Entitlements as required by Tauri bundler docs
+(Or Right-click the app → **Open** → **Open** once.)  
+Real fix later: Apple codesign + notarization.
 
 ## Layouts
 
