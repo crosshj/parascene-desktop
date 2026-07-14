@@ -15,6 +15,7 @@ Examples of likely drift already:
 
 | File | View |
 | --- | --- |
+| [overview-six-screens.png](./overview-six-screens.png) | Six-up overview: Library, Director, Editor, Assistant Edit, Hook, Sync & Downloads |
 | [director.png](./director.png) | Director — preview, scene list, instruction box (“Direct →”) |
 | [editor.png](./editor.png) | Editor — assets / sequences, preview, timeline, assistant |
 | [hook.png](./hook.png) | Hook — vertical preview, 9s range, suggestions, publish |
