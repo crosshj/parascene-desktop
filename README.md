@@ -42,24 +42,28 @@ Matches [Log in with Parascene](https://www.parascene.com/help/developer/login-w
 5. Access/refresh tokens + userinfo are stored in the **macOS Keychain**
 6. Further Parascene API calls go through `src/sdk/parascene.ts`
 
-## Releases / CI
+## Download & install (Release DMG)
 
-GitHub Actions workflow: `.github/workflows/macos-desktop.yml`
-
-- **Releases page:** pushes to `main` update a prerelease **Desktop — latest main** (`desktop-latest` tag) with the DMG.- **Versioned:** push a `desktop-v*` tag for a proper release.
-- Also uploads workflow **Artifacts** on PRs/pushes; prefer the Releases DMG for sharing.
-- Builds are unsigned Apple Silicon (`macos-14`).
-
-### Unsigned installs / Gatekeeper
-
-After downloading the Release DMG, macOS often shows **“Parascene” is damaged and can’t be opened** — Gatekeeper quarantine, not a corrupt file.
+1. Open the repo **Releases** page and download the DMG from **Desktop — latest main** (or a `desktop-v*` release).
+2. Open the DMG and drag **Parascene** into **Applications**.
+3. Clear Gatekeeper quarantine (unsigned builds look “damaged” otherwise):
 
 ```bash
 xattr -cr /Applications/Parascene.app
 ```
 
-(Or Right-click the app → **Open** → **Open** once.)  
-Real fix later: Apple codesign + notarization.
+4. Open Parascene from Applications (or Spotlight).
+
+Alternative to step 3: Right-click the app → **Open** → **Open**.
+
+## Releases / CI
+
+GitHub Actions workflow: `.github/workflows/macos-desktop.yml`
+
+- Pushes to `main` update prerelease **Desktop — latest main** (`desktop-latest`) with the DMG.
+- Push a `desktop-v*` tag for a versioned release.
+- PRs also upload workflow **Artifacts**; prefer the Releases DMG for sharing.
+- Builds are unsigned Apple Silicon (`macos-14`). Codesign + notarization come later.
 
 ## Layouts
 
@@ -72,3 +76,13 @@ Fixtures live under `src/fixtures/` and back a `ProjectRepository` interface.
 ## Non-goals (this pass)
 
 No timeline editing, FFmpeg, rendering, generation, or real Hook publishing.
+
+## Plans / roadmap
+
+- [docs/PLAN-from-chatgpt.md](docs/PLAN-from-chatgpt.md) — where the product plan stands (shell done → Library next)
+- [docs/PLAN-architecture-principles.md](docs/PLAN-architecture-principles.md) — local-first; ease web/DB load; gens without Creation rows (maybe)
+- [docs/PLAN-library-sync.md](docs/PLAN-library-sync.md) — local Library + sync design
+- [docs/PLAN-macos-desktop-shell.md](docs/PLAN-macos-desktop-shell.md) — shell leftovers (About / updates)
+- [docs/PLAN-ffmpeg.md](docs/PLAN-ffmpeg.md) — FFmpeg detect + install assist
+- [docs/PLAN-parascene-generation.md](docs/PLAN-parascene-generation.md) — generation API deps (first–last frame, short duration, prompt relay)
+- [docs/mockups/](docs/mockups/) — Director / Editor / Hook / Library target visuals
