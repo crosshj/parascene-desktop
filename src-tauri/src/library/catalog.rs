@@ -111,6 +111,25 @@ pub struct CreationPage {
     pub has_more: bool,
 }
 
+/// Sidebar filter tallies over the full SQLite catalog (not the loaded page window).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogFilterCounts {
+    pub all: u32,
+    pub video: u32,
+    pub image: u32,
+    pub audio: u32,
+    pub groups: u32,
+    pub local_only: u32,
+    pub published: u32,
+    pub unpublished: u32,
+    /// Approximate from denormalized aspect_ratio / width×height (not remote_json).
+    pub aspect11: u32,
+    pub aspect916: u32,
+    pub aspect45: u32,
+    pub aspect169: u32,
+}
+
 fn open_db(db_path: &Path) -> Result<Connection, String> {
     Connection::open(db_path).map_err(|e| format!("Could not open catalog DB: {e}"))
 }
@@ -234,6 +253,76 @@ pub(crate) fn auth_kv_delete(key: &str) -> Result<(), String> {
 fn count_creations(conn: &Connection) -> Result<i64, String> {
     conn.query_row("SELECT COUNT(*) FROM creations", [], |row| row.get(0))
         .map_err(|e| e.to_string())
+}
+
+fn catalog_filter_counts(conn: &Connection) -> Result<CatalogFilterCounts, String> {
+    conn.query_row(
+        r#"
+        SELECT
+          COUNT(*) AS all_count,
+          COALESCE(SUM(CASE WHEN lower(media_type) = 'video' THEN 1 ELSE 0 END), 0) AS video_count,
+          COALESCE(SUM(CASE WHEN lower(media_type) = 'image' THEN 1 ELSE 0 END), 0) AS image_count,
+          COALESCE(SUM(CASE WHEN lower(media_type) = 'audio' THEN 1 ELSE 0 END), 0) AS audio_count,
+          COALESCE(SUM(CASE
+            WHEN lower(COALESCE(filename, '')) LIKE 'group/%' THEN 1
+            WHEN instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0 THEN 1
+            WHEN instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0 THEN 1
+            ELSE 0
+          END), 0) AS groups_count,
+          -- Local-only = not in Parascene cloud (no remote URL / snapshot), not "on disk".
+          COALESCE(SUM(CASE
+            WHEN (remote_url IS NULL OR remote_url = '')
+             AND (remote_json IS NULL OR remote_json = '')
+            THEN 1
+            ELSE 0
+          END), 0) AS local_only_count,
+          COALESCE(SUM(CASE WHEN published != 0 THEN 1 ELSE 0 END), 0) AS published_count,
+          COALESCE(SUM(CASE WHEN published = 0 THEN 1 ELSE 0 END), 0) AS unpublished_count,
+          COALESCE(SUM(CASE
+            WHEN trim(COALESCE(aspect_ratio, '')) = '1:1' THEN 1
+            WHEN width IS NOT NULL AND height IS NOT NULL AND width > 0 AND height > 0
+                 AND width = height THEN 1
+            ELSE 0
+          END), 0) AS aspect11_count,
+          COALESCE(SUM(CASE
+            WHEN trim(COALESCE(aspect_ratio, '')) = '9:16' THEN 1
+            WHEN width IS NOT NULL AND height IS NOT NULL AND width > 0 AND height > 0
+                 AND width * 16 = height * 9 THEN 1
+            ELSE 0
+          END), 0) AS aspect916_count,
+          COALESCE(SUM(CASE
+            WHEN trim(COALESCE(aspect_ratio, '')) = '4:5' THEN 1
+            WHEN width IS NOT NULL AND height IS NOT NULL AND width > 0 AND height > 0
+                 AND width * 5 = height * 4 THEN 1
+            ELSE 0
+          END), 0) AS aspect45_count,
+          COALESCE(SUM(CASE
+            WHEN trim(COALESCE(aspect_ratio, '')) = '16:9' THEN 1
+            WHEN width IS NOT NULL AND height IS NOT NULL AND width > 0 AND height > 0
+                 AND width * 9 = height * 16 THEN 1
+            ELSE 0
+          END), 0) AS aspect169_count
+        FROM creations
+        "#,
+        [],
+        |row| {
+            Ok(CatalogFilterCounts {
+                all: row.get::<_, i64>(0)? as u32,
+                video: row.get::<_, i64>(1)? as u32,
+                image: row.get::<_, i64>(2)? as u32,
+                audio: row.get::<_, i64>(3)? as u32,
+                groups: row.get::<_, i64>(4)? as u32,
+                local_only: row.get::<_, i64>(5)? as u32,
+                published: row.get::<_, i64>(6)? as u32,
+                unpublished: row.get::<_, i64>(7)? as u32,
+                aspect11: row.get::<_, i64>(8)? as u32,
+                aspect916: row.get::<_, i64>(9)? as u32,
+                aspect45: row.get::<_, i64>(10)? as u32,
+                aspect169: row.get::<_, i64>(11)? as u32,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Dev/test seed only — not called from ready_connection (real catalog comes from sync).
@@ -747,6 +836,13 @@ pub fn library_list_creations() -> Result<Vec<Creation>, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
     list_creations(&conn)
+}
+
+#[tauri::command]
+pub fn library_filter_counts() -> Result<CatalogFilterCounts, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    catalog_filter_counts(&conn)
 }
 
 /// Plain list (no side effects). Prefer `library::library_list_creations_page` for UI,

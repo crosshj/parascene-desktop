@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ensureAccessToken } from "../auth/session";
 import type {
   Creation,
+  CatalogFilterCounts,
   CreationPage,
   CreationUpsert,
   DownloadSummary,
@@ -31,6 +32,10 @@ export async function listCreationsPage(opts?: {
     limit: opts?.limit ?? CREATIONS_PAGE_SIZE,
     offset: opts?.offset ?? 0,
   });
+}
+
+export async function getCatalogFilterCounts(): Promise<CatalogFilterCounts> {
+  return invoke<CatalogFilterCounts>("library_filter_counts");
 }
 
 export async function getCreation(id: string): Promise<Creation> {
@@ -107,6 +112,18 @@ export async function cacheMissingMedia(): Promise<DownloadSummary> {
 /** Delete a creation from the local catalog and its media/preview files (not cloud). */
 export async function deleteLocal(id: string): Promise<SyncStatus> {
   return invoke<SyncStatus>("library_delete_local", { id });
+}
+
+export type ImportLocalResult = {
+  imported: number;
+  cancelled: boolean;
+  creations: Creation[];
+  status: SyncStatus;
+};
+
+/** Native file picker → copy into Library/media as local-only creations. */
+export async function importFromDisk(): Promise<ImportLocalResult> {
+  return invoke<ImportLocalResult>("library_import_from_disk");
 }
 
 /** Regenerate local board preview from full local media (native aspect JPEG). */

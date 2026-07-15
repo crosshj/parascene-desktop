@@ -1,10 +1,11 @@
 mod catalog;
 mod download;
+mod import_local;
 mod paths;
 mod thumb_fill;
 
 pub use catalog::{
-    library_apply_manifest, library_ensure_ready, library_get_creation,
+    library_apply_manifest, library_ensure_ready, library_filter_counts, library_get_creation,
     library_invalidate_thumbs, library_list_creations, library_sync_status,
 };
 pub use download::{
@@ -12,6 +13,7 @@ pub use download::{
     library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,
     library_invalidate_mismatched_thumbs, library_local_fit_plan,
 };
+pub use import_local::{library_import_from_disk, library_import_local_paths};
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
 use catalog::{query_creations_page, CreationPage};

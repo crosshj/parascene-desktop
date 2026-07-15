@@ -94,6 +94,22 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
       hasMore: false,
     };
   }
+  if (cmd === "library_filter_counts") {
+    return {
+      all: fixtureCreations.length,
+      video: 0,
+      image: 0,
+      audio: 0,
+      groups: 0,
+      localOnly: 0,
+      published: 0,
+      unpublished: 0,
+      aspect11: 0,
+      aspect916: 0,
+      aspect45: 0,
+      aspect169: 0,
+    };
+  }
   throw new Error(`unexpected invoke: ${cmd}`);
 });
 
@@ -136,6 +152,7 @@ describe("auth shell", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     store.clear();
+    localStorage.clear();
     oauthHandler = null;
     fixtureCreations = [];
     fixtureSyncStatus = {
@@ -231,9 +248,45 @@ describe("auth shell", () => {
       "true",
     );
 
+    await user.click(screen.getByRole("button", { name: "Director" }));
     await user.click(screen.getByRole("button", { name: "Close project" }));
     expect(screen.getByLabelText("Project picker")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
+  });
+
+  it("restores open project and tabs after remount", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+
+    await logIn(user);
+    await screen.findByLabelText("Creations");
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.click(screen.getByRole("button", { name: "Editor" }));
+    expect(screen.getByLabelText("Assets")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Library" }));
+    expect(screen.getByLabelText("Creations")).toBeInTheDocument();
+
+    unmount();
+    render(<App />);
+
+    // Auth + shell session restore — land on Library Creations with project still open.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Creations")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Library" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    expect(screen.getByLabelText("Assets")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Editor" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("switches Library Creations and Sync surfaces", async () => {

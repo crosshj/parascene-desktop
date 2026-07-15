@@ -9,10 +9,12 @@ import { listen } from "@tauri-apps/api/event";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { useShell } from "../app/ShellProvider";
+import { CreationsFilterEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
   syncCreationsManifest,
@@ -38,11 +40,24 @@ import {
   withoutCloudUrlLabel,
 } from "../sync/syncState";
 import {
+  EMPTY_FILTER_TOGGLES,
+  activeFilterId,
+  filterCreationsVisible,
+  mergeFilterCounts,
+  selectFilter,
+  togglesFromFilterId,
+  type CreationFilterToggles,
+  type FilterId,
+} from "./creationFilters";
+import { CreationsSidebar } from "./CreationsSidebar";
+import {
   cacheMissingMedia,
   cacheMissingThumbs,
   ensureLocal,
+  getCatalogFilterCounts,
   getCreation,
   getSyncStatus,
+  importFromDisk,
   listCreationsPage,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
@@ -50,10 +65,16 @@ import { VirtualCreationsGrid } from "./VirtualCreationsGrid";
 import {
   CREATIONS_LOAD_MORE_PAGES,
   CREATIONS_PAGE_SIZE,
+  type CatalogFilterCounts,
   type Creation,
   type DownloadProgress,
   type SyncStatus,
 } from "./types";
+
+const SIDEBAR_WIDTH_KEY = "parascene.creationsSidebarWidth";
+const SIDEBAR_DEFAULT_WIDTH = 220;
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 360;
 
 function hasLayoutAspect(c: Creation): boolean {
   return Boolean(c.aspectRatio) || (Boolean(c.width) && Boolean(c.height));
@@ -226,16 +247,35 @@ function useCatalog() {
     });
 
     // Backend pushed a row change (thumb/media landed) — patch in place.
-    void listen<Creation>("library-creation-updated", (event) => {
-      const next = event.payload;
-      const merged = creationsRef.current.map((c) =>
-        c.id === next.id ? next : c,
-      );
+    // Coalesce bursts of updates so thousands of thumb finishes don't freeze React.
+    const pendingRows = new Map<string, Creation>();
+    let rowFlushRaf = 0;
+    const flushRowUpdates = () => {
+      rowFlushRaf = 0;
+      if (pendingRows.size === 0) return;
+      const patch = new Map(pendingRows);
+      pendingRows.clear();
+      let changed = false;
+      const merged = creationsRef.current.map((c) => {
+        const next = patch.get(c.id);
+        if (!next || next === c) return c;
+        changed = true;
+        return next;
+      });
+      if (!changed) return;
       creationsRef.current = merged;
       setCreations(merged);
       refreshStatus();
+    };
+    void listen<Creation>("library-creation-updated", (event) => {
+      pendingRows.set(event.payload.id, event.payload);
+      if (rowFlushRaf) return;
+      rowFlushRaf = window.requestAnimationFrame(flushRowUpdates);
     }).then((off) => {
-      unlistenRow = off;
+      unlistenRow = () => {
+        if (rowFlushRaf) window.cancelAnimationFrame(rowFlushRaf);
+        off();
+      };
     });
 
     void listen<string>("library-creation-deleted", (event) => {
@@ -409,6 +449,22 @@ function useCatalog() {
     setActivity((prev) => clearFinishedSyncActivity(prev));
   }, []);
 
+  const [importing, setImporting] = useState(false);
+  const runImportFromDisk = useCallback(async () => {
+    setImporting(true);
+    setError(null);
+    try {
+      const result = await importFromDisk();
+      if (result.cancelled) return;
+      setStatus(result.status);
+      await loadInitial();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImporting(false);
+    }
+  }, [loadInitial]);
+
   return {
     creations,
     total,
@@ -418,12 +474,14 @@ function useCatalog() {
     syncing,
     repairing,
     loadingMore,
+    importing,
     progress,
     activity,
     runSync,
     runCacheThumbs,
     runCacheMedia,
     runCloudRepair,
+    runImportFromDisk,
     clearFinishedActivity,
     loadMore,
     refreshStatus,
@@ -432,12 +490,22 @@ function useCatalog() {
 
 function creationsChromeStatus(opts: {
   creations: Creation[] | null;
+  visibleCount: number;
+  filterActive: boolean;
   total: number;
   syncing: boolean;
   loadingMore: boolean;
   progress: DownloadProgress | null;
 }): string | null {
-  const { creations, total, syncing, loadingMore, progress } = opts;
+  const {
+    creations,
+    visibleCount,
+    filterActive,
+    total,
+    syncing,
+    loadingMore,
+    progress,
+  } = opts;
   if (creations === null) return "Loading catalog…";
   if (creations.length === 0) return null;
   if (syncing && progress && progress.total > 0) {
@@ -449,6 +517,9 @@ function creationsChromeStatus(opts: {
   if (progress && progress.total > 0) {
     const phase = progress.phase === "thumbs" ? "previews" : "media";
     return `Caching ${phase} ${progress.done} of ${progress.total}…`;
+  }
+  if (filterActive) {
+    return `Showing ${visibleCount} matching · ${creations.length} loaded of ${total}`;
   }
   return `Showing ${creations.length} of ${total}`;
 }
@@ -462,6 +533,8 @@ function CreationsPanel({
   progress,
   onSync,
   onLoadMore,
+  onImportFromDisk,
+  importing,
 }: {
   creations: Creation[] | null;
   total: number;
@@ -471,15 +544,263 @@ function CreationsPanel({
   progress: DownloadProgress | null;
   onSync: () => void;
   onLoadMore: () => void;
+  onImportFromDisk: () => void;
+  importing: boolean;
 }) {
-  const { setChromeStatus } = useShell();
+  const {
+    setChromeStatus,
+    openProjectId,
+    project,
+    createProject,
+    addCreationsToOpenProject,
+    creationsFilterId,
+    setCreationsFilterId,
+  } = useShell();
   const [active, setActive] = useState<Creation | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  /** Sidebar highlight — updates immediately on click. */
+  const [sidebarFilters, setSidebarFilters] = useState<CreationFilterToggles>(
+    () => togglesFromFilterId(creationsFilterId),
+  );
+  /** Grid filter — applied after a blank frame so the switch feels instant. */
+  const [gridFilters, setGridFilters] = useState<CreationFilterToggles>(() =>
+    togglesFromFilterId(creationsFilterId),
+  );
+  const [gridBlank, setGridBlank] = useState(false);
+  const sidebarFiltersRef = useRef(sidebarFilters);
+  sidebarFiltersRef.current = sidebarFilters;
+  const filterApplyGen = useRef(0);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      const n = raw ? Number(raw) : SIDEBAR_DEFAULT_WIDTH;
+      if (!Number.isFinite(n)) return SIDEBAR_DEFAULT_WIDTH;
+      return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n));
+    } catch {
+      return SIDEBAR_DEFAULT_WIDTH;
+    }
+  });
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [catalogCounts, setCatalogCounts] = useState<CatalogFilterCounts | null>(
+    null,
+  );
+  const [deferredKeepIds, setDeferredKeepIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const empty = creations !== null && creations.length === 0;
 
+  const inProjectIds = useMemo(() => {
+    if (!openProjectId) return new Set<string>();
+    return new Set(project.assets.map((a) => a.id));
+  }, [openProjectId, project.assets]);
+
+  const filterCounts = useMemo(
+    () => mergeFilterCounts(catalogCounts, selectedIds, inProjectIds),
+    [catalogCounts, inProjectIds, selectedIds],
+  );
+
   useEffect(() => {
+    let cancelled = false;
+    void getCatalogFilterCounts()
+      .then((counts) => {
+        if (!cancelled) setCatalogCounts(counts);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogCounts(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [total, syncing, creations?.length]);
+
+  const sidebarFilterKey = activeFilterId(sidebarFilters);
+  const gridFilterKey = activeFilterId(gridFilters);
+
+  // Any sidebar filter change reconciles deferred dims (Selected / Not selected pins).
+  useEffect(() => {
+    setDeferredKeepIds(new Set());
+  }, [sidebarFilterKey]);
+
+  // Drop In project filter when the project closes.
+  useEffect(() => {
+    if (openProjectId) return;
+    if (sidebarFilterKey !== "inProject" && gridFilterKey !== "inProject") {
+      return;
+    }
+    setSidebarFilters(EMPTY_FILTER_TOGGLES);
+    setGridFilters(EMPTY_FILTER_TOGGLES);
+    setGridBlank(false);
+    setCreationsFilterId("all");
+  }, [gridFilterKey, openProjectId, setCreationsFilterId, sidebarFilterKey]);
+
+  useEffect(() => {
+    return () => {
+      filterApplyGen.current += 1;
+    };
+  }, []);
+
+  const visibleCreations = useMemo(() => {
+    if (gridBlank || !creations) return [];
+    return filterCreationsVisible(
+      creations,
+      gridFilters,
+      selectedIds,
+      deferredKeepIds,
+      inProjectIds,
+    );
+  }, [
+    creations,
+    deferredKeepIds,
+    gridBlank,
+    gridFilters,
+    inProjectIds,
+    selectedIds,
+  ]);
+
+  const filterEmpty = !gridBlank && visibleCreations.length === 0;
+  const [showFilterEmpty, setShowFilterEmpty] = useState(false);
+  useEffect(() => {
+    if (!filterEmpty) {
+      setShowFilterEmpty(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowFilterEmpty(true), 320);
+    return () => window.clearTimeout(timer);
+  }, [filterEmpty, gridFilterKey]);
+
+  const dimmedIds = useMemo(() => {
+    const out = new Set<string>();
+    if (gridFilterKey === "notSelected") {
+      for (const id of deferredKeepIds) {
+        if (selectedIds.has(id)) out.add(id);
+      }
+    } else if (gridFilterKey === "selected") {
+      for (const id of deferredKeepIds) {
+        if (!selectedIds.has(id)) out.add(id);
+      }
+    }
+    return out;
+  }, [deferredKeepIds, gridFilterKey, selectedIds]);
+
+  const onToggleFilter = useCallback(
+    (id: FilterId) => {
+      const next = selectFilter(sidebarFiltersRef.current, id);
+      // 1) Sidebar state first (same tick as blank).
+      setSidebarFilters(next);
+      setCreationsFilterId(activeFilterId(next));
+      // 2) Blank the grid before rebuilding.
+      setGridBlank(true);
+      const gen = ++filterApplyGen.current;
+      // 3) After paint, apply the filtered board.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (gen !== filterApplyGen.current) return;
+          setGridFilters(next);
+          setGridBlank(false);
+        });
+      });
+    },
+    [setCreationsFilterId],
+  );
+
+  const onToggleSelect = useCallback(
+    (creation: Creation) => {
+      const id = creation.id;
+      const wasSelected = selectedIds.has(id);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      // Use sidebar intent so shift-select matches the highlighted filter.
+      if (sidebarFilterKey === "notSelected") {
+        // Selecting: pin dimmed. Deselecting a pin: unpin.
+        setDeferredKeepIds((prev) => {
+          const next = new Set(prev);
+          if (wasSelected) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      } else if (sidebarFilterKey === "selected") {
+        // Deselecting: pin dimmed. Re-selecting a pin: unpin.
+        setDeferredKeepIds((prev) => {
+          const next = new Set(prev);
+          if (wasSelected) next.add(id);
+          else next.delete(id);
+          return next;
+        });
+      }
+    },
+    [selectedIds, sidebarFilterKey],
+  );
+
+  const onClearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setDeferredKeepIds(new Set());
+  }, []);
+
+  const onNewProjectFromSelection = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    const title =
+      ids.length === 1
+        ? "Untitled project"
+        : `Project (${ids.length} assets)`;
+    createProject(title, ids);
+    setSelectedIds(new Set());
+    setDeferredKeepIds(new Set());
+  }, [createProject, selectedIds]);
+
+  const onAddSelectionToProject = useCallback(() => {
+    if (!openProjectId || selectedIds.size === 0) return;
+    addCreationsToOpenProject([...selectedIds]);
+    setSelectedIds(new Set());
+    setDeferredKeepIds(new Set());
+  }, [addCreationsToOpenProject, openProjectId, selectedIds]);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const next = Math.min(
+        SIDEBAR_MAX_WIDTH,
+        Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (event.clientX - drag.startX)),
+      );
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      setDragging(false);
+      setSidebarWidth((w) => {
+        try {
+          localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+        } catch {
+          // ignore
+        }
+        return w;
+      });
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (gridBlank) {
+      setChromeStatus(null);
+      return () => setChromeStatus(null);
+    }
     setChromeStatus(
       creationsChromeStatus({
         creations,
+        visibleCount: visibleCreations.length,
+        filterActive: gridFilterKey !== "all",
         total,
         syncing,
         loadingMore,
@@ -487,51 +808,123 @@ function CreationsPanel({
       }),
     );
     return () => setChromeStatus(null);
-  }, [creations, loadingMore, progress, setChromeStatus, syncing, total]);
+  }, [
+    creations,
+    gridBlank,
+    gridFilterKey,
+    loadingMore,
+    progress,
+    setChromeStatus,
+    syncing,
+    total,
+    visibleCreations.length,
+  ]);
 
   return (
     <section className="stub-panel creations-panel" aria-label="Creations">
       {error ? <p className="library-error">{error}</p> : null}
       {creations === null ? (
-        <p className="muted">Loading catalog…</p>
+        <p className="muted" style={{ padding: "1rem" }}>
+          Loading catalog…
+        </p>
       ) : empty ? (
         <div className="library-empty-body">
           <p className="muted">No local creations yet.</p>
-          <SyncFromCloudButton
-            active={syncing}
-            onSync={onSync}
-            progress={progress}
-          />
+          <div className="library-empty-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onImportFromDisk}
+              disabled={importing || syncing}
+            >
+              {importing ? "Adding…" : "Add from disk…"}
+            </button>
+            <SyncFromCloudButton
+              active={syncing}
+              onSync={onSync}
+              progress={progress}
+            />
+          </div>
         </div>
       ) : (
-        <>
-          <VirtualCreationsGrid
-            creations={creations}
-            onOpen={(creation) => {
-              setActive(creation);
-              // Fire urgent fetch on click — don't wait for lightbox mount.
-              if (
-                creation.downloadState !== "local" ||
-                !creation.localPath
-              ) {
-                void ensureLocal([creation.id], {
-                  fullMedia: true,
-                  urgent: true,
-                });
-              }
-            }}
-            onNearEnd={onLoadMore}
+        <div className="creations-split">
+          <CreationsSidebar
+            toggles={sidebarFilters}
+            counts={filterCounts}
+            width={sidebarWidth}
+            onToggle={onToggleFilter}
+            selectedCount={selectedIds.size}
+            hasOpenProject={Boolean(openProjectId)}
+            onNewProject={onNewProjectFromSelection}
+            onAddToProject={onAddSelectionToProject}
+            onClearSelection={onClearSelection}
+            onAddFromDisk={onImportFromDisk}
+            importing={importing}
           />
-          {active ? (
-            <CreationLightbox
-              creation={
-                creations.find((c) => c.id === active.id) ?? active
-              }
-              onClose={() => setActive(null)}
-              onDeleted={() => setActive(null)}
-            />
-          ) : null}
-        </>
+          <button
+            type="button"
+            className={
+              dragging
+                ? "creations-split-resizer is-dragging"
+                : "creations-split-resizer"
+            }
+            aria-label="Resize filters sidebar"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              dragRef.current = {
+                startX: event.clientX,
+                startWidth: sidebarWidth,
+              };
+              setDragging(true);
+            }}
+          />
+          <div className="creations-split-main">
+            {gridBlank || (filterEmpty && !showFilterEmpty) ? (
+              <div
+                className="creations-grid-blank"
+                aria-busy={gridBlank || undefined}
+              />
+            ) : showFilterEmpty ? (
+              <CreationsFilterEmpty />
+            ) : (
+              <VirtualCreationsGrid
+                creations={visibleCreations}
+                selectedIds={selectedIds}
+                dimmedIds={dimmedIds}
+                inProjectIds={inProjectIds}
+                layoutResetKey={gridFilterKey}
+                onOpen={(creation) => {
+                  setActive(creation);
+                  if (
+                    creation.downloadState !== "local" ||
+                    !creation.localPath
+                  ) {
+                    void ensureLocal([creation.id], {
+                      fullMedia: true,
+                      urgent: true,
+                    });
+                  }
+                }}
+                onToggleSelect={onToggleSelect}
+                onNearEnd={() => {
+                  // Selection only comes from shift-clicks on already-loaded cards.
+                  // Paging while Filtered→Selected keeps load-more firing forever.
+                  if (gridFilterKey === "selected") return;
+                  onLoadMore();
+                }}
+              />
+            )}
+            {active ? (
+              <CreationLightbox
+                creation={
+                  creations.find((c) => c.id === active.id) ?? active
+                }
+                onClose={() => setActive(null)}
+                onDeleted={() => setActive(null)}
+              />
+            ) : null}
+          </div>
+        </div>
       )}
     </section>
   );
@@ -856,10 +1249,12 @@ export function LibraryView() {
     runCacheThumbs,
     runCacheMedia,
     runCloudRepair,
+    runImportFromDisk,
     clearFinishedActivity,
     activity,
     loadMore,
     refreshStatus,
+    importing,
   } = useCatalog();
 
   return (
@@ -889,6 +1284,8 @@ export function LibraryView() {
           progress={progress}
           onSync={runSync}
           onLoadMore={loadMore}
+          onImportFromDisk={runImportFromDisk}
+          importing={importing}
         />
       )}
     </div>

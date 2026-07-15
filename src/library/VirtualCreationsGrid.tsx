@@ -14,8 +14,12 @@ import { canFetchLocal, creationPreviewUrl } from "./previewUrl";
 import type { Creation } from "./types";
 import { warmLocalPreviews } from "./warmPreviews";
 
-/** Ask Rust for missing thumbs across the whole loaded catalogue window. */
-const ENSURE_AHEAD_PX = 20000;
+/** Ask Rust for missing thumbs near the viewport (not the whole board). */
+const ENSURE_AHEAD_PX = 1800;
+/** Max thumb ensure requests per scroll/layout pass. */
+const ENSURE_BATCH = 24;
+/** Keep this much padding above/below the viewport mounted. */
+const OVERSCAN_PX = 1200;
 /** Start paging when less than this much scroll runway remains (min; also ≥ 4 viewports). */
 const LOAD_MORE_MIN_PX = 9000;
 const LOAD_MORE_VIEWPORTS = 4;
@@ -33,6 +37,7 @@ type CardLayout = {
 /**
  * Shortest-column pack with sticky column membership so appends and aspect
  * tweaks don't reshuffle earlier cards (avoids jumpy remounts while paging).
+ * Assignment must be cleared when the list is filtered/reordered (not append-only).
  */
 function layoutBoardSticky(
   items: Creation[],
@@ -81,19 +86,39 @@ function layoutBoardSticky(
   };
 }
 
+/** True when `next` is the same prefix as `prev` plus optional new rows (infinite scroll). */
+export function isAppendOnlyIdList(prev: string[], next: string[]): boolean {
+  if (next.length < prev.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i] !== next[i]) return false;
+  }
+  return true;
+}
+
 /**
  * Masonry board from catalog aspect ratios (SQLite).
  *
- * Every creation already loaded into the feed stays mounted. Catalogue paging
- * bounds how many nodes we keep; content-visibility skips off-screen paint.
+ * Positions are packed for the full loaded catalogue; only the viewport
+ * (+ overscan) mounts React cards so large windows stay interactive.
  */
 export function VirtualCreationsGrid({
   creations,
+  selectedIds,
+  dimmedIds,
+  inProjectIds,
+  layoutResetKey,
   onOpen,
+  onToggleSelect,
   onNearEnd,
 }: {
   creations: Creation[];
+  selectedIds: ReadonlySet<string>;
+  dimmedIds?: ReadonlySet<string>;
+  inProjectIds?: ReadonlySet<string>;
+  /** Change when filters change so packing/scroll reset (sticky cols would scatter otherwise). */
+  layoutResetKey?: string;
   onOpen: (creation: Creation) => void;
+  onToggleSelect: (creation: Creation) => void;
   onNearEnd: () => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -104,30 +129,66 @@ export function VirtualCreationsGrid({
   const ensuredIds = useRef(new Set<string>());
   const assignmentRef = useRef(new Map<string, number>());
   const colsRef = useRef(0);
+  const prevIdsRef = useRef<string[]>([]);
+  const prevResetKeyRef = useRef(layoutResetKey);
   const rafScroll = useRef(0);
-
-  // Start decode before child layout effects so remounts can paint instantly.
-  warmLocalPreviews(creations);
 
   const { cards, totalHeight } = useMemo(() => {
     if (!layout.ready) return { cards: [] as CardLayout[], totalHeight: 0 };
-    if (colsRef.current !== layout.columnCount) {
-      colsRef.current = layout.columnCount;
+
+    const ids = creations.map((c) => c.id);
+    const resetKeyChanged = prevResetKeyRef.current !== layoutResetKey;
+    prevResetKeyRef.current = layoutResetKey;
+
+    if (
+      resetKeyChanged ||
+      colsRef.current !== layout.columnCount ||
+      !isAppendOnlyIdList(prevIdsRef.current, ids)
+    ) {
       assignmentRef.current = new Map();
+      colsRef.current = layout.columnCount;
     }
+    prevIdsRef.current = ids;
+
     return layoutBoardSticky(
       creations,
       layout.columnCount,
       layout.columnWidth,
       assignmentRef.current,
     );
-  }, [creations, layout.ready, layout.columnCount, layout.columnWidth]);
+  }, [
+    creations,
+    layout.ready,
+    layout.columnCount,
+    layout.columnWidth,
+    layoutResetKey,
+  ]);
+
+  // Filter / reset: jump to top so leftover scroll doesn't sit in empty packed space
+  // and trigger phantom load-more that confuses the board.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    setScrollTop(0);
+    nearEndSent.current = false;
+  }, [layoutResetKey]);
+
+  // Only mount + warm cards near the viewport — full-board mount freezes the UI.
+  const visibleCards = useMemo(() => {
+    if (cards.length === 0) return cards;
+    const top = scrollTop - OVERSCAN_PX;
+    const bottom = scrollTop + viewportH + OVERSCAN_PX;
+    return cards.filter(
+      (card) => card.top + card.height >= top && card.top <= bottom,
+    );
+  }, [cards, scrollTop, viewportH]);
 
   useEffect(() => {
-    warmLocalPreviews(creations);
-  }, [creations]);
+    warmLocalPreviews(visibleCards.map((c) => c.creation));
+  }, [visibleCards]);
 
-  // Pull any missing thumbs for the loaded catalogue, nearest-to-viewport first.
+  // Pull missing thumbs near the viewport only (capped batch).
   useEffect(() => {
     const mid = scrollTop + viewportH / 2;
     const missing = cards
@@ -136,6 +197,7 @@ export function VirtualCreationsGrid({
         if (creationPreviewUrl(card.creation)) return false;
         const key = `${card.id}:thumb`;
         if (ensuredIds.current.has(key)) return false;
+        if (card.top + card.height < scrollTop - ENSURE_AHEAD_PX) return false;
         if (card.top > scrollTop + viewportH + ENSURE_AHEAD_PX) return false;
         return true;
       })
@@ -143,7 +205,8 @@ export function VirtualCreationsGrid({
         (a, b) =>
           Math.abs(a.top + a.height / 2 - mid) -
           Math.abs(b.top + b.height / 2 - mid),
-      );
+      )
+      .slice(0, ENSURE_BATCH);
     if (missing.length === 0) return;
     const thumbIds: string[] = [];
     for (const card of missing) {
@@ -152,7 +215,7 @@ export function VirtualCreationsGrid({
       thumbIds.push(card.id);
     }
     void ensureLocal(thumbIds, { fullMedia: false });
-  }, [cards, creations, scrollTop, viewportH]);
+  }, [cards, scrollTop, viewportH]);
 
   const checkNearEnd = useCallback(
     (el: HTMLDivElement) => {
@@ -182,8 +245,10 @@ export function VirtualCreationsGrid({
       rafScroll.current = 0;
       const node = scrollerRef.current;
       if (!node) return;
-      setScrollTop(node.scrollTop);
-      setViewportH(node.clientHeight);
+      const nextTop = node.scrollTop;
+      const nextH = node.clientHeight;
+      setScrollTop((prev) => (prev === nextTop ? prev : nextTop));
+      setViewportH((prev) => (prev === nextH ? prev : nextH));
     });
   }, [checkNearEnd]);
 
@@ -194,7 +259,14 @@ export function VirtualCreationsGrid({
     setViewportH(el.clientHeight);
     checkNearEnd(el);
     el.addEventListener("scroll", onScroll, { passive: true });
-    const ro = new ResizeObserver(onScroll);
+    // Size changes only — don't re-enter the scroll ensure path on every image decode.
+    const ro = new ResizeObserver(() => {
+      const node = scrollerRef.current;
+      if (!node) return;
+      const nextH = node.clientHeight;
+      setViewportH((prev) => (prev === nextH ? prev : nextH));
+      checkNearEnd(node);
+    });
     ro.observe(el);
     return () => {
       el.removeEventListener("scroll", onScroll);
@@ -220,7 +292,7 @@ export function VirtualCreationsGrid({
         aria-label={`${creations.length} creations`}
         aria-busy={!layout.ready}
       >
-        {cards.map((card) => {
+        {visibleCards.map((card) => {
           const style = {
             top: card.top,
             left: card.left,
@@ -236,7 +308,11 @@ export function VirtualCreationsGrid({
               <CreationCard
                 creation={card.creation}
                 aspectCss={card.aspectCss}
+                selected={selectedIds.has(card.id)}
+                dimmed={dimmedIds?.has(card.id) ?? false}
+                inProject={inProjectIds?.has(card.id) ?? false}
                 onOpen={onOpen}
+                onToggleSelect={onToggleSelect}
               />
             </div>
           );

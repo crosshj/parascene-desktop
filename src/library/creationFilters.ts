@@ -1,0 +1,279 @@
+import { isGroupCreation, isPublishedCreation } from "./creationFlags";
+import { aspectRatioFromCreation } from "./aspectRatio";
+import type { CatalogFilterCounts, Creation } from "./types";
+
+/** Exclusive filter flags — at most one key is true (“All Assets” = all false). */
+export type CreationFilterToggles = {
+  video: boolean;
+  image: boolean;
+  audio: boolean;
+  groups: boolean;
+  localOnly: boolean;
+  published: boolean;
+  unpublished: boolean;
+  selected: boolean;
+  notSelected: boolean;
+  inProject: boolean;
+  aspect11: boolean;
+  aspect916: boolean;
+  aspect45: boolean;
+  aspect169: boolean;
+};
+
+export const EMPTY_FILTER_TOGGLES: CreationFilterToggles = {
+  video: false,
+  image: false,
+  audio: false,
+  groups: false,
+  localOnly: false,
+  published: false,
+  unpublished: false,
+  selected: false,
+  notSelected: false,
+  inProject: false,
+  aspect11: false,
+  aspect916: false,
+  aspect45: false,
+  aspect169: false,
+};
+
+export type FilterId = keyof CreationFilterToggles | "all";
+
+export function togglesFromFilterId(id: FilterId): CreationFilterToggles {
+  if (id === "all") return { ...EMPTY_FILTER_TOGGLES };
+  if (id in EMPTY_FILTER_TOGGLES) {
+    return { ...EMPTY_FILTER_TOGGLES, [id]: true };
+  }
+  return { ...EMPTY_FILTER_TOGGLES };
+}
+
+export function isFilterId(value: unknown): value is FilterId {
+  if (value === "all") return true;
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(EMPTY_FILTER_TOGGLES, value)
+  );
+}
+
+export const ASPECT_FILTER_PRESETS = {
+  aspect11: { w: 1, h: 1 },
+  aspect916: { w: 9, h: 16 },
+  aspect45: { w: 4, h: 5 },
+  aspect169: { w: 16, h: 9 },
+} as const;
+
+export type AspectFilterId = keyof typeof ASPECT_FILTER_PRESETS;
+
+/**
+ * Local-only = does not exist in Parascene cloud (desktop-origin).
+ * Not the same as “downloaded / on disk.”
+ */
+export function isLocalOnlyCreation(
+  c: Pick<Creation, "remoteUrl" | "remoteJson">,
+): boolean {
+  const remoteUrl = c.remoteUrl?.trim() ?? "";
+  const remoteJson = c.remoteJson?.trim() ?? "";
+  return !remoteUrl && !remoteJson;
+}
+
+export function creationMatchesAspectFilter(
+  creation: Creation,
+  id: AspectFilterId,
+): boolean {
+  const preset = ASPECT_FILTER_PRESETS[id];
+  const { w, h } = aspectRatioFromCreation(creation);
+  return w === preset.w && h === preset.h;
+}
+
+export function anyFilterActive(toggles: CreationFilterToggles): boolean {
+  return (Object.keys(EMPTY_FILTER_TOGGLES) as (keyof CreationFilterToggles)[]).some(
+    (key) => toggles[key],
+  );
+}
+
+export function activeFilterId(toggles: CreationFilterToggles): FilterId {
+  for (const key of Object.keys(EMPTY_FILTER_TOGGLES) as (keyof CreationFilterToggles)[]) {
+    if (toggles[key]) return key;
+  }
+  return "all";
+}
+
+/** Single active filter match. */
+export function creationMatchesFilters(
+  creation: Creation,
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+): boolean {
+  const active = activeFilterId(toggles);
+  if (active === "all") return true;
+  const mt = String(creation.mediaType ?? "").toLowerCase();
+  switch (active) {
+    case "video":
+      return mt === "video";
+    case "image":
+      return mt === "image";
+    case "audio":
+      return mt === "audio";
+    case "groups":
+      return isGroupCreation(creation);
+    case "localOnly":
+      return isLocalOnlyCreation(creation);
+    case "published":
+      return isPublishedCreation(creation);
+    case "unpublished":
+      return !isPublishedCreation(creation);
+    case "selected":
+      return selectedIds.has(creation.id);
+    case "notSelected":
+      return !selectedIds.has(creation.id);
+    case "inProject":
+      return inProjectIds.has(creation.id);
+    case "aspect11":
+    case "aspect916":
+    case "aspect45":
+    case "aspect169":
+      return creationMatchesAspectFilter(creation, active);
+    default:
+      return true;
+  }
+}
+
+const emptyIdSet: ReadonlySet<string> = new Set();
+
+export function filterCreations(
+  creations: Creation[],
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+): Creation[] {
+  if (!anyFilterActive(toggles)) return creations;
+  return creations.filter((c) =>
+    creationMatchesFilters(c, toggles, selectedIds, inProjectIds),
+  );
+}
+
+/**
+ * Exclusive filter views that defer hide-on-toggle so masonry doesn't reflow:
+ * - Not selected: keep newly selected items dimmed until leave
+ * - Selected: keep newly deselected items dimmed until leave
+ */
+export function filterCreationsVisible(
+  creations: Creation[],
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  deferredKeepIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+): Creation[] {
+  const active = activeFilterId(toggles);
+  if (deferredKeepIds.size === 0) {
+    return filterCreations(creations, toggles, selectedIds, inProjectIds);
+  }
+  if (active === "notSelected") {
+    return creations.filter((c) => {
+      if (deferredKeepIds.has(c.id) && selectedIds.has(c.id)) return true;
+      return creationMatchesFilters(c, toggles, selectedIds, inProjectIds);
+    });
+  }
+  if (active === "selected") {
+    return creations.filter((c) => {
+      if (deferredKeepIds.has(c.id) && !selectedIds.has(c.id)) return true;
+      return creationMatchesFilters(c, toggles, selectedIds, inProjectIds);
+    });
+  }
+  return filterCreations(creations, toggles, selectedIds, inProjectIds);
+}
+
+export type FilterCounts = Record<keyof CreationFilterToggles, number> & {
+  all: number;
+};
+
+/** Merge SQLite catalog tallies with selection / open-project counts from the UI. */
+export function mergeFilterCounts(
+  catalog: CatalogFilterCounts | null,
+  selectedIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+): FilterCounts {
+  const all = catalog?.all ?? 0;
+  const selected = selectedIds.size;
+  return {
+    all,
+    video: catalog?.video ?? 0,
+    image: catalog?.image ?? 0,
+    audio: catalog?.audio ?? 0,
+    groups: catalog?.groups ?? 0,
+    localOnly: catalog?.localOnly ?? 0,
+    published: catalog?.published ?? 0,
+    unpublished: catalog?.unpublished ?? 0,
+    selected,
+    notSelected: Math.max(0, all - selected),
+    inProject: inProjectIds.size,
+    aspect11: catalog?.aspect11 ?? 0,
+    aspect916: catalog?.aspect916 ?? 0,
+    aspect45: catalog?.aspect45 ?? 0,
+    aspect169: catalog?.aspect169 ?? 0,
+  };
+}
+
+/** Loaded-window tallies (tests / fallback). Prefer mergeFilterCounts for sidebar. */
+export function countFilterMatches(
+  creations: Creation[],
+  selectedIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+): FilterCounts {
+  const counts: FilterCounts = {
+    all: creations.length,
+    video: 0,
+    image: 0,
+    audio: 0,
+    groups: 0,
+    localOnly: 0,
+    published: 0,
+    unpublished: 0,
+    selected: 0,
+    notSelected: 0,
+    inProject: 0,
+    aspect11: 0,
+    aspect916: 0,
+    aspect45: 0,
+    aspect169: 0,
+  };
+  for (const c of creations) {
+    const mt = String(c.mediaType ?? "").toLowerCase();
+    if (mt === "video") counts.video += 1;
+    else if (mt === "image") counts.image += 1;
+    else if (mt === "audio") counts.audio += 1;
+    if (isGroupCreation(c)) counts.groups += 1;
+    if (isLocalOnlyCreation(c)) counts.localOnly += 1;
+    if (isPublishedCreation(c)) counts.published += 1;
+    else counts.unpublished += 1;
+    if (selectedIds.has(c.id)) counts.selected += 1;
+    else counts.notSelected += 1;
+    if (inProjectIds.has(c.id)) counts.inProject += 1;
+    if (creationMatchesAspectFilter(c, "aspect11")) counts.aspect11 += 1;
+    if (creationMatchesAspectFilter(c, "aspect916")) counts.aspect916 += 1;
+    if (creationMatchesAspectFilter(c, "aspect45")) counts.aspect45 += 1;
+    if (creationMatchesAspectFilter(c, "aspect169")) counts.aspect169 += 1;
+  }
+  return counts;
+}
+
+/**
+ * One filter at a time. Clicking All Assets (or the active filter again) clears to all.
+ */
+export function selectFilter(
+  toggles: CreationFilterToggles,
+  id: FilterId,
+): CreationFilterToggles {
+  if (id === "all") return { ...EMPTY_FILTER_TOGGLES };
+  if (toggles[id]) return { ...EMPTY_FILTER_TOGGLES };
+  return { ...EMPTY_FILTER_TOGGLES, [id]: true };
+}
+
+/** @deprecated Use selectFilter — filters are exclusive. */
+export function toggleFilter(
+  toggles: CreationFilterToggles,
+  id: FilterId,
+): CreationFilterToggles {
+  return selectFilter(toggles, id);
+}

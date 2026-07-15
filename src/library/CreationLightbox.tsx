@@ -4,6 +4,7 @@ import { getEnvConfig } from "../auth/session";
 import { creationPageUrl } from "../sync/syncState";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { creationAspectCss } from "./aspectRatio";
+import { AudioWaveform } from "./AudioWaveform";
 import {
   deleteLocal,
   ensureLocal,
@@ -46,7 +47,11 @@ export function CreationLightbox({
   const thumb = creationPreviewUrl(creation);
   const aspectCss = creationAspectCss(creation);
   const unavailable = isParasceneUnavailable(creation);
-  const waiting = !detail && canFetchLocal(creation) && !unavailable;
+  const canOpenOnWeb = canFetchLocal(creation);
+  const waiting = !detail && canOpenOnWeb && !unavailable;
+  const mediaType = String(creation.mediaType ?? "").trim().toLowerCase();
+  const isVideo = mediaType === "video";
+  const isAudio = mediaType === "audio";
   const webUrl = creationPageUrl(getEnvConfig().baseUrl, creation.id);
   const [busyKind, setBusyKind] = useState<"fill" | "delete" | null>(null);
   const busy = busyKind !== null;
@@ -138,25 +143,29 @@ export function CreationLightbox({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="creation-lightbox-actions">
-          <button
-            type="button"
-            className="btn ghost"
-            onClick={() => {
-              void openUrl(webUrl);
-            }}
-          >
-            View on Parascene
-          </button>
-          <button
-            type="button"
-            className="btn ghost"
-            disabled={busy}
-            onClick={() => {
-              void onFillThumb();
-            }}
-          >
-            {busyKind === "fill" ? "Filling…" : "Fill thumbnail"}
-          </button>
+          {canOpenOnWeb ? (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => {
+                void openUrl(webUrl);
+              }}
+            >
+              View on Parascene
+            </button>
+          ) : null}
+          {!isAudio ? (
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={busy}
+              onClick={() => {
+                void onFillThumb();
+              }}
+            >
+              {busyKind === "fill" ? "Filling…" : "Fill thumbnail"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn ghost"
@@ -178,17 +187,33 @@ export function CreationLightbox({
         </div>
         {actionError ? <p className="library-error">{actionError}</p> : null}
         <div
-          className="creation-lightbox-stage"
-          style={{ aspectRatio: aspectCss }}
+          className={[
+            "creation-lightbox-stage",
+            isAudio ? "is-audio" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          style={isAudio ? undefined : { aspectRatio: aspectCss }}
         >
           {detail ? (
-            creation.mediaType === "video" ? (
+            isVideo ? (
               <video
                 className="creation-lightbox-media"
                 src={detail}
                 controls
                 autoPlay
               />
+            ) : isAudio ? (
+              <div className="creation-lightbox-audio">
+                <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
+                <audio
+                  className="creation-lightbox-audio-el"
+                  src={detail}
+                  controls
+                  autoPlay
+                  preload="auto"
+                />
+              </div>
             ) : (
               <img
                 className="creation-lightbox-media"

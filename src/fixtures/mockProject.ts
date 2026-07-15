@@ -4,6 +4,7 @@ import type { Project, ProjectRepository } from "../project/types";
 export const mockProject: Project = {
   id: "fixture-project-1",
   title: "Sample sequence",
+  aspectRatio: "16:9",
   scenes: [
     { id: "s1", title: "Opening", durationLabel: "0:08" },
     { id: "s2", title: "Interview A", durationLabel: "0:24" },
@@ -11,9 +12,9 @@ export const mockProject: Project = {
     { id: "s4", title: "Close", durationLabel: "0:06" },
   ],
   assets: [
-    { id: "a1", name: "cam_a.mp4", kind: "video" },
-    { id: "a2", name: "cam_b.mp4", kind: "video" },
-    { id: "a3", name: "voiceover.wav", kind: "audio" },
+    { id: "a1", name: "cam_a.mp4", kind: "video", durationLabel: "0:24" },
+    { id: "a2", name: "cam_b.mp4", kind: "video", durationLabel: "0:18" },
+    { id: "a3", name: "voiceover.wav", kind: "audio", durationLabel: "1:12" },
     { id: "a4", name: "logo.png", kind: "image" },
   ],
   timeline: [
@@ -21,6 +22,9 @@ export const mockProject: Project = {
     { id: "c2", label: "Interview A", startSec: 8, endSec: 32 },
     { id: "c3", label: "B-roll", startSec: 32, endSec: 44 },
   ],
+  selectedTimelineClipId: null,
+  selectedAssetId: null,
+  timelineZoom: 1,
   hookSuggestions: [
     {
       id: "h1",

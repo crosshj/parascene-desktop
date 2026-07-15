@@ -40,7 +40,6 @@ export function AppChrome({ children }: { children: ReactNode }) {
     mode,
     setMode,
     openProjectId,
-    closeProject,
     chromeStatus,
   } = useShell();
   const { session, logout } = useAuth();
@@ -96,28 +95,19 @@ export function AppChrome({ children }: { children: ReactNode }) {
           ) : null}
 
           {showModeTabs ? (
-            <>
-              <nav className="context-tabs" aria-label="Layout mode">
-                {MODES.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    className={mode === m.id ? "mode-btn active" : "mode-btn"}
-                    aria-pressed={mode === m.id}
-                    onClick={() => setMode(m.id)}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </nav>
-              <button
-                type="button"
-                className="btn chrome-close-project"
-                onClick={() => closeProject()}
-              >
-                Close project
-              </button>
-            </>
+            <nav className="context-tabs" aria-label="Layout mode">
+              {MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={mode === m.id ? "mode-btn active" : "mode-btn"}
+                  aria-pressed={mode === m.id}
+                  onClick={() => setMode(m.id)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </nav>
           ) : null}
 
           {/* Former always-on mode switch — replaced by context tabs after spacer.

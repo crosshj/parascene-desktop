@@ -106,6 +106,23 @@ export type CreationPage = {
   hasMore: boolean;
 };
 
+/** Full-catalog tallies for the Creations sidebar (from SQLite). */
+export type CatalogFilterCounts = {
+  all: number;
+  video: number;
+  image: number;
+  audio: number;
+  groups: number;
+  localOnly: number;
+  published: number;
+  unpublished: number;
+  /** Approximate from denormalized aspect_ratio / width×height (not remote_json). */
+  aspect11: number;
+  aspect916: number;
+  aspect45: number;
+  aspect169: number;
+};
+
 export type DownloadSummary = {
   downloaded: number;
   failed: number;

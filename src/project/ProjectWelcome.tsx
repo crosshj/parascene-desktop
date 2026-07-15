@@ -1,7 +1,7 @@
 import { useShell } from "../app/ShellProvider";
 
 export function ProjectWelcome() {
-  const { recentProjects, openProject, project } = useShell();
+  const { recentProjects, openProject, createProject } = useShell();
 
   return (
     <div className="project-welcome" aria-label="Project picker">
@@ -16,7 +16,7 @@ export function ProjectWelcome() {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => openProject(project.id)}
+            onClick={() => createProject("Untitled project")}
           >
             New project
           </button>

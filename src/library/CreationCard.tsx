@@ -5,6 +5,7 @@ import {
   isGroupCreation,
   isPublishedCreation,
 } from "./creationFlags";
+import { AudioWaveform } from "./AudioWaveform";
 import {
   canFetchLocal,
   creationPreviewUrl,
@@ -40,6 +41,14 @@ function BrokenPreview() {
           strokeLinecap="round"
         />
       </svg>
+    </div>
+  );
+}
+
+function AudioPreview() {
+  return (
+    <div className="creation-thumb creation-thumb-audio" aria-hidden>
+      <AudioWaveform />
     </div>
   );
 }
@@ -95,12 +104,12 @@ function GroupBadge() {
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.9"
+        strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        <rect x="3.5" y="6.5" width="9.5" height="9.5" rx="2" />
-        <rect x="10.5" y="10.5" width="10" height="10" rx="2" />
+        <rect x="8" y="8" width="11" height="11" rx="2" />
+        <rect x="5" y="5" width="11" height="11" rx="2" />
       </svg>
     </span>
   );
@@ -126,6 +135,28 @@ function NsfwHiddenBadge() {
   );
 }
 
+function InProjectBadge() {
+  return (
+    <span
+      className="creation-badge creation-in-project-badge"
+      title="In current project"
+      aria-hidden
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+        <path d="M9 13l2 2 4-4" />
+      </svg>
+    </span>
+  );
+}
+
 /**
  * Board card: local thumbnail + catalog aspect slot. Share / group / play sit
  * top-left as matching badges. NSFW stays centered with blur; lightbox
@@ -134,11 +165,21 @@ function NsfwHiddenBadge() {
 export const CreationCard = memo(function CreationCard({
   creation,
   aspectCss,
+  selected = false,
+  dimmed = false,
+  inProject = false,
   onOpen,
+  onToggleSelect,
 }: {
   creation: Creation;
   aspectCss: string;
+  selected?: boolean;
+  /** Not-selected view: selected but kept in place until filter reconciles. */
+  dimmed?: boolean;
+  /** Open project includes this creation. */
+  inProject?: boolean;
   onOpen: (creation: Creation) => void;
+  onToggleSelect?: (creation: Creation) => void;
 }) {
   const preview = creationPreviewUrl(creation);
   const unavailable = isParasceneUnavailable(creation);
@@ -146,12 +187,14 @@ export const CreationCard = memo(function CreationCard({
   const [paintSrc, setPaintSrc] = useState<string | null>(() =>
     preview && isPreviewDecoded(preview) ? preview : null,
   );
-  const isVideo = creation.mediaType === "video";
+  const mediaType = String(creation.mediaType ?? "").trim().toLowerCase();
+  const isVideo = mediaType === "video";
+  const isAudio = mediaType === "audio";
   const isNsfw = creation.nsfw === true;
   const published = isPublishedCreation(creation);
   const isGroup = isGroupCreation(creation);
   const showPlay = isVideo && Boolean(paintSrc);
-  const showCornerBadges = published || isGroup || showPlay;
+  const showCornerBadges = published || isGroup || showPlay || inProject;
   const cardTitle = creationCardTitle(creation);
 
   // Don't mount <img> until decoded — avoids grey flash on virtual remount.
@@ -179,7 +222,14 @@ export const CreationCard = memo(function CreationCard({
   }, [creation, unavailable, preview]);
 
   const showImage = Boolean(paintSrc && paintSrc === preview);
-  const showPending = waitingOnDisk || (Boolean(preview) && !showImage);
+  // Audio rarely has a bitmap thumb — waveform once local (or disk-only import).
+  const showAudio =
+    isAudio &&
+    !showImage &&
+    !unavailable &&
+    (Boolean(creation.localPath) || !canFetchLocal(creation));
+  const showPending =
+    !showAudio && (waitingOnDisk || (Boolean(preview) && !showImage));
 
   return (
     <div className="creation-card">
@@ -189,15 +239,27 @@ export const CreationCard = memo(function CreationCard({
           "creation-card-hit",
           showPending ? "is-pending" : "",
           unavailable ? "is-broken" : "",
+          showAudio ? "is-audio" : "",
           isNsfw ? "is-nsfw" : "",
+          selected ? "is-selected" : "",
+          dimmed ? "is-dimmed" : "",
+          inProject ? "is-in-project" : "",
         ]
           .filter(Boolean)
           .join(" ")}
-        onClick={() => onOpen(creation)}
+        aria-pressed={selected}
+        onClick={(event) => {
+          if (event.shiftKey && onToggleSelect) {
+            event.preventDefault();
+            onToggleSelect(creation);
+            return;
+          }
+          onOpen(creation);
+        }}
         aria-label={
           unavailable
             ? `${creation.title} (unavailable)`
-            : `Open ${creation.title}${isNsfw ? ", NSFW" : ""}${published ? ", published" : ""}${isGroup ? ", group" : ""}${showPlay ? ", video" : ""}`
+            : `${selected ? "Selected. " : ""}${dimmed ? "Marked pending until filter changes. " : ""}${inProject ? "In current project. " : ""}Open ${creation.title}${isNsfw ? ", NSFW" : ""}${published ? ", published" : ""}${isGroup ? ", group" : ""}${showPlay ? ", video" : ""}${showAudio ? ", audio" : ""}. Shift-click to ${selected ? "deselect" : "select"}.`
         }
       >
         <span
@@ -213,6 +275,8 @@ export const CreationCard = memo(function CreationCard({
               decoding="sync"
               draggable={false}
             />
+          ) : showAudio ? (
+            <AudioPreview />
           ) : showPending ? (
             <>
               <div
@@ -228,6 +292,7 @@ export const CreationCard = memo(function CreationCard({
           {isNsfw ? <NsfwHiddenBadge /> : null}
           {showCornerBadges ? (
             <span className="creation-badge-row" aria-hidden>
+              {inProject ? <InProjectBadge /> : null}
               {published ? <PublishedBadge /> : null}
               {isGroup ? <GroupBadge /> : null}
               {showPlay ? <VideoPlayBadge /> : null}

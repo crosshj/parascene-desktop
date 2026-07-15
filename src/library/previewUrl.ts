@@ -31,14 +31,21 @@ export function isParascenePending(c: Creation): boolean {
   );
 }
 
+/** True when full media or a board thumb is already on disk. */
+export function hasLocalMedia(c: Creation): boolean {
+  return Boolean(c.localPath?.trim() || c.localThumbPath?.trim());
+}
+
 /**
  * Hard unavailable on Parascene (moderated / failed / no assets and not pending).
  * Local download_state `"failed"` is NOT this — that only means retry the save.
+ * Disk-only imports (no remote URLs) with local files are available.
  */
 export function isParasceneUnavailable(c: Creation): boolean {
   if (c.isModeratedError) return true;
   const s = statusKey(c);
   if (s === "failed" || s === "error" || s === "moderated") return true;
+  if (hasLocalMedia(c)) return false;
   if (canFetchLocal(c) || isParascenePending(c)) return false;
   return true;
 }
