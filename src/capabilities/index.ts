@@ -1,4 +1,8 @@
-/** Capability stubs — interfaces only until real features land. */
+/** Capability stubs — interfaces until real features land. */
+
+import { listCreations } from "../library/catalogClient";
+import type { Creation } from "../library/types";
+import { syncCreationsManifest } from "../sync/manifestSync";
 
 export type CapabilityResult =
   | { status: "ok" }
@@ -9,7 +13,7 @@ export interface CreationSync {
 }
 
 export interface AssetLibrary {
-  list(): Promise<CapabilityResult>;
+  list(): Promise<Creation[]>;
 }
 
 export interface TimelineCommands {
@@ -37,11 +41,14 @@ export const unimplemented = (
   });
 
 export const creationSyncStub: CreationSync = {
-  sync: () => unimplemented("creation sync"),
+  sync: async () => {
+    await syncCreationsManifest();
+    return { status: "ok" };
+  },
 };
 
 export const assetLibraryStub: AssetLibrary = {
-  list: () => unimplemented("asset library"),
+  list: () => listCreations(),
 };
 
 export const timelineCommandsStub: TimelineCommands = {

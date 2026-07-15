@@ -4,16 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build && bash scripts/clean-dmg.sh",
-    "desktop:build:raw": "tauri build",
-    "desktop:test": "vitest run",
+    "dev": "env PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
+    "build": "env PATH=\"$HOME/.cargo/bin:$PATH\" tauri build && bash scripts/clean-dmg.sh",
+    "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "vite:dev": "vite",
+    "vite:build": "tsc && vite build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

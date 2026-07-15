@@ -1,0 +1,866 @@
+use super::paths::{default_root, ensure_directories, resolve_paths, ParascenePaths};
+use chrono::Utc;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Creation {
+    pub id: String,
+    pub title: String,
+    pub media_type: String,
+    pub remote_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub video_url: Option<String>,
+    pub local_path: Option<String>,
+    pub local_thumb_path: Option<String>,
+    pub published: bool,
+    pub published_at: Option<String>,
+    pub created_at: String,
+    pub download_state: String,
+    pub checksum: Option<String>,
+    pub prompt: Option<String>,
+    pub expires_at: Option<String>,
+    pub updated_at: String,
+    pub filename: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub status: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub aspect_ratio: Option<String>,
+    pub nsfw: bool,
+    pub is_moderated_error: bool,
+    /// Full Parascene create-images row as synced (JSON).
+    pub remote_json: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreationUpsert {
+    pub id: String,
+    pub title: String,
+    pub media_type: String,
+    pub remote_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub video_url: Option<String>,
+    pub published: bool,
+    pub published_at: Option<String>,
+    pub created_at: String,
+    pub download_state: String,
+    pub prompt: Option<String>,
+    pub filename: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub status: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub aspect_ratio: Option<String>,
+    pub nsfw: bool,
+    pub is_moderated_error: bool,
+    pub remote_json: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    pub root_path: String,
+    pub last_sync_at: Option<String>,
+    pub total: u32,
+    pub local: u32,
+    pub remote: u32,
+    pub queued: u32,
+    pub downloading: u32,
+    pub failed: u32,
+    /// Rows with a local thumbnail file path set.
+    pub with_thumb: u32,
+    /// Rows with full local media on disk (`download_state = local` already counted separately).
+    pub with_media: u32,
+    /// Missing thumbs that still have a downloadable preview URL.
+    pub missing_thumb_cacheable: u32,
+    /// Missing full media that still have a remote URL.
+    pub missing_media_cacheable: u32,
+    /// Bytes used under Library/media.
+    pub media_bytes: u64,
+    /// Bytes used under Library/thumbs.
+    pub thumbs_bytes: u64,
+    /// Creations that can't be cached (no downloadable cloud URLs). Capped.
+    pub without_cloud_urls: Vec<WithoutCloudUrl>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WithoutCloudUrl {
+    pub id: String,
+    pub title: String,
+    pub filename: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreationPage {
+    pub creations: Vec<Creation>,
+    pub total: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub has_more: bool,
+}
+
+fn open_db(db_path: &Path) -> Result<Connection, String> {
+    Connection::open(db_path).map_err(|e| format!("Could not open catalog DB: {e}"))
+}
+
+fn migrate(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS creations (
+          id TEXT PRIMARY KEY NOT NULL,
+          title TEXT NOT NULL,
+          media_type TEXT NOT NULL,
+          remote_url TEXT,
+          thumbnail_url TEXT,
+          video_url TEXT,
+          local_path TEXT,
+          local_thumb_path TEXT,
+          published INTEGER NOT NULL DEFAULT 0,
+          published_at TEXT,
+          created_at TEXT NOT NULL,
+          download_state TEXT NOT NULL,
+          checksum TEXT,
+          prompt TEXT,
+          expires_at TEXT,
+          updated_at TEXT NOT NULL,
+          filename TEXT,
+          description TEXT,
+          color TEXT,
+          status TEXT,
+          width INTEGER,
+          height INTEGER,
+          aspect_ratio TEXT,
+          nsfw INTEGER NOT NULL DEFAULT 0,
+          is_moderated_error INTEGER NOT NULL DEFAULT 0,
+          remote_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_meta (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("Catalog migrate failed: {e}"))?;
+
+    // Older DBs may lack later columns.
+    for ddl in [
+        "ALTER TABLE creations ADD COLUMN thumbnail_url TEXT",
+        "ALTER TABLE creations ADD COLUMN local_thumb_path TEXT",
+        "ALTER TABLE creations ADD COLUMN video_url TEXT",
+        "ALTER TABLE creations ADD COLUMN published_at TEXT",
+        "ALTER TABLE creations ADD COLUMN filename TEXT",
+        "ALTER TABLE creations ADD COLUMN description TEXT",
+        "ALTER TABLE creations ADD COLUMN color TEXT",
+        "ALTER TABLE creations ADD COLUMN status TEXT",
+        "ALTER TABLE creations ADD COLUMN width INTEGER",
+        "ALTER TABLE creations ADD COLUMN height INTEGER",
+        "ALTER TABLE creations ADD COLUMN aspect_ratio TEXT",
+        "ALTER TABLE creations ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE creations ADD COLUMN is_moderated_error INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE creations ADD COLUMN remote_json TEXT",
+    ] {
+        let _ = conn.execute(ddl, []);
+    }
+    Ok(())
+}
+
+fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT value FROM sync_meta WHERE key = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query(params![key]).map_err(|e| e.to_string())?;
+    if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        Ok(Some(row.get(0).map_err(|e| e.to_string())?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sync_meta(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn meta_delete(conn: &Connection, key: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM sync_meta WHERE key = ?1", params![key])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Debug-build auth backend: session KV in catalog.sqlite (avoids Keychain prompts).
+const AUTH_KV_PREFIX: &str = "auth_store:";
+
+fn auth_meta_key(key: &str) -> String {
+    format!("{AUTH_KV_PREFIX}{key}")
+}
+
+pub(crate) fn auth_kv_get(key: &str) -> Result<Option<String>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    meta_get(&conn, &auth_meta_key(key))
+}
+
+pub(crate) fn auth_kv_set(key: &str, value: &str) -> Result<(), String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    meta_set(&conn, &auth_meta_key(key), value)
+}
+
+pub(crate) fn auth_kv_delete(key: &str) -> Result<(), String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    meta_delete(&conn, &auth_meta_key(key))
+}
+
+fn count_creations(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM creations", [], |row| row.get(0))
+        .map_err(|e| e.to_string())
+}
+
+/// Dev/test seed only — not called from ready_connection (real catalog comes from sync).
+#[cfg(test)]
+fn seed_if_empty(conn: &Connection) -> Result<bool, String> {
+    if count_creations(conn)? > 0 {
+        return Ok(false);
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let fixtures: &[(&str, &str, &str, &str, i64)] = &[
+        ("fixture-a1", "cam_a.mp4", "video", "remote", 1),
+        ("fixture-a2", "cam_b.mp4", "video", "remote", 0),
+        ("fixture-a3", "voiceover.wav", "audio", "remote", 0),
+        ("fixture-a4", "logo.png", "image", "local", 1),
+    ];
+
+    for (id, title, media_type, state, published) in fixtures {
+        conn.execute(
+            r#"
+            INSERT INTO creations (
+              id, title, media_type, remote_url, thumbnail_url, local_path, local_thumb_path, published,
+              created_at, download_state, checksum, prompt, expires_at, updated_at
+            ) VALUES (?1, ?2, ?3, NULL, NULL, NULL, NULL, ?4, ?5, ?6, NULL, NULL, NULL, ?5)
+            "#,
+            params![id, title, media_type, published, now, state],
+        )
+        .map_err(|e| format!("Seed insert failed: {e}"))?;
+    }
+
+    Ok(true)
+}
+
+fn map_creation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Creation> {
+    Ok(Creation {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        media_type: row.get(2)?,
+        remote_url: row.get(3)?,
+        thumbnail_url: row.get(4)?,
+        video_url: row.get(5)?,
+        local_path: row.get(6)?,
+        local_thumb_path: row.get(7)?,
+        published: row.get::<_, i64>(8)? != 0,
+        published_at: row.get(9)?,
+        created_at: row.get(10)?,
+        download_state: row.get(11)?,
+        checksum: row.get(12)?,
+        prompt: row.get(13)?,
+        expires_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        filename: row.get(16)?,
+        description: row.get(17)?,
+        color: row.get(18)?,
+        status: row.get(19)?,
+        width: row.get(20)?,
+        height: row.get(21)?,
+        aspect_ratio: row.get(22)?,
+        nsfw: row.get::<_, i64>(23).unwrap_or(0) != 0,
+        is_moderated_error: row.get::<_, i64>(24).unwrap_or(0) != 0,
+        remote_json: row.get(25)?,
+    })
+}
+
+const CREATION_SELECT: &str = r#"
+    SELECT id, title, media_type, remote_url, thumbnail_url, video_url, local_path, local_thumb_path,
+           published, published_at, created_at, download_state, checksum, prompt, expires_at, updated_at,
+           filename, description, color, status, width, height, aspect_ratio,
+           COALESCE(nsfw, 0), COALESCE(is_moderated_error, 0), remote_json
+    FROM creations
+"#;
+
+pub(crate) fn list_creations(conn: &Connection) -> Result<Vec<Creation>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "{CREATION_SELECT} ORDER BY created_at DESC, title ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], map_creation_row)
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub(crate) fn list_creations_page(
+    conn: &Connection,
+    limit: u32,
+    offset: u32,
+) -> Result<CreationPage, String> {
+    let limit = limit.clamp(1, 200);
+    let total = count_creations(conn)? as u32;
+    let mut stmt = conn
+        .prepare(&format!(
+            "{CREATION_SELECT} ORDER BY created_at DESC, title ASC LIMIT ?1 OFFSET ?2"
+        ))
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![limit, offset], map_creation_row)
+        .map_err(|e| e.to_string())?;
+
+    let mut creations = Vec::new();
+    for row in rows {
+        creations.push(row.map_err(|e| e.to_string())?);
+    }
+    let next_offset = offset.saturating_add(creations.len() as u32);
+    Ok(CreationPage {
+        has_more: next_offset < total,
+        creations,
+        total,
+        offset,
+        limit,
+    })
+}
+
+pub(crate) fn get_creations_by_ids(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<Creation>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let all = list_creations(conn)?;
+    let wanted: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    Ok(all.into_iter().filter(|c| wanted.contains(c.id.as_str())).collect())
+}
+
+pub(crate) fn get_creation_by_id(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<Creation>, String> {
+    let mut stmt = conn
+        .prepare(&format!("{CREATION_SELECT} WHERE id = ?1 LIMIT 1"))
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map(params![id], map_creation_row)
+        .map_err(|e| e.to_string())?;
+    match rows.next() {
+        Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
+        None => Ok(None),
+    }
+}
+
+fn count_by_state(conn: &Connection, state: &str) -> Result<u32, String> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM creations WHERE download_state = ?1",
+            params![state],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n as u32)
+}
+
+fn count_where(conn: &Connection, sql: &str) -> Result<u32, String> {
+    let n: i64 = conn
+        .query_row(sql, [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(n as u32)
+}
+
+fn dir_size_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_file() {
+            total = total.saturating_add(meta.len());
+        } else if meta.is_dir() {
+            total = total.saturating_add(dir_size_bytes(&entry.path()));
+        }
+    }
+    total
+}
+
+const WITHOUT_CLOUD_URLS_LIMIT: u32 = 50;
+
+fn list_without_cloud_urls(conn: &Connection) -> Result<Vec<WithoutCloudUrl>, String> {
+    // Matches unsyncableThumbCount ∪ unsyncableMediaCount: no local file and no
+    // downloadable URL under the same rules as cache-missing queries.
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, title, filename FROM creations
+            WHERE
+              (
+                (local_thumb_path IS NULL OR local_thumb_path = '')
+                AND NOT (
+                  (thumbnail_url IS NOT NULL AND thumbnail_url != '')
+                  OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
+                )
+              )
+              OR
+              (
+                (local_path IS NULL OR local_path = '')
+                AND (remote_url IS NULL OR remote_url = '')
+              )
+            ORDER BY created_at DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![WITHOUT_CLOUD_URLS_LIMIT], |row| {
+            Ok(WithoutCloudUrl {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                filename: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, String> {
+    let total = count_creations(conn)? as u32;
+    let with_thumb = count_where(
+        conn,
+        "SELECT COUNT(*) FROM creations WHERE local_thumb_path IS NOT NULL AND local_thumb_path != ''",
+    )?;
+    let with_media = count_where(
+        conn,
+        "SELECT COUNT(*) FROM creations WHERE local_path IS NOT NULL AND local_path != ''",
+    )?;
+    // Same URL rules as download::needs_thumb / needs_download (no local file required here).
+    let missing_thumb_cacheable = count_where(
+        conn,
+        r#"SELECT COUNT(*) FROM creations
+           WHERE (local_thumb_path IS NULL OR local_thumb_path = '')
+             AND (
+               (thumbnail_url IS NOT NULL AND thumbnail_url != '')
+               OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
+             )"#,
+    )?;
+    let missing_media_cacheable = count_where(
+        conn,
+        r#"SELECT COUNT(*) FROM creations
+           WHERE (local_path IS NULL OR local_path = '')
+             AND remote_url IS NOT NULL AND remote_url != ''"#,
+    )?;
+    Ok(SyncStatus {
+        root_path: paths.root.display().to_string(),
+        last_sync_at: meta_get(conn, "last_sync_at")?,
+        total,
+        local: count_by_state(conn, "local")?,
+        remote: count_by_state(conn, "remote")?,
+        queued: count_by_state(conn, "queued")?,
+        downloading: count_by_state(conn, "downloading")?,
+        failed: count_by_state(conn, "failed")?,
+        with_thumb,
+        with_media,
+        missing_thumb_cacheable,
+        missing_media_cacheable,
+        media_bytes: dir_size_bytes(&paths.media),
+        thumbs_bytes: dir_size_bytes(&paths.thumbs),
+        without_cloud_urls: list_without_cloud_urls(conn)?,
+    })
+}
+
+fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result<(), String> {
+    conn.execute(
+        r#"
+        INSERT INTO creations (
+          id, title, media_type, remote_url, thumbnail_url, video_url,
+          local_path, local_thumb_path, published, published_at, created_at, download_state,
+          checksum, prompt, expires_at, updated_at,
+          filename, description, color, status, width, height, aspect_ratio,
+          nsfw, is_moderated_error, remote_json
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6,
+          NULL, NULL, ?7, ?8, ?9, ?10,
+          NULL, ?11, NULL, ?12,
+          ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+          ?20, ?21, ?22
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          title = excluded.title,
+          media_type = excluded.media_type,
+          remote_url = excluded.remote_url,
+          thumbnail_url = excluded.thumbnail_url,
+          video_url = excluded.video_url,
+          published = excluded.published,
+          published_at = excluded.published_at,
+          created_at = excluded.created_at,
+          prompt = excluded.prompt,
+          filename = excluded.filename,
+          description = excluded.description,
+          color = excluded.color,
+          status = excluded.status,
+          width = excluded.width,
+          height = excluded.height,
+          aspect_ratio = excluded.aspect_ratio,
+          nsfw = excluded.nsfw,
+          is_moderated_error = excluded.is_moderated_error,
+          remote_json = excluded.remote_json,
+          updated_at = excluded.updated_at,
+          download_state = CASE
+            WHEN creations.local_path IS NOT NULL AND creations.download_state = 'local'
+              THEN creations.download_state
+            ELSE excluded.download_state
+          END
+        "#,
+        params![
+            row.id,
+            row.title,
+            row.media_type,
+            row.remote_url,
+            row.thumbnail_url,
+            row.video_url,
+            if row.published { 1 } else { 0 },
+            row.published_at,
+            row.created_at,
+            row.download_state,
+            row.prompt,
+            now,
+            row.filename,
+            row.description,
+            row.color,
+            row.status,
+            row.width,
+            row.height,
+            row.aspect_ratio,
+            if row.nsfw { 1 } else { 0 },
+            if row.is_moderated_error { 1 } else { 0 },
+            row.remote_json,
+        ],
+    )
+    .map_err(|e| format!("Upsert creation failed: {e}"))?;
+    Ok(())
+}
+
+pub(crate) fn set_download_state(conn: &Connection, id: &str, state: &str) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE creations SET download_state = ?1, updated_at = ?2 WHERE id = ?3",
+        params![state, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn set_local_thumb_path(
+    conn: &Connection,
+    id: &str,
+    local_thumb_path: &str,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE creations SET local_thumb_path = ?1, updated_at = ?2 WHERE id = ?3",
+        params![local_thumb_path, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn mark_downloaded(
+    conn: &Connection,
+    id: &str,
+    local_path: &str,
+    local_thumb_path: Option<&str>,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        r#"
+        UPDATE creations
+        SET local_path = ?1,
+            local_thumb_path = COALESCE(?2, local_thumb_path),
+            download_state = 'local',
+            updated_at = ?3
+        WHERE id = ?4
+        "#,
+        params![local_path, local_thumb_path, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Delete a creation from the local catalog and remove its media/thumb files.
+/// Only removes files under Library/media or Library/thumbs. Does not touch Parascene cloud.
+pub(crate) fn delete_creation_local(
+    conn: &Connection,
+    paths: &ParascenePaths,
+    id: &str,
+) -> Result<(), String> {
+    let creation = get_creation_by_id(conn, id)?
+        .ok_or_else(|| format!("Creation {id} not found"))?;
+    remove_file_under_root(&paths.media, creation.local_path.as_deref());
+    remove_file_under_root(&paths.thumbs, creation.local_thumb_path.as_deref());
+    let n = conn
+        .execute("DELETE FROM creations WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("Creation {id} not found"));
+    }
+    Ok(())
+}
+
+fn remove_file_under_root(root: &Path, stored: Option<&str>) {
+    let Some(stored) = stored.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let path = Path::new(stored);
+    let Ok(root_canon) = root.canonicalize() else {
+        return;
+    };
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let Ok(file_canon) = candidate.canonicalize() else {
+        // Missing file is fine — still delete the catalog row.
+        return;
+    };
+    if file_canon.starts_with(&root_canon) && file_canon.is_file() {
+        let _ = std::fs::remove_file(&file_canon);
+    }
+}
+
+pub(crate) fn ready_connection(paths: &ParascenePaths) -> Result<Connection, String> {
+    ensure_directories(paths)?;
+    let conn = open_db(&paths.catalog_db)?;
+    migrate(&conn)?;
+    meta_set(&conn, "root_path", &paths.root.display().to_string())?;
+    conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
+        .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+pub(crate) fn default_paths() -> Result<ParascenePaths, String> {
+    Ok(resolve_paths(default_root()?))
+}
+
+pub(crate) fn sync_status_for(paths: &ParascenePaths) -> Result<SyncStatus, String> {
+    let conn = ready_connection(paths)?;
+    sync_status(&conn, paths)
+}
+
+fn apply_manifest(conn: &Connection, rows: &[CreationUpsert]) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        upsert_creation(conn, row, &now)?;
+    }
+    meta_set(conn, "last_sync_at", &now)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn library_ensure_ready() -> Result<SyncStatus, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    sync_status(&conn, &paths)
+}
+
+#[tauri::command]
+pub fn library_list_creations() -> Result<Vec<Creation>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    list_creations(&conn)
+}
+
+/// Plain list (no side effects). Prefer `library::library_list_creations_page` for UI,
+/// which also kicks async thumb prefetch.
+pub(crate) fn query_creations_page(limit: u32, offset: u32) -> Result<CreationPage, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    list_creations_page(&conn, limit, offset)
+}
+
+#[tauri::command]
+pub fn library_get_creation(id: String) -> Result<Creation, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Creation {id} not found"))
+}
+
+#[tauri::command]
+pub fn library_sync_status() -> Result<SyncStatus, String> {
+    sync_status_for(&default_paths()?)
+}
+
+#[tauri::command]
+pub fn library_apply_manifest(creations: Vec<CreationUpsert>) -> Result<SyncStatus, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    apply_manifest(&conn, &creations)?;
+    sync_status(&conn, &paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_paths() -> ParascenePaths {
+        let root = std::env::temp_dir().join(format!(
+            "parascene-catalog-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        resolve_paths(root)
+    }
+
+    #[test]
+    fn migrate_seed_is_idempotent() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        seed_if_empty(&conn).expect("seed");
+        let first = list_creations(&conn).expect("list");
+        assert_eq!(first.len(), 4);
+        seed_if_empty(&conn).expect("seed again");
+        let second = list_creations(&conn).expect("list again");
+        assert_eq!(second.len(), 4);
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn apply_manifest_replaces_fixtures_and_sets_last_sync() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        seed_if_empty(&conn).expect("seed");
+        apply_manifest(
+            &conn,
+            &[CreationUpsert {
+                id: "42".into(),
+                title: "My clip".into(),
+                media_type: "video".into(),
+                remote_url: Some("https://cdn.example/v.mp4".into()),
+                thumbnail_url: Some("https://cdn.example/t.jpg".into()),
+                video_url: Some("https://cdn.example/v.mp4".into()),
+                published: true,
+                published_at: Some("2026-01-03T00:00:00Z".into()),
+                created_at: "2026-01-02T00:00:00Z".into(),
+                download_state: "remote".into(),
+                prompt: Some("a prompt".into()),
+                filename: Some("clip.mp4".into()),
+                description: Some("desc".into()),
+                color: Some("#112233".into()),
+                status: Some("completed".into()),
+                width: Some(1920),
+                height: Some(1080),
+                aspect_ratio: Some("16:9".into()),
+                nsfw: false,
+                is_moderated_error: false,
+                remote_json: r#"{"id":"42","width":1920,"height":1080}"#.into(),
+            }],
+        )
+        .expect("apply");
+        let rows = list_creations(&conn).expect("list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "42");
+        assert_eq!(rows[0].title, "My clip");
+        assert!(rows[0].thumbnail_url.is_some());
+        assert_eq!(rows[0].width, Some(1920));
+        assert_eq!(rows[0].height, Some(1080));
+        assert_eq!(rows[0].aspect_ratio.as_deref(), Some("16:9"));
+        assert_eq!(rows[0].color.as_deref(), Some("#112233"));
+        assert!(rows[0].remote_json.is_some());
+        let status = sync_status(&conn, &paths).expect("status");
+        assert_eq!(status.total, 1);
+        assert!(status.last_sync_at.is_some());
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn delete_creation_local_removes_disk_and_row() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(
+            &conn,
+            &[CreationUpsert {
+                id: "7".into(),
+                title: "Clip".into(),
+                media_type: "image".into(),
+                remote_url: Some("https://cdn.example/a.png".into()),
+                thumbnail_url: Some("https://cdn.example/t.png".into()),
+                video_url: None,
+                published: true,
+                published_at: None,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                download_state: "remote".into(),
+                prompt: None,
+                filename: Some("a.png".into()),
+                description: None,
+                color: None,
+                status: None,
+                width: Some(10),
+                height: Some(10),
+                aspect_ratio: Some("1:1".into()),
+                nsfw: false,
+                is_moderated_error: false,
+                remote_json: "{}".into(),
+            }],
+        )
+        .expect("apply");
+
+        let media = paths.media.join("7.png");
+        let thumb = paths.thumbs.join("7.png");
+        fs::write(&media, b"media").expect("media");
+        fs::write(&thumb, b"thumb").expect("thumb");
+        mark_downloaded(
+            &conn,
+            "7",
+            &media.display().to_string(),
+            Some(&thumb.display().to_string()),
+        )
+        .expect("mark");
+
+        delete_creation_local(&conn, &paths, "7").expect("delete");
+        assert!(get_creation_by_id(&conn, "7").expect("get").is_none());
+        assert!(!media.exists());
+        assert!(!thumb.exists());
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+}

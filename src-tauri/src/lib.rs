@@ -1,9 +1,18 @@
 mod auth_store;
 mod http_client;
+mod library;
 mod oauth_listener;
 
-use auth_store::{keychain_delete, keychain_get, keychain_set};
+use auth_store::{
+    auth_ensure_access_token, keychain_delete, keychain_get, keychain_set,
+};
 use http_client::{http_get_bearer, http_post_json};
+use library::{
+    library_apply_manifest, library_cache_missing_media, library_cache_missing_thumbs,
+    library_delete_local, library_download_ids, library_download_pending, library_download_thumbs,
+    library_ensure_local, library_ensure_ready, library_fill_thumb, library_get_creation,
+    library_list_creations, library_list_creations_page, library_sync_status,
+};
 use oauth_listener::{cancel_oauth_listener, start_oauth_listener};
 use tauri::Manager;
 
@@ -31,10 +40,25 @@ pub fn run() {
             keychain_get,
             keychain_set,
             keychain_delete,
+            auth_ensure_access_token,
             start_oauth_listener,
             cancel_oauth_listener,
             http_post_json,
-            http_get_bearer
+            http_get_bearer,
+            library_ensure_ready,
+            library_get_creation,
+            library_list_creations,
+            library_list_creations_page,
+            library_sync_status,
+            library_apply_manifest,
+            library_download_pending,
+            library_download_ids,
+            library_download_thumbs,
+            library_cache_missing_thumbs,
+            library_cache_missing_media,
+            library_ensure_local,
+            library_delete_local,
+            library_fill_thumb
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

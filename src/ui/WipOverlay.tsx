@@ -1,5 +1,15 @@
-/** Persistent non-blocking WIP watermark. */
+import { useShell } from "../app/ShellProvider";
+
+/** Non-blocking WIP watermark — hidden on Library → Creations and Sync. */
 export function WipOverlay() {
+  const { primaryTab, librarySurface } = useShell();
+  if (
+    primaryTab === "library" &&
+    (librarySurface === "creations" || librarySurface === "sync")
+  ) {
+    return null;
+  }
+
   return (
     <div className="wip-overlay" aria-hidden="true">
       <div className="wip-watermark">Work In Progress</div>

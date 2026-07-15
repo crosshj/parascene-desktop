@@ -10,6 +10,7 @@ import {
   type TokenSet,
 } from "../sdk/parascene";
 import {
+  PARASCENE_API_BASE_URL_DEFAULT,
   PARASCENE_BASE_URL_DEFAULT,
   PARASCENE_CLIENT_ID,
   PARASCENE_OAUTH_LOOPBACK_PORT,
@@ -50,6 +51,9 @@ export function getEnvConfig() {
   return {
     baseUrl:
       import.meta.env.VITE_PARASCENE_BASE_URL || PARASCENE_BASE_URL_DEFAULT,
+    apiBaseUrl:
+      import.meta.env.VITE_PARASCENE_API_BASE_URL ||
+      PARASCENE_API_BASE_URL_DEFAULT,
     clientId: import.meta.env.VITE_PARASCENE_CLIENT_ID || PARASCENE_CLIENT_ID,
     redirectUri: PARASCENE_OAUTH_REDIRECT_URI,
     loopbackPort: PARASCENE_OAUTH_LOOPBACK_PORT,
@@ -57,26 +61,28 @@ export function getEnvConfig() {
 }
 
 function createSdk(getTokens: () => Promise<TokenSet | null>): ParasceneSdk {
-  const { baseUrl, clientId, redirectUri } = getEnvConfig();
+  const { baseUrl, apiBaseUrl, clientId, redirectUri } = getEnvConfig();
   return createParasceneSdk({
     baseUrl,
+    apiBaseUrl,
     clientId,
     redirectUri,
     getAccessToken: async () => (await getTokens())?.accessToken ?? null,
     onRefreshNeeded: async () => {
-      const current = await getTokens();
-      if (!current?.refreshToken) return null;
-      const sdk = createParasceneSdk({
-        baseUrl,
-        clientId,
-        redirectUri,
-        getAccessToken: async () => current.accessToken,
-      });
-      const next = await sdk.refreshTokens(current.refreshToken);
-      await persistTokens(next);
-      return next;
+      await invoke<string>("auth_ensure_access_token", { force: true });
+      return loadStoredTokens();
     },
   });
+}
+
+/** Fresh access token — single-flight Rust refresh (Parascene rotates prt_ each time). */
+export async function ensureAccessToken(): Promise<string> {
+  return invoke<string>("auth_ensure_access_token", { force: false });
+}
+
+/** SDK that reads tokens from secure storage and refreshes via Rust when stale. */
+export function createAuthedSdk(): ParasceneSdk {
+  return createSdk(loadStoredTokens);
 }
 
 async function keychainGet(key: string): Promise<string | null> {
@@ -134,7 +140,7 @@ function decodeSession(raw: string): AuthSession | null {
   }
 }
 
-/** One Keychain item for the whole session (avoids multiple OS password prompts). */
+/** One secure-storage item for the whole session (Keychain in release, SQLite in debug). */
 export async function persistSession(session: AuthSession): Promise<void> {
   await keychainSet(KEYCHAIN_SESSION, encodeSession(session));
   await deleteLegacyKeychainItems();
@@ -292,9 +298,7 @@ export async function loginWithParascene(): Promise<AuthSession> {
 
   const authedSdk = createSdk(async () => tokens);
   const user = await step("Fetch /oauth/userinfo", () => authedSdk.getUserInfo());
-  await step("Store session in Keychain", () =>
-    persistSession({ tokens, user }),
-  );
+  await step("Store session", () => persistSession({ tokens, user }));
   return { tokens, user };
 }
 

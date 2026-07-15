@@ -11,7 +11,7 @@ Examples of likely drift already:
 - App uses IBM Plex + purple accent tokens (`src/styles.css`); mocks lean bluer / more generically “video editor”
 - Current chrome is a single compact header (mode switch + avatar / logout), not the mock multi-bar “Parascene Desktop Mockups” frame
 - Export / Undo / Render chrome in mocks is aspirational; shell pass stays lean until those features exist
-- Library hierarchy (breadcrumb → project → modes) is planned; today modes are always available — evolve toward Library without discarding the working chrome patterns
+- Chrome is now **Library | Project** with modes only when a project is open on the Project tab — prefer that over the mock breadcrumb “Library as sole home” layout
 
 | File | View |
 | --- | --- |

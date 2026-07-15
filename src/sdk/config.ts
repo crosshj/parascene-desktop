@@ -4,6 +4,9 @@ export const PARASCENE_CLIENT_ID =
 
 export const PARASCENE_BASE_URL_DEFAULT = "https://www.parascene.com";
 
+/** Origin for `/api/...` product routes (OAuth still uses site base URL). */
+export const PARASCENE_API_BASE_URL_DEFAULT = "https://api.parascene.com";
+
 /**
  * Loopback redirect registered on the Parascene app.
  * Must match Connections → Redirect URLs exactly.

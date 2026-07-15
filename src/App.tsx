@@ -5,11 +5,23 @@ import { ShellProvider, useShell } from "./app/ShellProvider";
 import { DirectorLayout } from "./layouts/director/DirectorLayout";
 import { EditorLayout } from "./layouts/editor/EditorLayout";
 import { HookLayout } from "./layouts/hook/HookLayout";
+import { LibraryView } from "./library/LibraryView";
+import { ProjectWelcome } from "./project/ProjectWelcome";
+import { ConfirmProvider } from "./ui/ConfirmDialog";
 import { WipOverlay } from "./ui/WipOverlay";
 import "./styles.css";
 
 function LayoutRouter() {
-  const { mode } = useShell();
+  const { primaryTab, mode, openProjectId } = useShell();
+
+  if (primaryTab === "library") {
+    return <LibraryView />;
+  }
+
+  if (!openProjectId) {
+    return <ProjectWelcome />;
+  }
+
   if (mode === "editor") return <EditorLayout />;
   if (mode === "hook") return <HookLayout />;
   return <DirectorLayout />;
@@ -32,9 +44,12 @@ function Root() {
 
   return (
     <ShellProvider>
-      <AppChrome>
-        <LayoutRouter />
-      </AppChrome>
+      <ConfirmProvider>
+        <WipOverlay />
+        <AppChrome>
+          <LayoutRouter />
+        </AppChrome>
+      </ConfirmProvider>
     </ShellProvider>
   );
 }
@@ -42,7 +57,6 @@ function Root() {
 export default function App() {
   return (
     <AuthProvider>
-      <WipOverlay />
       <Root />
     </AuthProvider>
   );

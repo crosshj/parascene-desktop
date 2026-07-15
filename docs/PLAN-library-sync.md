@@ -8,43 +8,33 @@ Derived from the ~3:33 design in [ChatGPT share](https://chatgpt.com/share/6a569
 
 ## Product model
 
-Two conceptual levels:
-
-1. **Library** — everything the user owns locally or on Parascene
-2. **Project workspace** — Director / Editor / Hook for a selected project
-
-Editing modes appear only when a project is open. Clicking **Parascene** (or the brand breadcrumb) returns to Library.
-
-### Navigation
-
-Preferred hierarchy:
+**Chrome (settled — supersedes ChatGPT breadcrumb / Library-as-sole-home IA):**
 
 ```text
-Parascene  /  {Project name}          [Director] [Editor] [Hook]
+| Library | Project |          | {context tabs} |
 ```
 
-- Modes only visible with an open project
-- Do not put Library inside Director
-- Avoid arbitrary docking / floating workspace designer
+Context tabs (same header row, after spacer) depend on the primary tab:
+
+- **Library** → `Creations | Sync`
+- **Project** + open project → `Director | Editor | Hook`
+- **Project** + no project → picker only (no context tabs)
+
+1. **Library** (default on open) — browse/download Parascene creations **without** an open project. Sync UI is a header context tab (sync logic stays native).
+2. **Project** — if nothing open: VS Code–style picker (recent + New project). If a project is loaded and this tab is selected: workspace body + mode context tabs.
+3. Switching to Library hides mode tabs but keeps the project loaded; Close project returns to the picker.
+
+Do not treat Library as a DAM-only home with Projects buried in a sidebar. Do not put Library inside Director. Avoid arbitrary docking / floating workspace designer.
 
 ### Library screen (target)
 
-- Sidebar: All Assets, Videos, Images, Audio, Published, Unpublished, Expiring Soon, Projects, Downloads
-- Main: asset grid (thumbnails + names)
-- Header: sync status (e.g. “Syncing 14 of 387”) + user
-- Footer: counts (local / downloading / last synchronized)
-
-Selection actions:
-
-- Create project
-- Add to existing project
-- Download now
-- Reveal in Finder
-- View on Parascene
+- Creations: asset grid (thumbnails + names); filters as needed later (type, published, expiring, etc.)
+- Sync: queue, failures, disk usage, last sync
+- Selection actions (later): Download now, Reveal in Finder, View on Parascene, Add to project / New project from selection
 
 ### How layouts consume the library
 
-- **Editor** left panel: project-scoped catalog + “All Library”
+- **Editor** left panel: project-scoped catalog + path into Creations
 - **Director**: only assets already in the project
 - **Hook**: later; still mocked for now
 
@@ -138,17 +128,20 @@ connected · syncing 14
 
 Click opens queue, failures, disk usage, last sync.
 
-**Key distinction:** Library is a first-class destination; sync is background infrastructure. Editing modes consume Library; they must not own it.
+**Key distinction:** Library is a primary chrome tab (peer to Project); sync is background infrastructure with a Library → Sync surface. Editing modes consume the catalog; they must not own downloads.
 
 ## Implementation phases
 
-1. Interfaces / types for catalog + sync state (TS + Rust commands)
-2. Paths + SQLite catalog schema (empty library UI possible)
-3. On-demand download for a single creation
-4. Library React view (grid, filters, selection actions stubbed where needed)
-5. Bind project workspace to project-scoped assets; hide modes until a project is open
-6. Manifest sync + resume + checksums; status chip + queue UI
-7. First-run policy + incremental “download everything”
+1. ~~Library \| Project chrome + Project picker + stub Creations/Sync~~ (shell done)
+2. ~~Interfaces / types for catalog + sync state (TS + Rust commands)~~
+3. ~~Paths + SQLite catalog schema (`~/Movies/Parascene`, `catalog.sqlite`)~~
+4. ~~Creations grid + Sync status panel wired to catalog~~
+5. ~~Manifest sync: `GET /api/create/images` → SQLite~~
+6. ~~Download media + thumbs into `Library/media` and `Library/thumbs` (masonry Creations grid)~~
+7. Library Creations UI polish (filters, selection actions)
+8. Bind project workspace to project-scoped assets
+9. Resume interrupted downloads + checksums; richer Sync queue UI
+10. First-run policy choices (videos only / recent / on-demand)
 
 ## Dependency: FFmpeg
 

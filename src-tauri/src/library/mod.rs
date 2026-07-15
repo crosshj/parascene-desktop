@@ -1,0 +1,34 @@
+mod catalog;
+mod download;
+mod paths;
+mod thumb_fill;
+
+pub use catalog::{
+    library_apply_manifest, library_ensure_ready, library_get_creation, library_list_creations,
+    library_sync_status,
+};
+pub use download::{
+    library_cache_missing_media, library_cache_missing_thumbs, library_delete_local,
+    library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,
+};
+pub use thumb_fill::library_fill_thumb;
+
+use catalog::{query_creations_page, CreationPage};
+use download::spawn_scroll_ahead;
+use tauri::AppHandle;
+
+/// List a page from local SQLite, then warm thumbs several pages ahead of `offset`
+/// (high priority). Full media for the listed page is low priority only.
+#[tauri::command]
+pub async fn library_list_creations_page(
+    app: AppHandle,
+    limit: u32,
+    offset: u32,
+) -> Result<CreationPage, String> {
+    let page = query_creations_page(limit, offset)?;
+    spawn_scroll_ahead(app, limit, offset);
+    Ok(page)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) use catalog::{auth_kv_delete, auth_kv_get, auth_kv_set};

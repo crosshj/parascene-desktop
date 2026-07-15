@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { createParasceneSdk, absolutizeAssetUrl } from "./parascene";
+import {
+  createParasceneSdk,
+  absolutizeAssetUrl,
+  isAccessTokenExpiredOrNear,
+} from "./parascene";
 
 const invoke = vi.fn();
 
@@ -75,4 +79,41 @@ describe("ParasceneSdk", () => {
       absolutizeAssetUrl("/avatars/a.png", "https://www.parascene.com"),
     ).toBe("https://www.parascene.com/avatars/a.png");
   });
+
+  it("detects expired access JWTs", () => {
+    const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 10 }))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+    expect(isAccessTokenExpiredOrNear(`hdr.${payload}.sig`)).toBe(true);
+  });
+
+  it("lists creations from the API origin with the access token", async () => {
+    invoke.mockResolvedValueOnce({
+      status: 200,
+      body: JSON.stringify({
+        images: [{ id: 1, title: "One", media_type: "image" }],
+        has_more: false,
+      }),
+    });
+
+    const sdk = createParasceneSdk({
+      baseUrl: "https://www.parascene.com",
+      apiBaseUrl: "https://api.parascene.com",
+      clientId: "app",
+      redirectUri: "http://127.0.0.1:17423/oauth/callback",
+      getAccessToken: async () => "access-jwt",
+    });
+    const page = await sdk.listMyCreations({ limit: 50, offset: 0 });
+    expect(page.images).toHaveLength(1);
+    expect(page.hasMore).toBe(false);
+    expect(invoke).toHaveBeenCalledWith(
+      "http_get_bearer",
+      expect.objectContaining({
+        url: "https://api.parascene.com/api/create/images?limit=50&offset=0",
+        bearer: "access-jwt",
+      }),
+    );
+  });
 });
+
