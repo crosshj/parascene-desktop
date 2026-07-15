@@ -5,7 +5,7 @@ import {
   creationPackHeight,
   parseAspectRatioString,
 } from "./aspectRatio";
-import { packByAspect, packByAspectStable } from "./CreationsMasonry";
+import { packByAspect, packByAspectStable, columnCountForWidth } from "./CreationsMasonry";
 
 describe("aspectRatio", () => {
   it("parses presets and freeform ratios", () => {
@@ -215,5 +215,19 @@ describe("packByAspect", () => {
     // a/b stay put; c joins the shorter column (b), even though a grew taller.
     expect(cols[0].map((c) => c.id)).toEqual(["a"]);
     expect(cols[1].map((c) => c.id)).toEqual(["b", "c"]);
+  });
+});
+
+describe("columnCountForWidth", () => {
+  it("keeps a dense board on large monitors instead of capping at 6", () => {
+    expect(columnCountForWidth(1100)).toBe(4);
+    expect(columnCountForWidth(1600)).toBe(7);
+    expect(columnCountForWidth(2200)).toBe(9);
+    expect(columnCountForWidth(2800)).toBe(12);
+  });
+
+  it("clamps at the edges", () => {
+    expect(columnCountForWidth(400)).toBe(2);
+    expect(columnCountForWidth(5000)).toBe(14);
   });
 });

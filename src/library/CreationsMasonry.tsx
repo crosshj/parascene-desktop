@@ -57,12 +57,18 @@ export function packByAspect(
   return packByAspectStable(items, layout, new Map());
 }
 
-function columnCountForWidth(width: number): number {
-  if (width <= 640) return 2;
-  if (width <= 860) return 3;
-  if (width <= 1100) return 4;
-  if (width <= 1600) return 5;
-  return 6;
+/** Aim for about this card width; wider boards gain columns instead of stretching. */
+export const TARGET_COLUMN_WIDTH_PX = 220;
+const MIN_COLUMNS = 2;
+const MAX_COLUMNS = 14;
+
+/** Column count from container width — scales past the old hard cap of 6. */
+export function columnCountForWidth(width: number): number {
+  if (width <= 0) return MIN_COLUMNS;
+  const count = Math.floor(
+    (width + MASONRY_GAP_PX) / (TARGET_COLUMN_WIDTH_PX + MASONRY_GAP_PX),
+  );
+  return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, count));
 }
 
 export function useMasonryLayout(
