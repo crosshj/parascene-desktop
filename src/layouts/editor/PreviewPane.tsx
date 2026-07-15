@@ -100,6 +100,8 @@ export function PreviewPane({
   const appliedSeedKeyRef = useRef<string | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const onClipDraftChangeRef = useRef(onClipDraftChange);
+  onClipDraftChangeRef.current = onClipDraftChange;
 
   useEffect(() => {
     const el = frameRef.current;
@@ -201,32 +203,45 @@ export function PreviewPane({
     const previewThumb = creationPreviewUrl(creation);
 
     if (stagingSeedKey && stagingSeed && stagingSeed.assetId === assetId) {
+      const nextThumb = previewThumb ?? stagingSeed.thumbUrl;
       if (appliedSeedKeyRef.current === stagingSeedKey) {
-        // Keep in/out/framing edits; refresh title/thumb only.
-        setStagedDraft((prev) =>
-          prev
-            ? {
-                ...prev,
-                label,
-                thumbUrl: prev.thumbUrl ?? previewThumb,
-              }
-            : prev,
-        );
+        // Keep in/out/framing edits; always prefer live catalog thumb.
+        setStagedDraft((prev) => {
+          if (!prev) return prev;
+          if (prev.label === label && prev.thumbUrl === nextThumb) return prev;
+          return { ...prev, label, thumbUrl: nextThumb };
+        });
+        if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
+          onClipDraftChangeRef.current?.(stagingSeedKey, {
+            ...stagingSeed,
+            kind: stagingSeed.kind || kindFromCreation,
+            label,
+            thumbUrl: nextThumb,
+          });
+        }
         return;
       }
       appliedSeedKeyRef.current = stagingSeedKey;
-      setStagedDraft({
+      const next = {
         ...stagingSeed,
         kind: stagingSeed.kind || kindFromCreation,
         label,
-        thumbUrl: stagingSeed.thumbUrl ?? previewThumb,
-      });
+        thumbUrl: nextThumb,
+      };
+      setStagedDraft(next);
+      if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
+        onClipDraftChangeRef.current?.(stagingSeedKey, next);
+      }
       return;
     }
 
     appliedSeedKeyRef.current = null;
     setStagedDraft((prev) => {
-      if (prev?.assetId === assetId) return prev;
+      if (prev?.assetId === assetId) {
+        const nextThumb = previewThumb ?? prev.thumbUrl;
+        if (prev.thumbUrl === nextThumb) return prev;
+        return { ...prev, thumbUrl: nextThumb };
+      }
       return defaultStagedClipDraft({
         assetId,
         label,

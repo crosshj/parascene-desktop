@@ -1,11 +1,16 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCreation } from "../../library/catalogClient";
+import { creationPreviewUrl } from "../../library/previewUrl";
+import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
   getActiveStagedClipDrag,
@@ -346,6 +351,9 @@ export function TimelinePane({
   const [movingClipId, setMovingClipId] = useState<string | null>(null);
   const [magnetic, setMagnetic] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(0);
+  const [thumbByAssetId, setThumbByAssetId] = useState<Record<string, string>>(
+    {},
+  );
   const zoom = zoomProp;
   const setZoom = useCallback(
     (next: number | ((prev: number) => number)) => {
@@ -389,6 +397,65 @@ export function TimelinePane({
     setClips(seedClips);
     clipsRef.current = seedClips;
   }, [projectId, seedClips]);
+
+  const clipAssetIdsKey = useMemo(() => {
+    const ids = new Set<string>();
+    for (const clip of clips) {
+      if (clip.assetId) ids.add(clip.assetId);
+    }
+    return [...ids].sort().join("\0");
+  }, [clips]);
+
+  useEffect(() => {
+    const ids = clipAssetIdsKey ? clipAssetIdsKey.split("\0") : [];
+    if (ids.length === 0) {
+      setThumbByAssetId({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const load = async () => {
+      const next: Record<string, string> = {};
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const row = await getCreation(id);
+            const url = creationPreviewUrl(row);
+            if (url) next[id] = url;
+          } catch {
+            // Missing catalog rows keep the stored clip.thumbUrl fallback.
+          }
+        }),
+      );
+      if (!cancelled) setThumbByAssetId(next);
+    };
+
+    void load();
+
+    let unlisten: (() => void) | undefined;
+    void listen<Creation>("library-creation-updated", (event) => {
+      const row = event.payload;
+      if (!ids.includes(row.id)) return;
+      const url = creationPreviewUrl(row);
+      setThumbByAssetId((prev) => {
+        if (!url) {
+          if (!(row.id in prev)) return prev;
+          const { [row.id]: _, ...rest } = prev;
+          return rest;
+        }
+        if (prev[row.id] === url) return prev;
+        return { ...prev, [row.id]: url };
+      });
+    }).then((off) => {
+      unlisten = off;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [clipAssetIdsKey]);
 
   useEffect(() => {
     return subscribeStagedClipDrag((draft) => {
@@ -819,7 +886,11 @@ export function TimelinePane({
                     className="editor-timeline-clip"
                     startSec={clip.startSec}
                     durationSec={clip.endSec - clip.startSec}
-                    thumbUrl={clip.thumbUrl ?? null}
+                    thumbUrl={
+                      (clip.assetId && thumbByAssetId[clip.assetId]) ||
+                      clip.thumbUrl ||
+                      null
+                    }
                     label={clip.label}
                     title={clip.assetId ?? clip.label}
                     pxPerSec={pxPerSec}
@@ -855,7 +926,11 @@ export function TimelinePane({
                     className="editor-timeline-clip"
                     startSec={clip.startSec}
                     durationSec={clip.endSec - clip.startSec}
-                    thumbUrl={clip.thumbUrl ?? null}
+                    thumbUrl={
+                      (clip.assetId && thumbByAssetId[clip.assetId]) ||
+                      clip.thumbUrl ||
+                      null
+                    }
                     label={clip.label}
                     title={clip.assetId ?? clip.label}
                     pxPerSec={pxPerSec}
