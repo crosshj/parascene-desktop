@@ -7,7 +7,7 @@ import { creationAspectCss } from "./aspectRatio";
 import {
   deleteLocal,
   ensureLocal,
-  fillThumb,
+  fillThumbAndPushToCloud,
   getCreation,
 } from "./catalogClient";
 import {
@@ -71,7 +71,7 @@ export function CreationLightbox({
     const ok = await confirm({
       title: "Fill thumbnail?",
       message:
-        "Rebuilds the local board preview from full local media at its natural aspect ratio. Does not change Parascene cloud assets.",
+        "Rebuilds the board preview from full local media at its natural aspect, then uploads that fit thumbnail to Parascene (square web thumbs stay unchanged).",
       confirmLabel: "Fill thumbnail",
     });
     if (!ok) return;
@@ -93,7 +93,7 @@ export function CreationLightbox({
           "Local media is not ready yet. Wait for the download, then try again.",
         );
       }
-      await fillThumb(row.id);
+      await fillThumbAndPushToCloud(row.id);
     } catch (e: unknown) {
       setActionError(formatInvokeError(e));
     } finally {

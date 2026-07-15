@@ -14,6 +14,8 @@ export type Creation = {
   mediaType: MediaType | string;
   remoteUrl: string | null;
   thumbnailUrl: string | null;
+  /** Native-aspect cloud thumb (`?variant=fit`); preferred over square. */
+  fitThumbnailUrl: string | null;
   videoUrl: string | null;
   localPath: string | null;
   localThumbPath: string | null;
@@ -46,6 +48,7 @@ export type CreationUpsert = {
   mediaType: string;
   remoteUrl: string | null;
   thumbnailUrl: string | null;
+  fitThumbnailUrl?: string | null;
   videoUrl: string | null;
   published: boolean;
   publishedAt: string | null;
@@ -118,5 +121,8 @@ export type DownloadProgress = {
   phase?: string;
 };
 
-/** First screenful (~8 rows × 5 cols). */
-export const CREATIONS_PAGE_SIZE = 40;
+/** One scroll page (~16 rows × 5 cols) — keep ahead of fast scroll. */
+export const CREATIONS_PAGE_SIZE = 80;
+
+/** How many SQLite pages to pull whenever the board gets near the end. */
+export const CREATIONS_LOAD_MORE_PAGES = 2;

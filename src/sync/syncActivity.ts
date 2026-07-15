@@ -1,4 +1,4 @@
-export type SyncItemKind = "thumb" | "media";
+export type SyncItemKind = "thumb" | "media" | "repair";
 export type SyncItemState =
   | "queued"
   | "active"
@@ -32,7 +32,9 @@ export function syncActivityKey(kind: string, id: string): string {
 }
 
 export function normalizeSyncKind(kind: string): SyncItemKind {
-  return kind === "media" ? "media" : "thumb";
+  if (kind === "media") return "media";
+  if (kind === "repair") return "repair";
+  return "thumb";
 }
 
 export function normalizeSyncState(state: string): SyncItemState {
@@ -118,8 +120,14 @@ export function countFinishedSyncActivity(items: SyncActivityItem[]): number {
   return items.filter((item) => isFinished(item.state)).length;
 }
 
-export function syncItemStateLabel(state: SyncItemState): string {
-  if (state === "active") return "Downloading";
+export function syncItemStateLabel(
+  state: SyncItemState,
+  kind?: SyncItemKind,
+): string {
+  if (state === "active") {
+    if (kind === "repair") return "Repairing";
+    return "Downloading";
+  }
   if (state === "done") return "Done";
   if (state === "failed") return "Failed";
   if (state === "skipped") return "Skipped";
@@ -127,5 +135,7 @@ export function syncItemStateLabel(state: SyncItemState): string {
 }
 
 export function syncItemKindLabel(kind: SyncItemKind): string {
-  return kind === "media" ? "Media" : "Preview";
+  if (kind === "media") return "Media";
+  if (kind === "repair") return "Repair";
+  return "Preview";
 }

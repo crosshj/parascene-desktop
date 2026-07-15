@@ -11,7 +11,7 @@ function fileSrc(path: string): string | null {
 
 /** True when the backend can fetch cloud bytes for this creation. */
 export function canFetchLocal(c: Creation): boolean {
-  return Boolean(c.remoteUrl || c.thumbnailUrl);
+  return Boolean(c.remoteUrl || c.fitThumbnailUrl || c.thumbnailUrl);
 }
 
 function statusKey(c: Creation): string {

@@ -1,4 +1,4 @@
-import { memo, useEffect } from "react";
+import { memo, useEffect, useLayoutEffect, useState } from "react";
 import { ensureLocal } from "./catalogClient";
 import {
   creationCardTitle,
@@ -11,6 +11,7 @@ import {
   isParasceneUnavailable,
 } from "./previewUrl";
 import type { Creation } from "./types";
+import { isPreviewDecoded, whenPreviewReady } from "./warmPreviews";
 
 function BrokenPreview() {
   return (
@@ -142,18 +143,43 @@ export const CreationCard = memo(function CreationCard({
   const preview = creationPreviewUrl(creation);
   const unavailable = isParasceneUnavailable(creation);
   const waitingOnDisk = !preview && !unavailable;
+  const [paintSrc, setPaintSrc] = useState<string | null>(() =>
+    preview && isPreviewDecoded(preview) ? preview : null,
+  );
   const isVideo = creation.mediaType === "video";
   const isNsfw = creation.nsfw === true;
   const published = isPublishedCreation(creation);
   const isGroup = isGroupCreation(creation);
-  const showPlay = isVideo && Boolean(preview);
+  const showPlay = isVideo && Boolean(paintSrc);
   const showCornerBadges = published || isGroup || showPlay;
   const cardTitle = creationCardTitle(creation);
+
+  // Don't mount <img> until decoded — avoids grey flash on virtual remount.
+  useLayoutEffect(() => {
+    if (!preview) {
+      setPaintSrc(null);
+      return;
+    }
+    if (isPreviewDecoded(preview)) {
+      setPaintSrc(preview);
+      return;
+    }
+    let cancelled = false;
+    void whenPreviewReady(preview).then(() => {
+      if (!cancelled) setPaintSrc(preview);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [preview]);
 
   useEffect(() => {
     if (unavailable || !canFetchLocal(creation) || preview) return;
     void ensureLocal([creation.id], { fullMedia: false });
   }, [creation, unavailable, preview]);
+
+  const showImage = Boolean(paintSrc && paintSrc === preview);
+  const showPending = waitingOnDisk || (Boolean(preview) && !showImage);
 
   return (
     <div className="creation-card">
@@ -161,7 +187,7 @@ export const CreationCard = memo(function CreationCard({
         type="button"
         className={[
           "creation-card-hit",
-          waitingOnDisk ? "is-pending" : "",
+          showPending ? "is-pending" : "",
           unavailable ? "is-broken" : "",
           isNsfw ? "is-nsfw" : "",
         ]
@@ -178,15 +204,16 @@ export const CreationCard = memo(function CreationCard({
           className="creation-card-clip"
           style={{ aspectRatio: aspectCss }}
         >
-          {preview ? (
+          {showImage ? (
             <img
               className="creation-thumb"
-              src={preview}
+              src={paintSrc!}
               alt=""
               loading="eager"
-              decoding="async"
+              decoding="sync"
+              draggable={false}
             />
-          ) : waitingOnDisk ? (
+          ) : showPending ? (
             <>
               <div
                 className="creation-thumb creation-thumb-fallback"

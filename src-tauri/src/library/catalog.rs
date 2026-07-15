@@ -12,6 +12,8 @@ pub struct Creation {
     pub media_type: String,
     pub remote_url: Option<String>,
     pub thumbnail_url: Option<String>,
+    /// Native-aspect cloud thumb (`?variant=fit`); preferred over square thumbnail.
+    pub fit_thumbnail_url: Option<String>,
     pub video_url: Option<String>,
     pub local_path: Option<String>,
     pub local_thumb_path: Option<String>,
@@ -44,6 +46,8 @@ pub struct CreationUpsert {
     pub media_type: String,
     pub remote_url: Option<String>,
     pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub fit_thumbnail_url: Option<String>,
     pub video_url: Option<String>,
     pub published: bool,
     pub published_at: Option<String>,
@@ -167,6 +171,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE creations ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE creations ADD COLUMN is_moderated_error INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE creations ADD COLUMN remote_json TEXT",
+        "ALTER TABLE creations ADD COLUMN fit_thumbnail_url TEXT",
     ] {
         let _ = conn.execute(ddl, []);
     }
@@ -269,32 +274,34 @@ fn map_creation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Creation> {
         media_type: row.get(2)?,
         remote_url: row.get(3)?,
         thumbnail_url: row.get(4)?,
-        video_url: row.get(5)?,
-        local_path: row.get(6)?,
-        local_thumb_path: row.get(7)?,
-        published: row.get::<_, i64>(8)? != 0,
-        published_at: row.get(9)?,
-        created_at: row.get(10)?,
-        download_state: row.get(11)?,
-        checksum: row.get(12)?,
-        prompt: row.get(13)?,
-        expires_at: row.get(14)?,
-        updated_at: row.get(15)?,
-        filename: row.get(16)?,
-        description: row.get(17)?,
-        color: row.get(18)?,
-        status: row.get(19)?,
-        width: row.get(20)?,
-        height: row.get(21)?,
-        aspect_ratio: row.get(22)?,
-        nsfw: row.get::<_, i64>(23).unwrap_or(0) != 0,
-        is_moderated_error: row.get::<_, i64>(24).unwrap_or(0) != 0,
-        remote_json: row.get(25)?,
+        fit_thumbnail_url: row.get(5)?,
+        video_url: row.get(6)?,
+        local_path: row.get(7)?,
+        local_thumb_path: row.get(8)?,
+        published: row.get::<_, i64>(9)? != 0,
+        published_at: row.get(10)?,
+        created_at: row.get(11)?,
+        download_state: row.get(12)?,
+        checksum: row.get(13)?,
+        prompt: row.get(14)?,
+        expires_at: row.get(15)?,
+        updated_at: row.get(16)?,
+        filename: row.get(17)?,
+        description: row.get(18)?,
+        color: row.get(19)?,
+        status: row.get(20)?,
+        width: row.get(21)?,
+        height: row.get(22)?,
+        aspect_ratio: row.get(23)?,
+        nsfw: row.get::<_, i64>(24).unwrap_or(0) != 0,
+        is_moderated_error: row.get::<_, i64>(25).unwrap_or(0) != 0,
+        remote_json: row.get(26)?,
     })
 }
 
 const CREATION_SELECT: &str = r#"
-    SELECT id, title, media_type, remote_url, thumbnail_url, video_url, local_path, local_thumb_path,
+    SELECT id, title, media_type, remote_url, thumbnail_url, fit_thumbnail_url, video_url,
+           local_path, local_thumb_path,
            published, published_at, created_at, download_state, checksum, prompt, expires_at, updated_at,
            filename, description, color, status, width, height, aspect_ratio,
            COALESCE(nsfw, 0), COALESCE(is_moderated_error, 0), remote_json
@@ -427,7 +434,8 @@ fn list_without_cloud_urls(conn: &Connection) -> Result<Vec<WithoutCloudUrl>, St
               (
                 (local_thumb_path IS NULL OR local_thumb_path = '')
                 AND NOT (
-                  (thumbnail_url IS NOT NULL AND thumbnail_url != '')
+                  (fit_thumbnail_url IS NOT NULL AND fit_thumbnail_url != '')
+                  OR (thumbnail_url IS NOT NULL AND thumbnail_url != '')
                   OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
                 )
               )
@@ -473,7 +481,8 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
         r#"SELECT COUNT(*) FROM creations
            WHERE (local_thumb_path IS NULL OR local_thumb_path = '')
              AND (
-               (thumbnail_url IS NOT NULL AND thumbnail_url != '')
+               (fit_thumbnail_url IS NOT NULL AND fit_thumbnail_url != '')
+               OR (thumbnail_url IS NOT NULL AND thumbnail_url != '')
                OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
              )"#,
     )?;
@@ -506,23 +515,24 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
     conn.execute(
         r#"
         INSERT INTO creations (
-          id, title, media_type, remote_url, thumbnail_url, video_url,
+          id, title, media_type, remote_url, thumbnail_url, fit_thumbnail_url, video_url,
           local_path, local_thumb_path, published, published_at, created_at, download_state,
           checksum, prompt, expires_at, updated_at,
           filename, description, color, status, width, height, aspect_ratio,
           nsfw, is_moderated_error, remote_json
         ) VALUES (
-          ?1, ?2, ?3, ?4, ?5, ?6,
-          NULL, NULL, ?7, ?8, ?9, ?10,
-          NULL, ?11, NULL, ?12,
-          ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-          ?20, ?21, ?22
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+          NULL, NULL, ?8, ?9, ?10, ?11,
+          NULL, ?12, NULL, ?13,
+          ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+          ?21, ?22, ?23
         )
         ON CONFLICT(id) DO UPDATE SET
           title = excluded.title,
           media_type = excluded.media_type,
           remote_url = excluded.remote_url,
           thumbnail_url = excluded.thumbnail_url,
+          fit_thumbnail_url = excluded.fit_thumbnail_url,
           video_url = excluded.video_url,
           published = excluded.published,
           published_at = excluded.published_at,
@@ -551,6 +561,7 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
             row.media_type,
             row.remote_url,
             row.thumbnail_url,
+            row.fit_thumbnail_url,
             row.video_url,
             if row.published { 1 } else { 0 },
             row.published_at,
@@ -572,6 +583,38 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
     )
     .map_err(|e| format!("Upsert creation failed: {e}"))?;
     Ok(())
+}
+
+/// Drop local preview path so the next thumb download can prefer a new fit URL.
+pub(crate) fn clear_local_thumb_paths(conn: &Connection, ids: &[String]) -> Result<u32, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut cleared = 0u32;
+    for id in ids {
+        let path: Option<String> = conn
+            .query_row(
+                "SELECT local_thumb_path FROM creations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
+            let _ = std::fs::remove_file(p);
+        }
+        let n = conn
+            .execute(
+                "UPDATE creations SET local_thumb_path = NULL, updated_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            cleared += 1;
+        }
+    }
+    Ok(cleared)
 }
 
 pub(crate) fn set_download_state(conn: &Connection, id: &str, state: &str) -> Result<(), String> {
@@ -734,6 +777,14 @@ pub fn library_apply_manifest(creations: Vec<CreationUpsert>) -> Result<SyncStat
     sync_status(&conn, &paths)
 }
 
+/// Clear local preview files/paths so thumbs can be re-downloaded (e.g. after fit repair).
+#[tauri::command]
+pub fn library_invalidate_thumbs(ids: Vec<String>) -> Result<u32, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    clear_local_thumb_paths(&conn, &ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,6 +827,7 @@ mod tests {
                 media_type: "video".into(),
                 remote_url: Some("https://cdn.example/v.mp4".into()),
                 thumbnail_url: Some("https://cdn.example/t.jpg".into()),
+                fit_thumbnail_url: Some("https://cdn.example/t.jpg?variant=fit".into()),
                 video_url: Some("https://cdn.example/v.mp4".into()),
                 published: true,
                 published_at: Some("2026-01-03T00:00:00Z".into()),
@@ -800,6 +852,7 @@ mod tests {
         assert_eq!(rows[0].id, "42");
         assert_eq!(rows[0].title, "My clip");
         assert!(rows[0].thumbnail_url.is_some());
+        assert!(rows[0].fit_thumbnail_url.is_some());
         assert_eq!(rows[0].width, Some(1920));
         assert_eq!(rows[0].height, Some(1080));
         assert_eq!(rows[0].aspect_ratio.as_deref(), Some("16:9"));
@@ -824,6 +877,7 @@ mod tests {
                 media_type: "image".into(),
                 remote_url: Some("https://cdn.example/a.png".into()),
                 thumbnail_url: Some("https://cdn.example/t.png".into()),
+                fit_thumbnail_url: None,
                 video_url: None,
                 published: true,
                 published_at: None,

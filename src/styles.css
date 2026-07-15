@@ -168,12 +168,6 @@ textarea {
 .creations-virtual-space {
   position: relative;
   width: 100%;
-  opacity: 0;
-  transition: opacity 0.22s ease;
-}
-
-.creations-virtual-scroller.is-ready .creations-virtual-space {
-  opacity: 1;
 }
 
 .creations-virtual-veil {
@@ -182,17 +176,14 @@ textarea {
   z-index: 4;
   background: var(--bg);
   pointer-events: none;
-  opacity: 1;
-  transition: opacity 0.22s ease;
-}
-
-.creations-virtual-scroller.is-ready .creations-virtual-veil {
-  opacity: 0;
 }
 
 .creations-virtual-item {
   position: absolute;
   box-sizing: border-box;
+  /* Skip off-screen paint without unmounting (keeps scroll continuous). */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
 }
 
 .stub-panel h1 {

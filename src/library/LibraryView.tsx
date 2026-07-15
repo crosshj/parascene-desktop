@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { useShell } from "../app/ShellProvider";
+import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
   syncCreationsManifest,
   syncCreationsMetadata,
@@ -47,6 +48,7 @@ import {
 import { CreationLightbox } from "./CreationLightbox";
 import { VirtualCreationsGrid } from "./VirtualCreationsGrid";
 import {
+  CREATIONS_LOAD_MORE_PAGES,
   CREATIONS_PAGE_SIZE,
   type Creation,
   type DownloadProgress,
@@ -58,20 +60,21 @@ function hasLayoutAspect(c: Creation): boolean {
 }
 
 function SyncFromCloudButton({
-  syncing,
+  active,
   disabled,
   onSync,
   progress,
 }: {
-  syncing: boolean;
+  /** True only while catalog sync is the active operation. */
+  active: boolean;
   disabled?: boolean;
   onSync: () => void;
   progress: DownloadProgress | null;
 }) {
   let label = "Sync from cloud";
-  if (syncing && progress?.phase === "catalog") {
+  if (active && progress?.phase === "catalog") {
     label = "Updating catalog…";
-  } else if (syncing && progress && progress.total > 0) {
+  } else if (active && progress && progress.total > 0) {
     const phase =
       progress.phase === "thumbs"
         ? "Previews"
@@ -79,7 +82,7 @@ function SyncFromCloudButton({
           ? "Media"
           : "Downloading";
     label = `${phase} ${progress.done}/${progress.total}…`;
-  } else if (syncing) {
+  } else if (active) {
     label = "Syncing…";
   }
   return (
@@ -87,7 +90,7 @@ function SyncFromCloudButton({
       type="button"
       className="btn btn-primary"
       onClick={onSync}
-      disabled={disabled ?? syncing}
+      disabled={disabled ?? active}
     >
       {label}
     </button>
@@ -101,6 +104,7 @@ function useCatalog() {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [repairing, setRepairing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [activity, setActivity] = useState<SyncActivityItem[]>([]);
@@ -128,16 +132,22 @@ function useCatalog() {
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const page = await listCreationsPage({
-        limit: CREATIONS_PAGE_SIZE,
-        offset: offsetRef.current,
-      });
-      const next = [...creationsRef.current, ...page.creations];
-      creationsRef.current = next;
-      setCreations(next);
-      offsetRef.current = next.length;
-      setTotal(page.total);
-      setHasMore(page.hasMore);
+      // Pull multiple pages per near-end so the board stays ahead of scroll.
+      let more = true;
+      for (let pageIdx = 0; pageIdx < CREATIONS_LOAD_MORE_PAGES && more; pageIdx++) {
+        const page = await listCreationsPage({
+          limit: CREATIONS_PAGE_SIZE,
+          offset: offsetRef.current,
+        });
+        const next = [...creationsRef.current, ...page.creations];
+        creationsRef.current = next;
+        setCreations(next);
+        offsetRef.current = next.length;
+        setTotal(page.total);
+        more = page.hasMore;
+        setHasMore(more);
+        if (page.creations.length === 0) break;
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -311,6 +321,84 @@ function useCatalog() {
     }
   }, []);
 
+  const runCloudRepair = useCallback(async () => {
+    setRepairing(true);
+    setError(null);
+    setProgress({
+      done: 0,
+      total: 0,
+      currentId: null,
+      failed: 0,
+      phase: "repair",
+    });
+    try {
+      const summary = await runCloudLibraryRepair({
+        onPhase: (phase) => {
+          const note =
+            phase === "local-fit-plan"
+              ? "Scanning local thumbs…"
+              : phase === "group-aspect"
+                ? "Updating group aspects…"
+                : phase === "local-fill"
+                  ? "Rebuilding mismatched thumbs…"
+                  : phase === "upload-existing-fit"
+                    ? "Uploading local fits…"
+                    : phase === "fit-thumbnails"
+                      ? "Cloud fit for items without media…"
+                      : phase === "resync"
+                        ? "Refreshing catalog…"
+                        : phase === "redownload-thumbs"
+                          ? "Refreshing previews…"
+                          : null;
+          setProgress({
+            done: 0,
+            total: 0,
+            currentId: note,
+            failed: 0,
+            phase: phase === "redownload-thumbs" ? "thumbs" : "repair",
+          });
+        },
+        onWait: (ms) => {
+          const secs = Math.max(1, Math.ceil(ms / 1000));
+          setProgress({
+            done: 0,
+            total: 0,
+            currentId: `Waiting ${secs}s for rate limit…`,
+            failed: 0,
+            phase: "repair",
+          });
+          window.setTimeout(() => {
+            setProgress((prev) =>
+              prev?.phase === "repair" &&
+              typeof prev.currentId === "string" &&
+              prev.currentId.startsWith("Waiting")
+                ? { ...prev, currentId: null }
+                : prev,
+            );
+          }, ms);
+        },
+        onItem: (event) => {
+          setActivity((prev) => applySyncItemEvent(prev, event));
+        },
+      });
+      const next = await getSyncStatus();
+      setStatus(next);
+      await loadInitial();
+      if (
+        summary.group.updated_count === 0 &&
+        summary.fit.updated_count === 0 &&
+        summary.localFilled === 0 &&
+        summary.uploadedOnly === 0
+      ) {
+        setProgress(null);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRepairing(false);
+    }
+  }, [loadInitial]);
+
   const refreshStatus = useCallback(() => {
     void getSyncStatus()
       .then(setStatus)
@@ -328,12 +416,14 @@ function useCatalog() {
     status,
     error,
     syncing,
+    repairing,
     loadingMore,
     progress,
     activity,
     runSync,
     runCacheThumbs,
     runCacheMedia,
+    runCloudRepair,
     clearFinishedActivity,
     loadMore,
     refreshStatus,
@@ -408,7 +498,7 @@ function CreationsPanel({
         <div className="library-empty-body">
           <p className="muted">No local creations yet.</p>
           <SyncFromCloudButton
-            syncing={syncing}
+            active={syncing}
             onSync={onSync}
             progress={progress}
           />
@@ -451,22 +541,26 @@ function SyncPanel({
   status,
   error,
   syncing,
+  repairing,
   progress,
   activity,
   onSync,
   onCacheThumbs,
   onCacheMedia,
+  onCloudRepair,
   onClearFinished,
   onRefreshStatus,
 }: {
   status: SyncStatus | null;
   error: string | null;
   syncing: boolean;
+  repairing: boolean;
   progress: DownloadProgress | null;
   activity: SyncActivityItem[];
   onSync: () => void;
   onCacheThumbs: () => void;
   onCacheMedia: () => void;
+  onCloudRepair: () => void;
   onClearFinished: () => void;
   onRefreshStatus: () => void;
 }) {
@@ -521,9 +615,10 @@ function SyncPanel({
   const inFlight = activity.filter(
     (item) => item.state === "queued" || item.state === "active",
   ).length;
-  // Include activity + catalog downloading so buttons don't flash between 1/1 jobs.
+  // Block starting a second job; only the active button shows an in-progress label.
   const rawBusy =
     syncing ||
+    repairing ||
     cachingThumbs ||
     cachingMedia ||
     inFlight > 0 ||
@@ -538,12 +633,21 @@ function SyncPanel({
     return () => window.clearTimeout(t);
   }, [rawBusy]);
   const busy = stickyBusy || rawBusy;
-  const batchLabel =
-    syncing && progress?.phase === "catalog"
+  const repairNote =
+    repairing &&
+    typeof progress?.currentId === "string" &&
+    progress.currentId.length > 0
+      ? progress.currentId
+      : null;
+  const batchLabel = repairNote
+    ? repairNote
+    : syncing && progress?.phase === "catalog"
       ? "Updating catalog…"
-      : progress && progress.total > 0
-        ? `${phaseLabel(progress.phase)} ${progress.done}/${progress.total}`
-        : null;
+      : repairing
+        ? "Repairing library…"
+        : progress && progress.total > 0
+          ? `${phaseLabel(progress.phase)} ${progress.done}/${progress.total}`
+          : null;
   const finishedCapped = finishedCount >= MAX_FINISHED_SYNC_ACTIVITY;
   const finishedLabel = finishedCapped
     ? `${finishedCount} finished (capped)`
@@ -559,7 +663,7 @@ function SyncPanel({
         <div className="sync-body">
           <div className="sync-body-actions">
             <SyncFromCloudButton
-              syncing={syncing}
+              active={syncing}
               disabled={busy}
               onSync={onSync}
               progress={progress}
@@ -591,6 +695,19 @@ function SyncPanel({
                     ? "No cacheable media"
                     : "Media cached"
                   : `Cache ${missingMedia.toLocaleString()} media`}
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={onCloudRepair}
+              disabled={busy}
+              title="Prefer local media to rebuild mismatched thumbs and upload fit; only call Parascene for leftovers without local files"
+            >
+              {repairNote
+                ? repairNote
+                : repairing
+                  ? "Repairing library…"
+                  : "Repair group aspects + fit thumbs"}
             </button>
           </div>
 
@@ -707,8 +824,9 @@ function SyncPanel({
                       className={`sync-queue-state state-${item.state}`}
                       title={item.detail ?? undefined}
                     >
-                      {syncItemStateLabel(item.state)}
-                      {item.detail && item.state === "failed"
+                      {syncItemStateLabel(item.state, item.kind)}
+                      {item.detail &&
+                      (item.state === "failed" || item.state === "skipped")
                         ? ` · ${item.detail}`
                         : ""}
                     </span>
@@ -731,11 +849,13 @@ export function LibraryView() {
     status,
     error,
     syncing,
+    repairing,
     loadingMore,
     progress,
     runSync,
     runCacheThumbs,
     runCacheMedia,
+    runCloudRepair,
     clearFinishedActivity,
     activity,
     loadMore,
@@ -749,11 +869,13 @@ export function LibraryView() {
           status={status}
           error={error}
           syncing={syncing}
+          repairing={repairing}
           progress={progress}
           activity={activity}
           onSync={runSync}
           onCacheThumbs={runCacheThumbs}
           onCacheMedia={runCacheMedia}
+          onCloudRepair={runCloudRepair}
           onClearFinished={clearFinishedActivity}
           onRefreshStatus={refreshStatus}
         />

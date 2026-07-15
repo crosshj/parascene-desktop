@@ -1,7 +1,7 @@
 use super::catalog::{
-    default_paths, delete_creation_local, get_creation_by_id, get_creations_by_ids, list_creations,
-    list_creations_page, mark_downloaded, ready_connection, set_download_state,
-    set_local_thumb_path, sync_status_for, Creation, SyncStatus,
+    clear_local_thumb_paths, default_paths, delete_creation_local, get_creation_by_id,
+    get_creations_by_ids, list_creations, list_creations_page, mark_downloaded, ready_connection,
+    set_download_state, set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
@@ -13,9 +13,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 
 /// Pages of thumbs to warm ahead of the requested list offset (stay in front of scroll).
-const THUMB_AHEAD_PAGES: u32 = 10;
+const THUMB_AHEAD_PAGES: u32 = 14;
 /// Concurrent thumb HTTP fetches — keep modest to avoid CDN/API rate limits.
-const THUMB_CONCURRENCY: usize = 4;
+const THUMB_CONCURRENCY: usize = 10;
 /// Retry budget for transient HTTP failures (429 / 503).
 const DOWNLOAD_MAX_ATTEMPTS: u32 = 5;
 /// Base pacing between media GETs in bulk sync (grows after 429s).
@@ -508,9 +508,171 @@ pub(crate) fn needs_thumb(c: &Creation) -> bool {
         return false;
     }
     match c.local_thumb_path.as_ref() {
-        Some(p) if Path::new(p).is_file() => false,
+        Some(p) if Path::new(p).is_file() => {
+            // Square CDN thumbs stuck on non-square slots (fit URL often 200s with square
+            // fallback). Images can heal from full remote_url; videos need a real fit object.
+            creation_expects_non_square(c)
+                && image_file_is_square_cdn_thumb(Path::new(p))
+                && c.media_type == "image"
+                && c.remote_url
+                    .as_deref()
+                    .map(|u| !u.is_empty())
+                    .unwrap_or(false)
+        }
         _ => true,
     }
+}
+
+/// Creations whose board slot is non-square but the local preview is still a square CDN thumb.
+pub(crate) fn list_ids_with_mismatched_square_thumbs(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<String>, String> {
+    let rows = list_creations(conn)?;
+    let mut out = Vec::new();
+    for c in rows {
+        let Some(path) = c.local_thumb_path.as_deref().filter(|p| !p.is_empty()) else {
+            continue;
+        };
+        if !Path::new(path).is_file() {
+            continue;
+        }
+        if creation_expects_non_square(&c) && image_file_is_square_cdn_thumb(Path::new(path)) {
+            out.push(c.id);
+        }
+    }
+    Ok(out)
+}
+
+/// Local-first fit heal plan: prefer disk media over cloud repair POSTs.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFitTarget {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFitPlan {
+    /// Has local media; rebuild `.fit.jpg` then upload to Parascene.
+    pub regenerate: Vec<LocalFitTarget>,
+    /// Local `.fit.jpg` already exists; push to cloud if fit URL missing.
+    pub upload_only: Vec<LocalFitTarget>,
+    /// Non-square images with no local media — server must generate fit.
+    pub cloud_repair: Vec<LocalFitTarget>,
+}
+
+fn local_file_ok(path: Option<&str>) -> bool {
+    path.filter(|p| !p.is_empty())
+        .map(|p| Path::new(p).is_file())
+        .unwrap_or(false)
+}
+
+fn cloud_missing_fit(c: &Creation) -> bool {
+    c.fit_thumbnail_url
+        .as_deref()
+        .map(|u| u.trim().is_empty())
+        .unwrap_or(true)
+}
+
+fn thumb_is_fit_jpg(path: &str) -> bool {
+    path.ends_with(".fit.jpg")
+}
+
+fn fit_target(c: &Creation) -> LocalFitTarget {
+    LocalFitTarget {
+        id: c.id.clone(),
+        title: if c.title.trim().is_empty() {
+            c.id.clone()
+        } else {
+            c.title.clone()
+        },
+    }
+}
+
+/// Partition the catalog into local regenerate / upload / server-only repair buckets.
+pub(crate) fn build_local_fit_plan(conn: &rusqlite::Connection) -> Result<LocalFitPlan, String> {
+    let rows = list_creations(conn)?;
+    let mut regenerate = Vec::new();
+    let mut upload_only = Vec::new();
+    let mut cloud_repair = Vec::new();
+
+    for c in rows {
+        let has_media = local_file_ok(c.local_path.as_deref());
+        let thumb_path = c.local_thumb_path.as_deref().filter(|p| !p.is_empty());
+        let has_thumb = thumb_path.map(|p| Path::new(p).is_file()).unwrap_or(false);
+        let is_fit = thumb_path.map(thumb_is_fit_jpg).unwrap_or(false);
+        let is_video = c.media_type.eq_ignore_ascii_case("video");
+        let expects_ns = creation_expects_non_square(&c);
+        let square_wrong = expects_ns
+            && has_thumb
+            && thumb_path
+                .map(|p| image_file_is_square_cdn_thumb(Path::new(p)))
+                .unwrap_or(false);
+        let missing_cloud_fit = cloud_missing_fit(&c);
+
+        if has_media {
+            // Only heal real problems: missing preview, square CDN on a
+            // non-square slot, or a non-square video that never got a local fit.
+            if !has_thumb || square_wrong || (is_video && expects_ns && !is_fit) {
+                regenerate.push(fit_target(&c));
+                continue;
+            }
+            // Push only when we already produced a local `.fit.jpg` and cloud
+            // doesn't have it yet — never upload every non-square thumb.
+            if is_fit && missing_cloud_fit {
+                upload_only.push(fit_target(&c));
+            }
+            continue;
+        }
+
+        // No local media: only images can be repaired server-side from storage.
+        // Video posters are often square; skip until the mp4 is downloaded.
+        if !is_video && expects_ns && (square_wrong || (!has_thumb && missing_cloud_fit)) {
+            cloud_repair.push(fit_target(&c));
+        }
+    }
+
+    Ok(LocalFitPlan {
+        regenerate,
+        upload_only,
+        cloud_repair,
+    })
+}
+
+fn creation_expects_non_square(c: &Creation) -> bool {
+    if let (Some(w), Some(h)) = (c.width, c.height) {
+        if w > 0 && h > 0 {
+            let ratio = w as f64 / h as f64;
+            if (ratio - 1.0).abs() > 0.08 {
+                return true;
+            }
+        }
+    }
+    if let Some(ar) = c.aspect_ratio.as_deref() {
+        let parts: Vec<_> = ar.split(':').collect();
+        if parts.len() == 2 {
+            if let (Ok(aw), Ok(ah)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                if aw > 0.0 && ah > 0.0 {
+                    return (aw / ah - 1.0).abs() > 0.08;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Parascene square board thumbs are 250×250 cover crops.
+fn image_file_is_square_cdn_thumb(path: &Path) -> bool {
+    let Ok((w, h)) = image::image_dimensions(path) else {
+        return false;
+    };
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let max = w.max(h);
+    let min = w.min(h);
+    max <= 280 && (max as f64 / min as f64) < 1.08
 }
 
 fn emit_creation_updated(app: &AppHandle, id: &str) {
@@ -590,11 +752,44 @@ fn short_download_err(err: &str) -> String {
         .collect()
 }
 
-fn preview_url_for(creation: &Creation) -> Option<&str> {
-    creation
+/// Prefer native-aspect fit thumb, then square thumbnail, then full image URL.
+fn preview_urls_for(creation: &Creation) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(u) = creation
+        .fit_thumbnail_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+    {
+        urls.push(u.to_string());
+    }
+    if let Some(u) = creation
         .thumbnail_url
         .as_deref()
         .filter(|u| !u.is_empty())
+    {
+        urls.push(u.to_string());
+    }
+    if creation.media_type == "image" {
+        if let Some(u) = creation.remote_url.as_deref().filter(|u| !u.is_empty()) {
+            if !urls.iter().any(|existing| existing == u) {
+                urls.push(u.to_string());
+            }
+        }
+    }
+    urls
+}
+
+fn preview_url_for(creation: &Creation) -> Option<&str> {
+    creation
+        .fit_thumbnail_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            creation
+                .thumbnail_url
+                .as_deref()
+                .filter(|u| !u.is_empty())
+        })
         .or_else(|| {
             if creation.media_type == "image" {
                 creation.remote_url.as_deref().filter(|u| !u.is_empty())
@@ -631,18 +826,39 @@ async fn download_thumbs_only(
                 emit_sync_item(&app, &creation, "thumb", "active");
                 let id = creation.id.clone();
                 let title = creation.title.clone();
-                let Some(url) = preview_url_for(&creation).map(str::to_string) else {
+                let urls = preview_urls_for(&creation);
+                if urls.is_empty() {
                     eprintln!("[library] thumb skip {id}: no preview url");
                     return (id, title, Err("no preview url".into()));
-                };
+                }
                 let stem = safe_id(&id);
-                match download_url_with_ext(&url, "image", &thumbs_dir, &stem).await {
-                    Ok(path) => (id, title, Ok(path.display().to_string())),
-                    Err(err) => {
-                        eprintln!("[library] thumb fail {id}: {err}");
-                        (id, title, Err(err))
+                let expect_ns = creation_expects_non_square(&creation);
+                let mut last_err = String::from("no preview url");
+                let n = urls.len();
+                for (i, url) in urls.into_iter().enumerate() {
+                    let last = i + 1 == n;
+                    match download_url_with_ext(&url, "image", &thumbs_dir, &stem).await {
+                        Ok(path) => {
+                            // Server fits often 200 with square thumb fallback — skip those for
+                            // non-square creations until we get a real fit / full image.
+                            if expect_ns && image_file_is_square_cdn_thumb(&path) && !last {
+                                eprintln!(
+                                    "[library] thumb reject square for non-square {id} ({url})"
+                                );
+                                let _ = tokio::fs::remove_file(&path).await;
+                                last_err = "square thumb rejected".into();
+                                continue;
+                            }
+                            return (id, title, Ok(path.display().to_string()));
+                        }
+                        Err(err) => {
+                            eprintln!("[library] thumb try fail {id} ({url}): {err}");
+                            last_err = err;
+                        }
                     }
                 }
+                eprintln!("[library] thumb fail {id}: {last_err}");
+                (id, title, Err(last_err))
             }
         })
         .buffer_unordered(THUMB_CONCURRENCY);
@@ -1364,11 +1580,13 @@ pub async fn library_download_thumbs(
     ids: Vec<String>,
 ) -> Result<DownloadSummary, String> {
     let paths = default_paths()?;
+    // Explicit ids always re-fetch (caller invalidated / wants refresh). Filter only by
+    // having a preview URL so we don't no-op after square→fit repair.
     let pending = {
         let conn = ready_connection(&paths)?;
         get_creations_by_ids(&conn, &ids)?
             .into_iter()
-            .filter(needs_thumb)
+            .filter(|c| preview_url_for(c).is_some())
             .collect()
     };
     let (downloaded, _) = download_thumbs_only(&app, &paths, pending).await?;
@@ -1378,6 +1596,24 @@ pub async fn library_download_thumbs(
         skipped: 0,
         status: sync_status_for(&paths)?,
     })
+}
+
+/// Clear local previews that are still square CDN thumbs on non-square creations.
+#[tauri::command]
+pub fn library_invalidate_mismatched_thumbs() -> Result<Vec<String>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    let ids = list_ids_with_mismatched_square_thumbs(&conn)?;
+    clear_local_thumb_paths(&conn, &ids)?;
+    Ok(ids)
+}
+
+/// Inspect the local catalog for fit work: regenerate from media, upload existing, or server-only.
+#[tauri::command]
+pub fn library_local_fit_plan() -> Result<LocalFitPlan, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    build_local_fit_plan(&conn)
 }
 
 /// Cache every missing local preview (Sync page). Runs in background; progress events fire.
@@ -1462,7 +1698,7 @@ pub(crate) fn spawn_scroll_ahead(app: AppHandle, limit: u32, offset: u32) {
             return;
         };
         let limit = limit.clamp(1, 200);
-        let ahead_count = limit.saturating_mul(THUMB_AHEAD_PAGES).clamp(limit, 500);
+        let ahead_count = limit.saturating_mul(THUMB_AHEAD_PAGES).clamp(limit, 960);
         let Ok(warm) = list_creations_page(&conn, ahead_count, offset) else {
             return;
         };

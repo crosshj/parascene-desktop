@@ -68,4 +68,27 @@ describe("syncActivity", () => {
     expect(countFinishedSyncActivity(items)).toBe(2);
     expect(clearFinishedSyncActivity(items).map((i) => i.id)).toEqual(["2"]);
   });
+
+  it("tracks repair rows separately from preview downloads", () => {
+    let items = applySyncItemEvent([], {
+      id: "9",
+      title: "Clip",
+      kind: "repair",
+      state: "active",
+      detail: "Rebuilding local fit + upload",
+    });
+    expect(items[0]).toMatchObject({
+      key: syncActivityKey("repair", "9"),
+      kind: "repair",
+      state: "active",
+    });
+    items = applySyncItemEvent(items, {
+      id: "9",
+      title: "Clip",
+      kind: "repair",
+      state: "done",
+      detail: "Local fit uploaded",
+    });
+    expect(items[0]).toMatchObject({ state: "done", kind: "repair" });
+  });
 });

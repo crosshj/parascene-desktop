@@ -113,3 +113,64 @@ export async function deleteLocal(id: string): Promise<SyncStatus> {
 export async function fillThumb(id: string): Promise<Creation> {
   return invoke<Creation>("library_fill_thumb", { id });
 }
+
+/** Read local board preview bytes as base64 (for cloud fit upload). */
+export async function readLocalThumbBase64(id: string): Promise<string> {
+  return invoke<string>("library_read_local_thumb_base64", { id });
+}
+
+/**
+ * Fill local board thumb from media, then push that JPEG to Parascene as `?variant=fit`.
+ * Cloud push failures are thrown so callers can show them; local fill still succeeded.
+ */
+export async function fillThumbAndPushToCloud(
+  id: string,
+  opts?: { onWait?: (ms: number) => void },
+): Promise<Creation> {
+  const creation = await fillThumb(id);
+  const { createAuthedSdk, ensureAccessToken } = await import("../auth/session");
+  await ensureAccessToken();
+  const b64 = await readLocalThumbBase64(id);
+  const sdk = createAuthedSdk();
+  await sdk.uploadFitThumbnail(id, b64, { onWait: opts?.onWait });
+  return creation;
+}
+
+/** Drop local previews so the next download can pick up fit thumbs. */
+export async function invalidateThumbs(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  return invoke<number>("library_invalidate_thumbs", { ids });
+}
+
+/** Clear square CDN previews stuck on non-square creations. Returns cleared ids. */
+export async function invalidateMismatchedThumbs(): Promise<string[]> {
+  return invoke<string[]>("library_invalidate_mismatched_thumbs");
+}
+
+/** Local-first fit heal plan from on-disk media + catalog aspect. */
+export type LocalFitTarget = {
+  id: string;
+  title: string;
+};
+
+export type LocalFitPlan = {
+  regenerate: LocalFitTarget[];
+  uploadOnly: LocalFitTarget[];
+  cloudRepair: LocalFitTarget[];
+};
+
+export async function localFitPlan(): Promise<LocalFitPlan> {
+  return invoke<LocalFitPlan>("library_local_fit_plan");
+}
+
+/** Upload an existing local board preview as `?variant=fit` (no regenerate). */
+export async function pushLocalFitToCloud(
+  id: string,
+  opts?: { onWait?: (ms: number) => void },
+): Promise<void> {
+  const { createAuthedSdk, ensureAccessToken } = await import("../auth/session");
+  await ensureAccessToken();
+  const b64 = await readLocalThumbBase64(id);
+  const sdk = createAuthedSdk();
+  await sdk.uploadFitThumbnail(id, b64, { onWait: opts?.onWait });
+}

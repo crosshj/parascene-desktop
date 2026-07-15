@@ -55,6 +55,7 @@ describe("manifestSync", () => {
       filename: "clip.mp4",
       video_url: "https://cdn.example/clip.mp4",
       thumbnail_url: "https://cdn.example/thumb.jpg",
+      fit_thumbnail_url: "https://cdn.example/thumb.jpg?variant=fit",
       media_type: "video",
       width: 1920,
       height: 1080,
@@ -73,6 +74,7 @@ describe("manifestSync", () => {
       mediaType: "video",
       remoteUrl: "https://cdn.example/clip.mp4",
       thumbnailUrl: "https://cdn.example/thumb.jpg",
+      fitThumbnailUrl: "https://cdn.example/thumb.jpg?variant=fit",
       videoUrl: "https://cdn.example/clip.mp4",
       published: false,
       publishedAt: "2026-03-02T00:00:00Z",
@@ -181,7 +183,7 @@ describe("manifestSync", () => {
       }),
     );
     expect(invoke).toHaveBeenCalledWith("library_download_pending", {
-      limit: 40,
+      limit: 80,
     });
   });
 });

@@ -4,14 +4,15 @@ mod paths;
 mod thumb_fill;
 
 pub use catalog::{
-    library_apply_manifest, library_ensure_ready, library_get_creation, library_list_creations,
-    library_sync_status,
+    library_apply_manifest, library_ensure_ready, library_get_creation,
+    library_invalidate_thumbs, library_list_creations, library_sync_status,
 };
 pub use download::{
     library_cache_missing_media, library_cache_missing_thumbs, library_delete_local,
     library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,
+    library_invalidate_mismatched_thumbs, library_local_fit_plan,
 };
-pub use thumb_fill::library_fill_thumb;
+pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
 use catalog::{query_creations_page, CreationPage};
 use download::spawn_scroll_ahead;

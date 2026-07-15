@@ -50,6 +50,8 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
     absolutizeAssetUrl(img.url || undefined, origin) ?? null;
   const thumbnailUrl =
     absolutizeAssetUrl(img.thumbnail_url || undefined, origin) ?? null;
+  const fitThumbnailUrl =
+    absolutizeAssetUrl(img.fit_thumbnail_url || undefined, origin) ?? null;
   const videoUrl =
     absolutizeAssetUrl(img.video_url || undefined, origin) ?? null;
   const remoteUrl =
@@ -69,6 +71,7 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
     id,
     url,
     thumbnail_url: thumbnailUrl,
+    fit_thumbnail_url: fitThumbnailUrl,
     video_url: videoUrl,
     media_type: mediaType,
     width,
@@ -92,6 +95,7 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
     mediaType,
     remoteUrl,
     thumbnailUrl,
+    fitThumbnailUrl,
     videoUrl,
     published: img.published === true,
     publishedAt: optionalString(img.published_at),

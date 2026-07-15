@@ -1,7 +1,7 @@
 //! Fill local board thumbs from full local media at native aspect.
 //!
 //! Overwrites `local_thumb_path` with `Library/thumbs/{id}.fit.jpg`.
-//! Does not touch Parascene cloud assets.
+//! Frontend may then push the JPEG to Parascene as `?variant=fit`.
 
 use super::catalog::{
     default_paths, get_creation_by_id, ready_connection, set_local_thumb_path, Creation,
@@ -213,6 +213,26 @@ pub fn library_fill_thumb(app: AppHandle, id: String) -> Result<Creation, String
     emit_creation_updated(&app, &id);
     let conn = ready_connection(&paths)?;
     get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Creation {id} missing after fill"))
+}
+
+/// Read the current local board preview as base64 (for pushing fit thumbs to Parascene).
+#[tauri::command]
+pub fn library_read_local_thumb_base64(id: String) -> Result<String, String> {
+    use base64::Engine;
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    let creation = get_creation_by_id(&conn, &id)?
+        .ok_or_else(|| format!("Creation {id} not found"))?;
+    let Some(stored) = creation
+        .local_thumb_path
+        .as_deref()
+        .filter(|p| !p.is_empty())
+    else {
+        return Err("No local thumbnail on disk".into());
+    };
+    let path = path_under_root(&paths.root, stored)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read thumb: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 #[cfg(test)]

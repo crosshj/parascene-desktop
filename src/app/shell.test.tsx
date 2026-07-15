@@ -90,7 +90,7 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
       creations: fixtureCreations,
       total: fixtureCreations.length,
       offset: 0,
-      limit: 40,
+      limit: 80,
       hasMore: false,
     };
   }
