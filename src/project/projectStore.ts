@@ -19,6 +19,10 @@ export type StoredProject = {
   selectedAssetId?: string | null;
   /** Timeline zoom (0.5–3); omitted → 1. */
   timelineZoom?: number;
+  /** Preview follows timeline; omitted → false. */
+  timelineMonitorActive?: boolean;
+  /** Timeline playhead seconds; omitted → 0. */
+  timelinePlayheadSec?: number;
   updatedAt: string;
 };
 
@@ -119,6 +123,16 @@ export function normalizeTimelineZoom(value: unknown): number {
   return Math.round(clamped * 4) / 4;
 }
 
+export function normalizeTimelineMonitorActive(value: unknown): boolean {
+  return value === true;
+}
+
+export function normalizeTimelinePlayheadSec(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n * 100) / 100;
+}
+
 function normalizeSelectedTimelineClipId(
   value: unknown,
   timeline: TimelineClip[],
@@ -144,16 +158,23 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     project.selectedTimelineClipId,
     timeline,
   );
-  const selectedAssetId = selectedTimelineClipId
-    ? null
-    : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
+  const timelineMonitorActive = normalizeTimelineMonitorActive(
+    project.timelineMonitorActive,
+  );
+  const selectedAssetId =
+    selectedTimelineClipId || timelineMonitorActive
+      ? null
+      : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
+  const selectedClipId = timelineMonitorActive ? null : selectedTimelineClipId;
   return {
     ...project,
     aspectRatio,
     timeline,
-    selectedTimelineClipId,
+    selectedTimelineClipId: selectedClipId,
     selectedAssetId,
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
+    timelineMonitorActive,
+    timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
   };
 }
 
@@ -183,6 +204,8 @@ export function createStoredProject(
     selectedTimelineClipId: null,
     selectedAssetId: null,
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
+    timelineMonitorActive: false,
+    timelinePlayheadSec: 0,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -256,9 +279,13 @@ export function setStoredProjectSelectedTimelineClipId(
     project.selectedAssetId,
     project.creationIds,
   );
+  const nextMonitorActive = next
+    ? false
+    : normalizeTimelineMonitorActive(project.timelineMonitorActive);
   if (
     next === (project.selectedTimelineClipId ?? null) &&
-    nextAssetId === (project.selectedAssetId ?? null)
+    nextAssetId === (project.selectedAssetId ?? null) &&
+    nextMonitorActive === normalizeTimelineMonitorActive(project.timelineMonitorActive)
   ) {
     return project;
   }
@@ -266,6 +293,7 @@ export function setStoredProjectSelectedTimelineClipId(
     ...project,
     selectedTimelineClipId: next,
     selectedAssetId: nextAssetId,
+    timelineMonitorActive: nextMonitorActive,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -281,9 +309,13 @@ export function setStoredProjectSelectedAssetId(
         project.selectedTimelineClipId,
         normalizeStoredTimeline(project.timeline),
       );
+  const nextMonitorActive = next
+    ? false
+    : normalizeTimelineMonitorActive(project.timelineMonitorActive);
   if (
     next === (project.selectedAssetId ?? null) &&
-    nextClipId === (project.selectedTimelineClipId ?? null)
+    nextClipId === (project.selectedTimelineClipId ?? null) &&
+    nextMonitorActive === normalizeTimelineMonitorActive(project.timelineMonitorActive)
   ) {
     return project;
   }
@@ -291,6 +323,7 @@ export function setStoredProjectSelectedAssetId(
     ...project,
     selectedAssetId: next,
     selectedTimelineClipId: nextClipId,
+    timelineMonitorActive: nextMonitorActive,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -308,6 +341,39 @@ export function setStoredProjectTimelineZoom(
   };
 }
 
+export function setStoredProjectTimelineMonitorActive(
+  project: StoredProject,
+  active: boolean,
+): StoredProject {
+  const next = normalizeTimelineMonitorActive(active);
+  if (next === normalizeTimelineMonitorActive(project.timelineMonitorActive)) {
+    return project;
+  }
+  return {
+    ...project,
+    timelineMonitorActive: next,
+    // Timeline owns the monitor — clear clip / asset selection.
+    selectedTimelineClipId: next ? null : project.selectedTimelineClipId ?? null,
+    selectedAssetId: next ? null : project.selectedAssetId ?? null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectTimelinePlayheadSec(
+  project: StoredProject,
+  sec: number,
+): StoredProject {
+  const next = normalizeTimelinePlayheadSec(sec);
+  if (next === normalizeTimelinePlayheadSec(project.timelinePlayheadSec)) {
+    return project;
+  }
+  return {
+    ...project,
+    timelinePlayheadSec: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /** Map a stored project into the shell UI Project shape. */
 export function storedProjectToUi(project: StoredProject): Project {
   const assets: ProjectAsset[] = project.creationIds.map((id) => ({
@@ -316,13 +382,16 @@ export function storedProjectToUi(project: StoredProject): Project {
     kind: "image",
   }));
   const timeline = normalizeStoredTimeline(project.timeline);
-  const selectedTimelineClipId = normalizeSelectedTimelineClipId(
-    project.selectedTimelineClipId,
-    timeline,
+  const timelineMonitorActive = normalizeTimelineMonitorActive(
+    project.timelineMonitorActive,
   );
-  const selectedAssetId = selectedTimelineClipId
+  const selectedTimelineClipId = timelineMonitorActive
     ? null
-    : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
+    : normalizeSelectedTimelineClipId(project.selectedTimelineClipId, timeline);
+  const selectedAssetId =
+    selectedTimelineClipId || timelineMonitorActive
+      ? null
+      : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
   return {
     id: project.id,
     title: project.title,
@@ -341,6 +410,8 @@ export function storedProjectToUi(project: StoredProject): Project {
     selectedTimelineClipId,
     selectedAssetId,
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
+    timelineMonitorActive,
+    timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     hookSuggestions: [],
   };
 }
@@ -357,6 +428,8 @@ export function emptyUiProject(): Project {
     selectedTimelineClipId: null,
     selectedAssetId: null,
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
+    timelineMonitorActive: false,
+    timelinePlayheadSec: 0,
     hookSuggestions: [],
   };
 }

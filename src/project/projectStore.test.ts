@@ -11,6 +11,8 @@ import {
   setStoredProjectSelectedAssetId,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
+  setStoredProjectTimelineMonitorActive,
+  setStoredProjectTimelinePlayheadSec,
   storedProjectToUi,
 } from "./projectStore";
 
@@ -145,6 +147,40 @@ describe("projectStore", () => {
     const loaded = loadStoredProjects()[0];
     expect(storedProjectToUi(loaded).selectedTimelineClipId).toBe("clip-1");
     expect(storedProjectToUi(loaded).selectedAssetId).toBeNull();
+  });
+
+  it("persists timeline monitor active and playhead", () => {
+    let a = createStoredProject("Demo", ["c1"]);
+    a = setStoredProjectTimeline(a, [
+      {
+        id: "clip-1",
+        label: "3.0s",
+        startSec: 0,
+        endSec: 3,
+        assetId: "c1",
+        lane: "video",
+        kind: "image",
+      },
+    ]);
+    a = setStoredProjectSelectedTimelineClipId(a, "clip-1");
+    a = setStoredProjectTimelinePlayheadSec(a, 12.34);
+    a = setStoredProjectTimelineMonitorActive(a, true);
+    expect(a.timelineMonitorActive).toBe(true);
+    expect(a.selectedTimelineClipId).toBeNull();
+    expect(a.timelinePlayheadSec).toBe(12.34);
+
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects()[0];
+    expect(loaded.timelineMonitorActive).toBe(true);
+    expect(loaded.timelinePlayheadSec).toBe(12.34);
+    const ui = storedProjectToUi(loaded);
+    expect(ui.timelineMonitorActive).toBe(true);
+    expect(ui.timelinePlayheadSec).toBe(12.34);
+    expect(ui.selectedTimelineClipId).toBeNull();
+
+    a = setStoredProjectSelectedTimelineClipId(loaded, "clip-1");
+    expect(a.timelineMonitorActive).toBe(false);
+    expect(a.selectedTimelineClipId).toBe("clip-1");
   });
 
   it("maps to UI project assets", () => {

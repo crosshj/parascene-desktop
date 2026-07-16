@@ -56,6 +56,10 @@ export type Project = {
   selectedAssetId: string | null;
   /** Timeline zoom multiplier (0.5–3). */
   timelineZoom: number;
+  /** Preview follows the timeline (program monitor). */
+  timelineMonitorActive: boolean;
+  /** Timeline playhead position in seconds. */
+  timelinePlayheadSec: number;
   hookSuggestions: HookSuggestion[];
 };
 

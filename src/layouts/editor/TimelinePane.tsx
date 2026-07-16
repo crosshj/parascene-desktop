@@ -38,6 +38,12 @@ type TimelinePaneProps = {
   /** Timeline zoom multiplier (0.5–3); controlled from project prefs. */
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
+  /** True when the center preview is owned by the timeline. */
+  monitorActive?: boolean;
+  /** Click/seek on tracks (not clip drag) hands the preview to the timeline. */
+  onActivateMonitor?: () => void;
+  playheadSec?: number;
+  onPlayheadChange?: (sec: number) => void;
 };
 
 type PointerDropDetail = {
@@ -137,11 +143,9 @@ function hashUnit(seed: string, index: number): number {
 function ClipAudioWaveform({
   widthPx,
   seed,
-  selected,
 }: {
   widthPx: number;
   seed: string;
-  selected?: boolean;
 }) {
   const barW = 2;
   const gap = 2;
@@ -173,11 +177,6 @@ function ClipAudioWaveform({
               width={barW}
               height={h}
               rx={1}
-              fill={
-                selected
-                  ? "rgba(165, 243, 252, 0.7)"
-                  : "rgba(216, 180, 254, 0.55)"
-              }
             />
           );
         })}
@@ -229,8 +228,8 @@ function MiniClip({
     .filter(Boolean)
     .join(" ");
 
-  let background = "rgba(88, 40, 140, 0.92)";
-  let border = "1.5px solid #c084fc";
+  let background: string | undefined = "rgba(88, 40, 140, 0.92)";
+  let border: string | undefined = "1.5px solid #c084fc";
   if (isGhost) {
     background = "rgba(168, 85, 247, 0.22)";
     border = "1.5px dashed #c084fc";
@@ -238,8 +237,8 @@ function MiniClip({
     background = "rgba(110, 55, 170, 0.96)";
     border = "1.5px solid #e9d5ff";
   } else if (selected) {
-    background = "rgba(14, 116, 144, 0.92)";
-    border = "2px solid #67e8f9";
+    background = undefined;
+    border = undefined;
   } else if (audio) {
     background = "rgba(55, 40, 100, 0.94)";
     border = "1.5px solid #a78bfa";
@@ -266,9 +265,6 @@ function MiniClip({
         zIndex: moving ? 4 : selected ? 2 : isGhost ? 3 : 1,
         background,
         border,
-        boxShadow: selected
-          ? "0 0 0 1px rgba(103, 232, 249, 0.45)"
-          : undefined,
         pointerEvents: isGhost ? "none" : "auto",
         cursor: movable ? (moving ? "grabbing" : "grab") : undefined,
         touchAction: movable ? "none" : undefined,
@@ -281,7 +277,6 @@ function MiniClip({
         <ClipAudioWaveform
           widthPx={widthPx}
           seed={waveSeed ?? label ?? "audio"}
-          selected={selected}
         />
       ) : thumbUrl && widthPx >= 40 ? (
         <img
@@ -343,6 +338,10 @@ export function TimelinePane({
   onSelectClip,
   zoom: zoomProp = 1,
   onZoomChange,
+  monitorActive = false,
+  onActivateMonitor,
+  playheadSec = 0,
+  onPlayheadChange,
 }: TimelinePaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
@@ -382,9 +381,14 @@ export function TimelinePane({
   onClipsChangeRef.current = onClipsChange;
   const onSelectClipRef = useRef(onSelectClip);
   onSelectClipRef.current = onSelectClip;
+  const onActivateMonitorRef = useRef(onActivateMonitor);
+  onActivateMonitorRef.current = onActivateMonitor;
+  const onPlayheadChangeRef = useRef(onPlayheadChange);
+  onPlayheadChangeRef.current = onPlayheadChange;
   const magneticRef = useRef(magnetic);
   magneticRef.current = magnetic;
   const pxPerSecRef = useRef(TIMELINE_PX_PER_SEC * zoom);
+  const seekRef = useRef<{ pointerId: number } | null>(null);
 
   const commitClips = useCallback((next: TimelineClip[]) => {
     setClips(next);
@@ -507,6 +511,32 @@ export function TimelinePane({
     [],
   );
 
+  const seekPlayhead = useCallback(
+    (clientX: number) => {
+      const next = pointToStartSec(clientX);
+      onPlayheadChangeRef.current?.(next);
+    },
+    [pointToStartSec],
+  );
+
+  const beginRulerSeek = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      if (getActiveStagedClipDrag()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      seekRef.current = { pointerId: event.pointerId };
+      onActivateMonitorRef.current?.();
+      seekPlayhead(event.clientX);
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // window listeners still handle move/up
+      }
+    },
+    [seekPlayhead],
+  );
+
   const applyClipMove = useCallback(
     (clientX: number, finalize: boolean) => {
       const move = moveRef.current;
@@ -574,6 +604,13 @@ export function TimelinePane({
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
+      const seek = seekRef.current;
+      if (seek && event.pointerId === seek.pointerId) {
+        event.preventDefault();
+        seekPlayhead(event.clientX);
+        return;
+      }
+
       const press = pressRef.current;
       if (press && event.pointerId === press.pointerId && !press.armed) {
         const dx = event.clientX - press.startX;
@@ -590,6 +627,11 @@ export function TimelinePane({
       applyClipMove(event.clientX, false);
     };
     const onUp = (event: PointerEvent) => {
+      if (seekRef.current && event.pointerId === seekRef.current.pointerId) {
+        seekRef.current = null;
+        return;
+      }
+
       const press = pressRef.current;
       if (press && event.pointerId === press.pointerId) {
         pressRef.current = null;
@@ -611,7 +653,7 @@ export function TimelinePane({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [applyClipMove, armClipMove, endClipMove]);
+  }, [applyClipMove, armClipMove, endClipMove, seekPlayhead]);
 
   const beginClipPress = useCallback(
     (clip: TimelineClip, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -757,17 +799,35 @@ export function TimelinePane({
   const dragging =
     ghost !== null || dragActive || movingClipId !== null;
 
+  const paneClass = [
+    "editor-timeline-pane",
+    dragging ? "is-clip-dragging" : "",
+    monitorActive ? "is-monitor-active" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <section
-      className={
-        dragging
-          ? "editor-timeline-pane is-clip-dragging"
-          : "editor-timeline-pane"
-      }
+      className={paneClass}
       aria-label="Timeline"
+      data-monitor-active={monitorActive ? "true" : undefined}
     >
-      <div className="editor-timeline-head">
-        <h2>Timeline</h2>
+      <div
+        className="editor-timeline-head"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          onActivateMonitor?.();
+        }}
+      >
+        <div className="editor-timeline-title">
+          <h2>Timeline</h2>
+          <span
+            className="editor-timeline-monitor-dot"
+            title={monitorActive ? "Preview follows timeline" : undefined}
+            aria-hidden={!monitorActive}
+          />
+        </div>
         <div className="editor-timeline-tools">
           <button
             type="button"
@@ -846,10 +906,21 @@ export function TimelinePane({
               if (event.button !== 0) return;
               const target = event.target as HTMLElement | null;
               if (target?.closest(".editor-timeline-clip")) return;
+              if (target?.closest(".editor-timeline-ruler")) return;
+              onActivateMonitor?.();
               onSelectClip?.(null);
             }}
           >
-            <div className="editor-timeline-ruler">
+            <div
+              className="editor-timeline-ruler"
+              role="slider"
+              tabIndex={0}
+              aria-label="Timeline playhead"
+              aria-valuemin={0}
+              aria-valuenow={Math.round(playheadSec * 100) / 100}
+              aria-valuetext={formatTick(playheadSec)}
+              onPointerDown={beginRulerSeek}
+            >
               {minorTicks.map((t) => (
                 <span
                   key={`m-${t}`}
@@ -870,7 +941,7 @@ export function TimelinePane({
 
             <div
               className="editor-timeline-playhead"
-              style={{ left: 0 }}
+              style={{ left: playheadSec * pxPerSec }}
               aria-hidden
             />
 

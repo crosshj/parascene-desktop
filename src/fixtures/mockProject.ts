@@ -25,6 +25,8 @@ export const mockProject: Project = {
   selectedTimelineClipId: null,
   selectedAssetId: null,
   timelineZoom: 1,
+  timelineMonitorActive: false,
+  timelinePlayheadSec: 0,
   hookSuggestions: [
     {
       id: "h1",

@@ -21,6 +21,8 @@ import {
   setStoredProjectSelectedAssetId,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
+  setStoredProjectTimelineMonitorActive,
+  setStoredProjectTimelinePlayheadSec,
   storedProjectToUi,
   type StoredProject,
 } from "../project/projectStore";
@@ -59,6 +61,10 @@ type ShellState = {
   setOpenProjectSelectedAssetId: (assetId: string | null) => void;
   /** Remember timeline zoom for the open project. */
   setOpenProjectTimelineZoom: (zoom: number) => void;
+  /** Remember whether the preview follows the timeline. */
+  setOpenProjectTimelineMonitorActive: (active: boolean) => void;
+  /** Remember timeline playhead position (seconds). */
+  setOpenProjectTimelinePlayheadSec: (sec: number) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => void;
   /** Last Creations filter — survives Library ↔ Project switches. */
@@ -160,12 +166,28 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     if (creationsFilterId === "inProject") setCreationsFilterId("all");
   }, [creationsFilterId, openProjectId]);
 
-  const persist = useCallback((next: StoredProject[]) => {
-    const sorted = sortByUpdatedDesc(next);
-    setStoredProjects(sorted);
-    saveStoredProjects(sorted);
-    return sorted;
-  }, []);
+  /** Functional update so rapid sequential writes (e.g. activate + scrub) compose. */
+  const updateStoredProjects = useCallback(
+    (updater: (prev: StoredProject[]) => StoredProject[]) => {
+      setStoredProjects((prev) => {
+        const sorted = sortByUpdatedDesc(updater(prev));
+        saveStoredProjects(sorted);
+        return sorted;
+      });
+    },
+    [],
+  );
+
+  const patchOpenProject = useCallback(
+    (patch: (project: StoredProject) => StoredProject) => {
+      if (!openProjectId) return;
+      const id = openProjectId;
+      updateStoredProjects((prev) =>
+        prev.map((p) => (p.id === id ? patch(p) : p)),
+      );
+    },
+    [openProjectId, updateStoredProjects],
+  );
 
   const project = useMemo(() => {
     if (!openProjectId) return emptyUiProject();
@@ -202,97 +224,81 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const createProject = useCallback(
     (title: string, creationIds: string[] = []) => {
       const created = createStoredProject(title, creationIds);
-      persist([created, ...storedProjects.filter((p) => p.id !== created.id)]);
+      updateStoredProjects((prev) => [
+        created,
+        ...prev.filter((p) => p.id !== created.id),
+      ]);
       setOpenProjectId(created.id);
       setPrimaryTab("project");
       setMode("director");
       setSelectedSceneId(`${created.id}-scene-1`);
       return created.id;
     },
-    [persist, storedProjects],
+    [updateStoredProjects],
   );
 
   const addCreationsToOpenProject = useCallback(
     (creationIds: string[]) => {
-      if (!openProjectId || creationIds.length === 0) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId ? mergeCreationIds(p, creationIds) : p,
-      );
-      persist(next);
+      if (creationIds.length === 0) return;
+      patchOpenProject((p) => mergeCreationIds(p, creationIds));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
   );
 
   const renameOpenProject = useCallback(
     (title: string) => {
-      if (!openProjectId) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId ? renameStoredProject(p, title) : p,
-      );
-      persist(next);
+      patchOpenProject((p) => renameStoredProject(p, title));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
   );
 
   const setOpenProjectAspectRatio = useCallback(
     (aspectRatio: ProjectAspectRatio) => {
-      if (!openProjectId) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId
-          ? setStoredProjectAspectRatio(p, aspectRatio)
-          : p,
-      );
-      persist(next);
+      patchOpenProject((p) => setStoredProjectAspectRatio(p, aspectRatio));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
   );
 
   const setOpenProjectTimeline = useCallback(
     (timeline: TimelineClip[]) => {
-      if (!openProjectId) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId ? setStoredProjectTimeline(p, timeline) : p,
-      );
-      persist(next);
+      patchOpenProject((p) => setStoredProjectTimeline(p, timeline));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
   );
 
   const setOpenProjectSelectedTimelineClipId = useCallback(
     (clipId: string | null) => {
-      if (!openProjectId) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId
-          ? setStoredProjectSelectedTimelineClipId(p, clipId)
-          : p,
-      );
-      persist(next);
+      patchOpenProject((p) => setStoredProjectSelectedTimelineClipId(p, clipId));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
   );
 
   const setOpenProjectSelectedAssetId = useCallback(
     (assetId: string | null) => {
-      if (!openProjectId) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId
-          ? setStoredProjectSelectedAssetId(p, assetId)
-          : p,
-      );
-      persist(next);
+      patchOpenProject((p) => setStoredProjectSelectedAssetId(p, assetId));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
   );
 
   const setOpenProjectTimelineZoom = useCallback(
     (zoom: number) => {
-      if (!openProjectId) return;
-      const next = storedProjects.map((p) =>
-        p.id === openProjectId ? setStoredProjectTimelineZoom(p, zoom) : p,
-      );
-      persist(next);
+      patchOpenProject((p) => setStoredProjectTimelineZoom(p, zoom));
     },
-    [openProjectId, persist, storedProjects],
+    [patchOpenProject],
+  );
+
+  const setOpenProjectTimelineMonitorActive = useCallback(
+    (active: boolean) => {
+      patchOpenProject((p) => setStoredProjectTimelineMonitorActive(p, active));
+    },
+    [patchOpenProject],
+  );
+
+  const setOpenProjectTimelinePlayheadSec = useCallback(
+    (sec: number) => {
+      patchOpenProject((p) => setStoredProjectTimelinePlayheadSec(p, sec));
+    },
+    [patchOpenProject],
   );
 
   const value = useMemo(
@@ -313,6 +319,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
       setOpenProjectTimelineZoom,
+      setOpenProjectTimelineMonitorActive,
+      setOpenProjectTimelinePlayheadSec,
       addCreationsToOpenProject,
       creationsFilterId,
       setCreationsFilterId,
@@ -345,6 +353,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
       setOpenProjectTimelineZoom,
+      setOpenProjectTimelineMonitorActive,
+      setOpenProjectTimelinePlayheadSec,
       addCreationsToOpenProject,
       creationsFilterId,
       chromeStatus,

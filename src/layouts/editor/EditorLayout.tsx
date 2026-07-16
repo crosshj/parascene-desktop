@@ -55,6 +55,8 @@ export function EditorLayout() {
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
     setOpenProjectTimelineZoom,
+    setOpenProjectTimelineMonitorActive,
+    setOpenProjectTimelinePlayheadSec,
     leftCollapsed,
     rightCollapsed,
     toggleLeft,
@@ -81,6 +83,11 @@ export function EditorLayout() {
   const dragRef = useRef<DragState | null>(null);
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
+
+  const monitorMode: "source" | "timeline" = project.timelineMonitorActive
+    ? "timeline"
+    : "source";
+  const timelinePlayheadSec = project.timelinePlayheadSec;
 
   useEffect(() => {
     const savedClipId = project.selectedTimelineClipId;
@@ -278,6 +285,13 @@ export function EditorLayout() {
     setOpenProjectSelectedTimelineClipId(clip.id);
   };
 
+  const activateTimeline = () => {
+    setSelectedClipId(null);
+    setClipStagingSeed(null);
+    setSelectedAssetId(null);
+    setOpenProjectTimelineMonitorActive(true);
+  };
+
   const onClipDraftChange = (clipId: string, draft: StagedClipDraft) => {
     setClipStagingSeed({ clipId, draft });
     const next = project.timeline.map((clip) =>
@@ -286,9 +300,12 @@ export function EditorLayout() {
     setOpenProjectTimeline(next);
   };
 
-  // Preview media: assets panel selection, or the selected clip's source asset.
+  // Source monitor: assets panel selection, or the selected clip's source asset.
+  // Timeline monitor owns the pane when active (no source asset loaded).
   const previewAssetId =
-    selectedAssetId ?? clipStagingSeed?.draft.assetId ?? null;
+    monitorMode === "source"
+      ? (selectedAssetId ?? clipStagingSeed?.draft.assetId ?? null)
+      : null;
 
   return (
     <div ref={workspaceRef} className={workspaceClass} style={style}>
@@ -320,8 +337,20 @@ export function EditorLayout() {
       <PreviewPane
         assetId={previewAssetId}
         aspectRatio={project.aspectRatio}
-        stagingSeed={clipStagingSeed?.draft ?? null}
-        stagingSeedKey={clipStagingSeed?.clipId ?? null}
+        monitorMode={monitorMode}
+        timelinePlayheadSec={timelinePlayheadSec}
+        timelineDurationSec={Math.max(
+          60,
+          ...project.timeline.map((c) => c.endSec),
+          timelinePlayheadSec,
+        )}
+        onTimelinePlayheadChange={setOpenProjectTimelinePlayheadSec}
+        stagingSeed={
+          monitorMode === "source" ? (clipStagingSeed?.draft ?? null) : null
+        }
+        stagingSeedKey={
+          monitorMode === "source" ? (clipStagingSeed?.clipId ?? null) : null
+        }
         onClipDraftChange={onClipDraftChange}
         showAssetsExpand={!showAssetsPane}
         onExpandAssets={expandAssets}
@@ -371,6 +400,10 @@ export function EditorLayout() {
         onSelectClip={selectClip}
         zoom={project.timelineZoom}
         onZoomChange={setOpenProjectTimelineZoom}
+        monitorActive={monitorMode === "timeline"}
+        onActivateMonitor={activateTimeline}
+        playheadSec={timelinePlayheadSec}
+        onPlayheadChange={setOpenProjectTimelinePlayheadSec}
       />
 
       {showAssetsDrawer || showAssistantDrawer ? (
