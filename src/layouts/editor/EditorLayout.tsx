@@ -24,6 +24,7 @@ import {
   type StagedClipDraft,
 } from "./stagedClip";
 import { TimelinePane } from "./TimelinePane";
+import { timelineSequenceDuration } from "./timelineCompose";
 import type { TimelineClip } from "../../project/types";
 
 const NARROW_MQ = "(max-width: 1100px)";
@@ -87,7 +88,119 @@ export function EditorLayout() {
   const monitorMode: "source" | "timeline" = project.timelineMonitorActive
     ? "timeline"
     : "source";
-  const timelinePlayheadSec = project.timelinePlayheadSec;
+  const sequenceDurationSec = timelineSequenceDuration(project.timeline);
+  /**
+   * While playing, playhead is local (avoids localStorage writes every frame).
+   * When paused, the persisted project playhead is the source of truth.
+   */
+  const [timelinePlaying, setTimelinePlaying] = useState(false);
+  const [livePlayheadSec, setLivePlayheadSec] = useState(
+    project.timelinePlayheadSec,
+  );
+  /** Bumped on scrub-while-playing / loop so media re-primes without pausing. */
+  const [mediaSeekEpoch, setMediaSeekEpoch] = useState(0);
+  const livePlayheadRef = useRef(project.timelinePlayheadSec);
+  const displayPlayheadSec = timelinePlaying
+    ? livePlayheadSec
+    : project.timelinePlayheadSec;
+
+  const pauseTimelinePlayback = () => {
+    if (!timelinePlaying) return;
+    setTimelinePlaying(false);
+    setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
+  };
+
+  // Virtual timeline clock — only while the program monitor is active.
+  useEffect(() => {
+    if (!timelinePlaying || monitorMode !== "timeline") return;
+    const end = Math.max(sequenceDurationSec, 0);
+    if (end <= 0) return;
+
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      const advanced = livePlayheadRef.current + dt;
+      // Loop by default — wrap at sequence end.
+      const wrapped = advanced >= end;
+      const next = wrapped ? advanced % end : advanced;
+      livePlayheadRef.current = next;
+      setLivePlayheadSec(next);
+      if (wrapped) setMediaSeekEpoch((n) => n + 1);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
+    };
+  }, [
+    timelinePlaying,
+    monitorMode,
+    sequenceDurationSec,
+    setOpenProjectTimelinePlayheadSec,
+  ]);
+
+  const seekTimelinePlayhead = (sec: number) => {
+    const end = Math.max(sequenceDurationSec, sec, 0.1);
+    const next = Math.max(0, Math.min(end, sec));
+    livePlayheadRef.current = next;
+    setLivePlayheadSec(next);
+    setOpenProjectTimelinePlayheadSec(next);
+    // Stay in playback — jump media to the new point.
+    if (timelinePlaying) setMediaSeekEpoch((n) => n + 1);
+  };
+
+  const toggleTimelinePlaying = () => {
+    if (monitorMode !== "timeline") return;
+    if (timelinePlaying) {
+      pauseTimelinePlayback();
+      return;
+    }
+    const end = sequenceDurationSec;
+    if (end <= 0) return;
+    const start =
+      project.timelinePlayheadSec >= end ? 0 : project.timelinePlayheadSec;
+    livePlayheadRef.current = start;
+    setLivePlayheadSec(start);
+    if (start !== project.timelinePlayheadSec) {
+      setOpenProjectTimelinePlayheadSec(start);
+    }
+    setTimelinePlaying(true);
+  };
+
+  // Space toggles play/pause while the program monitor owns the preview.
+  useEffect(() => {
+    if (monitorMode !== "timeline") return;
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code !== "Space" && event.key !== " ") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      event.preventDefault();
+      toggleTimelinePlaying();
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    monitorMode,
+    timelinePlaying,
+    sequenceDurationSec,
+    project.timelinePlayheadSec,
+  ]);
 
   useEffect(() => {
     const savedClipId = project.selectedTimelineClipId;
@@ -264,6 +377,7 @@ export function EditorLayout() {
   };
 
   const selectAsset = (id: string) => {
+    pauseTimelinePlayback();
     setSelectedClipId(null);
     setClipStagingSeed(null);
     setSelectedAssetId(id);
@@ -271,6 +385,7 @@ export function EditorLayout() {
   };
 
   const selectClip = (clip: TimelineClip | null) => {
+    pauseTimelinePlayback();
     if (!clip) {
       setSelectedClipId(null);
       setClipStagingSeed(null);
@@ -338,13 +453,17 @@ export function EditorLayout() {
         assetId={previewAssetId}
         aspectRatio={project.aspectRatio}
         monitorMode={monitorMode}
-        timelinePlayheadSec={timelinePlayheadSec}
+        timelineClips={project.timeline}
+        timelinePlayheadSec={displayPlayheadSec}
         timelineDurationSec={Math.max(
           60,
-          ...project.timeline.map((c) => c.endSec),
-          timelinePlayheadSec,
+          sequenceDurationSec,
+          displayPlayheadSec,
         )}
-        onTimelinePlayheadChange={setOpenProjectTimelinePlayheadSec}
+        timelinePlaying={timelinePlaying && monitorMode === "timeline"}
+        mediaSeekEpoch={mediaSeekEpoch}
+        onToggleTimelinePlay={toggleTimelinePlaying}
+        onTimelinePlayheadChange={seekTimelinePlayhead}
         stagingSeed={
           monitorMode === "source" ? (clipStagingSeed?.draft ?? null) : null
         }
@@ -402,8 +521,8 @@ export function EditorLayout() {
         onZoomChange={setOpenProjectTimelineZoom}
         monitorActive={monitorMode === "timeline"}
         onActivateMonitor={activateTimeline}
-        playheadSec={timelinePlayheadSec}
-        onPlayheadChange={setOpenProjectTimelinePlayheadSec}
+        playheadSec={displayPlayheadSec}
+        onPlayheadChange={seekTimelinePlayhead}
       />
 
       {showAssetsDrawer || showAssistantDrawer ? (

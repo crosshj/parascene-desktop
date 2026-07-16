@@ -19,6 +19,7 @@ import {
   PROJECT_ASPECT_OPTIONS,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
+import type { TimelineClip } from "../../project/types";
 import { kindFromMediaType } from "./stagingKind";
 import { ClipDragHandle, StagingFields } from "./PreviewStaging";
 import {
@@ -26,6 +27,8 @@ import {
   type StagedClipDraft,
 } from "./stagedClip";
 import { creationCardTitle } from "../../library/creationFlags";
+import { TimelineMonitor } from "./TimelineMonitor";
+import { timelineSequenceDuration } from "./timelineCompose";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -33,10 +36,18 @@ type PreviewPaneProps = {
   aspectRatio: ProjectAspectRatio;
   /** Source asset preview vs timeline-owned monitor. */
   monitorMode?: "source" | "timeline";
+  /** Timeline clips for program-monitor compose. */
+  timelineClips?: TimelineClip[];
   /** Timeline playhead time when monitorMode is timeline. */
   timelinePlayheadSec?: number;
   /** Timeline content length for scrub / skip-to-end. */
   timelineDurationSec?: number;
+  /** Whether the timeline clock is advancing. */
+  timelinePlaying?: boolean;
+  /** Bumps when playhead jumps while playing (scrub / loop) so media re-primes. */
+  mediaSeekEpoch?: number;
+  /** Toggle timeline play / pause. */
+  onToggleTimelinePlay?: () => void;
   /** Persist timeline playhead when scrubbing / seeking in timeline mode. */
   onTimelinePlayheadChange?: (sec: number) => void;
   /** Staging fields when a timeline clip is selected. */
@@ -91,8 +102,12 @@ export function PreviewPane({
   assetId,
   aspectRatio,
   monitorMode = "source",
+  timelineClips = [],
   timelinePlayheadSec = 0,
   timelineDurationSec = 0,
+  timelinePlaying = false,
+  mediaSeekEpoch = 0,
+  onToggleTimelinePlay,
   onTimelinePlayheadChange,
   stagingSeed = null,
   stagingSeedKey = null,
@@ -366,6 +381,14 @@ export function PreviewPane({
   };
 
   const timelineSpanSec = Math.max(timelineDurationSec, timelinePlayheadSec, 0.1);
+  const sequenceEndSec = Math.max(
+    timelineSequenceDuration(timelineClips),
+    0,
+  );
+  const timelineCanPlay =
+    monitorMode === "timeline" &&
+    Boolean(onToggleTimelinePlay) &&
+    sequenceEndSec > 0;
 
   const seekTimelineTo = (sec: number) => {
     if (!onTimelinePlayheadChange) return;
@@ -433,7 +456,7 @@ export function PreviewPane({
 
   let status: string | null = null;
   if (monitorMode === "timeline") {
-    status = "Timeline";
+    status = null;
   } else if (!assetId) status = "Select an asset";
   else if (catalogError) status = "Asset not in local catalog";
   else if (!creation) status = "Loading…";
@@ -469,7 +492,15 @@ export function PreviewPane({
       <div className="editor-preview-stage">
         <div ref={frameRef} className="editor-preview-frame">
           <div className="editor-preview-surface" style={surfaceStyle}>
-            {status ? (
+            {monitorMode === "timeline" ? (
+              <TimelineMonitor
+                clips={timelineClips}
+                playheadSec={timelinePlayheadSec}
+                playing={timelinePlaying}
+                mediaSeekEpoch={mediaSeekEpoch}
+                volume={volume}
+              />
+            ) : status ? (
               <span className="editor-preview-status muted">{status}</span>
             ) : (
               <>
@@ -619,13 +650,23 @@ export function PreviewPane({
                 <button
                   type="button"
                   className="editor-transport-icon is-play"
-                  disabled
-                  title="Timeline playback coming soon"
-                  aria-label="Play"
+                  disabled={!timelineCanPlay}
+                  title={timelinePlaying ? "Pause" : "Play"}
+                  aria-label={timelinePlaying ? "Pause" : "Play"}
+                  onClick={() => onToggleTimelinePlay?.()}
                 >
-                  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
-                    <path fill="currentColor" d="M4 2.5v11l10-5.5z" />
-                  </svg>
+                  {timelinePlaying ? (
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                      <path
+                        fill="currentColor"
+                        d="M4 3h3v10H4zm5 0h3v10H9z"
+                      />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                      <path fill="currentColor" d="M4 2.5v11l10-5.5z" />
+                    </svg>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -658,7 +699,39 @@ export function PreviewPane({
                   </svg>
                 </button>
               </div>
-              <div className="editor-transport-utils" aria-hidden />
+              <div className="editor-transport-utils">
+                <label className="editor-transport-volume">
+                  <svg
+                    className="editor-transport-volume-icon"
+                    viewBox="0 0 16 16"
+                    width="14"
+                    height="14"
+                    aria-hidden
+                  >
+                    <path
+                      fill="currentColor"
+                      d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
+                    />
+                  </svg>
+                  <span className="visually-hidden">Volume</span>
+                  <input
+                    type="range"
+                    className="editor-transport-scrub"
+                    min={0}
+                    max={100}
+                    value={volume}
+                    aria-label="Volume"
+                    style={
+                      {
+                        ["--scrub-progress" as string]: `${volume}%`,
+                      } as CSSProperties
+                    }
+                    onChange={(event) => {
+                      setVolume(Number(event.target.value));
+                    }}
+                  />
+                </label>
+              </div>
             </div>
           ) : (
             <div className="editor-preview-deck-body">
