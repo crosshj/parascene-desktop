@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -29,6 +30,7 @@ import {
   type StagedClipDraft,
   type TimelineGhostClip,
 } from "./stagedClip";
+import { timelineSequenceDuration } from "./timelineCompose";
 
 type TimelinePaneProps = {
   clips: TimelineClip[];
@@ -51,6 +53,11 @@ type TimelinePaneProps = {
   onActivateMonitor?: () => void;
   playheadSec?: number;
   onPlayheadChange?: (sec: number) => void;
+  /** Transport — only shown when monitorActive. */
+  playing?: boolean;
+  onTogglePlay?: () => void;
+  volume?: number;
+  onVolumeChange?: (volume: number) => void;
 };
 
 type PointerDropDetail = {
@@ -67,6 +74,15 @@ function formatTick(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function formatTransportClock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) sec = 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const f = Math.floor((sec % 1) * 24);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}:${String(f).padStart(2, "0")}`;
 }
 
 function formatClipDuration(sec: number): string {
@@ -383,6 +399,10 @@ export function TimelinePane({
   onActivateMonitor,
   playheadSec = 0,
   onPlayheadChange,
+  playing = false,
+  onTogglePlay,
+  volume = 80,
+  onVolumeChange,
 }: TimelinePaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
@@ -943,6 +963,18 @@ export function TimelinePane({
   const dragging =
     ghost !== null || dragActive || movingClipIds.length > 0;
 
+  const sequenceEndSec = timelineSequenceDuration(clips);
+  const transportSpanSec = Math.max(sequenceEndSec, playheadSec, 0.1);
+  const canPlayTransport = Boolean(onTogglePlay) && sequenceEndSec > 0;
+  const transportEnabled = monitorActive;
+  const seekTransportTo = (sec: number) => {
+    if (!onPlayheadChange) return;
+    onPlayheadChange(Math.max(0, Math.min(transportSpanSec, sec)));
+  };
+  const seekTransportBy = (delta: number) => {
+    seekTransportTo(playheadSec + delta);
+  };
+
   const paneClass = [
     "editor-timeline-pane",
     dragging ? "is-clip-dragging" : "",
@@ -966,12 +998,144 @@ export function TimelinePane({
       >
         <div className="editor-timeline-title">
           <h2>Timeline</h2>
-          <span
-            className="editor-timeline-monitor-dot"
-            title={monitorActive ? "Preview follows timeline" : undefined}
-            aria-hidden={!monitorActive}
-          />
         </div>
+
+        <div
+          className={`editor-timeline-transport${
+            transportEnabled ? "" : " is-inactive"
+          }`}
+          aria-label="Timeline playback"
+          aria-disabled={!transportEnabled}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <span className="editor-transport-tc">
+            {formatTransportClock(playheadSec)}
+          </span>
+          <div
+            className="editor-transport-icons"
+            aria-label="Playback controls"
+          >
+            <button
+              type="button"
+              className="editor-transport-icon"
+              disabled={!transportEnabled || !onPlayheadChange}
+              title="Skip back"
+              aria-label="Skip to beginning"
+              onClick={() => seekTransportTo(0)}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M2 3h1.5v10H2zm3.2 5 8.3 5.2V2.8z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="editor-transport-icon"
+              disabled={!transportEnabled || !onPlayheadChange}
+              title="Rewind"
+              aria-label="Rewind 1 second"
+              onClick={() => seekTransportBy(-1)}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M8.2 8 14.5 3v10zm-6.7 0L7.8 3v10z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="editor-transport-icon is-play"
+              disabled={!transportEnabled || !canPlayTransport}
+              title={playing ? "Pause" : "Play"}
+              aria-label={playing ? "Pause" : "Play"}
+              onClick={() => onTogglePlay?.()}
+            >
+              {playing ? (
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                  <path
+                    fill="currentColor"
+                    d="M4 3h3v10H4zm5 0h3v10H9z"
+                  />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                  <path fill="currentColor" d="M4 2.5v11l10-5.5z" />
+                </svg>
+              )}
+            </button>
+            <button
+              type="button"
+              className="editor-transport-icon"
+              disabled={!transportEnabled || !onPlayheadChange}
+              title="Fast forward"
+              aria-label="Forward 1 second"
+              onClick={() => seekTransportBy(1)}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M1.5 3v10L7.8 8zm6.7 0v10L14.5 8z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="editor-transport-icon"
+              disabled={!transportEnabled || !onPlayheadChange}
+              title="Skip forward"
+              aria-label="Skip to end"
+              onClick={() => seekTransportTo(transportSpanSec)}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M2.5 2.8v10.4L10.8 8zM12.5 3H14v10h-1.5z"
+                />
+              </svg>
+            </button>
+          </div>
+          <label
+            className={`editor-transport-volume${
+              transportEnabled ? "" : " is-disabled"
+            }`}
+          >
+            <svg
+              className="editor-transport-volume-icon"
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              aria-hidden
+            >
+              <path
+                fill="currentColor"
+                d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
+              />
+            </svg>
+            <span className="visually-hidden">Volume</span>
+            <input
+              type="range"
+              className="editor-transport-scrub"
+              min={0}
+              max={100}
+              value={volume}
+              disabled={!transportEnabled}
+              aria-label="Volume"
+              style={
+                {
+                  ["--scrub-progress" as string]: `${volume}%`,
+                } as CSSProperties
+              }
+              onChange={(event) => {
+                if (!transportEnabled) return;
+                onVolumeChange?.(Number(event.target.value));
+              }}
+            />
+          </label>
+        </div>
+
         <div className="editor-timeline-tools">
           <button
             type="button"

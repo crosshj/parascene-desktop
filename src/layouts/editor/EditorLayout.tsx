@@ -97,6 +97,7 @@ export function EditorLayout() {
     clipId: string;
     draft: StagedClipDraft;
   } | null>(null);
+  const [previewVolume, setPreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
   const [assetsDrawerOpen, setAssetsDrawerOpen] = useState(false);
@@ -610,6 +611,9 @@ export function EditorLayout() {
           onSelect={selectAsset}
           onCollapse={collapseAssets}
           drawer={narrow}
+          previewActive={
+            monitorMode === "source" && Boolean(selectedAssetId)
+          }
         />
       ) : null}
 
@@ -632,15 +636,8 @@ export function EditorLayout() {
         monitorMode={monitorMode}
         timelineClips={project.timeline}
         timelinePlayheadSec={displayPlayheadSec}
-        timelineDurationSec={Math.max(
-          60,
-          sequenceDurationSec,
-          displayPlayheadSec,
-        )}
         timelinePlaying={timelinePlaying && monitorMode === "timeline"}
         mediaSeekEpoch={mediaSeekEpoch}
-        onToggleTimelinePlay={toggleTimelinePlaying}
-        onTimelinePlayheadChange={seekTimelinePlayhead}
         stagingSeed={
           monitorMode === "source" ? (clipStagingSeed?.draft ?? null) : null
         }
@@ -650,6 +647,8 @@ export function EditorLayout() {
         onClipDraftChange={onClipDraftChange}
         showAssetsExpand={!showAssetsPane}
         onExpandAssets={expandAssets}
+        volume={previewVolume}
+        onVolumeChange={setPreviewVolume}
       />
 
       {assistantDocked ? (
@@ -672,8 +671,15 @@ export function EditorLayout() {
           type="button"
           className="editor-pane-expand right"
           onClick={expandAssistant}
+          title="Expand assistant"
+          aria-label="Expand assistant"
         >
-          Assistant
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M13.8 12.8 9.5 8l4.3-4.8-1.1-1L7.4 8l5.3 5.8zm-5.2 0L3.3 8l4.3-4.8-1.1-1L1.2 8l5.3 5.8z"
+            />
+          </svg>
         </button>
       )}
 
@@ -700,6 +706,10 @@ export function EditorLayout() {
         onActivateMonitor={activateTimeline}
         playheadSec={displayPlayheadSec}
         onPlayheadChange={seekTimelinePlayhead}
+        playing={timelinePlaying && monitorMode === "timeline"}
+        onTogglePlay={toggleTimelinePlaying}
+        volume={previewVolume}
+        onVolumeChange={setPreviewVolume}
       />
 
       {showAssetsDrawer || showAssistantDrawer ? (

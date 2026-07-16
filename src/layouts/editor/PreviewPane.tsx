@@ -33,7 +33,6 @@ import {
 } from "./stagedClip";
 import { creationCardTitle } from "../../library/creationFlags";
 import { TimelineMonitor } from "./TimelineMonitor";
-import { timelineSequenceDuration } from "./timelineCompose";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -45,16 +44,10 @@ type PreviewPaneProps = {
   timelineClips?: TimelineClip[];
   /** Timeline playhead time when monitorMode is timeline. */
   timelinePlayheadSec?: number;
-  /** Timeline content length for scrub / skip-to-end. */
-  timelineDurationSec?: number;
   /** Whether the timeline clock is advancing. */
   timelinePlaying?: boolean;
   /** Bumps when playhead jumps while playing (scrub / loop) so media re-primes. */
   mediaSeekEpoch?: number;
-  /** Toggle timeline play / pause. */
-  onToggleTimelinePlay?: () => void;
-  /** Persist timeline playhead when scrubbing / seeking in timeline mode. */
-  onTimelinePlayheadChange?: (sec: number) => void;
   /** Staging fields when a timeline clip is selected. */
   stagingSeed?: StagedClipDraft | null;
   /** Clip id (or other key) so re-selecting refreshes seed even for same asset. */
@@ -64,6 +57,9 @@ type PreviewPaneProps = {
   /** Show a left-edge control to reopen the assets pane. */
   showAssetsExpand?: boolean;
   onExpandAssets?: () => void;
+  /** Shared preview volume (0–100). */
+  volume?: number;
+  onVolumeChange?: (volume: number) => void;
 };
 
 type Size = { w: number; h: number };
@@ -103,22 +99,89 @@ function videoAlreadyPainted(el: HTMLVideoElement): boolean {
   return el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 }
 
+function SourceLabelIcon({
+  kind,
+}: {
+  kind: "timeline" | "asset" | "clip" | null;
+}) {
+  if (kind === "asset") {
+    return (
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
+        <rect
+          x="2"
+          y="3"
+          width="12"
+          height="10"
+          rx="1.2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+        />
+        <circle cx="5.4" cy="6.4" r="1.1" fill="currentColor" />
+        <path d="M2.8 12.4l3-3.4 2 1.9 2.4-2.9 3 4.4z" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (kind === "clip") {
+    return (
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
+        <rect
+          x="2"
+          y="4"
+          width="12"
+          height="8"
+          rx="1.2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+        />
+        <path
+          d="M6 4v8M10 4v8"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          fill="none"
+        />
+      </svg>
+    );
+  }
+  // timeline (default)
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
+      <rect
+        x="1.8"
+        y="3"
+        width="12.4"
+        height="10"
+        rx="1.2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+      />
+      <path
+        d="M1.8 6.4h12.4M5.2 3v3.4M9 6.4v6.6"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
 export function PreviewPane({
   assetId,
   aspectRatio,
   monitorMode = "source",
   timelineClips = [],
   timelinePlayheadSec = 0,
-  timelineDurationSec = 0,
   timelinePlaying = false,
   mediaSeekEpoch = 0,
-  onToggleTimelinePlay,
-  onTimelinePlayheadChange,
   stagingSeed = null,
   stagingSeedKey = null,
   onClipDraftChange,
   showAssetsExpand = false,
   onExpandAssets,
+  volume: volumeProp,
+  onVolumeChange,
 }: PreviewPaneProps) {
   const [creation, setCreation] = useState<Creation | null>(null);
   const [catalogError, setCatalogError] = useState(false);
@@ -126,7 +189,12 @@ export function PreviewPane({
   const [playing, setPlaying] = useState(false);
   const [currentSec, setCurrentSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
-  const [volume, setVolume] = useState(80);
+  const [volumeLocal, setVolumeLocal] = useState(80);
+  const volume = volumeProp ?? volumeLocal;
+  const setVolume = (next: number) => {
+    if (onVolumeChange) onVolumeChange(next);
+    else setVolumeLocal(next);
+  };
   const [frameSize, setFrameSize] = useState<Size>({ w: 0, h: 0 });
   const [stagedDraft, setStagedDraft] = useState<StagedClipDraft | null>(null);
   const [reversedDetail, setReversedDetail] = useState<string | null>(null);
@@ -432,6 +500,46 @@ export function PreviewPane({
   const audioExcluded =
     isVideo && stagedDraft != null && !stagedDraft.includeAudio;
   const volumeEnabled = canPlay && !audioExcluded;
+  const sourcePreviewLoops = monitorMode === "source" && (isVideo || isAudio);
+  const clipLoopEnabled =
+    sourcePreviewLoops &&
+    editingClip &&
+    stagedDraft != null &&
+    stagedDraft.kind !== "image";
+  const clipLoopInSec = clipLoopEnabled ? Math.max(0, stagedDraft.inSec) : 0;
+  const clipLoopOutSec = clipLoopEnabled
+    ? Math.max(clipLoopInSec + 0.1, stagedDraft.outSec)
+    : 0;
+
+  // Persistent source-ownership badge for the preview (Timeline / Asset / Clip).
+  const assetDisplayName = (() => {
+    if (creation) {
+      const titled = creationCardTitle(creation);
+      if (!titled.untitled) return titled.text;
+      return creation.filename?.trim() || assetId || "";
+    }
+    return stagedDraft?.label || assetId || "";
+  })();
+  const clipDurationSec = stagedDraft
+    ? Math.max(0, stagedDraft.outSec - stagedDraft.inSec)
+    : 0;
+  const clipTrack = stagedDraft?.kind === "audio" ? "A1" : "V1";
+  const sourceKind: "timeline" | "asset" | "clip" | null =
+    monitorMode === "timeline"
+      ? "timeline"
+      : editingClip
+        ? "clip"
+        : assetId
+          ? "asset"
+          : null;
+  const sourceLabelText =
+    sourceKind === "timeline"
+      ? "Timeline"
+      : sourceKind === "asset"
+        ? `Asset • ${assetDisplayName}`
+        : sourceKind === "clip"
+          ? `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s`
+          : null;
 
   const onStagingDraftChange = (draft: StagedClipDraft) => {
     const next =
@@ -462,6 +570,13 @@ export function PreviewPane({
     const el = mediaRef.current;
     if (!el || !canPlay) return;
     if (el.paused) {
+      if (
+        clipLoopEnabled &&
+        (el.currentTime < clipLoopInSec || el.currentTime >= clipLoopOutSec)
+      ) {
+        el.currentTime = clipLoopInSec;
+        setCurrentSec(clipLoopInSec);
+      }
       void el.play();
       setPlaying(true);
     } else {
@@ -478,30 +593,40 @@ export function PreviewPane({
     setCurrentSec(next);
   };
 
-  const timelineSpanSec = Math.max(timelineDurationSec, timelinePlayheadSec, 0.1);
-  const sequenceEndSec = Math.max(
-    timelineSequenceDuration(timelineClips),
-    0,
-  );
-  const timelineCanPlay =
-    monitorMode === "timeline" &&
-    Boolean(onToggleTimelinePlay) &&
-    sequenceEndSec > 0;
-
-  const seekTimelineTo = (sec: number) => {
-    if (!onTimelinePlayheadChange) return;
-    const next = Math.max(0, Math.min(timelineSpanSec, sec));
-    onTimelinePlayheadChange(next);
-  };
-
-  const seekTimelineBy = (delta: number) => {
-    seekTimelineTo(timelinePlayheadSec + delta);
-  };
-
   const onTimeUpdate = (
     event: SyntheticEvent<HTMLVideoElement | HTMLAudioElement>,
   ) => {
-    setCurrentSec(event.currentTarget.currentTime);
+    const el = event.currentTarget;
+    if (clipLoopEnabled && el.currentTime >= clipLoopOutSec - 0.03) {
+      el.currentTime = clipLoopInSec;
+      setCurrentSec(clipLoopInSec);
+      if (!el.paused) void el.play().catch(() => {});
+      return;
+    }
+    setCurrentSec(el.currentTime);
+  };
+
+  const onSourceEnded = (
+    event: SyntheticEvent<HTMLVideoElement | HTMLAudioElement>,
+  ) => {
+    const el = event.currentTarget;
+    if (clipLoopEnabled) {
+      el.currentTime = clipLoopInSec;
+      setCurrentSec(clipLoopInSec);
+      void el.play().catch(() => {
+        setPlaying(false);
+      });
+      return;
+    }
+    if (sourcePreviewLoops) {
+      el.currentTime = 0;
+      setCurrentSec(0);
+      void el.play().catch(() => {
+        setPlaying(false);
+      });
+      return;
+    }
+    setPlaying(false);
   };
 
   const onLoadedMeta = (
@@ -564,29 +689,35 @@ export function PreviewPane({
   else if (!useDetail && !thumb && waitingLocal) status = "Saving locally…";
   else if (!useDetail && !thumb) status = "No local media";
 
-  const transportSec =
-    monitorMode === "timeline" ? timelinePlayheadSec : currentSec;
+  const transportSec = currentSec;
   const transportCanPlay = monitorMode === "source" && canPlay;
-  const scrubMax =
-    monitorMode === "timeline"
-      ? timelineSpanSec
-      : Math.max(durationSec, 0.1);
+  const scrubMax = Math.max(durationSec, 0.1);
   const scrubProgress =
-    monitorMode === "timeline"
-      ? Math.min(100, Math.max(0, (transportSec / scrubMax) * 100))
-      : durationSec > 0
-        ? Math.min(100, Math.max(0, (transportSec / durationSec) * 100))
-        : 0;
+    durationSec > 0
+      ? Math.min(100, Math.max(0, (transportSec / durationSec) * 100))
+      : 0;
 
   return (
-    <section className="editor-preview-pane" aria-label="Preview">
+    <section
+      className={`editor-preview-pane${
+        showAssetsExpand ? " has-assets-expand" : ""
+      }`}
+      aria-label="Preview"
+    >
       {showAssetsExpand ? (
         <button
           type="button"
           className="editor-pane-expand left"
           onClick={onExpandAssets}
+          title="Expand assets"
+          aria-label="Expand assets"
         >
-          Assets
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M2.2 3.2 6.5 8 2.2 12.8l1.1 1 5.3-5.8L3.3 2.2zm5.2 0L12.7 8l-5.3 4.8 1.1 1L14.8 8 8.5 2.2z"
+            />
+          </svg>
         </button>
       ) : null}
 
@@ -625,11 +756,12 @@ export function PreviewPane({
                     poster={thumb ?? undefined}
                     playsInline
                     preload="auto"
+                    loop={sourcePreviewLoops && !clipLoopEnabled}
                     onTimeUpdate={onTimeUpdate}
                     onLoadedMetadata={onLoadedMeta}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
-                    onEnded={() => setPlaying(false)}
+                    onEnded={onSourceEnded}
                     onError={() => setDetailFailed(true)}
                   />
                 ) : null}
@@ -643,11 +775,12 @@ export function PreviewPane({
                       className="editor-preview-audio-el"
                       src={playbackDetail!}
                       preload="auto"
+                      loop={sourcePreviewLoops && !clipLoopEnabled}
                       onTimeUpdate={onTimeUpdate}
                       onLoadedMetadata={onLoadedMeta}
                       onPlay={() => setPlaying(true)}
                       onPause={() => setPlaying(false)}
-                      onEnded={() => setPlaying(false)}
+                      onEnded={onSourceEnded}
                       onError={() => setDetailFailed(true)}
                     />
                   </div>
@@ -681,7 +814,18 @@ export function PreviewPane({
               </div>
             ) : null}
           </div>
+
+          {sourceLabelText ? (
+            <div
+              className="editor-preview-source-label"
+              data-source={sourceKind ?? undefined}
+            >
+              <SourceLabelIcon kind={sourceKind} />
+              <span>{sourceLabelText}</span>
+            </div>
+          ) : null}
         </div>
+        {monitorMode !== "timeline" ? (
         <div className="editor-preview-deck" aria-label="Preview controls">
           <input
             type="range"
@@ -690,11 +834,7 @@ export function PreviewPane({
             max={scrubMax}
             step={0.01}
             value={Math.min(transportSec, scrubMax)}
-            disabled={
-              monitorMode === "timeline"
-                ? !onTimelinePlayheadChange
-                : !transportCanPlay
-            }
+            disabled={!transportCanPlay}
             aria-label="Seek"
             style={
               {
@@ -702,246 +842,118 @@ export function PreviewPane({
               } as CSSProperties
             }
             onChange={(event) => {
-              const next = Number(event.target.value);
-              if (monitorMode === "timeline") seekTimelineTo(next);
-              else seekTo(next);
+              seekTo(Number(event.target.value));
             }}
           />
 
-          {monitorMode === "timeline" ? (
-            <div className="editor-preview-deck-row is-timeline-transport">
-              <span className="editor-transport-tc">
-                {formatClock(transportSec)}
-              </span>
-              <div
-                className="editor-transport-icons"
-                aria-label="Playback controls"
-              >
-                <button
-                  type="button"
-                  className="editor-transport-icon"
-                  disabled={!onTimelinePlayheadChange}
-                  title="Skip back"
-                  aria-label="Skip to beginning"
-                  onClick={() => seekTimelineTo(0)}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                    <path
-                      fill="currentColor"
-                      d="M2 3h1.5v10H2zm3.2 5 8.3 5.2V2.8z"
-                    />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className="editor-transport-icon"
-                  disabled={!onTimelinePlayheadChange}
-                  title="Rewind"
-                  aria-label="Rewind 1 second"
-                  onClick={() => seekTimelineBy(-1)}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                    <path
-                      fill="currentColor"
-                      d="M8.2 8 14.5 3v10zm-6.7 0L7.8 3v10z"
-                    />
-                  </svg>
-                </button>
+          <div className="editor-preview-deck-body">
+            <div className="editor-preview-deck-row">
+              <div className="editor-transport-left">
                 <button
                   type="button"
                   className="editor-transport-icon is-play"
-                  disabled={!timelineCanPlay}
-                  title={timelinePlaying ? "Pause" : "Play"}
-                  aria-label={timelinePlaying ? "Pause" : "Play"}
-                  onClick={() => onToggleTimelinePlay?.()}
+                  disabled={!transportCanPlay}
+                  title={playing ? "Pause" : "Play"}
+                  aria-label={playing ? "Pause" : "Play"}
+                  onClick={onTogglePlay}
                 >
-                  {timelinePlaying ? (
-                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                  {playing ? (
+                    <svg
+                      viewBox="0 0 16 16"
+                      width="15"
+                      height="15"
+                      aria-hidden
+                    >
                       <path
                         fill="currentColor"
                         d="M4 3h3v10H4zm5 0h3v10H9z"
                       />
                     </svg>
                   ) : (
-                    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                    <svg
+                      viewBox="0 0 16 16"
+                      width="15"
+                      height="15"
+                      aria-hidden
+                    >
                       <path fill="currentColor" d="M4 2.5v11l10-5.5z" />
                     </svg>
                   )}
                 </button>
-                <button
-                  type="button"
-                  className="editor-transport-icon"
-                  disabled={!onTimelinePlayheadChange}
-                  title="Fast forward"
-                  aria-label="Forward 1 second"
-                  onClick={() => seekTimelineBy(1)}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                    <path
-                      fill="currentColor"
-                      d="M1.5 3v10L7.8 8zm6.7 0v10L14.5 8z"
-                    />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className="editor-transport-icon"
-                  disabled={!onTimelinePlayheadChange}
-                  title="Skip forward"
-                  aria-label="Skip to end"
-                  onClick={() => seekTimelineTo(timelineSpanSec)}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                    <path
-                      fill="currentColor"
-                      d="M2.5 2.8v10.4L10.8 8zM12.5 3H14v10h-1.5z"
-                    />
-                  </svg>
-                </button>
+                <span className="editor-transport-tc">
+                  {formatClock(transportSec)}
+                </span>
               </div>
               <div className="editor-transport-utils">
-                <label className="editor-transport-volume">
-                  <svg
-                    className="editor-transport-volume-icon"
-                    viewBox="0 0 16 16"
-                    width="14"
-                    height="14"
-                    aria-hidden
+                {isVideo || isAudio ? (
+                  <label
+                    className={`editor-transport-volume${
+                      volumeEnabled ? "" : " is-disabled"
+                    }`}
                   >
-                    <path
-                      fill="currentColor"
-                      d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
-                    />
-                  </svg>
-                  <span className="visually-hidden">Volume</span>
-                  <input
-                    type="range"
-                    className="editor-transport-scrub"
-                    min={0}
-                    max={100}
-                    value={volume}
-                    aria-label="Volume"
-                    style={
-                      {
-                        ["--scrub-progress" as string]: `${volume}%`,
-                      } as CSSProperties
-                    }
-                    onChange={(event) => {
-                      setVolume(Number(event.target.value));
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-          ) : (
-            <div className="editor-preview-deck-body">
-              <div className="editor-preview-deck-row">
-                <div className="editor-transport-left">
-                  <button
-                    type="button"
-                    className="editor-transport-icon is-play"
-                    disabled={!transportCanPlay}
-                    title={playing ? "Pause" : "Play"}
-                    aria-label={playing ? "Pause" : "Play"}
-                    onClick={onTogglePlay}
-                  >
-                    {playing ? (
-                      <svg
-                        viewBox="0 0 16 16"
-                        width="15"
-                        height="15"
-                        aria-hidden
-                      >
-                        <path
-                          fill="currentColor"
-                          d="M4 3h3v10H4zm5 0h3v10H9z"
-                        />
-                      </svg>
-                    ) : (
-                      <svg
-                        viewBox="0 0 16 16"
-                        width="15"
-                        height="15"
-                        aria-hidden
-                      >
-                        <path fill="currentColor" d="M4 2.5v11l10-5.5z" />
-                      </svg>
-                    )}
-                  </button>
-                  <span className="editor-transport-tc">
-                    {formatClock(transportSec)}
-                  </span>
-                </div>
-                <div className="editor-transport-utils">
-                  {isVideo || isAudio ? (
-                    <label
-                      className={`editor-transport-volume${
-                        volumeEnabled ? "" : " is-disabled"
-                      }`}
+                    <svg
+                      className="editor-transport-volume-icon"
+                      viewBox="0 0 16 16"
+                      width="14"
+                      height="14"
+                      aria-hidden
                     >
-                      <svg
-                        className="editor-transport-volume-icon"
-                        viewBox="0 0 16 16"
-                        width="14"
-                        height="14"
-                        aria-hidden
-                      >
-                        <path
-                          fill="currentColor"
-                          d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
-                        />
-                      </svg>
-                      <span className="visually-hidden">Volume</span>
-                      <input
-                        type="range"
-                        className="editor-transport-scrub"
-                        min={0}
-                        max={100}
-                        value={volume}
-                        disabled={!volumeEnabled}
-                        aria-label="Volume"
-                        title={
-                          audioExcluded
-                            ? "Audio include is off for this clip"
-                            : undefined
-                        }
-                        style={
-                          {
-                            ["--scrub-progress" as string]: `${volume}%`,
-                          } as CSSProperties
-                        }
-                        onChange={(event) => {
-                          if (!volumeEnabled) return;
-                          const next = Number(event.target.value);
-                          setVolume(next);
-                          const el = mediaRef.current;
-                          if (el) el.volume = next / 100;
-                        }}
+                      <path
+                        fill="currentColor"
+                        d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
                       />
-                    </label>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="editor-preview-deck-row">
-                {canStage && stagedDraft ? (
-                  <StagingFields
-                    draft={stagedDraft}
-                    sourceDurationSec={durationSec}
-                    onDraftChange={onStagingDraftChange}
-                  />
-                ) : (
-                  <p className="muted editor-staging-empty">
-                    Select an asset to prepare a clip
-                  </p>
-                )}
-                {canStage && stagedDraft && !editingClip ? (
-                  <ClipDragHandle draft={stagedDraft} />
+                    </svg>
+                    <span className="visually-hidden">Volume</span>
+                    <input
+                      type="range"
+                      className="editor-transport-scrub"
+                      min={0}
+                      max={100}
+                      value={volume}
+                      disabled={!volumeEnabled}
+                      aria-label="Volume"
+                      title={
+                        audioExcluded
+                          ? "Audio include is off for this clip"
+                          : undefined
+                      }
+                      style={
+                        {
+                          ["--scrub-progress" as string]: `${volume}%`,
+                        } as CSSProperties
+                      }
+                      onChange={(event) => {
+                        if (!volumeEnabled) return;
+                        const next = Number(event.target.value);
+                        setVolume(next);
+                        const el = mediaRef.current;
+                        if (el) el.volume = next / 100;
+                      }}
+                    />
+                  </label>
                 ) : null}
               </div>
             </div>
-          )}
+
+            <div className="editor-preview-deck-row">
+              {canStage && stagedDraft ? (
+                <StagingFields
+                  draft={stagedDraft}
+                  sourceDurationSec={durationSec}
+                  onDraftChange={onStagingDraftChange}
+                />
+              ) : (
+                <p className="muted editor-staging-empty">
+                  Select an asset to prepare a clip
+                </p>
+              )}
+              {canStage && stagedDraft && !editingClip ? (
+                <ClipDragHandle draft={stagedDraft} />
+              ) : null}
+            </div>
+          </div>
         </div>
+        ) : null}
       </div>
     </section>
   );

@@ -30,6 +30,8 @@ type AssetBrowserPaneProps = {
   onCollapse: () => void;
   /** True when shown as a narrow-desktop drawer overlay. */
   drawer?: boolean;
+  /** True when a selected asset owns the preview. */
+  previewActive?: boolean;
 };
 
 function kindFromCreation(
@@ -142,6 +144,7 @@ export function AssetBrowserPane({
   onSelect,
   onCollapse,
   drawer = false,
+  previewActive = false,
 }: AssetBrowserPaneProps) {
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
@@ -207,13 +210,29 @@ export function AssetBrowserPane({
 
   return (
     <aside
-      className={drawer ? "editor-asset-pane is-drawer" : "editor-asset-pane"}
+      className={[
+        drawer ? "editor-asset-pane is-drawer" : "editor-asset-pane",
+        previewActive ? "is-preview-active" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       aria-label="Assets"
     >
       <div className="editor-pane-head">
         <h2>Assets</h2>
-        <button type="button" className="btn ghost" onClick={onCollapse}>
-          Collapse
+        <button
+          type="button"
+          className="editor-pane-collapse"
+          onClick={onCollapse}
+          title={drawer ? "Close assets" : "Collapse assets"}
+          aria-label={drawer ? "Close assets" : "Collapse assets"}
+        >
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M10.5 3.25 5.75 8l4.75 4.75-1.05 1.05L3.65 8l5.8-5.8z"
+            />
+          </svg>
         </button>
       </div>
 

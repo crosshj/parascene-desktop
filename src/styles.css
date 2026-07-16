@@ -1638,6 +1638,20 @@ textarea {
   position: relative;
 }
 
+.editor-preview-pane.has-assets-expand {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.editor-preview-pane.has-assets-expand .editor-preview-stage {
+  grid-column: 2;
+  min-width: 0;
+  min-height: 0;
+  align-self: stretch;
+  height: 100%;
+}
+
 .editor-timeline-pane {
   grid-area: timeline;
   min-width: 0;
@@ -1707,6 +1721,8 @@ textarea {
   flex: 0 0 auto;
   padding: 0.65rem 0.75rem;
   border-bottom: 1px solid var(--border);
+  background: transparent;
+  transition: background-color 160ms ease;
 }
 
 .editor-pane-head h2 {
@@ -1716,34 +1732,92 @@ textarea {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
+  transition: color 160ms ease;
+}
+
+.editor-asset-pane.is-preview-active .editor-pane-head,
+.editor-assistant-pane:focus-within .editor-pane-head {
+  background-color: color-mix(in srgb, var(--select) 10%, transparent);
+}
+
+.editor-asset-pane.is-preview-active .editor-pane-head h2,
+.editor-assistant-pane:focus-within .editor-pane-head h2 {
+  color: var(--text);
+}
+
+.editor-assistant-pane:focus {
+  outline: none;
+}
+
+.editor-pane-collapse {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.editor-pane-collapse:hover {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.editor-pane-collapse:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.editor-pane-collapse svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 .editor-pane-expand {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
+  display: grid;
+  place-items: center;
   border: none;
   background: var(--surface);
   color: var(--muted);
   cursor: pointer;
-  padding: 0.75rem 0.35rem;
+  padding: 0;
   z-index: 4;
 }
 
+.editor-pane-expand:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-raised) 80%, var(--surface));
+}
+
+.editor-pane-expand:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.editor-pane-expand svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
 .editor-pane-expand.left {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: stretch;
+  width: 100%;
   border-right: 1px solid var(--border);
 }
 
 .editor-pane-expand.right {
   grid-area: assistant;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
   align-self: stretch;
   justify-self: stretch;
   width: 100%;
+  min-width: 2rem;
   border-left: 1px solid var(--border);
 }
 
@@ -2061,6 +2135,40 @@ textarea {
   background: #0a0a0e;
   border-radius: 4px;
   overflow: hidden;
+}
+
+/* Persistent source-ownership badge (Timeline / Asset / Clip). */
+.editor-preview-source-label {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 22px;
+  max-width: calc(100% - 1rem);
+  padding: 0 0.45rem;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--select);
+  background: color-mix(in srgb, var(--select) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--select) 30%, transparent);
+  pointer-events: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.editor-preview-source-label svg {
+  flex: 0 0 auto;
+}
+
+.editor-preview-source-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor-preview-surface {
@@ -2608,14 +2716,22 @@ body.is-timeline-clip-moving * {
 /* Timeline */
 
 .editor-timeline-head {
+  position: relative;
   flex: 0 0 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.4rem 0.75rem;
+  padding: 0.35rem 0.75rem;
   border-bottom: 1px solid var(--border);
+  background: transparent;
   cursor: pointer;
+  transition: background-color 160ms ease;
+}
+
+.editor-timeline-pane.is-monitor-active .editor-timeline-head {
+  background-color: color-mix(in srgb, var(--select) 10%, transparent);
+  border-bottom-color: var(--border);
 }
 
 .editor-timeline-title {
@@ -2623,6 +2739,7 @@ body.is-timeline-clip-moving * {
   align-items: center;
   gap: 0.45rem;
   min-width: 0;
+  justify-self: start;
 }
 
 .editor-timeline-head h2 {
@@ -2632,30 +2749,49 @@ body.is-timeline-clip-moving * {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
+  transition: color 160ms ease;
 }
 
-.editor-timeline-monitor-dot {
-  width: 0.4rem;
-  height: 0.4rem;
-  border-radius: 999px;
-  background: var(--select);
-  opacity: 0;
-  transform: scale(0.7);
-  transition:
-    opacity 160ms ease,
-    transform 160ms ease;
-  flex: 0 0 auto;
+.editor-timeline-pane.is-monitor-active .editor-timeline-head h2 {
+  color: var(--text);
 }
 
-.editor-timeline-pane.is-monitor-active .editor-timeline-monitor-dot {
-  opacity: 0.85;
-  transform: scale(1);
+.editor-timeline-transport {
+  display: inline-flex;
+  align-items: center;
+  justify-self: center;
+  gap: 8rem;
+  min-width: 0;
+  cursor: default;
+}
+
+.editor-timeline-transport.is-inactive {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.editor-timeline-transport.is-inactive .editor-transport-tc {
+  color: var(--muted);
+}
+
+.editor-timeline-transport .editor-transport-tc {
+  font-size: 0.82rem;
+}
+
+.editor-timeline-transport .editor-transport-icons {
+  min-height: 0;
+  gap: 0.45rem;
+}
+
+.editor-timeline-transport .editor-transport-volume {
+  margin-left: 0;
 }
 
 .editor-timeline-tools {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  justify-self: end;
 }
 
 .editor-timeline-tool {

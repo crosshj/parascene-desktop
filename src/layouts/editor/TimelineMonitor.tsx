@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ensureLocal, getCreation } from "../../library/catalogClient";
 import {
   canFetchLocal,
@@ -74,6 +74,28 @@ function listVisualDecoders(
     }
   }
   return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * Park each standby decoder on the earliest in-point for that asset×direction.
+ * Keeps cold slots off frame 0 so the first scrub cut doesn't flash.
+ */
+function parkSourceByKey(
+  clips: readonly TimelineClip[],
+): Map<AssetDecoderKey, number> {
+  const map = new Map<AssetDecoderKey, number>();
+  const videoClips = clips
+    .filter((c) => c.lane !== "audio" && Boolean(c.assetId?.trim()))
+    .filter((c) => c.kind !== "audio")
+    .slice()
+    .sort(
+      (a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id),
+    );
+  for (const clip of videoClips) {
+    const key = assetDecoderKey(clip);
+    if (!map.has(key)) map.set(key, clipInSec(clip));
+  }
+  return map;
 }
 
 function useAssetMedia(assetId: string): MediaUrls {
@@ -188,13 +210,14 @@ function useReversedDetail(
   return { detail, busy, error };
 }
 
-function seekMedia(el: HTMLMediaElement, sec: number): Promise<void> {
+/** Resolves true when a seek was issued, false when already at the target. */
+function seekMedia(el: HTMLMediaElement, sec: number): Promise<boolean> {
   const target = Math.max(0, sec);
   if (
     Number.isFinite(el.currentTime) &&
     Math.abs(el.currentTime - target) < 0.04
   ) {
-    return Promise.resolve();
+    return Promise.resolve(false);
   }
   return new Promise((resolve) => {
     let settled = false;
@@ -203,7 +226,7 @@ function seekMedia(el: HTMLMediaElement, sec: number): Promise<void> {
       settled = true;
       el.removeEventListener("seeked", finish);
       window.clearTimeout(fallback);
-      resolve();
+      resolve(true);
     };
     const fallback = window.setTimeout(finish, 800);
     el.addEventListener("seeked", finish);
@@ -235,6 +258,23 @@ function waitForCurrentFrame(el: HTMLMediaElement): Promise<void> {
   });
 }
 
+/** Prefer rVFC so we know a frame at the seek target was actually produced. */
+function waitForPaintedFrame(el: HTMLVideoElement): Promise<void> {
+  const withRvfc = el as HTMLVideoElement & {
+    requestVideoFrameCallback?: (cb: (now: number, meta: unknown) => void) => number;
+  };
+  if (typeof withRvfc.requestVideoFrameCallback === "function") {
+    return new Promise((resolve) => {
+      const fallback = window.setTimeout(resolve, 400);
+      withRvfc.requestVideoFrameCallback!(() => {
+        window.clearTimeout(fallback);
+        resolve();
+      });
+    });
+  }
+  return waitForCurrentFrame(el);
+}
+
 function waitForCanPlay(el: HTMLMediaElement): Promise<void> {
   if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
     return Promise.resolve();
@@ -257,6 +297,11 @@ function waitForCanPlay(el: HTMLMediaElement): Promise<void> {
  * Program monitor: one persistent <video>/<img> per backing asset×direction
  * present on the timeline. Playback is visibility + seek + play/pause among
  * those elements — never a hold-frame swap on cuts while playing.
+ *
+ * Presentation is gated separately from "active" (playhead target): the
+ * previous decoder stays visible until the incoming one has seeked to the
+ * exact source time. That is what kills the scrub first-frame flash —
+ * parking at in-point is not enough when the playhead lands mid-clip.
  */
 export function TimelineMonitor({
   clips,
@@ -272,40 +317,59 @@ export function TimelineMonitor({
 
   const decoders = useMemo(() => listVisualDecoders(clips), [clips]);
 
-  const liveKey = visual?.clip.assetId?.trim()
+  const activeKey = visual?.clip.assetId?.trim()
     ? assetDecoderKey(visual.clip)
     : null;
 
-  const nextClip = useMemo(() => {
-    if (!playing) return null;
-    return peekNextVisualClip(clips, playheadSec);
-  }, [playing, clips, playheadSec]);
+  const [visibleKey, setVisibleKey] = useState<AssetDecoderKey | null>(null);
+  const activeKeyRef = useRef(activeKey);
+  activeKeyRef.current = activeKey;
 
-  /** Where each non-live decoder should sit while we play. */
+  useEffect(() => {
+    if (!activeKey) setVisibleKey(null);
+  }, [activeKey]);
+
+  const onDecoderReady = useCallback((key: AssetDecoderKey) => {
+    if (activeKeyRef.current === key) setVisibleKey(key);
+  }, []);
+
+  const nextClip = useMemo(() => {
+    return peekNextVisualClip(clips, playheadSec);
+  }, [clips, playheadSec]);
+
+  /**
+   * Standby park times: earliest in-point per decoder, with look-ahead
+   * override for the upcoming cut (play or scrub).
+   */
   const prepByKey = useMemo(() => {
-    const map = new Map<AssetDecoderKey, number>();
-    if (!playing || !nextClip?.assetId?.trim()) return map;
-    const key = assetDecoderKey(nextClip);
-    // Same-asset next: one decoder can't play and pre-seek; skip prep.
-    if (liveKey && key === liveKey) return map;
-    map.set(key, clipInSec(nextClip));
+    const map = parkSourceByKey(clips);
+    if (nextClip?.assetId?.trim()) {
+      const key = assetDecoderKey(nextClip);
+      if (!activeKey || key !== activeKey) {
+        map.set(key, clipInSec(nextClip));
+      }
+    }
     return map;
-  }, [playing, nextClip, liveKey]);
+  }, [clips, nextClip, activeKey]);
 
   return (
     <>
       {decoders.map(({ key, kind }) => {
-        const isLive = key === liveKey;
+        const isActive = key === activeKey;
+        const isVisible = key === visibleKey;
+        const parkSec = prepByKey.get(key) ?? 0;
         return (
           <AssetDecoder
             key={key}
             decoderKey={key}
             kind={kind}
-            live={isLive}
-            liveLayer={isLive ? visual : null}
-            prepSourceSec={isLive ? null : (prepByKey.get(key) ?? null)}
-            playing={isLive && playing}
+            active={isActive}
+            visible={isVisible}
+            liveLayer={isActive ? visual : null}
+            prepSourceSec={isActive ? null : parkSec}
+            playing={isActive && playing}
             mediaSeekEpoch={mediaSeekEpoch}
+            onReady={onDecoderReady}
           />
         );
       })}
@@ -331,20 +395,26 @@ export function TimelineMonitor({
 function AssetDecoder({
   decoderKey,
   kind,
-  live,
+  active,
+  visible,
   liveLayer,
   prepSourceSec,
   playing,
   mediaSeekEpoch,
+  onReady,
 }: {
   decoderKey: AssetDecoderKey;
   kind: "video" | "image";
-  live: boolean;
+  /** Playhead currently maps to this decoder. */
+  active: boolean;
+  /** Actually painted in the preview (after seek alignment). */
+  visible: boolean;
   liveLayer: TimelineLayer | null;
-  /** When non-live and playing soon: park at this source time. */
+  /** Parked source time while standby (always set for non-active videos). */
   prepSourceSec: number | null;
   playing: boolean;
   mediaSeekEpoch: number;
+  onReady: (key: AssetDecoderKey) => void;
 }) {
   const assetId = assetIdFromKey(decoderKey);
   const reverse = isReverseKey(decoderKey);
@@ -360,10 +430,10 @@ function AssetDecoder({
   const imageSrc =
     kind === "image" ? media.detail ?? media.thumb : null;
 
-  if (live && wantsReverse && reversed.busy) {
+  if (active && wantsReverse && reversed.busy) {
     return <span className="editor-preview-wait muted">Reversing…</span>;
   }
-  if (live && wantsReverse && reversed.error) {
+  if (active && wantsReverse && reversed.error) {
     return (
       <span className="editor-preview-status muted">{reversed.error}</span>
     );
@@ -372,33 +442,58 @@ function AssetDecoder({
   if (kind === "video" && videoSrc) {
     return (
       <PersistentVideo
+        decoderKey={decoderKey}
         src={videoSrc}
-        live={live}
-        sourceSec={live ? (liveLayer?.sourceSec ?? 0) : (prepSourceSec ?? 0)}
-        followLive={live}
-        prep={prepSourceSec != null && !live}
+        active={active}
+        visible={visible}
+        sourceSec={active ? (liveLayer?.sourceSec ?? 0) : (prepSourceSec ?? 0)}
         playing={playing}
         mediaSeekEpoch={mediaSeekEpoch}
         clipId={liveLayer?.clip.id ?? null}
+        onReady={onReady}
       />
     );
   }
 
   if (imageSrc) {
-    return <PersistentImage src={imageSrc} live={live} />;
+    return (
+      <PersistentImage
+        decoderKey={decoderKey}
+        src={imageSrc}
+        active={active}
+        visible={visible}
+        onReady={onReady}
+      />
+    );
   }
 
-  if (live && media.waitingLocal) {
+  if (active && media.waitingLocal) {
     return <span className="editor-preview-wait muted">Saving locally…</span>;
   }
   return null;
 }
 
-function PersistentImage({ src, live }: { src: string; live: boolean }) {
+function PersistentImage({
+  decoderKey,
+  src,
+  active,
+  visible,
+  onReady,
+}: {
+  decoderKey: AssetDecoderKey;
+  src: string;
+  active: boolean;
+  visible: boolean;
+  onReady: (key: AssetDecoderKey) => void;
+}) {
+  useEffect(() => {
+    if (active) onReady(decoderKey);
+  }, [active, decoderKey, onReady, src]);
+
   return (
     <img
       className={`editor-preview-media editor-preview-detail${
-        live ? "" : " is-standby"
+        visible ? "" : " is-standby"
       }`}
       src={src}
       alt=""
@@ -410,32 +505,39 @@ function PersistentImage({ src, live }: { src: string; live: boolean }) {
 /**
  * One long-lived video for an asset×direction. Visibility / seek / play only —
  * no remount across timeline clips that share this decoder.
+ *
+ * `active` = playhead wants this decoder. `visible` = parent has committed it
+ * for paint (after we reported ready at the commanded source time). While
+ * active-but-not-visible we seek under cover; the previous decoder stays up.
  */
 function PersistentVideo({
+  decoderKey,
   src,
-  live,
+  active,
+  visible,
   sourceSec,
-  followLive,
-  prep,
   playing,
   mediaSeekEpoch,
   clipId,
+  onReady,
 }: {
+  decoderKey: AssetDecoderKey;
   src: string;
-  live: boolean;
+  active: boolean;
+  visible: boolean;
   sourceSec: number;
-  followLive: boolean;
-  prep: boolean;
   playing: boolean;
   mediaSeekEpoch: number;
   clipId: string | null;
+  onReady: (key: AssetDecoderKey) => void;
 }) {
   const ref = useRef<HTMLVideoElement | null>(null);
   const sourceSecRef = useRef(sourceSec);
   const playingRef = useRef(playing);
-  const liveRef = useRef(live);
-  const clipIdRef = useRef(clipId);
-  const [ready, setReady] = useState(false);
+  const activeRef = useRef(active);
+  const onReadyRef = useRef(onReady);
+  /** Has decoded at least one frame at some parked/commanded time. */
+  const [warm, setWarm] = useState(false);
 
   useEffect(() => {
     sourceSecRef.current = sourceSec;
@@ -444,89 +546,92 @@ function PersistentVideo({
     playingRef.current = playing;
   }, [playing]);
   useEffect(() => {
-    liveRef.current = live;
-  }, [live]);
+    activeRef.current = active;
+  }, [active]);
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
+
+  /** Seek to the latest commanded time, then paint-wait; re-seek if command moved. */
+  const alignToCommand = async (el: HTMLVideoElement, cancelled: () => boolean) => {
+    for (;;) {
+      const target = sourceSecRef.current;
+      const didSeek = await seekMedia(el, target);
+      if (cancelled()) return false;
+      // A parked decoder already has the correct frame painted. Waiting for
+      // rVFC in that case stalls until its timeout because paused media emits
+      // no new frame callback.
+      if (didSeek) {
+        await waitForPaintedFrame(el);
+        if (cancelled()) return false;
+      }
+      if (Math.abs(sourceSecRef.current - target) < 0.05) return true;
+    }
+  };
 
   // Initial attach / src change — decode ready, then seek to commanded time.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
-    setReady(false);
+    setWarm(false);
 
     const boot = async () => {
-      await seekMedia(el, sourceSecRef.current);
-      if (cancelled) return;
-      await waitForCurrentFrame(el);
-      if (cancelled) return;
-      setReady(true);
+      const ok = await alignToCommand(el, () => cancelled);
+      if (cancelled || !ok) return;
+      setWarm(true);
       el.pause();
-      if (liveRef.current && playingRef.current) {
-        await waitForCanPlay(el);
-        if (cancelled || !playingRef.current || !liveRef.current) return;
-        void el.play().catch(() => {});
+      if (activeRef.current) {
+        onReadyRef.current(decoderKey);
+        if (playingRef.current) {
+          await waitForCanPlay(el);
+          if (cancelled || !playingRef.current || !activeRef.current) return;
+          void el.play().catch(() => {});
+        }
       }
     };
     void boot();
     return () => {
       cancelled = true;
     };
-  }, [src]);
+    // decoderKey/src identity only — align uses refs for the rest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, decoderKey]);
 
-  // Prep (non-live): keep parked on the upcoming in-point.
+  // Standby park: only once we've left the screen — never disturb a hold frame.
   useEffect(() => {
-    if (!prep || live || !ready) return;
+    if (active || visible || !warm) return;
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
     void (async () => {
-      await seekMedia(el, sourceSec);
+      const didSeek = await seekMedia(el, sourceSec);
       if (cancelled) return;
-      await waitForCurrentFrame(el);
+      // Finish decoding the parked target now, while hidden, so activation at
+      // this same source time can hand off immediately.
+      if (didSeek) await waitForPaintedFrame(el);
       if (cancelled) return;
       el.pause();
     })();
     return () => {
       cancelled = true;
     };
-  }, [prep, live, ready, sourceSec]);
+  }, [active, visible, warm, sourceSec]);
 
-  // Live + paused: follow playhead seeks (scrub).
+  // Active: align to commanded source, then signal ready (parent flips visible).
+  // If already visible, seek in place — element holds prior frame during seek.
   useEffect(() => {
-    if (!live || playing || !ready || !followLive) return;
+    if (!active || !warm) return;
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
     void (async () => {
-      await seekMedia(el, sourceSecRef.current);
-      if (cancelled) return;
-      await waitForCurrentFrame(el);
-      if (cancelled) return;
-      el.pause();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [live, playing, ready, followLive, sourceSec]);
-
-  // Live clip-instance change while playing same asset (can't prep a second
-  // decoder): hard-seek to the new in-point, no hold canvas.
-  useEffect(() => {
-    if (clipIdRef.current === clipId) return;
-    const prev = clipIdRef.current;
-    clipIdRef.current = clipId;
-    if (!live || !ready || prev == null || clipId == null) return;
-    const el = ref.current;
-    if (!el) return;
-    let cancelled = false;
-    void (async () => {
-      await seekMedia(el, sourceSecRef.current);
-      if (cancelled) return;
-      await waitForCurrentFrame(el);
-      if (cancelled) return;
+      const ok = await alignToCommand(el, () => cancelled);
+      if (cancelled || !ok) return;
+      onReadyRef.current(decoderKey);
       if (playingRef.current) {
         await waitForCanPlay(el);
-        if (cancelled || !playingRef.current) return;
+        if (cancelled || !playingRef.current || !activeRef.current) return;
         void el.play().catch(() => {});
       } else {
         el.pause();
@@ -535,45 +640,13 @@ function PersistentVideo({
     return () => {
       cancelled = true;
     };
-  }, [clipId, live, ready]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, warm, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
 
-  // Become live: reveal + play if timeline is playing. Already pre-seeked when
-  // coming from prep on a different asset — just start playback.
+  // Play / pause while remaining the active + visible decoder.
   useEffect(() => {
     const el = ref.current;
-    if (!el || !ready) return;
-
-    if (!live) {
-      el.pause();
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      // Align to live source (prep should already be at in-point).
-      if (Math.abs(el.currentTime - sourceSecRef.current) > 0.12) {
-        await seekMedia(el, sourceSecRef.current);
-        if (cancelled) return;
-        await waitForCurrentFrame(el);
-        if (cancelled) return;
-      }
-      if (playingRef.current) {
-        await waitForCanPlay(el);
-        if (cancelled || !playingRef.current) return;
-        void el.play().catch(() => {});
-      } else {
-        el.pause();
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [live, ready, mediaSeekEpoch]);
-
-  // Play / pause while remaining live.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !live || !ready) return;
+    if (!el || !active || !visible || !warm) return;
     if (!playing) {
       el.pause();
       return;
@@ -581,8 +654,8 @@ function PersistentVideo({
     let cancelled = false;
     void (async () => {
       if (Math.abs(el.currentTime - sourceSecRef.current) > 0.25) {
-        await seekMedia(el, sourceSecRef.current);
-        if (cancelled) return;
+        const ok = await alignToCommand(el, () => cancelled);
+        if (cancelled || !ok) return;
       }
       await waitForCanPlay(el);
       if (cancelled || !playingRef.current) return;
@@ -591,13 +664,22 @@ function PersistentVideo({
     return () => {
       cancelled = true;
     };
-  }, [playing, live, ready, mediaSeekEpoch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, active, visible, warm, mediaSeekEpoch]);
+
+  // Inactive but still visible = hold last frame until the incoming decoder is ready.
+  useEffect(() => {
+    if (active || !visible) return;
+    const el = ref.current;
+    if (!el) return;
+    el.pause();
+  }, [active, visible]);
 
   return (
     <video
       ref={ref}
       className={`editor-preview-media editor-preview-detail${
-        live && ready ? "" : " is-standby"
+        visible && warm ? "" : " is-standby"
       }`}
       src={src}
       playsInline

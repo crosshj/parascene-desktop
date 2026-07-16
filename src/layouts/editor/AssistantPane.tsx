@@ -49,11 +49,31 @@ export function AssistantPane({
         drawer ? "editor-assistant-pane is-drawer" : "editor-assistant-pane"
       }
       aria-label="Assistant"
+      tabIndex={-1}
+      onPointerDown={(event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.closest("button, input, textarea, a, select, label")) {
+          return;
+        }
+        event.currentTarget.focus({ preventScroll: true });
+      }}
     >
       <div className="editor-pane-head">
         <h2>Assistant</h2>
-        <button type="button" className="btn ghost" onClick={onCollapse}>
-          Collapse
+        <button
+          type="button"
+          className="editor-pane-collapse"
+          onClick={onCollapse}
+          title={drawer ? "Close assistant" : "Collapse assistant"}
+          aria-label={drawer ? "Close assistant" : "Collapse assistant"}
+        >
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M5.5 12.75 10.25 8 5.5 3.25 6.55 2.2l5.8 5.8-5.8 5.8z"
+            />
+          </svg>
         </button>
       </div>
 

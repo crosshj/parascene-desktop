@@ -20,7 +20,7 @@ const LIBRARY_TABS: { id: LibrarySurface; label: string }[] = [
 const MODES: { id: LayoutMode; label: string }[] = [
   { id: "director", label: "Director" },
   { id: "editor", label: "Editor" },
-  { id: "hook", label: "Hook" },
+  { id: "hook", label: "Publisher" },
 ];
 
 function displayName(

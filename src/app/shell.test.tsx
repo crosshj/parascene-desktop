@@ -209,7 +209,7 @@ describe("auth shell", () => {
     expect(screen.getByText("No local creations yet.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Editor" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Hook" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Publisher" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Log out" }));
     expect(
@@ -232,7 +232,7 @@ describe("auth shell", () => {
     expect(screen.getByLabelText("Video preview")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Director" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Editor" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hook" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Publisher" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();
