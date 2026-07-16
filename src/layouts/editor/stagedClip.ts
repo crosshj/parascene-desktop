@@ -13,12 +13,44 @@ export type StagedClipDraft = {
   inSec: number;
   outSec: number;
   includeAudio: boolean;
+  /** Use a cached FFmpeg-reversed copy of the source asset. */
+  reverse: boolean;
   transform: StagedClipTransform;
   framing: StagedClipFraming;
   thumbUrl: string | null;
 };
 
+/**
+ * Mirror in/out across the source duration when toggling reverse so the same
+ * visual segment stays selected on the reversed file.
+ */
+export function remapTrimForReverse(
+  draft: StagedClipDraft,
+  durationSec: number,
+): Pick<StagedClipDraft, "inSec" | "outSec"> {
+  const d =
+    Number.isFinite(durationSec) && durationSec > 0
+      ? durationSec
+      : Math.max(draft.outSec, draft.inSec + 0.1);
+  const inSec = Math.max(0, Math.min(d, d - draft.outSec));
+  const outSec = Math.max(inSec + 0.1, Math.min(d, d - draft.inSec));
+  return { inSec, outSec };
+}
+
 export const DEFAULT_IMAGE_DURATION_SEC = 10;
+/** Used only until source media duration is known; then Out becomes the real length. */
+export const PROVISIONAL_VIDEO_OUT_SEC = 10;
+export const PROVISIONAL_AUDIO_OUT_SEC = 30;
+
+/** True when Out is still the kind placeholder (not yet filled from media duration). */
+export function isProvisionalOutSec(draft: StagedClipDraft): boolean {
+  if (draft.kind === "image") return false;
+  const provisional =
+    draft.kind === "audio"
+      ? PROVISIONAL_AUDIO_OUT_SEC
+      : PROVISIONAL_VIDEO_OUT_SEC;
+  return draft.outSec <= 0 || Math.abs(draft.outSec - provisional) < 0.05;
+}
 
 export function stagedClipDuration(draft: StagedClipDraft): number {
   return Math.max(0, draft.outSec - draft.inSec);
@@ -38,6 +70,7 @@ export function applyDraftToTimelineClip(
     inSec?: number;
     outSec?: number;
     includeAudio?: boolean;
+    reverse?: boolean;
     transform?: StagedClipTransform;
     framing?: StagedClipFraming;
   },
@@ -58,6 +91,7 @@ export function applyDraftToTimelineClip(
     inSec: draft.inSec,
     outSec: draft.outSec,
     includeAudio: draft.includeAudio,
+    reverse: draft.reverse,
     transform: draft.transform,
     framing: draft.framing,
   };
@@ -92,6 +126,7 @@ export function defaultStagedClipDraft(opts: {
       inSec: 0,
       outSec: DEFAULT_IMAGE_DURATION_SEC,
       includeAudio: false,
+      reverse: false,
       transform: "hold",
       framing: "fit",
       thumbUrl,
@@ -99,7 +134,11 @@ export function defaultStagedClipDraft(opts: {
   }
 
   const out =
-    sourceDuration > 0 ? sourceDuration : kind === "audio" ? 30 : 10;
+    sourceDuration > 0
+      ? sourceDuration
+      : kind === "audio"
+        ? PROVISIONAL_AUDIO_OUT_SEC
+        : PROVISIONAL_VIDEO_OUT_SEC;
 
   return {
     assetId,
@@ -108,6 +147,7 @@ export function defaultStagedClipDraft(opts: {
     inSec: 0,
     outSec: out,
     includeAudio: false,
+    reverse: false,
     transform: "hold",
     framing: "fit",
     thumbUrl,
@@ -118,12 +158,14 @@ export function defaultStagedClipDraft(opts: {
 export function timelineClipToStagedDraft(clip: {
   assetId?: string;
   label: string;
+  lane?: "video" | "audio";
   kind?: StagedClipKind;
   inSec?: number;
   outSec?: number;
   startSec: number;
   endSec: number;
   includeAudio?: boolean;
+  reverse?: boolean;
   transform?: StagedClipTransform;
   framing?: StagedClipFraming;
   thumbUrl?: string | null;
@@ -134,7 +176,9 @@ export function timelineClipToStagedDraft(clip: {
   const kind: StagedClipKind =
     clip.kind === "image" || clip.kind === "audio" || clip.kind === "video"
       ? clip.kind
-      : "video";
+      : clip.lane === "audio"
+        ? "audio"
+        : "video";
 
   const timelineDur = Math.max(0.1, clip.endSec - clip.startSec);
   const inSec = Number.isFinite(clip.inSec) ? Math.max(0, Number(clip.inSec)) : 0;
@@ -155,10 +199,14 @@ export function timelineClipToStagedDraft(clip: {
     kind,
     inSec,
     outSec,
+    // Include-audio only applies to video clips (muxed soundtrack).
     includeAudio:
-      typeof clip.includeAudio === "boolean"
-        ? clip.includeAudio
-        : kind === "video",
+      kind === "video"
+        ? typeof clip.includeAudio === "boolean"
+          ? clip.includeAudio
+          : true
+        : false,
+    reverse: Boolean(clip.reverse),
     transform,
     framing,
     thumbUrl: typeof clip.thumbUrl === "string" ? clip.thumbUrl : null,
@@ -193,6 +241,7 @@ export function parseStagedClipPayload(raw: string): StagedClipDraft | null {
       inSec,
       outSec,
       includeAudio: Boolean(d.includeAudio),
+      reverse: Boolean(d.reverse),
       transform: d.transform === "kenBurns" ? "kenBurns" : "hold",
       framing:
         d.framing === "fill" || d.framing === "stretch" ? d.framing : "fit",

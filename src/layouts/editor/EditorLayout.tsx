@@ -26,6 +26,7 @@ import {
 import { TimelinePane } from "./TimelinePane";
 import { timelineSequenceDuration } from "./timelineCompose";
 import type { TimelineClip } from "../../project/types";
+import { useConfirm } from "../../ui/ConfirmDialog";
 
 const NARROW_MQ = "(max-width: 1100px)";
 
@@ -34,6 +35,24 @@ function matchesNarrowViewport(): boolean {
     return false;
   }
   return window.matchMedia(NARROW_MQ).matches;
+}
+
+function newTimelineClipId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    target.isContentEditable
+  );
 }
 
 type DragKind = "assets" | "assistant" | "timeline";
@@ -63,12 +82,16 @@ export function EditorLayout() {
     toggleLeft,
     toggleRight,
   } = useShell();
+  const confirm = useConfirm();
 
   const [prefs, setPrefs] = useState<EditorLayoutPrefs>(() =>
     loadEditorLayoutPrefs(),
   );
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  /** Primary selected clip (drives preview staging). */
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  /** All selected timeline clips (includes primary). */
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   /** Staging fields taken from the clicked timeline clip. */
   const [clipStagingSeed, setClipStagingSeed] = useState<{
     clipId: string;
@@ -84,6 +107,23 @@ export function EditorLayout() {
   const dragRef = useRef<DragState | null>(null);
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
+  /** Internal clipboard for Cmd/Ctrl+C / Cmd/Ctrl+V of timeline clips. */
+  const clipClipboardRef = useRef<TimelineClip[]>([]);
+
+  const clearClipSelection = () => {
+    setSelectedClipId(null);
+    setSelectedClipIds([]);
+    setClipStagingSeed(null);
+    setOpenProjectSelectedTimelineClipId(null);
+  };
+
+  const applyPrimaryClip = (clip: TimelineClip) => {
+    setSelectedAssetId(null);
+    setSelectedClipId(clip.id);
+    const draft = timelineClipToStagedDraft(clip);
+    setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
+    setOpenProjectSelectedTimelineClipId(clip.id);
+  };
 
   const monitorMode: "source" | "timeline" = project.timelineMonitorActive
     ? "timeline"
@@ -177,18 +217,7 @@ export function EditorLayout() {
     const onKey = (event: KeyboardEvent) => {
       if (event.code !== "Space" && event.key !== " ") return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target;
-      if (target instanceof HTMLElement) {
-        const tag = target.tagName;
-        if (
-          tag === "INPUT" ||
-          tag === "TEXTAREA" ||
-          tag === "SELECT" ||
-          target.isContentEditable
-        ) {
-          return;
-        }
-      }
+      if (isEditableKeyboardTarget(event.target)) return;
       event.preventDefault();
       toggleTimelinePlaying();
     };
@@ -202,6 +231,109 @@ export function EditorLayout() {
     project.timelinePlayheadSec,
   ]);
 
+  // Delete / Backspace removes selected timeline clips after confirm.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (selectedClipIds.length === 0) return;
+      if (isEditableKeyboardTarget(event.target)) return;
+      event.preventDefault();
+      const ids = new Set(selectedClipIds);
+      const count = ids.size;
+      void (async () => {
+        const ok = await confirm({
+          title: count === 1 ? "Remove clip?" : `Remove ${count} clips?`,
+          message:
+            count === 1
+              ? "Removes this clip from the timeline."
+              : `Removes ${count} clips from the timeline.`,
+          confirmLabel: "Remove",
+          danger: true,
+        });
+        if (!ok) return;
+        pauseTimelinePlayback();
+        setOpenProjectTimeline(
+          project.timeline.filter((clip) => !ids.has(clip.id)),
+        );
+        clearClipSelection();
+      })();
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    selectedClipIds,
+    project.timeline,
+    confirm,
+    setOpenProjectTimeline,
+    setOpenProjectSelectedTimelineClipId,
+    timelinePlaying,
+  ]);
+
+  // Cmd/Ctrl+C copies selected clips; Cmd/Ctrl+V pastes at the playhead.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== "c" && key !== "v") return;
+      if (isEditableKeyboardTarget(event.target)) return;
+
+      if (key === "c") {
+        if (selectedClipIds.length === 0) return;
+        const idSet = new Set(selectedClipIds);
+        const clips = project.timeline
+          .filter((c) => idSet.has(c.id))
+          .sort((a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id))
+          .map((c) => ({ ...c }));
+        if (clips.length === 0) return;
+        event.preventDefault();
+        clipClipboardRef.current = clips;
+        return;
+      }
+
+      const sources = clipClipboardRef.current;
+      if (sources.length === 0) return;
+      event.preventDefault();
+      const playhead = Math.max(
+        0,
+        timelinePlaying ? livePlayheadRef.current : project.timelinePlayheadSec,
+      );
+      const origin = Math.min(...sources.map((c) => c.startSec));
+      const pasted = sources.map((source) => {
+        const duration = Math.max(0.1, source.endSec - source.startSec);
+        const startSec = playhead + (source.startSec - origin);
+        return {
+          ...source,
+          id: newTimelineClipId(),
+          startSec,
+          endSec: startSec + duration,
+        };
+      });
+      setOpenProjectTimeline([...project.timeline, ...pasted]);
+      pauseTimelinePlayback();
+      const primary = pasted[0];
+      if (primary) {
+        setSelectedAssetId(null);
+        setSelectedClipId(primary.id);
+        setSelectedClipIds(pasted.map((c) => c.id));
+        const draft = timelineClipToStagedDraft(primary);
+        setClipStagingSeed(draft ? { clipId: primary.id, draft } : null);
+        setOpenProjectSelectedTimelineClipId(primary.id);
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    selectedClipIds,
+    project.timeline,
+    project.timelinePlayheadSec,
+    timelinePlaying,
+    setOpenProjectTimeline,
+    setOpenProjectSelectedTimelineClipId,
+  ]);
+
   useEffect(() => {
     const savedClipId = project.selectedTimelineClipId;
     if (savedClipId) {
@@ -209,6 +341,7 @@ export function EditorLayout() {
       if (clip) {
         setSelectedAssetId(null);
         setSelectedClipId(clip.id);
+        setSelectedClipIds([clip.id]);
         const draft = timelineClipToStagedDraft(clip);
         setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
         return;
@@ -220,22 +353,45 @@ export function EditorLayout() {
       project.assets.some((asset) => asset.id === savedAssetId)
     ) {
       setSelectedClipId(null);
+      setSelectedClipIds([]);
       setClipStagingSeed(null);
       setSelectedAssetId(savedAssetId);
       return;
     }
     setSelectedAssetId(null);
     setSelectedClipId(null);
+    setSelectedClipIds([]);
     setClipStagingSeed(null);
   }, [project.id]);
 
-  // Drop local selection if the clip was removed from the timeline.
+  // Drop local selection if clips were removed from the timeline.
   useEffect(() => {
-    if (!selectedClipId) return;
-    if (project.timeline.some((c) => c.id === selectedClipId)) return;
-    setSelectedClipId(null);
-    setClipStagingSeed(null);
-  }, [project.timeline, selectedClipId]);
+    if (selectedClipIds.length === 0) return;
+    const alive = new Set(project.timeline.map((c) => c.id));
+    const nextIds = selectedClipIds.filter((id) => alive.has(id));
+    if (nextIds.length === selectedClipIds.length) {
+      if (selectedClipId && alive.has(selectedClipId)) return;
+    }
+    if (nextIds.length === 0) {
+      setSelectedClipId(null);
+      setSelectedClipIds([]);
+      setClipStagingSeed(null);
+      return;
+    }
+    setSelectedClipIds(nextIds);
+    const primaryId =
+      selectedClipId && nextIds.includes(selectedClipId)
+        ? selectedClipId
+        : nextIds[0];
+    const primary = project.timeline.find((c) => c.id === primaryId);
+    setSelectedClipId(primaryId);
+    if (primary) {
+      const draft = timelineClipToStagedDraft(primary);
+      setClipStagingSeed(draft ? { clipId: primary.id, draft } : null);
+    } else {
+      setClipStagingSeed(null);
+    }
+  }, [project.timeline, selectedClipId, selectedClipIds]);
 
   // Drop local asset selection if the asset left the project.
   useEffect(() => {
@@ -379,29 +535,50 @@ export function EditorLayout() {
   const selectAsset = (id: string) => {
     pauseTimelinePlayback();
     setSelectedClipId(null);
+    setSelectedClipIds([]);
     setClipStagingSeed(null);
     setSelectedAssetId(id);
     setOpenProjectSelectedAssetId(id);
   };
 
-  const selectClip = (clip: TimelineClip | null) => {
+  const selectClip = (
+    clip: TimelineClip | null,
+    opts?: { additive?: boolean },
+  ) => {
     pauseTimelinePlayback();
     if (!clip) {
-      setSelectedClipId(null);
-      setClipStagingSeed(null);
-      setOpenProjectSelectedTimelineClipId(null);
+      clearClipSelection();
       return;
     }
-    // Clip instance ≠ asset selection — clear assets panel highlight.
-    setSelectedAssetId(null);
-    setSelectedClipId(clip.id);
-    const draft = timelineClipToStagedDraft(clip);
-    setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
-    setOpenProjectSelectedTimelineClipId(clip.id);
+
+    if (opts?.additive) {
+      const has = selectedClipIds.includes(clip.id);
+      if (has) {
+        const next = selectedClipIds.filter((id) => id !== clip.id);
+        if (next.length === 0) {
+          clearClipSelection();
+          return;
+        }
+        setSelectedClipIds(next);
+        if (selectedClipId === clip.id) {
+          const primary =
+            project.timeline.find((c) => c.id === next[next.length - 1]) ?? null;
+          if (primary) applyPrimaryClip(primary);
+        }
+        return;
+      }
+      setSelectedClipIds([...selectedClipIds, clip.id]);
+      applyPrimaryClip(clip);
+      return;
+    }
+
+    applyPrimaryClip(clip);
+    setSelectedClipIds([clip.id]);
   };
 
   const activateTimeline = () => {
     setSelectedClipId(null);
+    setSelectedClipIds([]);
     setClipStagingSeed(null);
     setSelectedAssetId(null);
     setOpenProjectTimelineMonitorActive(true);
@@ -515,7 +692,7 @@ export function EditorLayout() {
         clips={project.timeline}
         projectId={project.id}
         onClipsChange={setOpenProjectTimeline}
-        selectedClipId={selectedClipId}
+        selectedClipIds={selectedClipIds}
         onSelectClip={selectClip}
         zoom={project.timelineZoom}
         onZoomChange={setOpenProjectTimelineZoom}

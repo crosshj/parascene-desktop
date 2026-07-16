@@ -6,6 +6,7 @@
 use super::catalog::{
     default_paths, get_creation_by_id, ready_connection, set_local_thumb_path, Creation,
 };
+use super::ffmpeg::resolve_ffmpeg;
 use super::paths::ParascenePaths;
 use image::imageops::FilterType;
 use image::DynamicImage;
@@ -47,32 +48,6 @@ fn path_under_root(root: &Path, stored: &str) -> Result<PathBuf, String> {
         return Err("Local media file not found".into());
     }
     Ok(file_canon)
-}
-
-fn resolve_ffmpeg() -> Option<PathBuf> {
-    let candidates = [
-        "ffmpeg",
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-    ];
-    for c in candidates {
-        let path = PathBuf::from(c);
-        let ok = Command::new(&path)
-            .arg("-version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            return Some(if c == "ffmpeg" {
-                PathBuf::from("ffmpeg")
-            } else {
-                path
-            });
-        }
-    }
-    None
 }
 
 fn extract_video_frame(ffmpeg: &Path, video: &Path, dest: &Path) -> Result<(), String> {

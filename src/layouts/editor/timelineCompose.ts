@@ -117,3 +117,33 @@ export function resolveTimelineFrame(
     audio: audioHits.map((c) => toLayer(c, time)),
   };
 }
+
+/**
+ * Next video-lane clip that begins after the visual covering `t` (or after `t`
+ * when in a gap). Used for look-ahead priming of the program monitor.
+ */
+export function peekNextVisualClip(
+  clips: readonly TimelineClip[],
+  t: number,
+): TimelineClip | null {
+  const time = Number.isFinite(t) && t > 0 ? t : 0;
+  const sequenceEnd = timelineSequenceDuration(clips);
+  const videoClips = clipsOnLane(clips, "video")
+    .slice()
+    .sort((a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id));
+  if (videoClips.length === 0) return null;
+
+  const current = clipCovering(videoClips, time, sequenceEnd);
+  const gate = current ? current.endSec : time;
+
+  for (const c of videoClips) {
+    if (current && c.id === current.id) continue;
+    if (c.startSec + 1e-6 >= gate) return c;
+  }
+  return null;
+}
+
+/** Layer at a clip's timeline start (source in-point) for standby priming. */
+export function layerAtClipStart(clip: TimelineClip): TimelineLayer {
+  return toLayer(clip, clip.startSec);
+}

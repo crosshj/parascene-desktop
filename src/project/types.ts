@@ -31,6 +31,8 @@ export type TimelineClip = {
   inSec?: number;
   outSec?: number;
   includeAudio?: boolean;
+  /** Play a behind-the-scenes FFmpeg-reversed copy of the source asset. */
+  reverse?: boolean;
   transform?: "hold" | "kenBurns";
   framing?: "fit" | "fill" | "stretch";
 };

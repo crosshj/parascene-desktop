@@ -6,6 +6,7 @@ import {
 import {
   clearStagedClipDrag,
   getActiveStagedClipDrag,
+  remapTrimForReverse,
   serializeStagedClip,
   setActiveStagedClipDrag,
   setStagedClipPointer,
@@ -168,12 +169,23 @@ export function StagingFields({
               />
               <span className="muted">Include</span>
             </label>
-          ) : (
-            <label className="editor-staging-field">
-              <span>Level</span>
-              <input type="range" min={0} max={100} defaultValue={80} disabled />
-            </label>
-          )}
+          ) : null}
+          <label className="editor-staging-field editor-staging-field-check">
+            <span>Reverse</span>
+            <input
+              type="checkbox"
+              checked={draft.reverse}
+              onChange={(e) => {
+                const reverse = e.target.checked;
+                const trim = remapTrimForReverse(draft, maxSec);
+                onDraftChange({
+                  ...draft,
+                  ...trim,
+                  reverse,
+                });
+              }}
+            />
+          </label>
         </>
       ) : null}
     </div>

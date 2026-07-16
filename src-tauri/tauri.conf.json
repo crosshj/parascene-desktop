@@ -30,7 +30,8 @@
           "$VIDEO/**",
           "$HOME/Movies/**",
           "$HOME/Movies/Parascene/**",
-          "$HOME/Movies/Parascene/Library/**"
+          "$HOME/Movies/Parascene/Library/**",
+          "$HOME/Movies/Parascene/Cache/**"
         ]
       }
     }

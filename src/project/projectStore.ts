@@ -81,6 +81,8 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
       : kind === "audio"
         ? "audio"
         : "video";
+  const resolvedKind =
+    kind ?? (lane === "audio" ? ("audio" as const) : undefined);
   const inSec = Number(c.inSec);
   const outSec = Number(c.outSec);
   return {
@@ -91,11 +93,16 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     assetId: typeof c.assetId === "string" ? c.assetId : undefined,
     thumbUrl: typeof c.thumbUrl === "string" ? c.thumbUrl : null,
     lane,
-    kind,
+    kind: resolvedKind,
     inSec: Number.isFinite(inSec) ? inSec : undefined,
     outSec: Number.isFinite(outSec) ? outSec : undefined,
     includeAudio:
-      typeof c.includeAudio === "boolean" ? c.includeAudio : undefined,
+      resolvedKind === "audio"
+        ? false
+        : typeof c.includeAudio === "boolean"
+          ? c.includeAudio
+          : undefined,
+    reverse: typeof c.reverse === "boolean" ? c.reverse : undefined,
     transform:
       c.transform === "kenBurns"
         ? "kenBurns"

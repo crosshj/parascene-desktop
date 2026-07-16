@@ -10,6 +10,10 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { getCreation } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
+import {
+  ensureReversedMedia,
+  getCachedReversedMedia,
+} from "../../library/reversedMedia";
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
@@ -32,9 +36,12 @@ type TimelinePaneProps = {
   projectId?: string;
   /** Persist timeline clips on the open project. */
   onClipsChange?: (clips: TimelineClip[]) => void;
-  /** Currently selected clip (loads into preview). */
-  selectedClipId?: string | null;
-  onSelectClip?: (clip: TimelineClip | null) => void;
+  /** Currently selected clip ids (multi-select). */
+  selectedClipIds?: readonly string[];
+  onSelectClip?: (
+    clip: TimelineClip | null,
+    opts?: { additive?: boolean },
+  ) => void;
   /** Timeline zoom multiplier (0.5–3); controlled from project prefs. */
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
@@ -67,6 +74,24 @@ function formatClipDuration(sec: number): string {
   return `${(Math.round(sec * 10) / 10).toFixed(1)}s`;
 }
 
+function clipDisplayThumbUrl(
+  clip: TimelineClip,
+  catalogByAssetId: Record<string, string>,
+  reverseByAssetId: Record<string, string>,
+): string | null {
+  const assetId = clip.assetId;
+  if (clip.reverse && assetId) {
+    return (
+      reverseByAssetId[assetId] ||
+      clip.thumbUrl ||
+      catalogByAssetId[assetId] ||
+      null
+    );
+  }
+  if (assetId && catalogByAssetId[assetId]) return catalogByAssetId[assetId];
+  return clip.thumbUrl || null;
+}
+
 function newClipId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -78,13 +103,17 @@ function snapStartSec(
   startSec: number,
   laneClips: TimelineClip[],
   magnetic: boolean,
-  excludeId?: string,
+  excludeIds?: ReadonlySet<string> | string,
 ): number {
   const raw = Math.max(0, startSec);
   if (!magnetic) return Math.round(raw * 10) / 10;
 
-  const others = excludeId
-    ? laneClips.filter((c) => c.id !== excludeId)
+  const excluded =
+    typeof excludeIds === "string"
+      ? new Set([excludeIds])
+      : (excludeIds ?? new Set<string>());
+  const others = excluded.size
+    ? laneClips.filter((c) => !excluded.has(c.id))
     : laneClips;
   const anchors = [
     0,
@@ -121,6 +150,7 @@ function draftToClip(
     inSec: draft.inSec,
     outSec: draft.outSec,
     includeAudio: draft.includeAudio,
+    reverse: draft.reverse,
     transform: draft.transform,
     framing: draft.framing,
   };
@@ -196,6 +226,7 @@ function MiniClip({
   moving = false,
   selected = false,
   audio = false,
+  reversed = false,
   waveSeed,
   onPointerDown,
 }: {
@@ -210,6 +241,8 @@ function MiniClip({
   selected?: boolean;
   /** Audio lane / audio kind — draw waveform overlay instead of a thumb. */
   audio?: boolean;
+  /** Show a small left-pointing play mark (reversed clip). */
+  reversed?: boolean;
   waveSeed?: string;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
@@ -224,6 +257,7 @@ function MiniClip({
     moving ? "is-moving" : "",
     selected ? "is-selected" : "",
     audio ? "is-audio" : "",
+    reversed ? "is-reversed" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -273,6 +307,13 @@ function MiniClip({
         minWidth: 0,
       }}
     >
+      {reversed ? (
+        <span className="editor-timeline-clip-reverse" aria-hidden title="Reversed">
+          <svg viewBox="0 0 8 8" width="7" height="7">
+            <path fill="currentColor" d="M7 1v6L1.5 4z" />
+          </svg>
+        </span>
+      ) : null}
       {audio ? (
         <ClipAudioWaveform
           widthPx={widthPx}
@@ -334,7 +375,7 @@ export function TimelinePane({
   clips: seedClips,
   projectId = "",
   onClipsChange,
-  selectedClipId = null,
+  selectedClipIds = [],
   onSelectClip,
   zoom: zoomProp = 1,
   onZoomChange,
@@ -347,12 +388,15 @@ export function TimelinePane({
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
   const [ghost, setGhost] = useState<TimelineGhostClip | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [movingClipId, setMovingClipId] = useState<string | null>(null);
+  const [movingClipIds, setMovingClipIds] = useState<string[]>([]);
   const [magnetic, setMagnetic] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [thumbByAssetId, setThumbByAssetId] = useState<Record<string, string>>(
     {},
   );
+  const [reverseThumbByAssetId, setReverseThumbByAssetId] = useState<
+    Record<string, string>
+  >({});
   const zoom = zoomProp;
   const setZoom = useCallback(
     (next: number | ((prev: number) => number)) => {
@@ -362,11 +406,15 @@ export function TimelinePane({
     [onZoomChange, zoom],
   );
   const moveRef = useRef<{
-    clipId: string;
-    duration: number;
+    /** Clip under the pointer (snap + grab offset). */
+    primaryId: string;
+    movingIds: string[];
+    /** startSec at arm time, keyed by clip id. */
+    originStarts: Record<string, number>;
+    /** duration keyed by clip id. */
+    durations: Record<string, number>;
     grabOffsetSec: number;
     pointerId: number;
-    lane: "video" | "audio";
   } | null>(null);
   const pressRef = useRef<{
     clip: TimelineClip;
@@ -374,9 +422,12 @@ export function TimelinePane({
     startX: number;
     startY: number;
     armed: boolean;
+    additive: boolean;
   } | null>(null);
   const clipsRef = useRef(clips);
   clipsRef.current = clips;
+  const selectedClipIdsRef = useRef(selectedClipIds);
+  selectedClipIdsRef.current = selectedClipIds;
   const onClipsChangeRef = useRef(onClipsChange);
   onClipsChangeRef.current = onClipsChange;
   const onSelectClipRef = useRef(onSelectClip);
@@ -406,6 +457,16 @@ export function TimelinePane({
     const ids = new Set<string>();
     for (const clip of clips) {
       if (clip.assetId) ids.add(clip.assetId);
+    }
+    return [...ids].sort().join("\0");
+  }, [clips]);
+
+  const reversedVideoAssetIdsKey = useMemo(() => {
+    const ids = new Set<string>();
+    for (const clip of clips) {
+      if (clip.reverse && clip.kind !== "audio" && clip.assetId) {
+        ids.add(clip.assetId);
+      }
     }
     return [...ids].sort().join("\0");
   }, [clips]);
@@ -460,6 +521,57 @@ export function TimelinePane({
       unlisten?.();
     };
   }, [clipAssetIdsKey]);
+
+  useEffect(() => {
+    const ids = reversedVideoAssetIdsKey
+      ? reversedVideoAssetIdsKey.split("\0")
+      : [];
+    if (ids.length === 0) {
+      setReverseThumbByAssetId({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const load = async () => {
+      const next: Record<string, string> = {};
+      await Promise.all(
+        ids.map(async (id) => {
+          const cached = getCachedReversedMedia(id);
+          if (cached?.thumbUrl) {
+            next[id] = cached.thumbUrl;
+            return;
+          }
+          try {
+            const urls = await ensureReversedMedia(id);
+            if (urls.thumbUrl) next[id] = urls.thumbUrl;
+          } catch {
+            // Keep clip.thumbUrl / catalog fallback.
+          }
+        }),
+      );
+      if (cancelled) return;
+      setReverseThumbByAssetId(next);
+
+      // Persist reverse first-frame thumbs onto clips that still hold the original.
+      const current = clipsRef.current;
+      const patched = current.map((clip) => {
+        if (!clip.reverse || !clip.assetId) return clip;
+        const thumb = next[clip.assetId];
+        if (!thumb || clip.thumbUrl === thumb) return clip;
+        return { ...clip, thumbUrl: thumb };
+      });
+      const changed = patched.some(
+        (c, i) => c.thumbUrl !== current[i]?.thumbUrl,
+      );
+      if (changed) commitClips(patched);
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [reversedVideoAssetIdsKey, commitClips]);
 
   useEffect(() => {
     return subscribeStagedClipDrag((draft) => {
@@ -541,28 +653,43 @@ export function TimelinePane({
     (clientX: number, finalize: boolean) => {
       const move = moveRef.current;
       if (!move) return;
-      const rawStart = pointToStartSec(clientX) - move.grabOffsetSec;
+      const primaryOrigin = move.originStarts[move.primaryId];
+      const primaryDuration = move.durations[move.primaryId];
+      if (!Number.isFinite(primaryOrigin) || !Number.isFinite(primaryDuration)) {
+        return;
+      }
+
+      const rawPrimaryStart = pointToStartSec(clientX) - move.grabOffsetSec;
+      const primaryClip = clipsRef.current.find((c) => c.id === move.primaryId);
+      const lane: "video" | "audio" =
+        primaryClip?.lane === "audio" ? "audio" : "video";
       const laneClips = clipsRef.current.filter((c) =>
-        move.lane === "audio"
+        lane === "audio"
           ? c.lane === "audio"
           : (c.lane ?? "video") === "video",
       );
-      const startSec = snapStartSec(
-        rawStart,
+      const exclude = new Set(move.movingIds);
+      const snappedPrimary = snapStartSec(
+        rawPrimaryStart,
         laneClips,
         finalize ? magneticRef.current : magneticRef.current,
-        move.clipId,
+        exclude,
       );
+      const delta = snappedPrimary - primaryOrigin;
+
       setClips((prev) => {
-        const next = prev.map((c) =>
-          c.id === move.clipId
-            ? {
-                ...c,
-                startSec,
-                endSec: startSec + move.duration,
-              }
-            : c,
-        );
+        const next = prev.map((c) => {
+          if (!exclude.has(c.id)) return c;
+          const origin = move.originStarts[c.id];
+          const duration = move.durations[c.id];
+          if (!Number.isFinite(origin) || !Number.isFinite(duration)) return c;
+          const startSec = Math.max(0, origin + delta);
+          return {
+            ...c,
+            startSec,
+            endSec: startSec + duration,
+          };
+        });
         clipsRef.current = next;
         return next;
       });
@@ -576,7 +703,7 @@ export function TimelinePane({
       applyClipMove(clientX, true);
       const next = clipsRef.current;
       moveRef.current = null;
-      setMovingClipId(null);
+      setMovingClipIds([]);
       document.body.classList.remove("is-timeline-clip-moving");
       onClipsChangeRef.current?.(next);
     },
@@ -585,18 +712,32 @@ export function TimelinePane({
 
   const armClipMove = useCallback(
     (clip: TimelineClip, clientX: number, pointerId: number) => {
-      const duration = Math.max(0.1, clip.endSec - clip.startSec);
-      const lane: "video" | "audio" =
-        clip.lane === "audio" ? "audio" : "video";
+      const selected = selectedClipIdsRef.current;
+      const movingIds =
+        selected.includes(clip.id) && selected.length > 0
+          ? [...selected]
+          : [clip.id];
+      // Dragging an unselected clip adopts it as the sole selection.
+      if (!selected.includes(clip.id)) {
+        onSelectClipRef.current?.(clip);
+      }
+      const originStarts: Record<string, number> = {};
+      const durations: Record<string, number> = {};
+      for (const c of clipsRef.current) {
+        if (!movingIds.includes(c.id)) continue;
+        originStarts[c.id] = c.startSec;
+        durations[c.id] = Math.max(0.1, c.endSec - c.startSec);
+      }
       const pointerSec = pointToStartSec(clientX);
       moveRef.current = {
-        clipId: clip.id,
-        duration,
+        primaryId: clip.id,
+        movingIds,
+        originStarts,
+        durations,
         grabOffsetSec: pointerSec - clip.startSec,
         pointerId,
-        lane,
       };
-      setMovingClipId(clip.id);
+      setMovingClipIds(movingIds);
       document.body.classList.add("is-timeline-clip-moving");
     },
     [pointToStartSec],
@@ -636,7 +777,9 @@ export function TimelinePane({
       if (press && event.pointerId === press.pointerId) {
         pressRef.current = null;
         if (!press.armed && !moveRef.current) {
-          onSelectClipRef.current?.(press.clip);
+          onSelectClipRef.current?.(press.clip, {
+            additive: press.additive,
+          });
           return;
         }
       }
@@ -667,6 +810,7 @@ export function TimelinePane({
         startX: event.clientX,
         startY: event.clientY,
         armed: false,
+        additive: event.shiftKey,
       };
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -797,7 +941,7 @@ export function TimelinePane({
   };
 
   const dragging =
-    ghost !== null || dragActive || movingClipId !== null;
+    ghost !== null || dragActive || movingClipIds.length > 0;
 
   const paneClass = [
     "editor-timeline-pane",
@@ -957,16 +1101,17 @@ export function TimelinePane({
                     className="editor-timeline-clip"
                     startSec={clip.startSec}
                     durationSec={clip.endSec - clip.startSec}
-                    thumbUrl={
-                      (clip.assetId && thumbByAssetId[clip.assetId]) ||
-                      clip.thumbUrl ||
-                      null
-                    }
+                    thumbUrl={clipDisplayThumbUrl(
+                      clip,
+                      thumbByAssetId,
+                      reverseThumbByAssetId,
+                    )}
                     label={clip.label}
                     title={clip.assetId ?? clip.label}
                     pxPerSec={pxPerSec}
-                    moving={movingClipId === clip.id}
-                    selected={selectedClipId === clip.id}
+                    moving={movingClipIds.includes(clip.id)}
+                    selected={selectedClipIds.includes(clip.id)}
+                    reversed={Boolean(clip.reverse)}
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />
                 ))
@@ -997,17 +1142,18 @@ export function TimelinePane({
                     className="editor-timeline-clip"
                     startSec={clip.startSec}
                     durationSec={clip.endSec - clip.startSec}
-                    thumbUrl={
-                      (clip.assetId && thumbByAssetId[clip.assetId]) ||
-                      clip.thumbUrl ||
-                      null
-                    }
+                    thumbUrl={clipDisplayThumbUrl(
+                      clip,
+                      thumbByAssetId,
+                      reverseThumbByAssetId,
+                    )}
                     label={clip.label}
                     title={clip.assetId ?? clip.label}
                     pxPerSec={pxPerSec}
-                    moving={movingClipId === clip.id}
-                    selected={selectedClipId === clip.id}
+                    moving={movingClipIds.includes(clip.id)}
+                    selected={selectedClipIds.includes(clip.id)}
                     audio
+                    reversed={Boolean(clip.reverse)}
                     waveSeed={clip.id}
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />

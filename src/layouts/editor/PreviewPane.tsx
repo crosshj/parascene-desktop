@@ -14,6 +14,10 @@ import {
   creationPreviewUrl,
   isParasceneUnavailable,
 } from "../../library/previewUrl";
+import {
+  ensureReversedMedia,
+  getCachedReversedMedia,
+} from "../../library/reversedMedia";
 import type { Creation } from "../../library/types";
 import {
   PROJECT_ASPECT_OPTIONS,
@@ -24,6 +28,7 @@ import { kindFromMediaType } from "./stagingKind";
 import { ClipDragHandle, StagingFields } from "./PreviewStaging";
 import {
   defaultStagedClipDraft,
+  isProvisionalOutSec,
   type StagedClipDraft,
 } from "./stagedClip";
 import { creationCardTitle } from "../../library/creationFlags";
@@ -124,6 +129,10 @@ export function PreviewPane({
   const [volume, setVolume] = useState(80);
   const [frameSize, setFrameSize] = useState<Size>({ w: 0, h: 0 });
   const [stagedDraft, setStagedDraft] = useState<StagedClipDraft | null>(null);
+  const [reversedDetail, setReversedDetail] = useState<string | null>(null);
+  const [reversedThumb, setReversedThumb] = useState<string | null>(null);
+  const [reverseBusy, setReverseBusy] = useState(false);
+  const [reverseError, setReverseError] = useState<string | null>(null);
   const appliedSeedKeyRef = useRef<string | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
@@ -198,12 +207,12 @@ export function PreviewPane({
   }, [assetId]);
 
   const detail = creation ? creationDetailUrl(creation) : null;
-  const thumb = creation ? creationPreviewUrl(creation) : null;
+  const catalogThumb = creation ? creationPreviewUrl(creation) : null;
   const unavailable = creation ? isParasceneUnavailable(creation) : false;
   const waitingLocal =
     Boolean(creation) &&
     !detail &&
-    !thumb &&
+    !catalogThumb &&
     canFetchLocal(creation!) &&
     !unavailable;
   const mediaType = String(creation?.mediaType ?? "")
@@ -211,8 +220,74 @@ export function PreviewPane({
     .toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
-  const useDetail = Boolean(detail) && !detailFailed;
-  const canPlay = Boolean(useDetail && (isVideo || isAudio));
+  const wantsReverse =
+    Boolean(stagedDraft?.reverse) && (isVideo || isAudio);
+  const thumb =
+    wantsReverse && reversedThumb ? reversedThumb : catalogThumb;
+  const playbackDetail = wantsReverse ? reversedDetail : detail;
+  const useDetail = Boolean(playbackDetail) && !detailFailed;
+  const canPlay = Boolean(useDetail && (isVideo || isAudio) && !reverseBusy);
+
+  useEffect(() => {
+    if (!wantsReverse || !assetId || !detail) {
+      setReversedDetail(null);
+      setReversedThumb(null);
+      setReverseBusy(false);
+      setReverseError(null);
+      return;
+    }
+
+    const applyUrls = (mediaUrl: string, thumbUrl: string | null) => {
+      setReversedDetail(mediaUrl);
+      setReversedThumb(thumbUrl);
+      setReverseBusy(false);
+      setReverseError(null);
+      if (!thumbUrl) return;
+      setStagedDraft((prev) => {
+        if (!prev || !prev.reverse || prev.thumbUrl === thumbUrl) return prev;
+        const next = { ...prev, thumbUrl };
+        if (stagingSeedKey) {
+          onClipDraftChangeRef.current?.(stagingSeedKey, next);
+        }
+        return next;
+      });
+    };
+
+    const cached = getCachedReversedMedia(assetId);
+    if (cached) {
+      applyUrls(cached.mediaUrl, cached.thumbUrl);
+      return;
+    }
+
+    let cancelled = false;
+    setReverseBusy(true);
+    setReverseError(null);
+    setReversedDetail(null);
+    setReversedThumb(null);
+
+    void ensureReversedMedia(assetId)
+      .then((urls) => {
+        if (cancelled) return;
+        applyUrls(urls.mediaUrl, urls.thumbUrl);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const message =
+          err instanceof Error
+            ? err.message
+            : typeof err === "string"
+              ? err
+              : "Could not reverse media";
+        setReverseError(message);
+        setReverseBusy(false);
+        setReversedDetail(null);
+        setReversedThumb(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [wantsReverse, assetId, detail, stagingSeedKey]);
 
   useEffect(() => {
     if (!assetId || !creation || catalogError) {
@@ -228,11 +303,19 @@ export function PreviewPane({
       ? creation.filename?.trim() || assetId
       : titled.text;
     const previewThumb = creationPreviewUrl(creation);
+    const reverseThumb =
+      stagedDraft?.reverse || stagingSeed?.reverse
+        ? reversedThumb ?? getCachedReversedMedia(assetId)?.thumbUrl ?? null
+        : null;
+    const liveThumb = reverseThumb ?? previewThumb;
 
     if (stagingSeedKey && stagingSeed && stagingSeed.assetId === assetId) {
-      const nextThumb = previewThumb ?? stagingSeed.thumbUrl;
+      const nextThumb =
+        (stagingSeed.reverse
+          ? reverseThumb ?? stagingSeed.thumbUrl
+          : previewThumb) ?? stagingSeed.thumbUrl;
       if (appliedSeedKeyRef.current === stagingSeedKey) {
-        // Keep in/out/framing edits; always prefer live catalog thumb.
+        // Keep in/out/framing edits; prefer reverse thumb when reversed.
         setStagedDraft((prev) => {
           if (!prev) return prev;
           if (prev.label === label && prev.thumbUrl === nextThumb) return prev;
@@ -241,7 +324,10 @@ export function PreviewPane({
         if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
           onClipDraftChangeRef.current?.(stagingSeedKey, {
             ...stagingSeed,
-            kind: stagingSeed.kind || kindFromCreation,
+            kind:
+              kindFromCreation === "audio"
+                ? "audio"
+                : stagingSeed.kind || kindFromCreation,
             label,
             thumbUrl: nextThumb,
           });
@@ -251,7 +337,10 @@ export function PreviewPane({
       appliedSeedKeyRef.current = stagingSeedKey;
       const next = {
         ...stagingSeed,
-        kind: stagingSeed.kind || kindFromCreation,
+        kind:
+          kindFromCreation === "audio"
+            ? "audio"
+            : stagingSeed.kind || kindFromCreation,
         label,
         thumbUrl: nextThumb,
       };
@@ -265,16 +354,18 @@ export function PreviewPane({
     appliedSeedKeyRef.current = null;
     setStagedDraft((prev) => {
       if (prev?.assetId === assetId) {
-        const nextThumb = previewThumb ?? prev.thumbUrl;
-        if (prev.thumbUrl === nextThumb) return prev;
-        return { ...prev, thumbUrl: nextThumb };
+        const nextThumb =
+          (prev.reverse ? reverseThumb ?? prev.thumbUrl : liveThumb) ??
+          prev.thumbUrl;
+        if (prev.thumbUrl === nextThumb && prev.label === label) return prev;
+        return { ...prev, label, thumbUrl: nextThumb };
       }
       return defaultStagedClipDraft({
         assetId,
         label,
         kind: kindFromCreation,
         sourceDurationSec: durationSec > 0 ? durationSec : undefined,
-        thumbUrl: previewThumb,
+        thumbUrl: liveThumb,
       });
     });
   }, [
@@ -284,6 +375,7 @@ export function PreviewPane({
     durationSec,
     stagingSeed,
     stagingSeedKey,
+    reversedThumb,
   ]);
 
   useEffect(() => {
@@ -293,9 +385,9 @@ export function PreviewPane({
     if (stagingSeedKey) return;
     setStagedDraft((prev) => {
       if (!prev || prev.assetId !== stagedDraft.assetId) return prev;
-      if (prev.outSec > 0 && Math.abs(prev.outSec - durationSec) > 0.05) {
-        return prev;
-      }
+      if (prev.kind === "image") return prev;
+      // Replace provisional Out (10s/30s) with real media length once known.
+      if (!isProvisionalOutSec(prev)) return prev;
       if (Math.abs(prev.outSec - durationSec) < 0.05) return prev;
       return clampInOutDraft(prev, { outSec: durationSec }, durationSec);
     });
@@ -314,7 +406,7 @@ export function PreviewPane({
     } catch {
       // ignore seek before metadata
     }
-  }, [stagingSeedKey, stagingSeed, detail]);
+  }, [stagingSeedKey, stagingSeed, playbackDetail]);
 
   function clampInOutDraft(
     draft: StagedClipDraft,
@@ -342,9 +434,15 @@ export function PreviewPane({
   const volumeEnabled = canPlay && !audioExcluded;
 
   const onStagingDraftChange = (draft: StagedClipDraft) => {
-    setStagedDraft(draft);
+    const next =
+      draft.reverse && reversedThumb
+        ? { ...draft, thumbUrl: reversedThumb }
+        : !draft.reverse && catalogThumb
+          ? { ...draft, thumbUrl: catalogThumb }
+          : draft;
+    setStagedDraft(next);
     if (stagingSeedKey) {
-      onClipDraftChange?.(stagingSeedKey, draft);
+      onClipDraftChange?.(stagingSeedKey, next);
     }
   };
 
@@ -358,7 +456,7 @@ export function PreviewPane({
       el.pause();
       el.currentTime = 0;
     }
-  }, [assetId, detail]);
+  }, [assetId, playbackDetail]);
 
   const onTogglePlay = () => {
     const el = mediaRef.current;
@@ -460,6 +558,9 @@ export function PreviewPane({
   } else if (!assetId) status = "Select an asset";
   else if (catalogError) status = "Asset not in local catalog";
   else if (!creation) status = "Loading…";
+  else if (wantsReverse && reverseBusy) status = "Reversing…";
+  else if (wantsReverse && reverseError) status = reverseError;
+  else if (wantsReverse && !reversedDetail && detail) status = "Reversing…";
   else if (!useDetail && !thumb && waitingLocal) status = "Saving locally…";
   else if (!useDetail && !thumb) status = "No local media";
 
@@ -517,10 +618,10 @@ export function PreviewPane({
 
                 {useDetail && isVideo ? (
                   <video
-                    key={`detail:${detail}`}
+                    key={`detail:${playbackDetail}`}
                     ref={bindVideo}
                     className="editor-preview-media editor-preview-detail"
-                    src={detail!}
+                    src={playbackDetail!}
                     poster={thumb ?? undefined}
                     playsInline
                     preload="auto"
@@ -537,10 +638,10 @@ export function PreviewPane({
                   <div className="editor-preview-audio">
                     <AudioWaveform className="creation-audio-wave creation-audio-wave-lg editor-preview-audio-icon" />
                     <audio
-                      key={`detail:${detail}`}
+                      key={`detail:${playbackDetail}`}
                       ref={bindAudio}
                       className="editor-preview-audio-el"
-                      src={detail!}
+                      src={playbackDetail!}
                       preload="auto"
                       onTimeUpdate={onTimeUpdate}
                       onLoadedMetadata={onLoadedMeta}
@@ -554,9 +655,9 @@ export function PreviewPane({
 
                 {useDetail && !isVideo && !isAudio ? (
                   <img
-                    key={`detail:${detail}`}
+                    key={`detail:${playbackDetail}`}
                     className="editor-preview-media editor-preview-detail"
-                    src={detail!}
+                    src={playbackDetail!}
                     alt={creation?.title || "Asset preview"}
                     draggable={false}
                     onError={() => setDetailFailed(true)}
@@ -568,16 +669,15 @@ export function PreviewPane({
                     Saving locally…
                   </span>
                 ) : null}
+                {!useDetail && wantsReverse && reverseBusy ? (
+                  <span className="editor-preview-wait muted">Reversing…</span>
+                ) : null}
               </>
             )}
 
             {showAspectOverlay && matteStyle ? (
               <div className="editor-preview-aspect-overlay" aria-hidden>
-                <div className="editor-preview-aspect-matte" style={matteStyle}>
-                  <span className="editor-preview-aspect-label">
-                    {aspectRatio}
-                  </span>
-                </div>
+                <div className="editor-preview-aspect-matte" style={matteStyle} />
               </div>
             ) : null}
           </div>
@@ -622,8 +722,8 @@ export function PreviewPane({
                   className="editor-transport-icon"
                   disabled={!onTimelinePlayheadChange}
                   title="Skip back"
-                  aria-label="Skip back 5 seconds"
-                  onClick={() => seekTimelineBy(-5)}
+                  aria-label="Skip to beginning"
+                  onClick={() => seekTimelineTo(0)}
                 >
                   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
                     <path
@@ -688,8 +788,8 @@ export function PreviewPane({
                   className="editor-transport-icon"
                   disabled={!onTimelinePlayheadChange}
                   title="Skip forward"
-                  aria-label="Skip forward 5 seconds"
-                  onClick={() => seekTimelineBy(5)}
+                  aria-label="Skip to end"
+                  onClick={() => seekTimelineTo(timelineSpanSec)}
                 >
                   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
                     <path

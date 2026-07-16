@@ -2103,8 +2103,27 @@ textarea {
   z-index: 1;
 }
 
+.editor-preview-hold {
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.editor-preview-hold.is-visible {
+  opacity: 1;
+}
+
 .editor-preview-detail {
   z-index: 2;
+}
+
+.editor-preview-detail.is-priming {
+  opacity: 0;
+}
+
+.editor-preview-detail.is-standby {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .editor-preview-aspect-overlay {
@@ -2125,22 +2144,6 @@ textarea {
   border: 1px solid color-mix(in srgb, var(--text) 45%, transparent);
   border-radius: 2px;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
-}
-
-.editor-preview-aspect-label {
-  position: absolute;
-  top: 0.4rem;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 0.12rem 0.35rem;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-  color: var(--text);
-  font-size: 0.68rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.04em;
-  line-height: 1.2;
 }
 
 .editor-preview-wait {
@@ -2837,6 +2840,25 @@ body.is-timeline-clip-moving * {
   font-size: 0.85rem;
   font-weight: 500;
   color: var(--text);
+}
+
+.editor-timeline-clip-reverse {
+  position: absolute;
+  left: 3px;
+  bottom: 2px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 9px;
+  height: 9px;
+  color: rgba(240, 240, 245, 0.92);
+  pointer-events: none;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.85));
+}
+
+.editor-timeline-clip-reverse svg {
+  display: block;
 }
 
 .editor-timeline-clip-wave {

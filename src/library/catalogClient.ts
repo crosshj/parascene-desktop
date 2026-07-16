@@ -131,6 +131,19 @@ export async function fillThumb(id: string): Promise<Creation> {
   return invoke<Creation>("library_fill_thumb", { id });
 }
 
+/**
+ * Cached FFmpeg-reversed copy of local media (+ first-frame thumb for video).
+ * Generates files on first call; subsequent calls reuse the cache.
+ */
+export type ReversedMedia = {
+  path: string;
+  thumbPath: string | null;
+};
+
+export async function ensureReversed(id: string): Promise<ReversedMedia> {
+  return invoke<ReversedMedia>("library_ensure_reversed", { id });
+}
+
 /** Read local board preview bytes as base64 (for cloud fit upload). */
 export async function readLocalThumbBase64(id: string): Promise<string> {
   return invoke<string>("library_read_local_thumb_base64", { id });

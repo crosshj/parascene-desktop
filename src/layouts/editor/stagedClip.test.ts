@@ -3,7 +3,9 @@ import {
   applyDraftToTimelineClip,
   defaultStagedClipDraft,
   formatStagedDuration,
+  isProvisionalOutSec,
   parseStagedClipPayload,
+  remapTrimForReverse,
   serializeStagedClip,
   stagedClipDuration,
   targetLaneForDraft,
@@ -28,6 +30,25 @@ describe("stagedClip", () => {
     expect(video.outSec).toBe(12.5);
     expect(video.includeAudio).toBe(false);
     expect(targetLaneForDraft(video)).toBe("video");
+  });
+
+  it("marks Out as provisional until source duration is known", () => {
+    const pending = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+    });
+    expect(pending.outSec).toBe(10);
+    expect(isProvisionalOutSec(pending)).toBe(true);
+
+    const known = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 42.5,
+    });
+    expect(known.outSec).toBe(42.5);
+    expect(isProvisionalOutSec(known)).toBe(false);
   });
 
   it("serializes and parses drag payload", () => {
@@ -74,6 +95,18 @@ describe("stagedClip", () => {
     expect(timelineClipToStagedDraft({ label: "x", startSec: 0, endSec: 1 })).toBeNull();
   });
 
+  it("treats audio-lane clips as audio (no include-audio)", () => {
+    const draft = timelineClipToStagedDraft({
+      assetId: "a1",
+      label: "4.0s",
+      lane: "audio",
+      startSec: 0,
+      endSec: 4,
+    });
+    expect(draft?.kind).toBe("audio");
+    expect(draft?.includeAudio).toBe(false);
+  });
+
   it("applies draft edits back onto a timeline clip", () => {
     const clip = {
       id: "c1",
@@ -103,5 +136,45 @@ describe("stagedClip", () => {
     expect(next.transform).toBe("kenBurns");
     expect(next.framing).toBe("fill");
     expect(next.label).toBe("5.0s");
+  });
+
+  it("round-trips reverse on staged payloads", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 10,
+    });
+    draft.reverse = true;
+    draft.inSec = 2;
+    draft.outSec = 6;
+    const parsed = parseStagedClipPayload(serializeStagedClip(draft));
+    expect(parsed?.reverse).toBe(true);
+
+    const clip = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "4.0s",
+        startSec: 0,
+        endSec: 4,
+        assetId: "v1",
+        kind: "video",
+      },
+      draft,
+    );
+    expect(clip.reverse).toBe(true);
+    expect(timelineClipToStagedDraft(clip)?.reverse).toBe(true);
+  });
+
+  it("mirrors in/out when toggling reverse", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 10,
+    });
+    draft.inSec = 2;
+    draft.outSec = 5;
+    expect(remapTrimForReverse(draft, 10)).toEqual({ inSec: 5, outSec: 8 });
   });
 });

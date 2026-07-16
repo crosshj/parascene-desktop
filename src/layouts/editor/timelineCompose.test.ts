@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TimelineClip } from "../../project/types";
 import {
   clipSourceSec,
+  peekNextVisualClip,
   resolveTimelineFrame,
   timelineSequenceDuration,
 } from "./timelineCompose";
@@ -131,5 +132,34 @@ describe("resolveTimelineFrame", () => {
     const frame = resolveTimelineFrame(withVideo, 3);
     expect(frame.visual?.clip.kind).toBe("video");
     expect(frame.visual?.sourceSec).toBe(4);
+  });
+});
+
+describe("peekNextVisualClip", () => {
+  const clips: TimelineClip[] = [
+    clip({ id: "a", startSec: 0, endSec: 10, assetId: "1", kind: "video" }),
+    clip({ id: "b", startSec: 10, endSec: 20, assetId: "2", kind: "video" }),
+    clip({ id: "c", startSec: 30, endSec: 40, assetId: "3", kind: "video" }),
+    clip({
+      id: "music",
+      startSec: 0,
+      endSec: 50,
+      lane: "audio",
+      kind: "audio",
+      assetId: "m",
+    }),
+  ];
+
+  it("returns the clip that starts when the current one ends", () => {
+    expect(peekNextVisualClip(clips, 3)?.id).toBe("b");
+    expect(peekNextVisualClip(clips, 10)?.id).toBe("c");
+  });
+
+  it("returns the next clip after a gap", () => {
+    expect(peekNextVisualClip(clips, 25)?.id).toBe("c");
+  });
+
+  it("returns null when nothing follows", () => {
+    expect(peekNextVisualClip(clips, 35)).toBeNull();
   });
 });
