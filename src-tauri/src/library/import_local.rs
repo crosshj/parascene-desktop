@@ -96,7 +96,7 @@ fn probe_image_size(path: &Path) -> (Option<i64>, Option<i64>, Option<String>) {
     (Some(width), Some(height), aspect)
 }
 
-fn insert_local_creation(
+pub(crate) fn insert_local_creation(
     conn: &rusqlite::Connection,
     id: &str,
     title: &str,
@@ -165,8 +165,7 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
         let dest_name = format!("{id}_{filename}");
         let dest = paths.media.join(&dest_name);
 
-        fs::copy(source, &dest)
-            .map_err(|e| format!("Could not copy {}: {e}", source.display()))?;
+        fs::copy(source, &dest).map_err(|e| format!("Could not copy {}: {e}", source.display()))?;
 
         let (width, height, aspect_ratio) = if media_type == "image" {
             probe_image_size(&dest)
@@ -201,8 +200,8 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
         }
 
         let conn = ready_connection(&paths)?;
-        let updated = get_creation_by_id(&conn, &id)?
-            .ok_or_else(|| format!("Missing {id} after thumb"))?;
+        let updated =
+            get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Missing {id} after thumb"))?;
         let _ = app.emit("library-creation-updated", &updated);
         imported.push(updated);
     }

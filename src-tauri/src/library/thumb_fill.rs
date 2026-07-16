@@ -140,11 +140,7 @@ pub(crate) fn fill_local_thumb(
     paths: &ParascenePaths,
     creation: &Creation,
 ) -> Result<PathBuf, String> {
-    let Some(local) = creation
-        .local_path
-        .as_deref()
-        .filter(|p| !p.is_empty())
-    else {
+    let Some(local) = creation.local_path.as_deref().filter(|p| !p.is_empty()) else {
         return Err("No local media on disk yet — wait for download, then try again.".into());
     };
     let src = path_under_root(&paths.root, local)?;
@@ -196,8 +192,8 @@ pub fn library_read_local_thumb_base64(id: String) -> Result<String, String> {
     use base64::Engine;
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    let creation = get_creation_by_id(&conn, &id)?
-        .ok_or_else(|| format!("Creation {id} not found"))?;
+    let creation =
+        get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Creation {id} not found"))?;
     let Some(stored) = creation
         .local_thumb_path
         .as_deref()
@@ -252,16 +248,12 @@ mod tests {
 
     #[test]
     fn fill_real_library_portrait_when_present() {
-        let src = PathBuf::from(
-            "/Users/anthrowareadmin/Movies/Parascene/Library/media/17995.png",
-        );
+        let src = PathBuf::from("/Users/anthrowareadmin/Movies/Parascene/Library/media/17995.png");
         if !src.is_file() {
             return;
         }
-        let dest = std::env::temp_dir().join(format!(
-            "parascene-17995-fit-{}.jpg",
-            std::process::id()
-        ));
+        let dest =
+            std::env::temp_dir().join(format!("parascene-17995-fit-{}.jpg", std::process::id()));
         let _ = fs::remove_file(&dest);
         fill_from_image_file(&src, &dest).expect("fill real");
         let loaded = image::open(&dest).expect("open");
@@ -276,10 +268,7 @@ mod tests {
         if resolve_ffmpeg().is_some() {
             return;
         }
-        let root = std::env::temp_dir().join(format!(
-            "parascene-fill-vid-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("parascene-fill-vid-{}", std::process::id()));
         let _ = fs::create_dir_all(&root);
         let fake = root.join("clip.mp4");
         fs::write(&fake, b"not-a-real-video").unwrap();

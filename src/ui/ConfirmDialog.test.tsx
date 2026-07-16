@@ -44,4 +44,46 @@ describe("ConfirmDialog", () => {
     await user.click(screen.getByRole("button", { name: "Delete locally" }));
     expect(onResult).toHaveBeenCalledWith(true);
   });
+
+  it("can show only an OK button for alerts", async () => {
+    const user = userEvent.setup();
+    const onResult = vi.fn();
+
+    function AlertProbe() {
+      const confirm = useConfirm();
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void confirm({
+              title: "Asset in use",
+              message: "Remove clips first.",
+              confirmLabel: "OK",
+              hideCancel: true,
+            }).then(onResult);
+          }}
+        >
+          Warn
+        </button>
+      );
+    }
+
+    render(
+      <ConfirmProvider>
+        <AlertProbe />
+      </ConfirmProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Warn" }));
+    expect(screen.getByRole("button", { name: "OK" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Cancel" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Close" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    expect(onResult).toHaveBeenCalledWith(true);
+  });
 });

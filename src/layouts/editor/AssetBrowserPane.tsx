@@ -1,8 +1,19 @@
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { createPortal } from "react-dom";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import { ensureLocal, getCreation } from "../../library/catalogClient";
 import { creationCardTitle } from "../../library/creationFlags";
+import { isLocalOnlyCreation } from "../../library/creationFilters";
+import { FolderCard } from "../../library/FolderCard";
+import type { LibraryFolder } from "../../library/folderClient";
 import {
   canFetchLocal,
   creationPreviewUrl,
@@ -23,16 +34,25 @@ const FILTERS: { id: AssetKindFilter; label: string }[] = [
 
 type AssetBrowserPaneProps = {
   assets: ProjectAsset[];
+  folders?: LibraryFolder[];
   filter: AssetKindFilter;
   selectedId: string | null;
+  selectedIds: readonly string[];
   onFilterChange: (filter: AssetKindFilter) => void;
-  onSelect: (id: string) => void;
+  onSelectionChange: (ids: string[], primaryId: string | null) => void;
   onCollapse: () => void;
   /** True when shown as a narrow-desktop drawer overlay. */
   drawer?: boolean;
   /** True when a selected asset owns the preview. */
   previewActive?: boolean;
+  onDeleteAssets?: (ids: string[]) => void;
+  onRemoveAssets?: (ids: string[]) => void;
+  onRemoveFolders?: (ids: string[]) => void;
 };
+
+type AssetContextMenu =
+  | { kind: "assets"; assetIds: string[]; x: number; y: number }
+  | { kind: "folders"; folderIds: string[]; x: number; y: number };
 
 function kindFromCreation(
   creation: Creation | undefined,
@@ -138,22 +158,86 @@ function AssetThumb({
 
 export function AssetBrowserPane({
   assets,
+  folders = [],
   filter,
   selectedId,
+  selectedIds,
   onFilterChange,
-  onSelect,
+  onSelectionChange,
   onCollapse,
   drawer = false,
   previewActive = false,
+  onDeleteAssets,
+  onRemoveAssets,
+  onRemoveFolders,
 }: AssetBrowserPaneProps) {
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
   >({});
+  const [contextMenu, setContextMenu] = useState<AssetContextMenu | null>(null);
+  const [folderViewId, setFolderViewId] = useState<string | null>(null);
+  const selectionAnchorRef = useRef<string | null>(null);
+
+  const folderView =
+    folders.find((folder) => folder.id === folderViewId) ?? null;
+
+  useEffect(() => {
+    if (folderViewId && !folders.some((folder) => folder.id === folderViewId)) {
+      setFolderViewId(null);
+    }
+  }, [folderViewId, folders]);
+
+  const filedInProjectFolders = useMemo(() => {
+    const ids = new Set<string>();
+    for (const folder of folders) {
+      for (const memberId of folder.memberIds) ids.add(memberId);
+    }
+    return ids;
+  }, [folders]);
+
+  const rootAssets = useMemo(() => {
+    if (folderView) {
+      const members = new Set(folderView.memberIds);
+      return assets.filter((asset) => members.has(asset.id));
+    }
+    return assets.filter((asset) => !filedInProjectFolders.has(asset.id));
+  }, [assets, filedInProjectFolders, folderView]);
 
   const assetIdsKey = useMemo(
-    () => assets.map((a) => a.id).join("\0"),
-    [assets],
+    () => rootAssets.map((a) => a.id).join("\0"),
+    [rootAssets],
   );
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    let close: (() => void) | null = null;
+    let onKey: ((event: KeyboardEvent) => void) | null = null;
+    let onScroll: (() => void) | null = null;
+
+    // Defer so the opening right-click doesn't immediately dismiss the menu.
+    const timer = window.setTimeout(() => {
+      close = () => setContextMenu(null);
+      onKey = (event: KeyboardEvent) => {
+        if (event.key === "Escape") close?.();
+      };
+      onScroll = () => close?.();
+      window.addEventListener("pointerdown", close);
+      window.addEventListener("keydown", onKey);
+      window.addEventListener("scroll", onScroll, true);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      if (close) window.removeEventListener("pointerdown", close);
+      if (onKey) window.removeEventListener("keydown", onKey);
+      if (onScroll) window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    setContextMenu(null);
+  }, [assetIdsKey]);
 
   useEffect(() => {
     const ids = assetIdsKey ? assetIdsKey.split("\0") : [];
@@ -203,10 +287,85 @@ export function AssetBrowserPane({
     };
   }, [assetIdsKey]);
 
-  const visible = assets.filter((asset) => {
+  const visible = rootAssets.filter((asset) => {
     if (filter === "all") return true;
     return kindFromCreation(creationsById[asset.id], asset.kind) === filter;
   });
+
+  const showRootFolders = !folderView && folders.length > 0;
+
+  const isLocalOnlyAsset = (assetId: string): boolean => {
+    const creation = creationsById[assetId];
+    return creation ? isLocalOnlyCreation(creation) : false;
+  };
+
+  const openContextMenu = (
+    assetId: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    if (!onDeleteAssets && !onRemoveAssets) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const assetIds = selectedIds.includes(assetId) ? [...selectedIds] : [assetId];
+    if (!selectedIds.includes(assetId)) {
+      selectionAnchorRef.current = assetId;
+      onSelectionChange(assetIds, assetId);
+    }
+    setContextMenu({
+      kind: "assets",
+      assetIds,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const openFolderContextMenu = (
+    folderId: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    if (!onRemoveFolders) return;
+    setContextMenu({
+      kind: "folders",
+      folderIds: [folderId],
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const selectAsset = (
+    assetId: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    if (event.shiftKey && selectionAnchorRef.current) {
+      const ids = visible.map((asset) => asset.id);
+      const anchorIndex = ids.indexOf(selectionAnchorRef.current);
+      const clickedIndex = ids.indexOf(assetId);
+      if (anchorIndex >= 0 && clickedIndex >= 0) {
+        const from = Math.min(anchorIndex, clickedIndex);
+        const to = Math.max(anchorIndex, clickedIndex);
+        onSelectionChange(ids.slice(from, to + 1), assetId);
+        return;
+      }
+    }
+
+    if (event.metaKey || event.ctrlKey) {
+      const alreadySelected = selectedIds.includes(assetId);
+      const next = alreadySelected
+        ? selectedIds.filter((id) => id !== assetId)
+        : [...selectedIds, assetId];
+      selectionAnchorRef.current = assetId;
+      const primaryId = alreadySelected
+        ? selectedId && next.includes(selectedId)
+          ? selectedId
+          : (next[next.length - 1] ?? null)
+        : assetId;
+      onSelectionChange(next, primaryId);
+      return;
+    }
+
+    selectionAnchorRef.current = assetId;
+    onSelectionChange([assetId], assetId);
+  };
 
   return (
     <aside
@@ -236,6 +395,28 @@ export function AssetBrowserPane({
         </button>
       </div>
 
+      {folderView ? (
+        <div className="library-folder-breadcrumb editor-asset-breadcrumb">
+          <button
+            type="button"
+            className="library-folder-home"
+            aria-label="Assets home"
+            onClick={() => setFolderViewId(null)}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M12 3 3 10h2v9h5v-5h4v5h5v-9h2z"
+              />
+            </svg>
+          </button>
+          <span className="library-folder-crumb-sep" aria-hidden>
+            ›
+          </span>
+          <span className="library-folder-crumb-name">{folderView.title}</span>
+        </div>
+      ) : null}
+
       <div className="editor-asset-filters" role="toolbar" aria-label="Asset filters">
         {FILTERS.map((f) => (
           <button
@@ -255,9 +436,26 @@ export function AssetBrowserPane({
       </div>
 
       <div className="editor-asset-scroll">
-        {visible.length === 0 ? (
+        {showRootFolders ? (
+          <div className="editor-asset-folders" aria-label="Folders">
+            {folders.map((folder) => (
+              <FolderCard
+                key={folder.id}
+                folder={folder}
+                onOpen={(next) => {
+                  setFolderViewId(next.id);
+                  onSelectionChange([], null);
+                }}
+                onContextMenu={(next, event) =>
+                  openFolderContextMenu(next.id, event)
+                }
+              />
+            ))}
+          </div>
+        ) : null}
+        {visible.length === 0 && !showRootFolders ? (
           <p className="muted editor-asset-empty">No assets in this filter.</p>
-        ) : (
+        ) : visible.length === 0 ? null : (
           <ul className="editor-asset-grid">
             {visible.map((asset) => {
               const creation = creationsById[asset.id];
@@ -268,11 +466,12 @@ export function AssetBrowserPane({
                   <button
                     type="button"
                     className={
-                      selectedId === asset.id
+                      selectedIds.includes(asset.id)
                         ? "editor-asset-tile is-selected"
                         : "editor-asset-tile"
                     }
-                    onClick={() => onSelect(asset.id)}
+                    onClick={(event) => selectAsset(asset.id, event)}
+                    onContextMenu={(event) => openContextMenu(asset.id, event)}
                     title={name}
                   >
                     <AssetThumb kind={kind} creation={creation} />
@@ -292,6 +491,64 @@ export function AssetBrowserPane({
           </ul>
         )}
       </div>
+
+      {contextMenu
+        ? createPortal(
+            <div
+              className="editor-asset-context-menu"
+              role="menu"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              {contextMenu.kind === "folders" && onRemoveFolders ? (
+                <button
+                  type="button"
+                  className="editor-asset-context-item"
+                  role="menuitem"
+                  onClick={() => {
+                    const ids = contextMenu.folderIds;
+                    setContextMenu(null);
+                    onRemoveFolders(ids);
+                  }}
+                >
+                  Remove folder from project
+                </button>
+              ) : null}
+              {contextMenu.kind === "assets" && onRemoveAssets ? (
+                <button
+                  type="button"
+                  className="editor-asset-context-item"
+                  role="menuitem"
+                  onClick={() => {
+                    const ids = contextMenu.assetIds;
+                    setContextMenu(null);
+                    onRemoveAssets(ids);
+                  }}
+                >
+                  Remove{contextMenu.assetIds.length > 1 ? ` (${contextMenu.assetIds.length})` : ""}
+                </button>
+              ) : null}
+              {contextMenu.kind === "assets" &&
+              onDeleteAssets &&
+              contextMenu.assetIds.every(isLocalOnlyAsset) ? (
+                <button
+                  type="button"
+                  className="editor-asset-context-item is-danger"
+                  role="menuitem"
+                  onClick={() => {
+                    const ids = contextMenu.assetIds;
+                    setContextMenu(null);
+                    onDeleteAssets(ids);
+                  }}
+                >
+                  Delete{contextMenu.assetIds.length > 1 ? ` (${contextMenu.assetIds.length})` : ""}
+                </button>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </aside>
   );
 }

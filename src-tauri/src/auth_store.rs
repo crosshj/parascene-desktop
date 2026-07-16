@@ -125,8 +125,7 @@ async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
                     }
                 }
                 return Err(
-                    "Session expired — log out and log in again (refresh token invalidated)"
-                        .into(),
+                    "Session expired — log out and log in again (refresh token invalidated)".into(),
                 );
             }
             Err(err)

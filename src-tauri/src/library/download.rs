@@ -61,13 +61,7 @@ fn skip_remaining_media(
                 }
             }
         }
-        emit_sync_item_detail(
-            app,
-            &creation,
-            "media",
-            "skipped",
-            Some(reason.to_string()),
-        );
+        emit_sync_item_detail(app, &creation, "media", "skipped", Some(reason.to_string()));
         *skipped += 1;
     }
 }
@@ -93,10 +87,7 @@ fn media_pace_ms() -> &'static Mutex<u64> {
 }
 
 async fn pace_media_download() {
-    let ms = media_pace_ms()
-        .lock()
-        .map(|g| *g)
-        .unwrap_or(MEDIA_PACE_MS);
+    let ms = media_pace_ms().lock().map(|g| *g).unwrap_or(MEDIA_PACE_MS);
     if ms > 0 {
         tokio::time::sleep(Duration::from_millis(ms)).await;
     }
@@ -259,7 +250,12 @@ pub struct DownloadSummary {
 
 fn extension_for(url: &str, media_type: &str, content_type: Option<&str>) -> String {
     if let Some(ct) = content_type {
-        let ct = ct.split(';').next().unwrap_or(ct).trim().to_ascii_lowercase();
+        let ct = ct
+            .split(';')
+            .next()
+            .unwrap_or(ct)
+            .trim()
+            .to_ascii_lowercase();
         if let Some(ext) = match ct.as_str() {
             "image/jpeg" | "image/jpg" => Some("jpg"),
             "image/png" => Some("png"),
@@ -307,7 +303,10 @@ fn safe_id(id: &str) -> String {
 #[derive(Debug)]
 enum DownloadAttemptErr {
     /// Retryable with optional server-suggested wait.
-    Retryable { message: String, wait: Duration },
+    Retryable {
+        message: String,
+        wait: Duration,
+    },
     Fatal(String),
 }
 
@@ -322,9 +321,10 @@ async fn download_url_once(
     if let Some(token) = bearer {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
-    let res = req.send().await.map_err(|e| {
-        DownloadAttemptErr::Fatal(format!("Download failed: {e}"))
-    })?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| DownloadAttemptErr::Fatal(format!("Download failed: {e}")))?;
     let status = res.status();
     if status.as_u16() == 429 || status.as_u16() == 503 {
         let wait = retry_after_delay(&res);
@@ -344,20 +344,17 @@ async fn download_url_once(
     let ext = extension_for(url, media_type, content_type.as_deref());
     let dest = dest_dir.join(format!("{stem}.{ext}"));
 
-    tokio::fs::create_dir_all(dest_dir)
-        .await
-        .map_err(|e| {
-            DownloadAttemptErr::Fatal(format!("Could not create {}: {e}", dest_dir.display()))
-        })?;
+    tokio::fs::create_dir_all(dest_dir).await.map_err(|e| {
+        DownloadAttemptErr::Fatal(format!("Could not create {}: {e}", dest_dir.display()))
+    })?;
 
     let mut file = tokio::fs::File::create(&dest).await.map_err(|e| {
         DownloadAttemptErr::Fatal(format!("Could not write {}: {e}", dest.display()))
     })?;
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| {
-            DownloadAttemptErr::Fatal(format!("Download stream error: {e}"))
-        })?;
+        let chunk =
+            chunk.map_err(|e| DownloadAttemptErr::Fatal(format!("Download stream error: {e}")))?;
         file.write_all(&chunk)
             .await
             .map_err(|e| DownloadAttemptErr::Fatal(format!("Write failed: {e}")))?;
@@ -397,9 +394,7 @@ async fn download_url_authed_or_public(
                 // One forced refresh if soft-ensure still left us with a rejected JWT.
                 // Serialized in auth_store so this won't race with FE.
                 if let Ok(fresh) = crate::auth_store::force_refresh_access_token().await {
-                    match download_url_once(url, media_type, dest_dir, stem, Some(&fresh))
-                        .await
-                    {
+                    match download_url_once(url, media_type, dest_dir, stem, Some(&fresh)).await {
                         Ok(path) => return Ok(path),
                         Err(DownloadAttemptErr::Retryable { message, wait }) => {
                             return Err(DownloadAttemptErr::Retryable { message, wait });
@@ -688,7 +683,11 @@ fn emit_creation_updated(app: &AppHandle, id: &str) {
 }
 
 fn newest_first(mut items: Vec<Creation>) -> Vec<Creation> {
-    items.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+    items.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
     items
 }
 
@@ -762,11 +761,7 @@ fn preview_urls_for(creation: &Creation) -> Vec<String> {
     {
         urls.push(u.to_string());
     }
-    if let Some(u) = creation
-        .thumbnail_url
-        .as_deref()
-        .filter(|u| !u.is_empty())
-    {
+    if let Some(u) = creation.thumbnail_url.as_deref().filter(|u| !u.is_empty()) {
         urls.push(u.to_string());
     }
     if creation.media_type == "image" {
@@ -784,12 +779,7 @@ fn preview_url_for(creation: &Creation) -> Option<&str> {
         .fit_thumbnail_url
         .as_deref()
         .filter(|u| !u.is_empty())
-        .or_else(|| {
-            creation
-                .thumbnail_url
-                .as_deref()
-                .filter(|u| !u.is_empty())
-        })
+        .or_else(|| creation.thumbnail_url.as_deref().filter(|u| !u.is_empty()))
         .or_else(|| {
             if creation.media_type == "image" {
                 creation.remote_url.as_deref().filter(|u| !u.is_empty())
@@ -1245,12 +1235,7 @@ async fn download_media_batch(
                         short_download_err(&err)
                     );
                     eprintln!("[library] media queue abort: {reason}");
-                    skip_remaining_media(
-                        app,
-                        pending_iter.map(|(_, c)| c),
-                        &reason,
-                        &mut skipped,
-                    );
+                    skip_remaining_media(app, pending_iter.map(|(_, c)| c), &reason, &mut skipped);
                     break;
                 }
             }
@@ -1298,7 +1283,10 @@ fn take_next_urgent_media(q: &mut EnsureQueue) -> Option<String> {
 }
 
 fn take_next_media(q: &mut EnsureQueue) -> Option<String> {
-    let id = q.media_high.pop_front().or_else(|| q.media_low.pop_front())?;
+    let id = q
+        .media_high
+        .pop_front()
+        .or_else(|| q.media_low.pop_front())?;
     q.media_queued.remove(&id);
     Some(id)
 }

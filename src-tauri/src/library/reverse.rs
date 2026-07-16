@@ -249,18 +249,12 @@ pub struct ReversedMedia {
     pub thumb_path: Option<String>,
 }
 
-fn ensure_reversed_media(
+pub(crate) fn ensure_reversed_media(
     paths: &ParascenePaths,
     creation: &Creation,
 ) -> Result<ReversedMedia, String> {
-    let Some(local) = creation
-        .local_path
-        .as_deref()
-        .filter(|p| !p.is_empty())
-    else {
-        return Err(
-            "No local media on disk yet — wait for download, then try again.".into(),
-        );
+    let Some(local) = creation.local_path.as_deref().filter(|p| !p.is_empty()) else {
+        return Err("No local media on disk yet — wait for download, then try again.".into());
     };
     let src = path_under_root(&paths.root, local)?;
     let is_video = is_video_creation(creation, &src);
@@ -275,11 +269,7 @@ fn ensure_reversed_media(
         .ok_or_else(|| "Invalid reversed cache path".to_string())?;
     fs::create_dir_all(dir).map_err(|e| format!("Could not create reverse cache: {e}"))?;
 
-    let dest_usable = dest.is_file()
-        && dest
-            .metadata()
-            .map(|m| m.len() > 0)
-            .unwrap_or(false);
+    let dest_usable = dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
     if dest.is_file() && !dest_usable {
         let _ = fs::remove_file(&dest);
     }
@@ -295,8 +285,7 @@ fn ensure_reversed_media(
 
     if need_media || need_thumb {
         let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-            "FFmpeg is required to reverse media. Install with: brew install ffmpeg"
-                .to_string()
+            "FFmpeg is required to reverse media. Install with: brew install ffmpeg".to_string()
         })?;
 
         if need_media {

@@ -170,6 +170,25 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           key TEXT PRIMARY KEY NOT NULL,
           value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS folders (
+          id TEXT PRIMARY KEY NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS folder_items (
+          folder_id TEXT NOT NULL,
+          creation_id TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (folder_id, creation_id),
+          FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS folder_items_creation_unique
+          ON folder_items(creation_id);
         "#,
     )
     .map_err(|e| format!("Catalog migrate failed: {e}"))?;
@@ -194,6 +213,28 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     ] {
         let _ = conn.execute(ddl, []);
     }
+
+    // Folders may be missing on catalogs created before this feature.
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS folders (
+          id TEXT PRIMARY KEY NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS folder_items (
+          folder_id TEXT NOT NULL,
+          creation_id TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (folder_id, creation_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS folder_items_creation_unique
+          ON folder_items(creation_id);
+        "#,
+    );
+
     Ok(())
 }
 
@@ -455,13 +496,13 @@ pub(crate) fn get_creations_by_ids(
     }
     let all = list_creations(conn)?;
     let wanted: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-    Ok(all.into_iter().filter(|c| wanted.contains(c.id.as_str())).collect())
+    Ok(all
+        .into_iter()
+        .filter(|c| wanted.contains(c.id.as_str()))
+        .collect())
 }
 
-pub(crate) fn get_creation_by_id(
-    conn: &Connection,
-    id: &str,
-) -> Result<Option<Creation>, String> {
+pub(crate) fn get_creation_by_id(conn: &Connection, id: &str) -> Result<Option<Creation>, String> {
     let mut stmt = conn
         .prepare(&format!("{CREATION_SELECT} WHERE id = ?1 LIMIT 1"))
         .map_err(|e| e.to_string())?;
@@ -759,8 +800,8 @@ pub(crate) fn delete_creation_local(
     paths: &ParascenePaths,
     id: &str,
 ) -> Result<(), String> {
-    let creation = get_creation_by_id(conn, id)?
-        .ok_or_else(|| format!("Creation {id} not found"))?;
+    let creation =
+        get_creation_by_id(conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?;
     remove_file_under_root(&paths.media, creation.local_path.as_deref());
     remove_file_under_root(&paths.thumbs, creation.local_thumb_path.as_deref());
     let n = conn

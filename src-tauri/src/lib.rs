@@ -3,18 +3,20 @@ mod http_client;
 mod library;
 mod oauth_listener;
 
-use auth_store::{
-    auth_ensure_access_token, keychain_delete, keychain_get, keychain_set,
-};
+use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
 use http_client::{http_get_bearer, http_post_bearer, http_post_json};
 use library::{
-    library_apply_manifest, library_cache_missing_media, library_cache_missing_thumbs,
+    library_add_to_folder, library_apply_manifest, library_cache_missing_media,
+    library_cache_missing_thumbs, library_create_folder, library_delete_folder,
     library_delete_local, library_download_ids, library_download_pending, library_download_thumbs,
     library_ensure_local, library_ensure_ready, library_ensure_reversed, library_fill_thumb,
-    library_filter_counts, library_get_creation, library_import_from_disk,
+    library_filter_counts, library_get_creation, library_get_folder, library_import_from_disk,
     library_import_local_paths, library_invalidate_mismatched_thumbs, library_invalidate_thumbs,
-    library_list_creations, library_list_creations_page, library_local_fit_plan,
-    library_read_local_thumb_base64, library_sync_status,
+    library_list_creations, library_list_creations_page, library_list_filed_creation_ids,
+    library_list_folders, library_local_fit_plan, library_merge_timeline_clips,
+    library_read_local_thumb_base64, library_remove_from_folder, library_rename_folder,
+    library_sync_status, publisher_delete_render, publisher_export_render, publisher_list_renders,
+    publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, start_oauth_listener};
 use tauri::Manager;
@@ -70,7 +72,20 @@ pub fn run() {
             library_local_fit_plan,
             library_fill_thumb,
             library_read_local_thumb_base64,
-            library_ensure_reversed
+            library_ensure_reversed,
+            library_merge_timeline_clips,
+            library_list_folders,
+            library_list_filed_creation_ids,
+            library_get_folder,
+            library_create_folder,
+            library_rename_folder,
+            library_add_to_folder,
+            library_remove_from_folder,
+            library_delete_folder,
+            publisher_list_renders,
+            publisher_render_timeline,
+            publisher_delete_render,
+            publisher_export_render
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

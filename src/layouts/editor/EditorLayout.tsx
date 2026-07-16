@@ -1,11 +1,23 @@
 import {
+  useMemo,
   useEffect,
+  useCallback,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useShell } from "../../app/ShellProvider";
+import {
+  deleteLocal,
+  mergeTimelineClips,
+  type MergeProgress,
+} from "../../library/catalogClient";
+import {
+  listFolders,
+  type LibraryFolder,
+} from "../../library/folderClient";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
 import { AssistantPane } from "./AssistantPane";
 import {
@@ -25,6 +37,11 @@ import {
 } from "./stagedClip";
 import { TimelinePane } from "./TimelinePane";
 import { timelineSequenceDuration } from "./timelineCompose";
+import { getMergeableTimelineSelection } from "./timelineMerge";
+import {
+  TimelineMergeModal,
+  type TimelineMergeModalState,
+} from "./TimelineMergeModal";
 import type { TimelineClip } from "../../project/types";
 import { useConfirm } from "../../ui/ConfirmDialog";
 
@@ -42,6 +59,11 @@ function newTimelineClipId(): string {
     return crypto.randomUUID();
   }
   return `clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatClipDuration(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0.0s";
+  return `${(Math.round(sec * 10) / 10).toFixed(1)}s`;
 }
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
@@ -71,6 +93,9 @@ type DragState = {
 export function EditorLayout() {
   const {
     project,
+    addCreationsToOpenProject,
+    removeCreationsFromOpenProject,
+    removeFoldersFromOpenProject,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
@@ -88,6 +113,7 @@ export function EditorLayout() {
     loadEditorLayoutPrefs(),
   );
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   /** Primary selected clip (drives preview staging). */
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   /** All selected timeline clips (includes primary). */
@@ -99,6 +125,10 @@ export function EditorLayout() {
   } | null>(null);
   const [previewVolume, setPreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
+  const [projectFolders, setProjectFolders] = useState<LibraryFolder[]>([]);
+  const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
+    null,
+  );
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
   const [assetsDrawerOpen, setAssetsDrawerOpen] = useState(false);
   const [assistantDrawerOpen, setAssistantDrawerOpen] = useState(false);
@@ -110,6 +140,7 @@ export function EditorLayout() {
   prefsRef.current = prefs;
   /** Internal clipboard for Cmd/Ctrl+C / Cmd/Ctrl+V of timeline clips. */
   const clipClipboardRef = useRef<TimelineClip[]>([]);
+  const mergeRunningRef = useRef(false);
 
   const clearClipSelection = () => {
     setSelectedClipId(null);
@@ -120,6 +151,7 @@ export function EditorLayout() {
 
   const applyPrimaryClip = (clip: TimelineClip) => {
     setSelectedAssetId(null);
+    setSelectedAssetIds([]);
     setSelectedClipId(clip.id);
     const draft = timelineClipToStagedDraft(clip);
     setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
@@ -144,6 +176,31 @@ export function EditorLayout() {
   const displayPlayheadSec = timelinePlaying
     ? livePlayheadSec
     : project.timelinePlayheadSec;
+  const mergeSelection = useMemo(
+    () => getMergeableTimelineSelection(project.timeline, selectedClipIds),
+    [project.timeline, selectedClipIds],
+  );
+
+  const projectFolderIdsKey = project.folderIds.join("\0");
+
+  const refreshProjectFolders = useCallback(async () => {
+    const wanted = new Set(project.folderIds);
+    if (wanted.size === 0) {
+      setProjectFolders([]);
+      return;
+    }
+    try {
+      const all = await listFolders();
+      setProjectFolders(all.filter((folder) => wanted.has(folder.id)));
+    } catch (error) {
+      console.error("Failed to load project folders", error);
+      setProjectFolders([]);
+    }
+  }, [project.folderIds]);
+
+  useEffect(() => {
+    void refreshProjectFolders();
+  }, [refreshProjectFolders, projectFolderIdsKey, project.assets.length]);
 
   const pauseTimelinePlayback = () => {
     if (!timelinePlaying) return;
@@ -316,6 +373,7 @@ export function EditorLayout() {
       const primary = pasted[0];
       if (primary) {
         setSelectedAssetId(null);
+        setSelectedAssetIds([]);
         setSelectedClipId(primary.id);
         setSelectedClipIds(pasted.map((c) => c.id));
         const draft = timelineClipToStagedDraft(primary);
@@ -341,6 +399,7 @@ export function EditorLayout() {
       const clip = project.timeline.find((c) => c.id === savedClipId);
       if (clip) {
         setSelectedAssetId(null);
+        setSelectedAssetIds([]);
         setSelectedClipId(clip.id);
         setSelectedClipIds([clip.id]);
         const draft = timelineClipToStagedDraft(clip);
@@ -357,9 +416,11 @@ export function EditorLayout() {
       setSelectedClipIds([]);
       setClipStagingSeed(null);
       setSelectedAssetId(savedAssetId);
+      setSelectedAssetIds([savedAssetId]);
       return;
     }
     setSelectedAssetId(null);
+    setSelectedAssetIds([]);
     setSelectedClipId(null);
     setSelectedClipIds([]);
     setClipStagingSeed(null);
@@ -394,12 +455,45 @@ export function EditorLayout() {
     }
   }, [project.timeline, selectedClipId, selectedClipIds]);
 
-  // Drop local asset selection if the asset left the project.
+  // Drop local asset selections if assets left the project.
   useEffect(() => {
-    if (!selectedAssetId) return;
-    if (project.assets.some((asset) => asset.id === selectedAssetId)) return;
-    setSelectedAssetId(null);
-  }, [project.assets, selectedAssetId]);
+    if (selectedAssetIds.length === 0 && !selectedAssetId) return;
+    const alive = new Set(project.assets.map((asset) => asset.id));
+    const next = selectedAssetIds.filter((id) => alive.has(id));
+    if (
+      next.length === selectedAssetIds.length &&
+      (!selectedAssetId || alive.has(selectedAssetId))
+    ) {
+      return;
+    }
+    const primary =
+      selectedAssetId && next.includes(selectedAssetId)
+        ? selectedAssetId
+        : (next[next.length - 1] ?? null);
+    setSelectedAssetIds(next);
+    setSelectedAssetId(primary);
+    setOpenProjectSelectedAssetId(primary);
+  }, [
+    project.assets,
+    selectedAssetId,
+    selectedAssetIds,
+    setOpenProjectSelectedAssetId,
+  ]);
+
+  useEffect(() => {
+    let offProgress: (() => void) | undefined;
+    void listen<MergeProgress>("library-merge-progress", (event) => {
+      setMergeModal((prev) => {
+        if (!prev || prev.phase !== "running") return prev;
+        return { ...prev, progress: event.payload };
+      });
+    }).then((off) => {
+      offProgress = off;
+    });
+    return () => {
+      offProgress?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -533,13 +627,14 @@ export function EditorLayout() {
     else toggleRight();
   };
 
-  const selectAsset = (id: string) => {
+  const selectAssets = (ids: string[], primaryId: string | null) => {
     pauseTimelinePlayback();
     setSelectedClipId(null);
     setSelectedClipIds([]);
     setClipStagingSeed(null);
-    setSelectedAssetId(id);
-    setOpenProjectSelectedAssetId(id);
+    setSelectedAssetIds(ids);
+    setSelectedAssetId(primaryId);
+    setOpenProjectSelectedAssetId(primaryId);
   };
 
   const selectClip = (
@@ -582,6 +677,7 @@ export function EditorLayout() {
     setSelectedClipIds([]);
     setClipStagingSeed(null);
     setSelectedAssetId(null);
+    setSelectedAssetIds([]);
     setOpenProjectTimelineMonitorActive(true);
   };
 
@@ -591,6 +687,201 @@ export function EditorLayout() {
       clip.id === clipId ? applyDraftToTimelineClip(clip, draft) : clip,
     );
     setOpenProjectTimeline(next);
+  };
+
+  const openMergeModal = () => {
+    if (!mergeSelection || mergeRunningRef.current) return;
+    setMergeModal({
+      phase: "confirm",
+      clipCount: mergeSelection.clips.length,
+    });
+  };
+
+  const closeMergeModal = () => {
+    if (mergeRunningRef.current) return;
+    setMergeModal(null);
+  };
+
+  const runMergeSelectedClips = async () => {
+    if (!mergeSelection || mergeRunningRef.current) return;
+
+    pauseTimelinePlayback();
+    mergeRunningRef.current = true;
+    setMergeModal({
+      phase: "running",
+      clipCount: mergeSelection.clips.length,
+      progress: {
+        phase: "prepare",
+        done: 0,
+        total: mergeSelection.clips.length,
+      },
+    });
+
+    const sourceSelection = mergeSelection;
+    try {
+      const creation = await mergeTimelineClips(
+        sourceSelection.clips.map((clip) => ({
+          assetId: clip.assetId ?? "",
+          inSec: clip.inSec ?? 0,
+          outSec:
+            clip.outSec ??
+            (clip.inSec ?? 0) + Math.max(0.1, clip.endSec - clip.startSec),
+          reverse: Boolean(clip.reverse),
+        })),
+      );
+      addCreationsToOpenProject([creation.id]);
+
+      const duration = Math.max(
+        0.1,
+        sourceSelection.endSec - sourceSelection.startSec,
+      );
+      const mergedClip: TimelineClip = {
+        id: newTimelineClipId(),
+        label: formatClipDuration(duration),
+        startSec: sourceSelection.startSec,
+        endSec: sourceSelection.endSec,
+        assetId: creation.id,
+        thumbUrl: null,
+        lane: "video",
+        kind: "video",
+        inSec: 0,
+        outSec: duration,
+        includeAudio: false,
+        reverse: false,
+        transform: "hold",
+        framing: "fit",
+      };
+
+      const selectedIds = new Set(sourceSelection.clips.map((clip) => clip.id));
+      let inserted = false;
+      const nextTimeline = project.timeline.flatMap((clip) => {
+        if (!selectedIds.has(clip.id)) return [clip];
+        if (inserted) return [];
+        inserted = true;
+        return [mergedClip];
+      });
+      setOpenProjectTimeline(nextTimeline);
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
+      setSelectedClipId(mergedClip.id);
+      setSelectedClipIds([mergedClip.id]);
+      const draft = timelineClipToStagedDraft(mergedClip);
+      setClipStagingSeed(draft ? { clipId: mergedClip.id, draft } : null);
+      setOpenProjectSelectedTimelineClipId(mergedClip.id);
+      mergeRunningRef.current = false;
+      setMergeModal(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      mergeRunningRef.current = false;
+      setMergeModal({
+        phase: "error",
+        clipCount: sourceSelection.clips.length,
+        message,
+      });
+    }
+  };
+
+  const assetsUsedOnTimeline = (assetIds: readonly string[]) => {
+    const selected = new Set(assetIds);
+    return new Set(
+      project.timeline
+        .filter((clip) => clip.assetId && selected.has(clip.assetId))
+        .map((clip) => clip.assetId as string),
+    );
+  };
+
+  const removeAssetsFromProject = async (assetIds: string[]) => {
+    const usedIds = assetsUsedOnTimeline(assetIds);
+    if (usedIds.size > 0) {
+      await confirm({
+        title: usedIds.size === 1 ? "Asset in use" : "Assets in use",
+        message:
+          usedIds.size === 1
+            ? "One selected asset is used on the timeline. Remove its clips first, then try again."
+            : `${usedIds.size} selected assets are used on the timeline. Remove their clips first, then try again.`,
+        confirmLabel: "OK",
+        hideCancel: true,
+      });
+      return;
+    }
+    const count = assetIds.length;
+    const ok = await confirm({
+      title: count === 1 ? "Remove from project?" : `Remove ${count} assets?`,
+      message:
+        count === 1
+          ? "Do you want to remove this asset from the project?"
+          : `Do you want to remove these ${count} assets from the project?`,
+      confirmLabel: "Remove",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    removeCreationsFromOpenProject(assetIds);
+    if (selectedAssetId && assetIds.includes(selectedAssetId)) {
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
+      setOpenProjectSelectedAssetId(null);
+    }
+  };
+
+  const deleteAssetsFromProjectAndLibrary = async (assetIds: string[]) => {
+    const usedIds = assetsUsedOnTimeline(assetIds);
+    if (usedIds.size > 0) {
+      await confirm({
+        title: usedIds.size === 1 ? "Asset in use" : "Assets in use",
+        message:
+          usedIds.size === 1
+            ? "One selected asset is used on the timeline. Remove its clips first, then try again."
+            : `${usedIds.size} selected assets are used on the timeline. Remove their clips first, then try again.`,
+        confirmLabel: "OK",
+        hideCancel: true,
+      });
+      return;
+    }
+    const count = assetIds.length;
+    const ok = await confirm({
+      title: count === 1 ? "Delete asset?" : `Delete ${count} assets?`,
+      message:
+        count === 1
+          ? "Do you want to remove this from the project and also delete it from the library?"
+          : `Do you want to remove these ${count} assets from the project and also delete them from the library?`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+    const results = await Promise.allSettled(
+      assetIds.map((assetId) => deleteLocal(assetId)),
+    );
+    const deletedIds = assetIds.filter(
+      (_, index) => results[index]?.status === "fulfilled",
+    );
+    const failed = results.filter((result) => result.status === "rejected");
+    if (deletedIds.length > 0) {
+      removeCreationsFromOpenProject(deletedIds);
+    }
+    if (deletedIds.includes(selectedAssetId ?? "")) {
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
+      setOpenProjectSelectedAssetId(null);
+    }
+    if (failed.length > 0) {
+      const first = failed[0];
+      const detail =
+        first?.status === "rejected"
+          ? first.reason instanceof Error
+            ? first.reason.message
+            : String(first.reason)
+          : "";
+      await confirm({
+        title:
+          failed.length === 1
+            ? "One asset could not be deleted"
+            : `${failed.length} assets could not be deleted`,
+        message: detail,
+        confirmLabel: "OK",
+        hideCancel: true,
+      });
+    }
   };
 
   // Source monitor: assets panel selection, or the selected clip's source asset.
@@ -605,15 +896,26 @@ export function EditorLayout() {
       {showAssetsPane ? (
         <AssetBrowserPane
           assets={project.assets}
+          folders={projectFolders}
           filter={assetFilter}
           selectedId={selectedAssetId}
+          selectedIds={selectedAssetIds}
           onFilterChange={setAssetFilter}
-          onSelect={selectAsset}
+          onSelectionChange={selectAssets}
           onCollapse={collapseAssets}
           drawer={narrow}
           previewActive={
             monitorMode === "source" && Boolean(selectedAssetId)
           }
+          onDeleteAssets={(ids) => {
+            void deleteAssetsFromProjectAndLibrary(ids);
+          }}
+          onRemoveAssets={(ids) => {
+            void removeAssetsFromProject(ids);
+          }}
+          onRemoveFolders={(ids) => {
+            removeFoldersFromOpenProject(ids);
+          }}
         />
       ) : null}
 
@@ -710,7 +1012,21 @@ export function EditorLayout() {
         onTogglePlay={toggleTimelinePlaying}
         volume={previewVolume}
         onVolumeChange={setPreviewVolume}
+        canMergeSelected={Boolean(mergeSelection)}
+        onMergeSelected={openMergeModal}
+        mergeBusy={mergeModal?.phase === "running"}
       />
+
+      {mergeModal ? (
+        <TimelineMergeModal
+          state={mergeModal}
+          onCancel={closeMergeModal}
+          onConfirm={() => {
+            void runMergeSelectedClips();
+          }}
+          onDismissError={closeMergeModal}
+        />
+      ) : null}
 
       {showAssetsDrawer || showAssistantDrawer ? (
         <button

@@ -618,10 +618,29 @@ function PersistentVideo({
     };
   }, [active, visible, warm, sourceSec]);
 
-  // Active: align to commanded source, then signal ready (parent flips visible).
-  // If already visible, seek in place — element holds prior frame during seek.
+  // Scrub / pause: follow commanded sourceSec. Do NOT run this while playing —
+  // playhead ticks every frame and would interrupt free-running media.
   useEffect(() => {
-    if (!active || !warm) return;
+    if (!active || !warm || playing) return;
+    const el = ref.current;
+    if (!el) return;
+    let cancelled = false;
+    void (async () => {
+      const ok = await alignToCommand(el, () => cancelled);
+      if (cancelled || !ok) return;
+      el.pause();
+      onReadyRef.current(decoderKey);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, warm, playing, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
+
+  // Cut / activate while playing: one align at the commanded in-point, then
+  // free-run. Intentionally omits sourceSec so playhead ticks don't re-seek.
+  useEffect(() => {
+    if (!active || !warm || !playing) return;
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
@@ -629,21 +648,17 @@ function PersistentVideo({
       const ok = await alignToCommand(el, () => cancelled);
       if (cancelled || !ok) return;
       onReadyRef.current(decoderKey);
-      if (playingRef.current) {
-        await waitForCanPlay(el);
-        if (cancelled || !playingRef.current || !activeRef.current) return;
-        void el.play().catch(() => {});
-      } else {
-        el.pause();
-      }
+      await waitForCanPlay(el);
+      if (cancelled || !playingRef.current || !activeRef.current) return;
+      void el.play().catch(() => {});
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, warm, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
+  }, [active, warm, playing, clipId, mediaSeekEpoch, decoderKey]);
 
-  // Play / pause while remaining the active + visible decoder.
+  // Keep play/pause in sync once this decoder is the painted one.
   useEffect(() => {
     const el = ref.current;
     if (!el || !active || !visible || !warm) return;
@@ -651,12 +666,9 @@ function PersistentVideo({
       el.pause();
       return;
     }
+    if (!el.paused) return;
     let cancelled = false;
     void (async () => {
-      if (Math.abs(el.currentTime - sourceSecRef.current) > 0.25) {
-        const ok = await alignToCommand(el, () => cancelled);
-        if (cancelled || !ok) return;
-      }
       await waitForCanPlay(el);
       if (cancelled || !playingRef.current) return;
       void el.play().catch(() => {});
@@ -664,8 +676,7 @@ function PersistentVideo({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, active, visible, warm, mediaSeekEpoch]);
+  }, [playing, active, visible, warm]);
 
   // Inactive but still visible = hold last frame until the incoming decoder is ready.
   useEffect(() => {

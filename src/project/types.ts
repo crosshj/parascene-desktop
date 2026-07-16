@@ -51,6 +51,8 @@ export type Project = {
   aspectRatio: ProjectAspectRatio;
   scenes: Scene[];
   assets: ProjectAsset[];
+  /** Local Library folder ids attached to this project. */
+  folderIds: string[];
   timeline: TimelineClip[];
   /** Selected timeline clip id (editor); null when none. */
   selectedTimelineClipId: string | null;

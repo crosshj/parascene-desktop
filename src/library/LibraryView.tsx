@@ -56,11 +56,26 @@ import {
   ensureLocal,
   getCatalogFilterCounts,
   getCreation,
+  getCreations,
   getSyncStatus,
   importFromDisk,
   listCreationsPage,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
+import { FolderCard } from "./FolderCard";
+import { FolderCreateModal } from "./FolderCreateModal";
+import { FolderEditModal } from "./FolderEditModal";
+import { FolderPickModal } from "./FolderPickModal";
+import {
+  addToFolder,
+  createFolder,
+  listFiledCreationIds,
+  listFolders,
+  omitFiledCreations,
+  removeFromFolder,
+  renameFolder,
+  type LibraryFolder,
+} from "./folderClient";
 import { VirtualCreationsGrid } from "./VirtualCreationsGrid";
 import {
   CREATIONS_LOAD_MORE_PAGES,
@@ -553,11 +568,24 @@ function CreationsPanel({
     project,
     createProject,
     addCreationsToOpenProject,
+    addFoldersToOpenProject,
     creationsFilterId,
     setCreationsFilterId,
   } = useShell();
   const [active, setActive] = useState<Creation | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [folders, setFolders] = useState<LibraryFolder[]>([]);
+  const [filedIds, setFiledIds] = useState<Set<string>>(() => new Set());
+  const [folderViewId, setFolderViewId] = useState<string | null>(null);
+  /** Members loaded by id — not the paginated home catalog. */
+  const [folderMembers, setFolderMembers] = useState<Creation[] | null>(null);
+  const [folderMembersLoading, setFolderMembersLoading] = useState(false);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [pickFolderOpen, setPickFolderOpen] = useState(false);
+  const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
   /** Sidebar highlight — updates immediately on click. */
   const [sidebarFilters, setSidebarFilters] = useState<CreationFilterToggles>(
     () => togglesFromFilterId(creationsFilterId),
@@ -588,7 +616,85 @@ function CreationsPanel({
   const [deferredKeepIds, setDeferredKeepIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const empty = creations !== null && creations.length === 0;
+  const empty = creations !== null && creations.length === 0 && folders.length === 0;
+
+  const refreshFolders = useCallback(async () => {
+    try {
+      const [nextFolders, filed] = await Promise.all([
+        listFolders(),
+        listFiledCreationIds(),
+      ]);
+      setFolders(nextFolders);
+      setFiledIds(new Set(filed));
+      setFolderViewId((current) => {
+        if (!current) return null;
+        return nextFolders.some((folder) => folder.id === current)
+          ? current
+          : null;
+      });
+    } catch (error) {
+      console.error("Failed to load folders", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshFolders();
+  }, [refreshFolders, creations?.length, total]);
+
+  const folderView = useMemo(
+    () => folders.find((folder) => folder.id === folderViewId) ?? null,
+    [folderViewId, folders],
+  );
+
+  const folderMemberIdsKey = folderView?.memberIds.join("\0") ?? "";
+
+  useEffect(() => {
+    if (!folderView) {
+      setFolderMembers(null);
+      setFolderMembersLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setFolderMembersLoading(true);
+    void getCreations(folderView.memberIds)
+      .then((rows) => {
+        if (cancelled) return;
+        setFolderMembers(rows);
+        setFolderMembersLoading(false);
+      })
+      .catch((error) => {
+        console.error("Failed to load folder members", error);
+        if (cancelled) return;
+        setFolderMembers([]);
+        setFolderMembersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderView, folderMemberIdsKey]);
+
+  useEffect(() => {
+    if (!folderView) return;
+    const memberSet = new Set(folderView.memberIds);
+    let unlisten: (() => void) | undefined;
+    void listen<Creation>("library-creation-updated", (event) => {
+      const row = event.payload;
+      if (!memberSet.has(row.id)) return;
+      setFolderMembers((prev) => {
+        if (!prev) return prev;
+        const index = prev.findIndex((c) => c.id === row.id);
+        if (index < 0) return prev;
+        const next = [...prev];
+        next[index] = row;
+        return next;
+      });
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [folderView, folderMemberIdsKey]);
 
   const inProjectIds = useMemo(() => {
     if (!openProjectId) return new Set<string>();
@@ -642,8 +748,19 @@ function CreationsPanel({
 
   const visibleCreations = useMemo(() => {
     if (gridBlank || !creations) return [];
+    if (folderView) {
+      if (!folderMembers) return [];
+      return filterCreationsVisible(
+        folderMembers,
+        gridFilters,
+        selectedIds,
+        deferredKeepIds,
+        inProjectIds,
+      );
+    }
+    const unfiled = omitFiledCreations(creations, filedIds);
     return filterCreationsVisible(
-      creations,
+      unfiled,
       gridFilters,
       selectedIds,
       deferredKeepIds,
@@ -652,13 +769,24 @@ function CreationsPanel({
   }, [
     creations,
     deferredKeepIds,
+    filedIds,
+    folderMembers,
+    folderView,
     gridBlank,
     gridFilters,
     inProjectIds,
     selectedIds,
   ]);
 
-  const filterEmpty = !gridBlank && visibleCreations.length === 0;
+  const homeFolders = useMemo(() => {
+    if (folderView || gridBlank) return [];
+    return folders;
+  }, [folderView, folders, gridBlank]);
+
+  const filterEmpty =
+    !gridBlank &&
+    !folderMembersLoading &&
+    visibleCreations.length === 0;
   const [showFilterEmpty, setShowFilterEmpty] = useState(false);
   useEffect(() => {
     if (!filterEmpty) {
@@ -738,7 +866,17 @@ function CreationsPanel({
 
   const onClearSelection = useCallback(() => {
     setSelectedIds(new Set());
+    setSelectedFolderIds(new Set());
     setDeferredKeepIds(new Set());
+  }, []);
+
+  const onToggleFolderSelect = useCallback((folder: LibraryFolder) => {
+    setSelectedFolderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(folder.id)) next.delete(folder.id);
+      else next.add(folder.id);
+      return next;
+    });
   }, []);
 
   const onNewProjectFromSelection = useCallback(() => {
@@ -750,6 +888,7 @@ function CreationsPanel({
         : `Project (${ids.length} assets)`;
     createProject(title, ids);
     setSelectedIds(new Set());
+    setSelectedFolderIds(new Set());
     setDeferredKeepIds(new Set());
   }, [createProject, selectedIds]);
 
@@ -759,6 +898,75 @@ function CreationsPanel({
     setSelectedIds(new Set());
     setDeferredKeepIds(new Set());
   }, [addCreationsToOpenProject, openProjectId, selectedIds]);
+
+  const onCreateFolderFromSelection = useCallback(
+    async (title: string) => {
+      if (selectedIds.size === 0) return;
+      try {
+        await createFolder(title, [...selectedIds]);
+        setCreateFolderOpen(false);
+        setSelectedIds(new Set());
+        setDeferredKeepIds(new Set());
+        await refreshFolders();
+      } catch (error) {
+        console.error(error);
+      }
+    },
+    [refreshFolders, selectedIds],
+  );
+
+  const onAddSelectionToFolder = useCallback(
+    async (folder: LibraryFolder) => {
+      if (selectedIds.size === 0) return;
+      try {
+        await addToFolder(folder.id, [...selectedIds]);
+        setPickFolderOpen(false);
+        setSelectedIds(new Set());
+        setDeferredKeepIds(new Set());
+        await refreshFolders();
+      } catch (error) {
+        console.error(error);
+      }
+    },
+    [refreshFolders, selectedIds],
+  );
+
+  const onRemoveSelectionFromFolder = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    try {
+      await removeFromFolder([...selectedIds]);
+      setSelectedIds(new Set());
+      setDeferredKeepIds(new Set());
+      await refreshFolders();
+    } catch (error) {
+      console.error(error);
+    }
+  }, [refreshFolders, selectedIds]);
+
+  const onAddSelectedFoldersToProject = useCallback(() => {
+    if (!openProjectId || selectedFolderIds.size === 0) return;
+    const chosen = folders.filter((folder) => selectedFolderIds.has(folder.id));
+    const folderIds = chosen.map((folder) => folder.id);
+    const memberIds = [
+      ...new Set(chosen.flatMap((folder) => folder.memberIds)),
+    ];
+    addFoldersToOpenProject(folderIds, memberIds);
+    setSelectedFolderIds(new Set());
+  }, [addFoldersToOpenProject, folders, openProjectId, selectedFolderIds]);
+
+  const onSaveFolderEdit = useCallback(
+    async (title: string, description: string) => {
+      if (!editFolder) return;
+      try {
+        await renameFolder(editFolder.id, title, description);
+        setEditFolder(null);
+        await refreshFolders();
+      } catch (error) {
+        console.error(error);
+      }
+    },
+    [editFolder, refreshFolders],
+  );
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -854,9 +1062,18 @@ function CreationsPanel({
             width={sidebarWidth}
             onToggle={onToggleFilter}
             selectedCount={selectedIds.size}
+            selectedFolderCount={selectedFolderIds.size}
             hasOpenProject={Boolean(openProjectId)}
+            inFolderView={Boolean(folderView)}
+            hasFolders={folders.length > 0}
             onNewProject={onNewProjectFromSelection}
             onAddToProject={onAddSelectionToProject}
+            onNewFolder={() => setCreateFolderOpen(true)}
+            onAddToFolder={() => setPickFolderOpen(true)}
+            onRemoveFromFolder={() => {
+              void onRemoveSelectionFromFolder();
+            }}
+            onAddFolderToProject={onAddSelectedFoldersToProject}
             onClearSelection={onClearSelection}
             onAddFromDisk={onImportFromDisk}
             importing={importing}
@@ -879,40 +1096,100 @@ function CreationsPanel({
             }}
           />
           <div className="creations-split-main">
-            {gridBlank || (filterEmpty && !showFilterEmpty) ? (
+            {folderView ? (
+              <div className="library-folder-breadcrumb" aria-label="Folder">
+                <button
+                  type="button"
+                  className="library-folder-home"
+                  aria-label="Library home"
+                  onClick={() => setFolderViewId(null)}
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M12 3 3 10h2v9h5v-5h4v5h5v-9h2z"
+                    />
+                  </svg>
+                </button>
+                <span className="library-folder-crumb-sep" aria-hidden>
+                  ›
+                </span>
+                <span className="library-folder-crumb-name">
+                  {folderView.title}
+                </span>
+                <button
+                  type="button"
+                  className="library-folder-edit"
+                  aria-label="Edit folder"
+                  onClick={() => setEditFolder(folderView)}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
+                    />
+                  </svg>
+                </button>
+              </div>
+            ) : null}
+            {gridBlank ||
+            folderMembersLoading ||
+            (filterEmpty && !showFilterEmpty && homeFolders.length === 0) ? (
               <div
                 className="creations-grid-blank"
-                aria-busy={gridBlank || undefined}
+                aria-busy={
+                  gridBlank || folderMembersLoading || undefined
+                }
               />
-            ) : showFilterEmpty ? (
+            ) : showFilterEmpty && homeFolders.length === 0 ? (
               <CreationsFilterEmpty />
             ) : (
-              <VirtualCreationsGrid
-                creations={visibleCreations}
-                selectedIds={selectedIds}
-                dimmedIds={dimmedIds}
-                inProjectIds={inProjectIds}
-                layoutResetKey={gridFilterKey}
-                onOpen={(creation) => {
-                  setActive(creation);
-                  if (
-                    creation.downloadState !== "local" ||
-                    !creation.localPath
-                  ) {
-                    void ensureLocal([creation.id], {
-                      fullMedia: true,
-                      urgent: true,
-                    });
-                  }
-                }}
-                onToggleSelect={onToggleSelect}
-                onNearEnd={() => {
-                  // Selection only comes from shift-clicks on already-loaded cards.
-                  // Paging while Filtered→Selected keeps load-more firing forever.
-                  if (gridFilterKey === "selected") return;
-                  onLoadMore();
-                }}
-              />
+              <>
+                {homeFolders.length > 0 ? (
+                  <div className="library-folder-grid" aria-label="Folders">
+                    {homeFolders.map((folder) => (
+                      <FolderCard
+                        key={folder.id}
+                        folder={folder}
+                        selected={selectedFolderIds.has(folder.id)}
+                        onOpen={(next) => {
+                          setFolderViewId(next.id);
+                          setSelectedIds(new Set());
+                          setSelectedFolderIds(new Set());
+                        }}
+                        onToggleSelect={onToggleFolderSelect}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {visibleCreations.length > 0 || folderView ? (
+                  <VirtualCreationsGrid
+                    creations={visibleCreations}
+                    selectedIds={selectedIds}
+                    dimmedIds={dimmedIds}
+                    inProjectIds={inProjectIds}
+                    layoutResetKey={`${gridFilterKey}:${folderViewId ?? "home"}`}
+                    onOpen={(creation) => {
+                      setActive(creation);
+                      if (
+                        creation.downloadState !== "local" ||
+                        !creation.localPath
+                      ) {
+                        void ensureLocal([creation.id], {
+                          fullMedia: true,
+                          urgent: true,
+                        });
+                      }
+                    }}
+                    onToggleSelect={onToggleSelect}
+                    onNearEnd={() => {
+                      if (gridFilterKey === "selected") return;
+                      if (folderView) return;
+                      onLoadMore();
+                    }}
+                  />
+                ) : null}
+              </>
             )}
             {active ? (
               <CreationLightbox
@@ -921,6 +1198,32 @@ function CreationsPanel({
                 }
                 onClose={() => setActive(null)}
                 onDeleted={() => setActive(null)}
+              />
+            ) : null}
+            {createFolderOpen ? (
+              <FolderCreateModal
+                onCancel={() => setCreateFolderOpen(false)}
+                onCreate={(title) => {
+                  void onCreateFolderFromSelection(title);
+                }}
+              />
+            ) : null}
+            {pickFolderOpen ? (
+              <FolderPickModal
+                folders={folders}
+                onCancel={() => setPickFolderOpen(false)}
+                onPick={(folder) => {
+                  void onAddSelectionToFolder(folder);
+                }}
+              />
+            ) : null}
+            {editFolder ? (
+              <FolderEditModal
+                folder={editFolder}
+                onCancel={() => setEditFolder(null)}
+                onSave={(title, description) => {
+                  void onSaveFolderEdit(title, description);
+                }}
               />
             ) : null}
           </div>

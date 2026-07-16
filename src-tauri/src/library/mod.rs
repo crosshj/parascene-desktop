@@ -1,8 +1,11 @@
 mod catalog;
 mod download;
 mod ffmpeg;
+mod folders;
 mod import_local;
+mod merge;
 mod paths;
+mod render;
 mod reverse;
 mod thumb_fill;
 
@@ -15,7 +18,17 @@ pub use download::{
     library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,
     library_invalidate_mismatched_thumbs, library_local_fit_plan,
 };
+pub use folders::{
+    library_add_to_folder, library_create_folder, library_delete_folder, library_get_folder,
+    library_list_filed_creation_ids, library_list_folders, library_remove_from_folder,
+    library_rename_folder,
+};
 pub use import_local::{library_import_from_disk, library_import_local_paths};
+pub use merge::library_merge_timeline_clips;
+pub use render::{
+    publisher_delete_render, publisher_export_render, publisher_list_renders,
+    publisher_render_timeline,
+};
 pub use reverse::library_ensure_reversed;
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 

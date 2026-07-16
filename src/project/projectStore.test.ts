@@ -4,6 +4,9 @@ import {
   createStoredProject,
   loadStoredProjects,
   mergeCreationIds,
+  mergeFolderIds,
+  removeCreationIds,
+  removeFolderIds,
   renameStoredProject,
   saveStoredProjects,
   setStoredProjectAspectRatio,
@@ -35,6 +38,49 @@ describe("projectStore", () => {
     const a = createStoredProject("Demo", ["c1"]);
     const merged = mergeCreationIds(a, ["c1", "c2"]);
     expect(merged.creationIds).toEqual(["c1", "c2"]);
+  });
+
+  it("merges folder ids and member creation ids", () => {
+    const a = createStoredProject("Demo", ["c1"]);
+    const merged = mergeFolderIds(a, ["f1"], ["c1", "c2", "c3"]);
+    expect(merged.folderIds).toEqual(["f1"]);
+    expect(merged.creationIds).toEqual(["c1", "c2", "c3"]);
+    const again = mergeFolderIds(merged, ["f1", "f2"], ["c3"]);
+    expect(again.folderIds).toEqual(["f1", "f2"]);
+    expect(again.creationIds).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("removes folder ids without removing member creations", () => {
+    let a = createStoredProject("Demo", ["c1", "c2"]);
+    a = mergeFolderIds(a, ["f1"], ["c2"]);
+    const next = removeFolderIds(a, ["f1"]);
+    expect(next.folderIds).toEqual([]);
+    expect(next.creationIds).toEqual(["c1", "c2"]);
+  });
+
+  it("defaults missing folder ids when loading older projects", () => {
+    localStorage.setItem(
+      PROJECTS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: "old",
+          title: "Legacy",
+          creationIds: ["c1"],
+          updatedAt: "2020-01-01T00:00:00.000Z",
+        },
+      ]),
+    );
+    const loaded = loadStoredProjects();
+    expect(loaded[0].folderIds).toEqual([]);
+    expect(storedProjectToUi(loaded[0]).folderIds).toEqual([]);
+  });
+
+  it("removes creation ids and clears selected asset when needed", () => {
+    let a = createStoredProject("Demo", ["c1", "c2"]);
+    a = setStoredProjectSelectedAssetId(a, "c1");
+    const next = removeCreationIds(a, ["c1"]);
+    expect(next.creationIds).toEqual(["c2"]);
+    expect(next.selectedAssetId).toBeNull();
   });
 
   it("renames a project", () => {

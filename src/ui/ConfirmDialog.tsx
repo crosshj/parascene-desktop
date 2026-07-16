@@ -14,6 +14,8 @@ export type ConfirmOptions = {
   message: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** Hide the cancel button (alert-style: only OK). */
+  hideCancel?: boolean;
   /** Emphasize the confirm action as destructive. */
   danger?: boolean;
 };
@@ -60,7 +62,8 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        close(false);
+        // Alert-style dialogs treat Escape as acknowledge.
+        close(pending.hideCancel ? true : false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -76,7 +79,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         <div
           className="confirm-dialog-backdrop"
           role="presentation"
-          onClick={() => close(false)}
+          onClick={() => close(pending.hideCancel ? true : false)}
         >
           <div
             className="confirm-dialog"
@@ -91,13 +94,15 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               {pending.message}
             </p>
             <div className="confirm-dialog-actions">
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => close(false)}
-              >
-                {pending.cancelLabel ?? "Cancel"}
-              </button>
+              {pending.hideCancel ? null : (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => close(false)}
+                >
+                  {pending.cancelLabel ?? "Cancel"}
+                </button>
+              )}
               <button
                 type="button"
                 className={pending.danger ? "btn btn-danger" : "btn btn-primary"}

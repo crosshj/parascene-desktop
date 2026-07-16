@@ -9,6 +9,8 @@ export type StoredProject = {
   id: string;
   title: string;
   creationIds: string[];
+  /** Local Library folder ids attached to this project; omitted on older projects → []. */
+  folderIds?: string[];
   /** Creative output frame; omitted on older stored projects → default. */
   aspectRatio?: ProjectAspectRatio;
   /** Editor timeline clips; omitted on older stored projects → []. */
@@ -156,6 +158,15 @@ function normalizeSelectedAssetId(
   return creationIds.includes(value) ? value : null;
 }
 
+function normalizeFolderIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  ];
+}
+
 function normalizeStoredProject(project: StoredProject): StoredProject {
   const aspectRatio = isProjectAspectRatio(project.aspectRatio)
     ? project.aspectRatio
@@ -175,6 +186,7 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
   const selectedClipId = timelineMonitorActive ? null : selectedTimelineClipId;
   return {
     ...project,
+    folderIds: normalizeFolderIds(project.folderIds),
     aspectRatio,
     timeline,
     selectedTimelineClipId: selectedClipId,
@@ -204,6 +216,7 @@ export function createStoredProject(
     id: newId(),
     title: trimmed,
     creationIds: uniqueIds,
+    folderIds: [],
     aspectRatio: isProjectAspectRatio(aspectRatio)
       ? aspectRatio
       : DEFAULT_PROJECT_ASPECT_RATIO,
@@ -226,6 +239,56 @@ export function mergeCreationIds(
   return {
     ...project,
     creationIds: [...next],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function removeCreationIds(
+  project: StoredProject,
+  creationIds: string[],
+): StoredProject {
+  if (creationIds.length === 0) return project;
+  const remove = new Set(creationIds);
+  const nextIds = project.creationIds.filter((id) => !remove.has(id));
+  if (nextIds.length === project.creationIds.length) return project;
+  return {
+    ...project,
+    creationIds: nextIds,
+    selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function mergeFolderIds(
+  project: StoredProject,
+  folderIds: string[],
+  memberCreationIds: string[] = [],
+): StoredProject {
+  if (folderIds.length === 0 && memberCreationIds.length === 0) return project;
+  const nextFolders = new Set(normalizeFolderIds(project.folderIds));
+  for (const id of folderIds) nextFolders.add(id);
+  const nextCreations = new Set(project.creationIds);
+  for (const id of memberCreationIds) nextCreations.add(id);
+  return {
+    ...project,
+    folderIds: [...nextFolders],
+    creationIds: [...nextCreations],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function removeFolderIds(
+  project: StoredProject,
+  folderIds: string[],
+): StoredProject {
+  if (folderIds.length === 0) return project;
+  const remove = new Set(folderIds);
+  const current = normalizeFolderIds(project.folderIds);
+  const next = current.filter((id) => !remove.has(id));
+  if (next.length === current.length) return project;
+  return {
+    ...project,
+    folderIds: next,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -413,6 +476,7 @@ export function storedProjectToUi(project: StoredProject): Project {
       },
     ],
     assets,
+    folderIds: normalizeFolderIds(project.folderIds),
     timeline,
     selectedTimelineClipId,
     selectedAssetId,
@@ -431,6 +495,7 @@ export function emptyUiProject(): Project {
     aspectRatio: DEFAULT_PROJECT_ASPECT_RATIO,
     scenes: [],
     assets: [],
+    folderIds: [],
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,

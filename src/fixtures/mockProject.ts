@@ -17,6 +17,7 @@ export const mockProject: Project = {
     { id: "a3", name: "voiceover.wav", kind: "audio", durationLabel: "1:12" },
     { id: "a4", name: "logo.png", kind: "image" },
   ],
+  folderIds: [],
   timeline: [
     { id: "c1", label: "Opening", startSec: 0, endSec: 8 },
     { id: "c2", label: "Interview A", startSec: 8, endSec: 32 },

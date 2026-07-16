@@ -58,6 +58,9 @@ type TimelinePaneProps = {
   onTogglePlay?: () => void;
   volume?: number;
   onVolumeChange?: (volume: number) => void;
+  canMergeSelected?: boolean;
+  onMergeSelected?: () => void;
+  mergeBusy?: boolean;
 };
 
 type PointerDropDetail = {
@@ -403,6 +406,9 @@ export function TimelinePane({
   onTogglePlay,
   volume = 80,
   onVolumeChange,
+  canMergeSelected = false,
+  onMergeSelected,
+  mergeBusy = false,
 }: TimelinePaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
@@ -1136,7 +1142,33 @@ export function TimelinePane({
           </label>
         </div>
 
-        <div className="editor-timeline-tools">
+        <div
+          className="editor-timeline-tools"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="editor-timeline-tool"
+            title={
+              canMergeSelected
+                ? "Merge selected clips"
+                : "Select contiguous video clips to merge"
+            }
+            aria-label="Merge selected clips"
+            disabled={!canMergeSelected || mergeBusy}
+            onClick={() => onMergeSelected?.()}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M2.5 4.5h4v7h-4zm7 0h4v7h-4zM6.5 8h3"
+              />
+            </svg>
+          </button>
           <button
             type="button"
             className={

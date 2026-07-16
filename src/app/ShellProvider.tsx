@@ -14,6 +14,9 @@ import {
   emptyUiProject,
   loadStoredProjects,
   mergeCreationIds,
+  mergeFolderIds,
+  removeCreationIds,
+  removeFolderIds,
   renameStoredProject,
   saveStoredProjects,
   setStoredProjectAspectRatio,
@@ -67,6 +70,15 @@ type ShellState = {
   setOpenProjectTimelinePlayheadSec: (sec: number) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => void;
+  /** Remove library creation IDs from the open project (no-op if none open). */
+  removeCreationsFromOpenProject: (creationIds: string[]) => void;
+  /** Attach local Library folders (and their members) to the open project. */
+  addFoldersToOpenProject: (
+    folderIds: string[],
+    memberCreationIds: string[],
+  ) => void;
+  /** Detach local Library folders from the open project (members stay). */
+  removeFoldersFromOpenProject: (folderIds: string[]) => void;
   /** Last Creations filter — survives Library ↔ Project switches. */
   creationsFilterId: FilterId;
   setCreationsFilterId: (id: FilterId) => void;
@@ -245,6 +257,30 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const removeCreationsFromOpenProject = useCallback(
+    (creationIds: string[]) => {
+      if (creationIds.length === 0) return;
+      patchOpenProject((p) => removeCreationIds(p, creationIds));
+    },
+    [patchOpenProject],
+  );
+
+  const addFoldersToOpenProject = useCallback(
+    (folderIds: string[], memberCreationIds: string[]) => {
+      if (folderIds.length === 0 && memberCreationIds.length === 0) return;
+      patchOpenProject((p) => mergeFolderIds(p, folderIds, memberCreationIds));
+    },
+    [patchOpenProject],
+  );
+
+  const removeFoldersFromOpenProject = useCallback(
+    (folderIds: string[]) => {
+      if (folderIds.length === 0) return;
+      patchOpenProject((p) => removeFolderIds(p, folderIds));
+    },
+    [patchOpenProject],
+  );
+
   const renameOpenProject = useCallback(
     (title: string) => {
       patchOpenProject((p) => renameStoredProject(p, title));
@@ -322,6 +358,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       addCreationsToOpenProject,
+      removeCreationsFromOpenProject,
+      addFoldersToOpenProject,
+      removeFoldersFromOpenProject,
       creationsFilterId,
       setCreationsFilterId,
       chromeStatus,
@@ -356,6 +395,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       addCreationsToOpenProject,
+      removeCreationsFromOpenProject,
+      addFoldersToOpenProject,
+      removeFoldersFromOpenProject,
       creationsFilterId,
       chromeStatus,
       project,

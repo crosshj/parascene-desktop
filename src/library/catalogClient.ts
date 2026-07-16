@@ -42,6 +42,31 @@ export async function getCreation(id: string): Promise<Creation> {
   return invoke<Creation>("library_get_creation", { id });
 }
 
+/** Fetch creations by id, preserving `ids` order. Missing rows are skipped. */
+export async function getCreations(ids: string[]): Promise<Creation[]> {
+  if (ids.length === 0) return [];
+  const unique = [...new Set(ids)];
+  const byId = new Map<string, Creation>();
+  await Promise.all(
+    unique.map(async (id) => {
+      try {
+        byId.set(id, await getCreation(id));
+      } catch {
+        // Stale membership / deleted creation.
+      }
+    }),
+  );
+  const out: Creation[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const row = byId.get(id);
+    if (row) out.push(row);
+  }
+  return out;
+}
+
 export async function getSyncStatus(): Promise<SyncStatus> {
   return invoke<SyncStatus>("library_sync_status");
 }
@@ -142,6 +167,31 @@ export type ReversedMedia = {
 
 export async function ensureReversed(id: string): Promise<ReversedMedia> {
   return invoke<ReversedMedia>("library_ensure_reversed", { id });
+}
+
+export type MergeTimelineClipInput = {
+  assetId: string;
+  inSec?: number;
+  outSec?: number;
+  reverse?: boolean;
+};
+
+export type MergeProgress = {
+  phase: string;
+  done: number;
+  total: number;
+};
+
+export type MergeFinished = {
+  ok: boolean;
+  creationId: string | null;
+  error: string | null;
+};
+
+export async function mergeTimelineClips(
+  clips: MergeTimelineClipInput[],
+): Promise<Creation> {
+  return invoke<Creation>("library_merge_timeline_clips", { clips });
 }
 
 /** Read local board preview bytes as base64 (for cloud fit upload). */

@@ -255,9 +255,16 @@ export function CreationsSidebar({
   width,
   onToggle,
   selectedCount = 0,
+  selectedFolderCount = 0,
   hasOpenProject = false,
+  inFolderView = false,
+  hasFolders = false,
   onNewProject,
   onAddToProject,
+  onNewFolder,
+  onAddToFolder,
+  onRemoveFromFolder,
+  onAddFolderToProject,
   onClearSelection,
   onAddFromDisk,
   importing = false,
@@ -267,14 +274,24 @@ export function CreationsSidebar({
   width: number;
   onToggle: (id: FilterId) => void;
   selectedCount?: number;
+  selectedFolderCount?: number;
   hasOpenProject?: boolean;
+  inFolderView?: boolean;
+  hasFolders?: boolean;
   onNewProject?: () => void;
   onAddToProject?: () => void;
+  onNewFolder?: () => void;
+  onAddToFolder?: () => void;
+  onRemoveFromFolder?: () => void;
+  onAddFolderToProject?: () => void;
   onClearSelection?: () => void;
   onAddFromDisk?: () => void;
   importing?: boolean;
 }) {
-  const showSelectionActions = selectedCount > 0;
+  const totalSelected = selectedCount + selectedFolderCount;
+  const showSelectionActions = totalSelected > 0;
+  const creationSelection = selectedCount > 0;
+  const folderSelection = selectedFolderCount > 0;
 
   return (
     <aside
@@ -334,22 +351,60 @@ export function CreationsSidebar({
       {showSelectionActions ? (
         <div className="creations-sidebar-actions" aria-label="Selection actions">
           <p className="creations-sidebar-actions-count">
-            {selectedCount} selected
+            {totalSelected} selected
           </p>
-          <button
-            type="button"
-            className="creations-sidebar-action-btn"
-            onClick={onNewProject}
-          >
-            New project…
-          </button>
-          {hasOpenProject ? (
+          {creationSelection ? (
+            <>
+              <button
+                type="button"
+                className="creations-sidebar-action-btn"
+                onClick={onNewFolder}
+              >
+                New folder…
+              </button>
+              {hasFolders ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onAddToFolder}
+                >
+                  Add to folder…
+                </button>
+              ) : null}
+              {inFolderView ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onRemoveFromFolder}
+                >
+                  Remove from folder
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="creations-sidebar-action-btn"
+                onClick={onNewProject}
+              >
+                New project…
+              </button>
+              {hasOpenProject ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onAddToProject}
+                >
+                  Add to project…
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          {folderSelection && hasOpenProject ? (
             <button
               type="button"
               className="creations-sidebar-action-btn"
-              onClick={onAddToProject}
+              onClick={onAddFolderToProject}
             >
-              Add to project…
+              Add folder to project…
             </button>
           ) : null}
           <button

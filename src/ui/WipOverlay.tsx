@@ -1,12 +1,12 @@
 import { useShell } from "../app/ShellProvider";
 
-/** Non-blocking WIP watermark — hidden on Library surfaces and Editor. */
+/** Non-blocking WIP watermark — hidden on Library, Editor, and Publisher. */
 export function WipOverlay() {
   const { primaryTab, librarySurface, mode } = useShell();
   if (
     (primaryTab === "library" &&
       (librarySurface === "creations" || librarySurface === "sync")) ||
-    (primaryTab === "project" && mode === "editor")
+    (primaryTab === "project" && (mode === "editor" || mode === "hook"))
   ) {
     return null;
   }

@@ -1,5 +1,13 @@
-import type { ReactNode } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthProvider";
+import { getEnvConfig } from "../auth/session";
 import {
   useShell,
   type LibrarySurface,
@@ -31,6 +39,15 @@ function displayName(
   return session.user.name?.trim() || null;
 }
 
+function profilePageUrl(
+  session: NonNullable<ReturnType<typeof useAuth>["session"]>,
+): string | null {
+  const handle = session.user.preferred_username?.trim().replace(/^@/, "");
+  if (!handle) return null;
+  const base = getEnvConfig().baseUrl.replace(/\/$/, "");
+  return `${base}/@${encodeURIComponent(handle)}`;
+}
+
 export function AppChrome({ children }: { children: ReactNode }) {
   const {
     primaryTab,
@@ -44,11 +61,72 @@ export function AppChrome({ children }: { children: ReactNode }) {
   } = useShell();
   const { session, logout } = useAuth();
   const name = session ? displayName(session) : null;
+  const profileUrl = session ? profilePageUrl(session) : null;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const accountRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
+    null,
+  );
+
   const showLibraryTabs = primaryTab === "library";
   const showModeTabs = Boolean(openProjectId && primaryTab === "project");
   const showContextTabs = showLibraryTabs || showModeTabs;
   const showChromeStatus =
-    Boolean(chromeStatus) && primaryTab === "library" && librarySurface === "creations";
+    Boolean(chromeStatus) &&
+    primaryTab === "library" &&
+    librarySurface === "creations";
+
+  useEffect(() => {
+    if (!menuOpen || !accountRef.current) {
+      setMenuPos(null);
+      return;
+    }
+    const rect = accountRef.current.getBoundingClientRect();
+    setMenuPos({
+      top: Math.round(rect.bottom + 6),
+      right: Math.round(window.innerWidth - rect.right),
+    });
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMenuOpen(false);
+    };
+    let onPointerDown: ((event: PointerEvent) => void) | undefined;
+    const timer = window.setTimeout(() => {
+      onPointerDown = (event: PointerEvent) => {
+        const target = event.target as Node | null;
+        if (!target) return;
+        if (accountRef.current?.contains(target)) return;
+        if (menuRef.current?.contains(target)) return;
+        setMenuOpen(false);
+      };
+      window.addEventListener("pointerdown", onPointerDown);
+    }, 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKey);
+      if (onPointerDown) {
+        window.removeEventListener("pointerdown", onPointerDown);
+      }
+    };
+  }, [menuOpen]);
+
+  const openProfile = () => {
+    if (!profileUrl) return;
+    setMenuOpen(false);
+    void openUrl(profileUrl);
+  };
+
+  const doLogout = () => {
+    setMenuOpen(false);
+    void logout();
+  };
 
   return (
     <div className="app-shell">
@@ -109,10 +187,6 @@ export function AppChrome({ children }: { children: ReactNode }) {
               ))}
             </nav>
           ) : null}
-
-          {/* Former always-on mode switch — replaced by context tabs after spacer.
-          <nav className="mode-switch" aria-label="Layout mode">...</nav>
-          */}
         </div>
         {showChromeStatus ? (
           <p className="chrome-status" title={chromeStatus ?? undefined}>
@@ -120,23 +194,67 @@ export function AppChrome({ children }: { children: ReactNode }) {
           </p>
         ) : null}
         <div className="auth-strip">
-          {session?.user.picture ? (
-            <img
-              className="avatar"
-              src={session.user.picture}
-              alt=""
-              width={28}
-              height={28}
-            />
-          ) : (
-            <span className="avatar avatar-fallback" aria-hidden>
-              {(name || "?").replace(/^@/, "").slice(0, 1).toUpperCase()}
-            </span>
-          )}
-          {name ? <span className="auth-name">{name}</span> : null}
-          <button type="button" className="btn" onClick={() => logout()}>
-            Log out
-          </button>
+          {session ? (
+            <>
+              <button
+                ref={accountRef}
+                type="button"
+                className={`auth-account${menuOpen ? " is-open" : ""}`}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label={name ? `Account menu for ${name}` : "Account menu"}
+                onClick={() => setMenuOpen((open) => !open)}
+              >
+                {session.user.picture ? (
+                  <img
+                    className="avatar"
+                    src={session.user.picture}
+                    alt=""
+                    width={28}
+                    height={28}
+                  />
+                ) : (
+                  <span className="avatar avatar-fallback" aria-hidden>
+                    {(name || "?").replace(/^@/, "").slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                {name ? <span className="auth-name">{name}</span> : null}
+              </button>
+
+              {menuOpen && menuPos
+                ? createPortal(
+                    <div
+                      ref={menuRef}
+                      className="auth-account-menu"
+                      role="menu"
+                      aria-label="Account"
+                      style={{ top: menuPos.top, right: menuPos.right }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      {profileUrl ? (
+                        <button
+                          type="button"
+                          className="auth-account-menu-item"
+                          role="menuitem"
+                          onClick={openProfile}
+                        >
+                          View profile
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="auth-account-menu-item is-logout"
+                        role="menuitem"
+                        onClick={doLogout}
+                      >
+                        Log out
+                      </button>
+                    </div>,
+                    document.body,
+                  )
+                : null}
+            </>
+          ) : null}
         </div>
       </header>
       <main className="app-main">{children}</main>

@@ -56,10 +56,7 @@ mod tests {
 
     #[test]
     fn ensure_directories_creates_layout() {
-        let root = env::temp_dir().join(format!(
-            "parascene-paths-test-{}",
-            std::process::id()
-        ));
+        let root = env::temp_dir().join(format!("parascene-paths-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let paths = resolve_paths(root.clone());
         ensure_directories(&paths).expect("dirs");

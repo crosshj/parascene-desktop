@@ -211,7 +211,8 @@ describe("auth shell", () => {
     expect(screen.queryByRole("button", { name: "Editor" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Publisher" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Log out" }));
+    await user.click(screen.getByRole("button", { name: /Account menu/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Log out" }));
     expect(
       await screen.findByRole("button", { name: "Log in" }),
     ).toBeInTheDocument();

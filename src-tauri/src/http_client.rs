@@ -23,7 +23,11 @@ fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<u64>
     None
 }
 
-fn result_from_response(status: u16, headers: &reqwest::header::HeaderMap, body: String) -> HttpJsonResult {
+fn result_from_response(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    body: String,
+) -> HttpJsonResult {
     HttpJsonResult {
         status,
         body,
