@@ -1,4 +1,5 @@
 import type { TimelineClip } from "../../project/types";
+import type { FrameTarget } from "../../preview/types";
 
 /** One visual (V1) or audio (A1) contribution at a timeline time. */
 export type TimelineLayer = {
@@ -7,7 +8,8 @@ export type TimelineLayer = {
   localSec: number;
   /**
    * Mapped source media time (inSec + localSec), clamped to [inSec, outSec].
-   * Images ignore this for pixels today; Ken Burns / video seek use it later.
+   * For reverse clips this is still the forward-source mapping; reverse remap
+   * happens in `resolveFrameTarget`.
    */
   sourceSec: number;
 };
@@ -146,4 +148,109 @@ export function peekNextVisualClip(
 /** Layer at a clip's timeline start (source in-point) for standby priming. */
 export function layerAtClipStart(clip: TimelineClip): TimelineLayer {
   return toLayer(clip, clip.startSec);
+}
+
+function secToUs(sec: number): number {
+  return Math.round(Math.max(0, sec) * 1e6);
+}
+
+/**
+ * Map timeline time to a FrameProvider request. Reverse clips remap onto the
+ * forward proxy (no reversed file required for canvas preview).
+ */
+export function resolveFrameTarget(
+  clips: readonly TimelineClip[],
+  timelineTimeUs: number,
+): FrameTarget | null {
+  const tSec = timelineTimeUs / 1e6;
+  const frame = resolveTimelineFrame(clips, tSec);
+  const visual = frame.visual;
+  if (!visual?.clip.assetId?.trim()) return null;
+  if (visual.clip.kind === "audio") return null;
+
+  const assetId = visual.clip.assetId.trim();
+  const clipId = visual.clip.id;
+  if (visual.clip.kind === "image") {
+    return {
+      assetId,
+      sourceTimeUs: 0,
+      clipId,
+      kind: "image",
+    };
+  }
+
+  let sourceSec = visual.sourceSec;
+  if (visual.clip.reverse) {
+    const inSec = clipInSec(visual.clip);
+    const outSec = clipOutSec(visual.clip);
+    sourceSec = outSec - (sourceSec - inSec);
+  }
+
+  return {
+    assetId,
+    sourceTimeUs: secToUs(sourceSec),
+    clipId,
+    kind: "video",
+  };
+}
+
+/** Seam neighbors for preload when the playhead is near a cut. */
+export type SeamPreload = {
+  outgoing: { assetId: string; startTimeUs: number; endTimeUs: number } | null;
+  incoming: { assetId: string; startTimeUs: number; endTimeUs: number } | null;
+};
+
+const SEAM_WINDOW_SEC = 0.35;
+
+export function resolveSeamPreload(
+  clips: readonly TimelineClip[],
+  timelineSec: number,
+): SeamPreload {
+  const frame = resolveTimelineFrame(clips, timelineSec);
+  const next = peekNextVisualClip(clips, timelineSec);
+  const visual = frame.visual;
+
+  let outgoing: SeamPreload["outgoing"] = null;
+  let incoming: SeamPreload["incoming"] = null;
+
+  if (visual?.clip.assetId?.trim() && visual.clip.kind !== "image") {
+    const end = visual.clip.endSec;
+    if (end - timelineSec <= SEAM_WINDOW_SEC) {
+      const outSec = clipOutSec(visual.clip);
+      const inSec = clipInSec(visual.clip);
+      let start = Math.max(inSec, outSec - SEAM_WINDOW_SEC);
+      let endSrc = outSec;
+      if (visual.clip.reverse) {
+        start = inSec;
+        endSrc = Math.min(outSec, inSec + SEAM_WINDOW_SEC);
+      }
+      outgoing = {
+        assetId: visual.clip.assetId.trim(),
+        startTimeUs: secToUs(start),
+        endTimeUs: secToUs(endSrc),
+      };
+    }
+  }
+
+  if (
+    next?.assetId?.trim() &&
+    next.kind !== "image" &&
+    next.startSec - timelineSec <= SEAM_WINDOW_SEC
+  ) {
+    const inSec = clipInSec(next);
+    const outSec = clipOutSec(next);
+    let start = inSec;
+    let endSrc = Math.min(outSec, inSec + SEAM_WINDOW_SEC);
+    if (next.reverse) {
+      start = Math.max(inSec, outSec - SEAM_WINDOW_SEC);
+      endSrc = outSec;
+    }
+    incoming = {
+      assetId: next.assetId.trim(),
+      startTimeUs: secToUs(start),
+      endTimeUs: secToUs(endSrc),
+    };
+  }
+
+  return { outgoing, incoming };
 }

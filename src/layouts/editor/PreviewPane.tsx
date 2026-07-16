@@ -33,6 +33,7 @@ import {
 } from "./stagedClip";
 import { creationCardTitle } from "../../library/creationFlags";
 import { TimelineMonitor } from "./TimelineMonitor";
+import { SourcePreviewCanvas } from "./SourcePreviewCanvas";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -93,10 +94,6 @@ function fitAspect(
     w = (h * aw) / ah;
   }
   return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
-}
-
-function videoAlreadyPainted(el: HTMLVideoElement): boolean {
-  return el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 }
 
 function SourceLabelIcon({
@@ -201,9 +198,12 @@ export function PreviewPane({
   const [reversedThumb, setReversedThumb] = useState<string | null>(null);
   const [reverseBusy, setReverseBusy] = useState(false);
   const [reverseError, setReverseError] = useState<string | null>(null);
+  const [canvasReady, setCanvasReady] = useState(false);
   const appliedSeedKeyRef = useRef<string | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const playingRef = useRef(false);
+  const currentSecRef = useRef(0);
   const onClipDraftChangeRef = useRef(onClipDraftChange);
   onClipDraftChangeRef.current = onClipDraftChange;
 
@@ -290,18 +290,29 @@ export function PreviewPane({
   const isAudio = mediaType === "audio";
   const wantsReverse =
     Boolean(stagedDraft?.reverse) && (isVideo || isAudio);
+  /** Video reverse uses forward proxy + time remap; only audio still needs FFmpeg reverse. */
+  const needsReversedFile = wantsReverse && isAudio;
   const thumb =
     wantsReverse && reversedThumb ? reversedThumb : catalogThumb;
-  const playbackDetail = wantsReverse ? reversedDetail : detail;
-  const useDetail = Boolean(playbackDetail) && !detailFailed;
-  const canPlay = Boolean(useDetail && (isVideo || isAudio) && !reverseBusy);
+  const playbackDetail = needsReversedFile ? reversedDetail : detail;
+  const useDetail = Boolean(
+    (isVideo || (!isAudio && (detail || catalogThumb)) || playbackDetail) &&
+      !detailFailed,
+  );
+  const canPlay = isVideo
+    ? Boolean(assetId && canvasReady && !detailFailed)
+    : isAudio
+      ? Boolean(playbackDetail && !detailFailed && !(needsReversedFile && reverseBusy))
+      : Boolean(assetId && canvasReady && (detail || catalogThumb));
 
   useEffect(() => {
-    if (!wantsReverse || !assetId || !detail) {
-      setReversedDetail(null);
-      setReversedThumb(null);
-      setReverseBusy(false);
-      setReverseError(null);
+    if (!needsReversedFile || !assetId || !detail) {
+      if (!needsReversedFile) {
+        setReversedDetail(null);
+        setReversedThumb(null);
+        setReverseBusy(false);
+        setReverseError(null);
+      }
       return;
     }
 
@@ -355,7 +366,7 @@ export function PreviewPane({
     return () => {
       cancelled = true;
     };
-  }, [wantsReverse, assetId, detail, stagingSeedKey]);
+  }, [needsReversedFile, assetId, detail, stagingSeedKey]);
 
   useEffect(() => {
     if (!assetId || !creation || catalogError) {
@@ -465,16 +476,18 @@ export function PreviewPane({
   useEffect(() => {
     if (!stagingSeedKey || !stagingSeed) return;
     if (stagingSeed.kind === "image") return;
-    const el = mediaRef.current;
-    if (!el) return;
     const t = Math.max(0, stagingSeed.inSec);
-    try {
-      el.currentTime = t;
-      setCurrentSec(t);
-    } catch {
-      // ignore seek before metadata
+    setCurrentSec(t);
+    currentSecRef.current = t;
+    const el = mediaRef.current;
+    if (el && isAudio) {
+      try {
+        el.currentTime = t;
+      } catch {
+        // ignore seek before metadata
+      }
     }
-  }, [stagingSeedKey, stagingSeed, playbackDetail]);
+  }, [stagingSeedKey, stagingSeed, playbackDetail, isAudio]);
 
   function clampInOutDraft(
     draft: StagedClipDraft,
@@ -556,9 +569,12 @@ export function PreviewPane({
 
   useEffect(() => {
     setPlaying(false);
+    playingRef.current = false;
     setCurrentSec(0);
+    currentSecRef.current = 0;
     setDurationSec(0);
     setDetailFailed(false);
+    setCanvasReady(false);
     const el = mediaRef.current;
     if (el) {
       el.pause();
@@ -566,31 +582,104 @@ export function PreviewPane({
     }
   }, [assetId, playbackDetail]);
 
-  const onTogglePlay = () => {
-    const el = mediaRef.current;
-    if (!el || !canPlay) return;
-    if (el.paused) {
-      if (
-        clipLoopEnabled &&
-        (el.currentTime < clipLoopInSec || el.currentTime >= clipLoopOutSec)
-      ) {
-        el.currentTime = clipLoopInSec;
-        setCurrentSec(clipLoopInSec);
+  useEffect(() => {
+    if (isVideo || isAudio) return;
+    if (!stagedDraft) return;
+    const d = Math.max(0.1, stagedDraft.outSec - stagedDraft.inSec);
+    setDurationSec((prev) => (Math.abs(prev - d) < 0.05 ? prev : d));
+  }, [isVideo, isAudio, stagedDraft?.inSec, stagedDraft?.outSec]);
+
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
+  useEffect(() => {
+    currentSecRef.current = currentSec;
+  }, [currentSec]);
+
+  // Virtual clock for canvas video / image (audio still uses HTMLMediaElement).
+  useEffect(() => {
+    if (monitorMode !== "source") return;
+    if (isAudio) return;
+    if (!playing || !canPlay) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      let next = currentSecRef.current + dt;
+      const max = durationSec > 0 ? durationSec : next;
+      if (clipLoopEnabled) {
+        if (next >= clipLoopOutSec) next = clipLoopInSec;
+      } else if (next >= max) {
+        next = max;
+        setPlaying(false);
+        playingRef.current = false;
+        setCurrentSec(next);
+        currentSecRef.current = next;
+        return;
       }
-      void el.play();
-      setPlaying(true);
-    } else {
-      el.pause();
-      setPlaying(false);
+      currentSecRef.current = next;
+      setCurrentSec(next);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [
+    monitorMode,
+    isAudio,
+    playing,
+    canPlay,
+    durationSec,
+    clipLoopEnabled,
+    clipLoopInSec,
+    clipLoopOutSec,
+  ]);
+
+  const onTogglePlay = () => {
+    if (!canPlay) return;
+    if (isAudio) {
+      const el = mediaRef.current;
+      if (!el) return;
+      if (el.paused) {
+        if (
+          clipLoopEnabled &&
+          (el.currentTime < clipLoopInSec || el.currentTime >= clipLoopOutSec)
+        ) {
+          el.currentTime = clipLoopInSec;
+          setCurrentSec(clipLoopInSec);
+        }
+        void el.play();
+        setPlaying(true);
+      } else {
+        el.pause();
+        setPlaying(false);
+      }
+      return;
     }
+    if (playing) {
+      setPlaying(false);
+      return;
+    }
+    if (
+      clipLoopEnabled &&
+      (currentSec < clipLoopInSec || currentSec >= clipLoopOutSec)
+    ) {
+      setCurrentSec(clipLoopInSec);
+      currentSecRef.current = clipLoopInSec;
+    }
+    setPlaying(true);
   };
 
   const seekTo = (sec: number) => {
-    const el = mediaRef.current;
-    if (!el || !canPlay) return;
-    const next = Math.max(0, Math.min(el.duration || durationSec, sec));
-    el.currentTime = next;
+    if (!canPlay) return;
+    const next = Math.max(0, Math.min(durationSec || sec, sec));
+    if (isAudio) {
+      const el = mediaRef.current;
+      if (!el) return;
+      el.currentTime = next;
+    }
     setCurrentSec(next);
+    currentSecRef.current = next;
   };
 
   const onTimeUpdate = (
@@ -636,27 +725,17 @@ export function PreviewPane({
     setDurationSec(Number.isFinite(d) ? d : 0);
   };
 
-  const bindVideo = (el: HTMLVideoElement | null) => {
-    mediaRef.current = el;
-    if (!el) return;
-    el.muted = audioExcluded;
-    el.volume = volume / 100;
-    if (videoAlreadyPainted(el)) {
-      const d = el.duration;
-      if (Number.isFinite(d)) setDurationSec(d);
-    }
-  };
-
   const bindAudio = (el: HTMLAudioElement | null) => {
     mediaRef.current = el;
     if (!el) return;
-    el.muted = false;
-    el.volume = volume / 100;
-    if (el.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      const d = el.duration;
-      if (Number.isFinite(d)) setDurationSec(d);
-    }
+    el.volume = audioExcluded ? 0 : volume / 100;
   };
+
+  /** Forward-proxy time for reverse video (draft times stay in reverse-file space). */
+  const canvasSourceSec =
+    isVideo && wantsReverse && durationSec > 0
+      ? Math.max(0, durationSec - currentSec)
+      : currentSec;
 
   useEffect(() => {
     const el = mediaRef.current;
@@ -683,11 +762,11 @@ export function PreviewPane({
   } else if (!assetId) status = "Select an asset";
   else if (catalogError) status = "Asset not in local catalog";
   else if (!creation) status = "Loading…";
-  else if (wantsReverse && reverseBusy) status = "Reversing…";
-  else if (wantsReverse && reverseError) status = reverseError;
-  else if (wantsReverse && !reversedDetail && detail) status = "Reversing…";
+  else if (needsReversedFile && reverseBusy) status = "Reversing…";
+  else if (needsReversedFile && reverseError) status = reverseError;
+  else if (needsReversedFile && !reversedDetail && detail) status = "Reversing…";
   else if (!useDetail && !thumb && waitingLocal) status = "Saving locally…";
-  else if (!useDetail && !thumb) status = "No local media";
+  else if (!useDetail && !thumb && !isVideo) status = "No local media";
 
   const transportSec = currentSec;
   const transportCanPlay = monitorMode === "source" && canPlay;
@@ -736,37 +815,21 @@ export function PreviewPane({
               <span className="editor-preview-status muted">{status}</span>
             ) : (
               <>
-                {/* Thumb stays visible so detail load / cache misses aren't blank. */}
-                {thumb ? (
-                  <img
-                    key={`thumb:${thumb}`}
-                    className="editor-preview-media editor-preview-thumb"
-                    src={thumb}
-                    alt=""
-                    draggable={false}
+                {isVideo && assetId ? (
+                  <SourcePreviewCanvas
+                    assetId={assetId}
+                    kind="video"
+                    currentSec={canvasSourceSec}
+                    playing={playing}
+                    onDuration={(sec) => setDurationSec(sec)}
+                    onReadyChange={setCanvasReady}
+                    onError={(msg) => {
+                      if (msg) setDetailFailed(true);
+                    }}
                   />
                 ) : null}
 
-                {useDetail && isVideo ? (
-                  <video
-                    key={`detail:${playbackDetail}`}
-                    ref={bindVideo}
-                    className="editor-preview-media editor-preview-detail"
-                    src={playbackDetail!}
-                    poster={thumb ?? undefined}
-                    playsInline
-                    preload="auto"
-                    loop={sourcePreviewLoops && !clipLoopEnabled}
-                    onTimeUpdate={onTimeUpdate}
-                    onLoadedMetadata={onLoadedMeta}
-                    onPlay={() => setPlaying(true)}
-                    onPause={() => setPlaying(false)}
-                    onEnded={onSourceEnded}
-                    onError={() => setDetailFailed(true)}
-                  />
-                ) : null}
-
-                {useDetail && isAudio ? (
+                {isAudio && useDetail ? (
                   <div className="editor-preview-audio">
                     <AudioWaveform className="creation-audio-wave creation-audio-wave-lg editor-preview-audio-icon" />
                     <audio
@@ -786,14 +849,19 @@ export function PreviewPane({
                   </div>
                 ) : null}
 
-                {useDetail && !isVideo && !isAudio ? (
-                  <img
-                    key={`detail:${playbackDetail}`}
-                    className="editor-preview-media editor-preview-detail"
-                    src={playbackDetail!}
-                    alt={creation?.title || "Asset preview"}
-                    draggable={false}
-                    onError={() => setDetailFailed(true)}
+                {!isVideo && !isAudio && assetId ? (
+                  <SourcePreviewCanvas
+                    assetId={assetId}
+                    kind="image"
+                    currentSec={currentSec}
+                    imageUrl={detail ?? catalogThumb}
+                    onDuration={(sec) => {
+                      if (durationSec <= 0) setDurationSec(sec || 5);
+                    }}
+                    onReadyChange={setCanvasReady}
+                    onError={(msg) => {
+                      if (msg) setDetailFailed(true);
+                    }}
                   />
                 ) : null}
 
@@ -802,7 +870,7 @@ export function PreviewPane({
                     Saving locally…
                   </span>
                 ) : null}
-                {!useDetail && wantsReverse && reverseBusy ? (
+                {!useDetail && needsReversedFile && reverseBusy ? (
                   <span className="editor-preview-wait muted">Reversing…</span>
                 ) : null}
               </>

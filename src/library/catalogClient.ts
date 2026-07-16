@@ -144,6 +144,15 @@ export async function ensureReversed(id: string): Promise<ReversedMedia> {
   return invoke<ReversedMedia>("library_ensure_reversed", { id });
 }
 
+/** Cached FFmpeg H.264 preview proxy of local video (≤720p, 30fps, GOP 10). */
+export type ProxyMedia = {
+  path: string;
+};
+
+export async function ensureProxy(id: string): Promise<ProxyMedia> {
+  return invoke<ProxyMedia>("library_ensure_proxy", { id });
+}
+
 /** Read local board preview bytes as base64 (for cloud fit upload). */
 export async function readLocalThumbBase64(id: string): Promise<string> {
   return invoke<string>("library_read_local_thumb_base64", { id });

@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ensureLocal, getCreation } from "../../library/catalogClient";
 import {
   canFetchLocal,
@@ -8,14 +8,26 @@ import {
   isParasceneUnavailable,
 } from "../../library/previewUrl";
 import {
+  ensureProxyMediaUrl,
+  getCachedProxyUrl,
+} from "../../library/proxyMedia";
+import {
   ensureReversedMedia,
   getCachedReversedMedia,
 } from "../../library/reversedMedia";
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
-  clipInSec,
+  getSharedFrameProvider,
+  pauseAllHtmlVideos,
+  PreviewRenderer,
+  preloadPreviewVideo,
+  webCodecsAvailable,
+} from "../../preview";
+import {
   peekNextVisualClip,
+  resolveFrameTarget,
+  resolveSeamPreload,
   resolveTimelineFrame,
   type TimelineLayer,
 } from "./timelineCompose";
@@ -34,274 +46,121 @@ type MediaUrls = {
   waitingLocal: boolean;
 };
 
-/** Unique decoder identity: one DOM media element per asset × direction. */
-export type AssetDecoderKey = string;
-
-export function assetDecoderKey(clip: TimelineClip): AssetDecoderKey {
-  const assetId = clip.assetId?.trim() || clip.id;
-  return `${assetId}:${clip.reverse ? "r" : "f"}`;
-}
-
-function assetIdFromKey(key: AssetDecoderKey): string {
-  const idx = key.lastIndexOf(":");
-  return idx >= 0 ? key.slice(0, idx) : key;
-}
-
-function isReverseKey(key: AssetDecoderKey): boolean {
-  return key.endsWith(":r");
-}
-
-type VisualDecoderMeta = {
-  key: AssetDecoderKey;
-  kind: "video" | "image";
-};
-
-/** Every unique video/image backing asset on the video lane. */
-function listVisualDecoders(
-  clips: readonly TimelineClip[],
-): VisualDecoderMeta[] {
-  const byKey = new Map<AssetDecoderKey, VisualDecoderMeta>();
-  for (const clip of clips) {
-    if (clip.lane === "audio") continue;
-    if (!clip.assetId?.trim()) continue;
-    const kind = clip.kind === "image" ? "image" : "video";
-    if (clip.kind === "audio") continue;
-    const key = assetDecoderKey(clip);
-    // Prefer video if the same key ever appears as both (shouldn't).
-    const prev = byKey.get(key);
-    if (!prev || (prev.kind === "image" && kind === "video")) {
-      byKey.set(key, { key, kind });
-    }
-  }
-  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
-}
-
-/**
- * Park each standby decoder on the earliest in-point for that asset×direction.
- * Keeps cold slots off frame 0 so the first scrub cut doesn't flash.
- */
-function parkSourceByKey(
-  clips: readonly TimelineClip[],
-): Map<AssetDecoderKey, number> {
-  const map = new Map<AssetDecoderKey, number>();
-  const videoClips = clips
-    .filter((c) => c.lane !== "audio" && Boolean(c.assetId?.trim()))
-    .filter((c) => c.kind !== "audio")
-    .slice()
-    .sort(
-      (a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id),
-    );
-  for (const clip of videoClips) {
-    const key = assetDecoderKey(clip);
-    if (!map.has(key)) map.set(key, clipInSec(clip));
-  }
-  return map;
-}
-
-function useAssetMedia(assetId: string): MediaUrls {
+function useAssetMedia(assetId: string | null): MediaUrls {
   const [creation, setCreation] = useState<Creation | null>(null);
   const [detailFailed, setDetailFailed] = useState(false);
+  const [waitingLocal, setWaitingLocal] = useState(false);
 
   useEffect(() => {
+    if (!assetId) {
+      setCreation(null);
+      return;
+    }
     let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
+    setDetailFailed(false);
     void getCreation(assetId)
       .then((row) => {
         if (cancelled) return;
         setCreation(row);
         if (
-          !creationDetailUrl(row) &&
           canFetchLocal(row) &&
-          !isParasceneUnavailable(row)
+          !creationDetailUrl(row) &&
+          !creationPreviewUrl(row)
         ) {
-          void ensureLocal([row.id], { fullMedia: true, urgent: true });
+          setWaitingLocal(true);
+          void ensureLocal([assetId], { fullMedia: true, urgent: true });
+        } else {
+          setWaitingLocal(false);
         }
       })
       .catch(() => {
         if (!cancelled) setCreation(null);
       });
-
-    void listen<Creation>("library-creation-updated", (event) => {
-      if (event.payload.id !== assetId) return;
-      setCreation(event.payload);
-      setDetailFailed(false);
-    }).then((off) => {
-      unlisten = off;
-    });
-
     return () => {
       cancelled = true;
-      unlisten?.();
+    };
+  }, [assetId]);
+
+  useEffect(() => {
+    if (!assetId) return;
+    let cancelled = false;
+    const unlisten = listen<Creation>("library-creation-updated", (event) => {
+      if (cancelled) return;
+      if (event.payload.id !== assetId) return;
+      setCreation(event.payload);
+      if (creationDetailUrl(event.payload) || creationPreviewUrl(event.payload)) {
+        setWaitingLocal(false);
+        setDetailFailed(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then((fn) => fn());
     };
   }, [assetId]);
 
   const detail =
     creation && !detailFailed ? creationDetailUrl(creation) : null;
   const thumb = creation ? creationPreviewUrl(creation) : null;
-  const unavailable = creation ? isParasceneUnavailable(creation) : false;
-  const waitingLocal =
-    Boolean(creation) &&
-    !detail &&
-    !thumb &&
-    canFetchLocal(creation!) &&
-    !unavailable;
 
-  return { detail, thumb, waitingLocal };
+  return {
+    detail,
+    thumb,
+    waitingLocal:
+      waitingLocal ||
+      Boolean(
+        creation &&
+          canFetchLocal(creation) &&
+          !detail &&
+          !thumb &&
+          !isParasceneUnavailable(creation),
+      ),
+  };
 }
 
 function useReversedDetail(
-  assetId: string,
+  assetId: string | null,
   enabled: boolean,
-  sourceReady: boolean,
-): { detail: string | null; busy: boolean; error: string | null } {
-  const cached = enabled ? getCachedReversedMedia(assetId) : null;
-  const [detail, setDetail] = useState<string | null>(
-    () => cached?.mediaUrl ?? null,
-  );
+  hasLocal: boolean,
+): { detail: string | null; busy: boolean } {
+  const [detail, setDetail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!enabled || !sourceReady) {
+    if (!enabled || !assetId || !hasLocal) {
       setDetail(null);
       setBusy(false);
-      setError(null);
       return;
     }
-
-    const hit = getCachedReversedMedia(assetId);
-    if (hit) {
-      setDetail(hit.mediaUrl);
+    const cached = getCachedReversedMedia(assetId);
+    if (cached) {
+      setDetail(cached.mediaUrl);
       setBusy(false);
-      setError(null);
       return;
     }
-
     let cancelled = false;
     setBusy(true);
-    setError(null);
-    setDetail(null);
-
     void ensureReversedMedia(assetId)
       .then((urls) => {
         if (cancelled) return;
         setDetail(urls.mediaUrl);
         setBusy(false);
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (cancelled) return;
-        const message =
-          err instanceof Error
-            ? err.message
-            : typeof err === "string"
-              ? err
-              : "Could not reverse media";
-        setError(message);
-        setBusy(false);
         setDetail(null);
+        setBusy(false);
       });
-
     return () => {
       cancelled = true;
     };
-  }, [assetId, enabled, sourceReady]);
+  }, [assetId, enabled, hasLocal]);
 
-  return { detail, busy, error };
-}
-
-/** Resolves true when a seek was issued, false when already at the target. */
-function seekMedia(el: HTMLMediaElement, sec: number): Promise<boolean> {
-  const target = Math.max(0, sec);
-  if (
-    Number.isFinite(el.currentTime) &&
-    Math.abs(el.currentTime - target) < 0.04
-  ) {
-    return Promise.resolve(false);
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      el.removeEventListener("seeked", finish);
-      window.clearTimeout(fallback);
-      resolve(true);
-    };
-    const fallback = window.setTimeout(finish, 800);
-    el.addEventListener("seeked", finish);
-    try {
-      el.currentTime = target;
-    } catch {
-      finish();
-    }
-  });
-}
-
-function waitForCurrentFrame(el: HTMLMediaElement): Promise<void> {
-  if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      el.removeEventListener("loadeddata", finish);
-      el.removeEventListener("canplay", finish);
-      window.clearTimeout(fallback);
-      resolve();
-    };
-    const fallback = window.setTimeout(finish, 800);
-    el.addEventListener("loadeddata", finish);
-    el.addEventListener("canplay", finish);
-  });
-}
-
-/** Prefer rVFC so we know a frame at the seek target was actually produced. */
-function waitForPaintedFrame(el: HTMLVideoElement): Promise<void> {
-  const withRvfc = el as HTMLVideoElement & {
-    requestVideoFrameCallback?: (cb: (now: number, meta: unknown) => void) => number;
-  };
-  if (typeof withRvfc.requestVideoFrameCallback === "function") {
-    return new Promise((resolve) => {
-      const fallback = window.setTimeout(resolve, 400);
-      withRvfc.requestVideoFrameCallback!(() => {
-        window.clearTimeout(fallback);
-        resolve();
-      });
-    });
-  }
-  return waitForCurrentFrame(el);
-}
-
-function waitForCanPlay(el: HTMLMediaElement): Promise<void> {
-  if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      el.removeEventListener("canplay", finish);
-      window.clearTimeout(fallback);
-      resolve();
-    };
-    const fallback = window.setTimeout(finish, 800);
-    el.addEventListener("canplay", finish);
-  });
+  return { detail, busy };
 }
 
 /**
- * Program monitor: one persistent <video>/<img> per backing asset×direction
- * present on the timeline. Playback is visibility + seek + play/pause among
- * those elements — never a hold-frame swap on cuts while playing.
- *
- * Presentation is gated separately from "active" (playhead target): the
- * previous decoder stays visible until the incoming one has seeked to the
- * exact source time. That is what kills the scrub first-frame flash —
- * parking at in-point is not enough when the playhead lands mid-clip.
+ * Program monitor: persistent canvas + FrameProvider / HTML-video fallback.
  */
 export function TimelineMonitor({
   clips,
@@ -310,70 +169,243 @@ export function TimelineMonitor({
   mediaSeekEpoch = 0,
   volume,
 }: TimelineMonitorProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rendererRef = useRef<PreviewRenderer | null>(null);
+  const htmlFallback = !webCodecsAvailable();
+
   const frame = resolveTimelineFrame(clips, playheadSec);
   const visual = frame.visual;
   const audioLayer = frame.audio[0] ?? null;
   const audioAssetId = audioLayer?.clip.assetId?.trim() || null;
 
-  const decoders = useMemo(() => listVisualDecoders(clips), [clips]);
+  const target = useMemo(
+    () => resolveFrameTarget(clips, Math.round(playheadSec * 1e6)),
+    [clips, playheadSec],
+  );
 
-  const activeKey = visual?.clip.assetId?.trim()
-    ? assetDecoderKey(visual.clip)
-    : null;
+  const visualAssetId = target?.assetId ?? null;
+  const media = useAssetMedia(visualAssetId);
+  const wantsReverse = Boolean(visual?.clip.reverse && target?.kind === "video");
+  const reversed = useReversedDetail(
+    visualAssetId,
+    wantsReverse && htmlFallback,
+    Boolean(media.detail),
+  );
 
-  const [visibleKey, setVisibleKey] = useState<AssetDecoderKey | null>(null);
-  const activeKeyRef = useRef(activeKey);
-  activeKeyRef.current = activeKey;
+  const [proxyUrl, setProxyUrl] = useState<string | null>(null);
+  const [proxyError, setProxyError] = useState<string | null>(null);
+  const [proxyBusy, setProxyBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  /** Media URL for painting: original (HTML) or proxy (WebCodecs). */
+  const paintUrl = htmlFallback
+    ? wantsReverse
+      ? reversed.detail
+      : media.detail
+    : proxyUrl;
+
+  // A1 owns program audio when present; otherwise play the video soundtrack.
+  const videoMuted = Boolean(audioLayer);
 
   useEffect(() => {
-    if (!activeKey) setVisibleKey(null);
-  }, [activeKey]);
-
-  const onDecoderReady = useCallback((key: AssetDecoderKey) => {
-    if (activeKeyRef.current === key) setVisibleKey(key);
-  }, []);
-
-  const nextClip = useMemo(() => {
-    return peekNextVisualClip(clips, playheadSec);
-  }, [clips, playheadSec]);
-
-  /**
-   * Standby park times: earliest in-point per decoder, with look-ahead
-   * override for the upcoming cut (play or scrub).
-   */
-  const prepByKey = useMemo(() => {
-    const map = parkSourceByKey(clips);
-    if (nextClip?.assetId?.trim()) {
-      const key = assetDecoderKey(nextClip);
-      if (!activeKey || key !== activeKey) {
-        map.set(key, clipInSec(nextClip));
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const renderer = new PreviewRenderer(canvas, getSharedFrameProvider());
+    rendererRef.current = renderer;
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      renderer.resize(entry.contentRect.width, entry.contentRect.height);
+    });
+    ro.observe(canvas.parentElement ?? canvas);
+    // Size immediately from parent box.
+    const parent = canvas.parentElement;
+    if (parent) {
+      const rect = parent.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        renderer.resize(rect.width, rect.height);
       }
     }
-    return map;
-  }, [clips, nextClip, activeKey]);
+    return () => {
+      ro.disconnect();
+      pauseAllHtmlVideos();
+      renderer.dispose();
+      rendererRef.current = null;
+    };
+  }, []);
+
+  // WebCodecs path needs proxies; HTML path uses originals.
+  useEffect(() => {
+    if (htmlFallback || !target || target.kind !== "video") {
+      setProxyUrl(null);
+      setProxyError(null);
+      setProxyBusy(false);
+      return;
+    }
+    const cached = getCachedProxyUrl(target.assetId);
+    if (cached) {
+      setProxyUrl(cached);
+      setProxyError(null);
+      setProxyBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setProxyBusy(true);
+    setProxyError(null);
+    void ensureProxyMediaUrl(target.assetId)
+      .then((url) => {
+        if (cancelled) return;
+        setProxyUrl(url);
+        setProxyBusy(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setProxyBusy(false);
+        setProxyError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [htmlFallback, target?.assetId, target?.kind]);
+
+  // Seam preload (best-effort).
+  useEffect(() => {
+    if (!htmlFallback) {
+      const provider = getSharedFrameProvider();
+      const seam = resolveSeamPreload(clips, playheadSec);
+      const warm = async (
+        side: { assetId: string; startTimeUs: number; endTimeUs: number } | null,
+      ) => {
+        if (!side) return;
+        try {
+          const url =
+            getCachedProxyUrl(side.assetId) ??
+            (await ensureProxyMediaUrl(side.assetId));
+          preloadPreviewVideo(
+            side.assetId,
+            url,
+            side.startTimeUs,
+            side.endTimeUs,
+            provider,
+          );
+        } catch {
+          /* ignore */
+        }
+      };
+      void warm(seam.outgoing);
+      void warm(seam.incoming);
+      const next = peekNextVisualClip(clips, playheadSec);
+      if (next?.assetId?.trim() && next.kind !== "image") {
+        void warm({
+          assetId: next.assetId.trim(),
+          startTimeUs: 0,
+          endTimeUs: Math.round(0.2 * 1e6),
+        });
+      }
+    }
+  }, [htmlFallback, clips, playheadSec, mediaSeekEpoch]);
+
+  // Pause hidden videos when leaving play.
+  useEffect(() => {
+    if (!playing) pauseAllHtmlVideos();
+  }, [playing]);
+
+  // Paint / play.
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    if (!target) {
+      setStatus(null);
+      if (clips.length === 0) renderer.showEmpty();
+      return;
+    }
+
+    if (target.kind === "image") {
+      const url = media.detail ?? media.thumb;
+      if (!url) {
+        setStatus(media.waitingLocal ? "Saving locally…" : "No local media");
+        return;
+      }
+      setStatus(null);
+      void renderer.renderTarget(target, {
+        timelineTimeUs: Math.round(playheadSec * 1e6),
+        imageUrl: url,
+      });
+      return;
+    }
+
+    if (htmlFallback) {
+      if (wantsReverse && reversed.busy) {
+        setStatus("Reversing…");
+        return;
+      }
+      if (!paintUrl) {
+        setStatus(media.waitingLocal ? "Saving locally…" : "No local media");
+        return;
+      }
+      setStatus(null);
+      // While HTML-playing, only re-enter on asset/seek/play edges — not every
+      // playhead tick (blit loop owns frames; seeking every tick kills audio).
+      void renderer.renderTarget(target, {
+        timelineTimeUs: Math.round(playheadSec * 1e6),
+        proxyUrl: paintUrl,
+        playing,
+        muted: videoMuted,
+        volume,
+      });
+      return;
+    }
+
+    if (proxyBusy) {
+      setStatus("Building proxy…");
+      return;
+    }
+    if (proxyError) {
+      setStatus(proxyError);
+      return;
+    }
+    if (!paintUrl) {
+      setStatus(media.waitingLocal ? "Saving locally…" : "Preparing video…");
+      return;
+    }
+
+    setStatus(null);
+    void renderer.renderTarget(target, {
+      timelineTimeUs: Math.round(playheadSec * 1e6),
+      proxyUrl: paintUrl,
+      playing,
+    });
+  }, [
+    target,
+    paintUrl,
+    proxyBusy,
+    proxyError,
+    media.detail,
+    media.thumb,
+    media.waitingLocal,
+    // HTML play: ignore continuous playhead; scrub & seek epoch still update.
+    htmlFallback && playing ? mediaSeekEpoch : playheadSec,
+    mediaSeekEpoch,
+    clips.length,
+    playing,
+    htmlFallback,
+    wantsReverse,
+    reversed.busy,
+    videoMuted,
+    volume,
+  ]);
 
   return (
     <>
-      {decoders.map(({ key, kind }) => {
-        const isActive = key === activeKey;
-        const isVisible = key === visibleKey;
-        const parkSec = prepByKey.get(key) ?? 0;
-        return (
-          <AssetDecoder
-            key={key}
-            decoderKey={key}
-            kind={kind}
-            active={isActive}
-            visible={isVisible}
-            liveLayer={isActive ? visual : null}
-            prepSourceSec={isActive ? null : parkSec}
-            playing={isActive && playing}
-            mediaSeekEpoch={mediaSeekEpoch}
-            onReady={onDecoderReady}
-          />
-        );
-      })}
-
+      <canvas
+        ref={canvasRef}
+        className="editor-preview-media editor-preview-detail editor-preview-canvas"
+        aria-label="Timeline preview"
+      />
+      {status ? (
+        <span className="editor-preview-wait muted">{status}</span>
+      ) : null}
       {audioLayer && audioAssetId ? (
         <AudioLayer
           key={`a:${audioAssetId}:${audioLayer.clip.reverse ? "r" : "f"}`}
@@ -384,308 +416,10 @@ export function TimelineMonitor({
           volume={volume}
         />
       ) : null}
-
-      {!visual && !audioLayer ? (
+      {!visual && !audioLayer && !status ? (
         <span className="editor-preview-status muted">Timeline</span>
       ) : null}
     </>
-  );
-}
-
-function AssetDecoder({
-  decoderKey,
-  kind,
-  active,
-  visible,
-  liveLayer,
-  prepSourceSec,
-  playing,
-  mediaSeekEpoch,
-  onReady,
-}: {
-  decoderKey: AssetDecoderKey;
-  kind: "video" | "image";
-  /** Playhead currently maps to this decoder. */
-  active: boolean;
-  /** Actually painted in the preview (after seek alignment). */
-  visible: boolean;
-  liveLayer: TimelineLayer | null;
-  /** Parked source time while standby (always set for non-active videos). */
-  prepSourceSec: number | null;
-  playing: boolean;
-  mediaSeekEpoch: number;
-  onReady: (key: AssetDecoderKey) => void;
-}) {
-  const assetId = assetIdFromKey(decoderKey);
-  const reverse = isReverseKey(decoderKey);
-  const media = useAssetMedia(assetId);
-  const wantsReverse = reverse && kind === "video";
-  const reversed = useReversedDetail(
-    assetId,
-    wantsReverse,
-    Boolean(media.detail),
-  );
-
-  const videoSrc = wantsReverse ? reversed.detail : media.detail;
-  const imageSrc =
-    kind === "image" ? media.detail ?? media.thumb : null;
-
-  if (active && wantsReverse && reversed.busy) {
-    return <span className="editor-preview-wait muted">Reversing…</span>;
-  }
-  if (active && wantsReverse && reversed.error) {
-    return (
-      <span className="editor-preview-status muted">{reversed.error}</span>
-    );
-  }
-
-  if (kind === "video" && videoSrc) {
-    return (
-      <PersistentVideo
-        decoderKey={decoderKey}
-        src={videoSrc}
-        active={active}
-        visible={visible}
-        sourceSec={active ? (liveLayer?.sourceSec ?? 0) : (prepSourceSec ?? 0)}
-        playing={playing}
-        mediaSeekEpoch={mediaSeekEpoch}
-        clipId={liveLayer?.clip.id ?? null}
-        onReady={onReady}
-      />
-    );
-  }
-
-  if (imageSrc) {
-    return (
-      <PersistentImage
-        decoderKey={decoderKey}
-        src={imageSrc}
-        active={active}
-        visible={visible}
-        onReady={onReady}
-      />
-    );
-  }
-
-  if (active && media.waitingLocal) {
-    return <span className="editor-preview-wait muted">Saving locally…</span>;
-  }
-  return null;
-}
-
-function PersistentImage({
-  decoderKey,
-  src,
-  active,
-  visible,
-  onReady,
-}: {
-  decoderKey: AssetDecoderKey;
-  src: string;
-  active: boolean;
-  visible: boolean;
-  onReady: (key: AssetDecoderKey) => void;
-}) {
-  useEffect(() => {
-    if (active) onReady(decoderKey);
-  }, [active, decoderKey, onReady, src]);
-
-  return (
-    <img
-      className={`editor-preview-media editor-preview-detail${
-        visible ? "" : " is-standby"
-      }`}
-      src={src}
-      alt=""
-      draggable={false}
-    />
-  );
-}
-
-/**
- * One long-lived video for an asset×direction. Visibility / seek / play only —
- * no remount across timeline clips that share this decoder.
- *
- * `active` = playhead wants this decoder. `visible` = parent has committed it
- * for paint (after we reported ready at the commanded source time). While
- * active-but-not-visible we seek under cover; the previous decoder stays up.
- */
-function PersistentVideo({
-  decoderKey,
-  src,
-  active,
-  visible,
-  sourceSec,
-  playing,
-  mediaSeekEpoch,
-  clipId,
-  onReady,
-}: {
-  decoderKey: AssetDecoderKey;
-  src: string;
-  active: boolean;
-  visible: boolean;
-  sourceSec: number;
-  playing: boolean;
-  mediaSeekEpoch: number;
-  clipId: string | null;
-  onReady: (key: AssetDecoderKey) => void;
-}) {
-  const ref = useRef<HTMLVideoElement | null>(null);
-  const sourceSecRef = useRef(sourceSec);
-  const playingRef = useRef(playing);
-  const activeRef = useRef(active);
-  const onReadyRef = useRef(onReady);
-  /** Has decoded at least one frame at some parked/commanded time. */
-  const [warm, setWarm] = useState(false);
-
-  useEffect(() => {
-    sourceSecRef.current = sourceSec;
-  }, [sourceSec]);
-  useEffect(() => {
-    playingRef.current = playing;
-  }, [playing]);
-  useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
-  useEffect(() => {
-    onReadyRef.current = onReady;
-  }, [onReady]);
-
-  /** Seek to the latest commanded time, then paint-wait; re-seek if command moved. */
-  const alignToCommand = async (el: HTMLVideoElement, cancelled: () => boolean) => {
-    for (;;) {
-      const target = sourceSecRef.current;
-      const didSeek = await seekMedia(el, target);
-      if (cancelled()) return false;
-      // A parked decoder already has the correct frame painted. Waiting for
-      // rVFC in that case stalls until its timeout because paused media emits
-      // no new frame callback.
-      if (didSeek) {
-        await waitForPaintedFrame(el);
-        if (cancelled()) return false;
-      }
-      if (Math.abs(sourceSecRef.current - target) < 0.05) return true;
-    }
-  };
-
-  // Initial attach / src change — decode ready, then seek to commanded time.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    let cancelled = false;
-    setWarm(false);
-
-    const boot = async () => {
-      const ok = await alignToCommand(el, () => cancelled);
-      if (cancelled || !ok) return;
-      setWarm(true);
-      el.pause();
-      if (activeRef.current) {
-        onReadyRef.current(decoderKey);
-        if (playingRef.current) {
-          await waitForCanPlay(el);
-          if (cancelled || !playingRef.current || !activeRef.current) return;
-          void el.play().catch(() => {});
-        }
-      }
-    };
-    void boot();
-    return () => {
-      cancelled = true;
-    };
-    // decoderKey/src identity only — align uses refs for the rest.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, decoderKey]);
-
-  // Standby park: only once we've left the screen — never disturb a hold frame.
-  useEffect(() => {
-    if (active || visible || !warm) return;
-    const el = ref.current;
-    if (!el) return;
-    let cancelled = false;
-    void (async () => {
-      const didSeek = await seekMedia(el, sourceSec);
-      if (cancelled) return;
-      // Finish decoding the parked target now, while hidden, so activation at
-      // this same source time can hand off immediately.
-      if (didSeek) await waitForPaintedFrame(el);
-      if (cancelled) return;
-      el.pause();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [active, visible, warm, sourceSec]);
-
-  // Active: align to commanded source, then signal ready (parent flips visible).
-  // If already visible, seek in place — element holds prior frame during seek.
-  useEffect(() => {
-    if (!active || !warm) return;
-    const el = ref.current;
-    if (!el) return;
-    let cancelled = false;
-    void (async () => {
-      const ok = await alignToCommand(el, () => cancelled);
-      if (cancelled || !ok) return;
-      onReadyRef.current(decoderKey);
-      if (playingRef.current) {
-        await waitForCanPlay(el);
-        if (cancelled || !playingRef.current || !activeRef.current) return;
-        void el.play().catch(() => {});
-      } else {
-        el.pause();
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, warm, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
-
-  // Play / pause while remaining the active + visible decoder.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !active || !visible || !warm) return;
-    if (!playing) {
-      el.pause();
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      if (Math.abs(el.currentTime - sourceSecRef.current) > 0.25) {
-        const ok = await alignToCommand(el, () => cancelled);
-        if (cancelled || !ok) return;
-      }
-      await waitForCanPlay(el);
-      if (cancelled || !playingRef.current) return;
-      void el.play().catch(() => {});
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, active, visible, warm, mediaSeekEpoch]);
-
-  // Inactive but still visible = hold last frame until the incoming decoder is ready.
-  useEffect(() => {
-    if (active || !visible) return;
-    const el = ref.current;
-    if (!el) return;
-    el.pause();
-  }, [active, visible]);
-
-  return (
-    <video
-      ref={ref}
-      className={`editor-preview-media editor-preview-detail${
-        visible && warm ? "" : " is-standby"
-      }`}
-      src={src}
-      playsInline
-      preload="auto"
-      muted
-    />
   );
 }
 
@@ -726,14 +460,21 @@ function AudioLayer({
     el.volume = Math.max(0, Math.min(1, volume / 100));
   }, [volume]);
 
+  // Scrub only while paused — never seek every playhead tick while playing.
   useEffect(() => {
-    if (!src) return;
+    if (!src || playing) return;
     const el = ref.current;
     if (!el) return;
-    if (playing) return;
-    void seekMedia(el, layer.sourceSec);
+    try {
+      if (Math.abs(el.currentTime - layer.sourceSec) > 0.05) {
+        el.currentTime = layer.sourceSec;
+      }
+    } catch {
+      /* ignore */
+    }
   }, [src, layer.sourceSec, layer.clip.id, playing]);
 
+  // Play / pause / discontinuous seek.
   useEffect(() => {
     if (!src) return;
     const el = ref.current;
@@ -744,14 +485,14 @@ function AudioLayer({
     }
     let cancelled = false;
     void (async () => {
-      await seekMedia(el, sourceSecRef.current);
-      if (cancelled || !playingRef.current) return;
-      await waitForCanPlay(el);
-      if (cancelled || !playingRef.current) return;
       try {
+        if (Math.abs(el.currentTime - sourceSecRef.current) > 0.15) {
+          el.currentTime = sourceSecRef.current;
+        }
+        if (cancelled || !playingRef.current) return;
         await el.play();
       } catch {
-        // ignore
+        /* ignore */
       }
     })();
     return () => {

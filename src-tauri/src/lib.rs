@@ -10,8 +10,8 @@ use http_client::{http_get_bearer, http_post_bearer, http_post_json};
 use library::{
     library_apply_manifest, library_cache_missing_media, library_cache_missing_thumbs,
     library_delete_local, library_download_ids, library_download_pending, library_download_thumbs,
-    library_ensure_local, library_ensure_ready, library_ensure_reversed, library_fill_thumb,
-    library_filter_counts, library_get_creation, library_import_from_disk,
+    library_ensure_local, library_ensure_proxy, library_ensure_ready, library_ensure_reversed,
+    library_fill_thumb, library_filter_counts, library_get_creation, library_import_from_disk,
     library_import_local_paths, library_invalidate_mismatched_thumbs, library_invalidate_thumbs,
     library_list_creations, library_list_creations_page, library_local_fit_plan,
     library_read_local_thumb_base64, library_sync_status,
@@ -70,7 +70,8 @@ pub fn run() {
             library_local_fit_plan,
             library_fill_thumb,
             library_read_local_thumb_base64,
-            library_ensure_reversed
+            library_ensure_reversed,
+            library_ensure_proxy
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

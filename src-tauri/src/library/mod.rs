@@ -3,6 +3,7 @@ mod download;
 mod ffmpeg;
 mod import_local;
 mod paths;
+mod proxy;
 mod reverse;
 mod thumb_fill;
 
@@ -16,6 +17,7 @@ pub use download::{
     library_invalidate_mismatched_thumbs, library_local_fit_plan,
 };
 pub use import_local::{library_import_from_disk, library_import_local_paths};
+pub use proxy::library_ensure_proxy;
 pub use reverse::library_ensure_reversed;
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
