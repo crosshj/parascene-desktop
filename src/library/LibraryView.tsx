@@ -43,6 +43,10 @@ import {
   EMPTY_FILTER_TOGGLES,
   activeFilterId,
   filterCreationsVisible,
+  folderBoardAspect,
+  folderCollageMemberIds,
+  folderMatchesFilters,
+  folderNeedsMemberCreations,
   mergeFilterCounts,
   selectFilter,
   togglesFromFilterId,
@@ -62,7 +66,6 @@ import {
   listCreationsPage,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
-import { FolderCard } from "./FolderCard";
 import { FolderCreateModal } from "./FolderCreateModal";
 import { FolderEditModal } from "./FolderEditModal";
 import { FolderPickModal } from "./FolderPickModal";
@@ -583,6 +586,12 @@ function CreationsPanel({
   /** Members loaded by id — not the paginated home catalog. */
   const [folderMembers, setFolderMembers] = useState<Creation[] | null>(null);
   const [folderMembersLoading, setFolderMembersLoading] = useState(false);
+  /** Member rows used to decide which folders match the active filter. */
+  const [folderFilterMembersById, setFolderFilterMembersById] = useState<
+    Map<string, Creation>
+  >(() => new Map());
+  const [folderFilterMembersLoading, setFolderFilterMembersLoading] =
+    useState(false);
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [pickFolderOpen, setPickFolderOpen] = useState(false);
   const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
@@ -647,6 +656,81 @@ function CreationsPanel({
   );
 
   const folderMemberIdsKey = folderView?.memberIds.join("\0") ?? "";
+  const homeFolderMemberIdsKey = useMemo(
+    () =>
+      folders
+        .map((folder) => `${folder.id}:${folder.memberIds.join(",")}`)
+        .join("|"),
+    [folders],
+  );
+  const needsFolderMemberFilter = folderNeedsMemberCreations(gridFilters);
+  const folderFilterCacheRef = useRef<Map<string, Creation>>(new Map());
+  const folderFilterFetchKeyRef = useRef<string>("");
+
+  useEffect(() => {
+    if (folderView || !needsFolderMemberFilter) {
+      setFolderFilterMembersLoading(false);
+      return;
+    }
+    if (folders.length === 0) {
+      folderFilterFetchKeyRef.current = "";
+      setFolderFilterMembersById(new Map());
+      setFolderFilterMembersLoading(false);
+      return;
+    }
+
+    const ids = [...new Set(folders.flatMap((folder) => folder.memberIds))];
+    const fetchKey = homeFolderMemberIdsKey;
+    const cache = folderFilterCacheRef.current;
+    const publishFromCache = () => {
+      const next = new Map<string, Creation>();
+      for (const id of ids) {
+        const row = cache.get(id);
+        if (row) next.set(id, row);
+      }
+      setFolderFilterMembersById(next);
+      setFolderFilterMembersLoading(false);
+    };
+
+    // Same membership snapshot already loaded — avoid setState churn / loops.
+    if (folderFilterFetchKeyRef.current === fetchKey) {
+      return;
+    }
+
+    const missing = ids.filter((id) => !cache.has(id));
+    if (missing.length === 0) {
+      folderFilterFetchKeyRef.current = fetchKey;
+      publishFromCache();
+      return;
+    }
+
+    let cancelled = false;
+    // Keep showing previous matches while we fill gaps — only blank on cold start.
+    if (cache.size === 0) setFolderFilterMembersLoading(true);
+
+    void getCreations(missing)
+      .then((rows) => {
+        if (cancelled) return;
+        for (const row of rows) cache.set(row.id, row);
+        folderFilterFetchKeyRef.current = fetchKey;
+        publishFromCache();
+      })
+      .catch((error) => {
+        console.error("Failed to load folder members for filter", error);
+        if (cancelled) return;
+        folderFilterFetchKeyRef.current = "";
+        setFolderFilterMembersLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    folderView,
+    folders,
+    homeFolderMemberIdsKey,
+    needsFolderMemberFilter,
+  ]);
 
   useEffect(() => {
     if (!folderView) {
@@ -700,6 +784,11 @@ function CreationsPanel({
     if (!openProjectId) return new Set<string>();
     return new Set(project.assets.map((a) => a.id));
   }, [openProjectId, project.assets]);
+
+  const projectFolderIds = useMemo(() => {
+    if (!openProjectId) return new Set<string>();
+    return new Set(project.folderIds);
+  }, [openProjectId, project.folderIds]);
 
   const filterCounts = useMemo(
     () => mergeFilterCounts(catalogCounts, selectedIds, inProjectIds),
@@ -778,15 +867,89 @@ function CreationsPanel({
     selectedIds,
   ]);
 
+  const folderFilterCreationsById = useMemo(() => {
+    const map = new Map<string, Creation>(folderFilterMembersById);
+    if (creations) {
+      for (const creation of creations) {
+        if (!map.has(creation.id)) map.set(creation.id, creation);
+      }
+    }
+    return map;
+  }, [creations, folderFilterMembersById]);
+
+  const homeFolderAspect = useMemo(
+    () => folderBoardAspect(gridFilters),
+    [gridFilters],
+  );
+
   const homeFolders = useMemo(() => {
     if (folderView || gridBlank) return [];
-    return folders;
-  }, [folderView, folders, gridBlank]);
+    if (
+      folderFilterMembersLoading &&
+      needsFolderMemberFilter &&
+      folderFilterMembersById.size === 0
+    ) {
+      return [];
+    }
+    return folders.filter((folder) =>
+      folderMatchesFilters(
+        folder,
+        gridFilters,
+        selectedIds,
+        selectedFolderIds,
+        inProjectIds,
+        projectFolderIds,
+        folderFilterCreationsById,
+      ),
+    );
+  }, [
+    folderFilterCreationsById,
+    folderFilterMembersById.size,
+    folderFilterMembersLoading,
+    folderView,
+    folders,
+    gridBlank,
+    gridFilters,
+    inProjectIds,
+    needsFolderMemberFilter,
+    projectFolderIds,
+    selectedFolderIds,
+    selectedIds,
+  ]);
+
+  const folderCollageIdsByFolderId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const folder of homeFolders) {
+      map.set(
+        folder.id,
+        folderCollageMemberIds(
+          folder,
+          gridFilters,
+          selectedIds,
+          selectedFolderIds,
+          inProjectIds,
+          projectFolderIds,
+          folderFilterCreationsById,
+        ),
+      );
+    }
+    return map;
+  }, [
+    folderFilterCreationsById,
+    gridFilters,
+    homeFolders,
+    inProjectIds,
+    projectFolderIds,
+    selectedFolderIds,
+    selectedIds,
+  ]);
 
   const filterEmpty =
     !gridBlank &&
     !folderMembersLoading &&
-    visibleCreations.length === 0;
+    !(folderFilterMembersLoading && needsFolderMemberFilter) &&
+    visibleCreations.length === 0 &&
+    homeFolders.length === 0;
   const [showFilterEmpty, setShowFilterEmpty] = useState(false);
   useEffect(() => {
     if (!filterEmpty) {
@@ -1134,62 +1297,57 @@ function CreationsPanel({
             ) : null}
             {gridBlank ||
             folderMembersLoading ||
+            (folderFilterMembersLoading && needsFolderMemberFilter) ||
             (filterEmpty && !showFilterEmpty && homeFolders.length === 0) ? (
               <div
                 className="creations-grid-blank"
                 aria-busy={
-                  gridBlank || folderMembersLoading || undefined
+                  gridBlank ||
+                  folderMembersLoading ||
+                  (folderFilterMembersLoading && needsFolderMemberFilter) ||
+                  undefined
                 }
               />
             ) : showFilterEmpty && homeFolders.length === 0 ? (
               <CreationsFilterEmpty />
             ) : (
-              <>
-                {homeFolders.length > 0 ? (
-                  <div className="library-folder-grid" aria-label="Folders">
-                    {homeFolders.map((folder) => (
-                      <FolderCard
-                        key={folder.id}
-                        folder={folder}
-                        selected={selectedFolderIds.has(folder.id)}
-                        onOpen={(next) => {
-                          setFolderViewId(next.id);
-                          setSelectedIds(new Set());
-                          setSelectedFolderIds(new Set());
-                        }}
-                        onToggleSelect={onToggleFolderSelect}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-                {visibleCreations.length > 0 || folderView ? (
-                  <VirtualCreationsGrid
-                    creations={visibleCreations}
-                    selectedIds={selectedIds}
-                    dimmedIds={dimmedIds}
-                    inProjectIds={inProjectIds}
-                    layoutResetKey={`${gridFilterKey}:${folderViewId ?? "home"}`}
-                    onOpen={(creation) => {
-                      setActive(creation);
-                      if (
-                        creation.downloadState !== "local" ||
-                        !creation.localPath
-                      ) {
-                        void ensureLocal([creation.id], {
-                          fullMedia: true,
-                          urgent: true,
-                        });
-                      }
-                    }}
-                    onToggleSelect={onToggleSelect}
-                    onNearEnd={() => {
-                      if (gridFilterKey === "selected") return;
-                      if (folderView) return;
-                      onLoadMore();
-                    }}
-                  />
-                ) : null}
-              </>
+              <VirtualCreationsGrid
+                creations={visibleCreations}
+                folders={homeFolders}
+                selectedIds={selectedIds}
+                selectedFolderIds={selectedFolderIds}
+                dimmedIds={dimmedIds}
+                inProjectIds={inProjectIds}
+                layoutResetKey={`${gridFilterKey}:${folderViewId ?? "home"}`}
+                folderPackHeight={homeFolderAspect.packHeight}
+                folderAspectCss={homeFolderAspect.aspectCss}
+                folderCollageIdsByFolderId={folderCollageIdsByFolderId}
+                folderCreationsById={folderFilterCreationsById}
+                onOpen={(creation) => {
+                  setActive(creation);
+                  if (
+                    creation.downloadState !== "local" ||
+                    !creation.localPath
+                  ) {
+                    void ensureLocal([creation.id], {
+                      fullMedia: true,
+                      urgent: true,
+                    });
+                  }
+                }}
+                onToggleSelect={onToggleSelect}
+                onOpenFolder={(next) => {
+                  setFolderViewId(next.id);
+                  setSelectedIds(new Set());
+                  setSelectedFolderIds(new Set());
+                }}
+                onToggleFolderSelect={onToggleFolderSelect}
+                onNearEnd={() => {
+                  if (gridFilterKey === "selected") return;
+                  if (folderView) return;
+                  onLoadMore();
+                }}
+              />
             )}
             {active ? (
               <CreationLightbox

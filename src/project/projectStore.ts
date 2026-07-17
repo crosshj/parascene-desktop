@@ -280,15 +280,31 @@ export function mergeFolderIds(
 export function removeFolderIds(
   project: StoredProject,
   folderIds: string[],
+  memberCreationIds: string[] = [],
 ): StoredProject {
-  if (folderIds.length === 0) return project;
-  const remove = new Set(folderIds);
-  const current = normalizeFolderIds(project.folderIds);
-  const next = current.filter((id) => !remove.has(id));
-  if (next.length === current.length) return project;
+  if (folderIds.length === 0 && memberCreationIds.length === 0) return project;
+  const removeFolders = new Set(folderIds);
+  const currentFolders = normalizeFolderIds(project.folderIds);
+  const nextFolders = currentFolders.filter((id) => !removeFolders.has(id));
+  const removeMembers = new Set(memberCreationIds);
+  const nextCreations =
+    removeMembers.size === 0
+      ? project.creationIds
+      : project.creationIds.filter((id) => !removeMembers.has(id));
+  if (
+    nextFolders.length === currentFolders.length &&
+    nextCreations.length === project.creationIds.length
+  ) {
+    return project;
+  }
   return {
     ...project,
-    folderIds: next,
+    folderIds: nextFolders,
+    creationIds: nextCreations,
+    selectedAssetId: normalizeSelectedAssetId(
+      project.selectedAssetId,
+      nextCreations,
+    ),
     updatedAt: new Date().toISOString(),
   };
 }

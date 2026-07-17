@@ -11,7 +11,8 @@ mod thumb_fill;
 
 pub use catalog::{
     library_apply_manifest, library_ensure_ready, library_filter_counts, library_get_creation,
-    library_invalidate_thumbs, library_list_creations, library_sync_status,
+    library_get_creations, library_invalidate_thumbs, library_list_creations,
+    library_sync_status,
 };
 pub use download::{
     library_cache_missing_media, library_cache_missing_thumbs, library_delete_local,

@@ -9,6 +9,8 @@ import {
 import { creationAspectCss, creationPackHeight } from "./aspectRatio";
 import { ensureLocal } from "./catalogClient";
 import { CreationCard } from "./CreationCard";
+import { FolderCard } from "./FolderCard";
+import type { LibraryFolder } from "./folderClient";
 import { MASONRY_GAP_PX, useMasonryLayout } from "./CreationsMasonry";
 import { canFetchLocal, creationPreviewUrl } from "./previewUrl";
 import type { Creation } from "./types";
@@ -24,9 +26,13 @@ const OVERSCAN_PX = 1200;
 const LOAD_MORE_MIN_PX = 9000;
 const LOAD_MORE_VIEWPORTS = 4;
 
+type BoardItem =
+  | { kind: "folder"; id: string; folder: LibraryFolder }
+  | { kind: "creation"; id: string; creation: Creation };
+
 type CardLayout = {
   id: string;
-  creation: Creation;
+  item: BoardItem;
   top: number;
   left: number;
   width: number;
@@ -40,10 +46,12 @@ type CardLayout = {
  * Assignment must be cleared when the list is filtered/reordered (not append-only).
  */
 function layoutBoardSticky(
-  items: Creation[],
+  items: BoardItem[],
   columnCount: number,
   columnWidth: number,
   assignment: Map<string, number>,
+  folderPackHeight: number,
+  folderAspectCss: string,
 ): { cards: CardLayout[]; totalHeight: number } {
   const cols = Math.max(1, columnCount);
   const tops = Array.from({ length: cols }, () => 0);
@@ -56,26 +64,32 @@ function layoutBoardSticky(
     }
   }
 
-  for (const creation of items) {
-    let col = assignment.get(creation.id);
+  for (const item of items) {
+    let col = assignment.get(item.id);
     if (col === undefined || col >= cols) {
       col = 0;
       for (let i = 1; i < cols; i++) {
         if (tops[i] < tops[col]) col = i;
       }
-      assignment.set(creation.id, col);
+      assignment.set(item.id, col);
     }
-    // Creation metadata aspect only (9:16, 4:5, …). Thumbs are often square — ignore them.
-    const height = Math.max(48, columnWidth * creationPackHeight(creation));
+    const packHeight =
+      item.kind === "folder"
+        ? folderPackHeight
+        : creationPackHeight(item.creation);
+    const height = Math.max(48, columnWidth * packHeight);
     const left = col * (columnWidth + MASONRY_GAP_PX);
     cards.push({
-      id: creation.id,
-      creation,
+      id: item.id,
+      item,
       top: tops[col],
       left,
       width: columnWidth,
       height,
-      aspectCss: creationAspectCss(creation),
+      aspectCss:
+        item.kind === "folder"
+          ? folderAspectCss
+          : creationAspectCss(item.creation),
     });
     tops[col] += height + MASONRY_GAP_PX;
   }
@@ -100,25 +114,44 @@ export function isAppendOnlyIdList(prev: string[], next: string[]): boolean {
  *
  * Positions are packed for the full loaded catalogue; only the viewport
  * (+ overscan) mounts React cards so large windows stay interactive.
+ * Optional folders pack as square tiles at the front of the board.
  */
 export function VirtualCreationsGrid({
   creations,
+  folders = [],
   selectedIds,
+  selectedFolderIds,
   dimmedIds,
   inProjectIds,
   layoutResetKey,
+  folderPackHeight = 1,
+  folderAspectCss = "1 / 1",
+  folderCollageIdsByFolderId,
+  folderCreationsById,
   onOpen,
   onToggleSelect,
+  onOpenFolder,
+  onToggleFolderSelect,
   onNearEnd,
 }: {
   creations: Creation[];
+  folders?: LibraryFolder[];
   selectedIds: ReadonlySet<string>;
+  selectedFolderIds?: ReadonlySet<string>;
   dimmedIds?: ReadonlySet<string>;
   inProjectIds?: ReadonlySet<string>;
   /** Change when filters change so packing/scroll reset (sticky cols would scatter otherwise). */
   layoutResetKey?: string;
+  /** Relative height for folder tiles (h/w). Defaults to square. */
+  folderPackHeight?: number;
+  folderAspectCss?: string;
+  /** When filtering, collage thumbs are limited to matching members. */
+  folderCollageIdsByFolderId?: ReadonlyMap<string, readonly string[]>;
+  folderCreationsById?: ReadonlyMap<string, Creation>;
   onOpen: (creation: Creation) => void;
   onToggleSelect: (creation: Creation) => void;
+  onOpenFolder?: (folder: LibraryFolder) => void;
+  onToggleFolderSelect?: (folder: LibraryFolder) => void;
   onNearEnd: () => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -129,43 +162,55 @@ export function VirtualCreationsGrid({
   const ensuredIds = useRef(new Set<string>());
   const assignmentRef = useRef(new Map<string, number>());
   const colsRef = useRef(0);
-  const prevIdsRef = useRef<string[]>([]);
   const prevResetKeyRef = useRef(layoutResetKey);
   const rafScroll = useRef(0);
+
+  const boardItems = useMemo<BoardItem[]>(() => {
+    const items: BoardItem[] = folders.map((folder) => ({
+      kind: "folder",
+      id: `folder:${folder.id}`,
+      folder,
+    }));
+    for (const creation of creations) {
+      items.push({ kind: "creation", id: creation.id, creation });
+    }
+    return items;
+  }, [creations, folders]);
 
   const { cards, totalHeight } = useMemo(() => {
     if (!layout.ready) return { cards: [] as CardLayout[], totalHeight: 0 };
 
-    const ids = creations.map((c) => c.id);
     const resetKeyChanged = prevResetKeyRef.current !== layoutResetKey;
     prevResetKeyRef.current = layoutResetKey;
 
-    if (
-      resetKeyChanged ||
-      colsRef.current !== layout.columnCount ||
-      !isAppendOnlyIdList(prevIdsRef.current, ids)
-    ) {
+    // Only wipe sticky columns on filter / folder-view / column-count changes.
+    // Membership edits (file into folder, new folder tile) must keep existing
+    // cards in place so scroll and packing don't jump.
+    if (resetKeyChanged || colsRef.current !== layout.columnCount) {
       assignmentRef.current = new Map();
       colsRef.current = layout.columnCount;
     }
-    prevIdsRef.current = ids;
 
     return layoutBoardSticky(
-      creations,
+      boardItems,
       layout.columnCount,
       layout.columnWidth,
       assignmentRef.current,
+      folderPackHeight,
+      folderAspectCss,
     );
   }, [
-    creations,
+    boardItems,
+    folderAspectCss,
+    folderPackHeight,
     layout.ready,
     layout.columnCount,
     layout.columnWidth,
     layoutResetKey,
   ]);
 
-  // Filter / reset: jump to top so leftover scroll doesn't sit in empty packed space
-  // and trigger phantom load-more that confuses the board.
+  // Filter / folder-view changes: jump to top so leftover scroll doesn't sit in
+  // empty packed space and trigger phantom load-more.
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -185,7 +230,11 @@ export function VirtualCreationsGrid({
   }, [cards, scrollTop, viewportH]);
 
   useEffect(() => {
-    warmLocalPreviews(visibleCards.map((c) => c.creation));
+    warmLocalPreviews(
+      visibleCards
+        .filter((card) => card.item.kind === "creation")
+        .map((card) => (card.item as { kind: "creation"; creation: Creation }).creation),
+    );
   }, [visibleCards]);
 
   // Pull missing thumbs near the viewport only (capped batch).
@@ -193,8 +242,10 @@ export function VirtualCreationsGrid({
     const mid = scrollTop + viewportH / 2;
     const missing = cards
       .filter((card) => {
-        if (!canFetchLocal(card.creation)) return false;
-        if (creationPreviewUrl(card.creation)) return false;
+        if (card.item.kind !== "creation") return false;
+        const creation = card.item.creation;
+        if (!canFetchLocal(creation)) return false;
+        if (creationPreviewUrl(creation)) return false;
         const key = `${card.id}:thumb`;
         if (ensuredIds.current.has(key)) return false;
         if (card.top + card.height < scrollTop - ENSURE_AHEAD_PX) return false;
@@ -279,7 +330,7 @@ export function VirtualCreationsGrid({
     nearEndSent.current = false;
     const el = scrollerRef.current;
     if (el) checkNearEnd(el);
-  }, [creations.length, checkNearEnd]);
+  }, [creations.length, folders.length, checkNearEnd]);
 
   return (
     <div
@@ -289,7 +340,7 @@ export function VirtualCreationsGrid({
       <div
         className="creations-virtual-space"
         style={{ height: totalHeight }}
-        aria-label={`${creations.length} creations`}
+        aria-label={`${creations.length} creations${folders.length > 0 ? `, ${folders.length} folders` : ""}`}
         aria-busy={!layout.ready}
       >
         {visibleCards.map((card) => {
@@ -305,15 +356,30 @@ export function VirtualCreationsGrid({
               className="creations-virtual-item"
               style={style}
             >
-              <CreationCard
-                creation={card.creation}
-                aspectCss={card.aspectCss}
-                selected={selectedIds.has(card.id)}
-                dimmed={dimmedIds?.has(card.id) ?? false}
-                inProject={inProjectIds?.has(card.id) ?? false}
-                onOpen={onOpen}
-                onToggleSelect={onToggleSelect}
-              />
+              {card.item.kind === "folder" ? (
+                <FolderCard
+                  folder={card.item.folder}
+                  variant="board"
+                  selected={selectedFolderIds?.has(card.item.folder.id) ?? false}
+                  collageMemberIds={
+                    folderCollageIdsByFolderId?.get(card.item.folder.id) ??
+                    card.item.folder.memberIds
+                  }
+                  creationsById={folderCreationsById}
+                  onOpen={onOpenFolder ?? (() => {})}
+                  onToggleSelect={onToggleFolderSelect}
+                />
+              ) : (
+                <CreationCard
+                  creation={card.item.creation}
+                  aspectCss={card.aspectCss}
+                  selected={selectedIds.has(card.id)}
+                  dimmed={dimmedIds?.has(card.id) ?? false}
+                  inProject={inProjectIds?.has(card.id) ?? false}
+                  onOpen={onOpen}
+                  onToggleSelect={onToggleSelect}
+                />
+              )}
             </div>
           );
         })}

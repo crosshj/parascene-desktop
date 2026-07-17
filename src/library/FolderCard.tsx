@@ -2,10 +2,17 @@ import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "r
 import { getCreation } from "./catalogClient";
 import type { LibraryFolder } from "./folderClient";
 import { creationPreviewUrl } from "./previewUrl";
+import type { Creation } from "./types";
 
 type FolderCardProps = {
   folder: LibraryFolder;
   selected?: boolean;
+  /** Square board tile that fills the masonry cell. */
+  variant?: "default" | "board";
+  /** Members to show in the collage (defaults to the first folder members). */
+  collageMemberIds?: readonly string[];
+  /** Prefer these rows for preview URLs (avoids extra getCreation traffic). */
+  creationsById?: ReadonlyMap<string, Creation>;
   onOpen: (folder: LibraryFolder) => void;
   onToggleSelect?: (folder: LibraryFolder) => void;
   onContextMenu?: (
@@ -28,14 +35,27 @@ function FolderGlyph() {
   );
 }
 
-function FolderCollage({ memberIds }: { memberIds: string[] }) {
+function FolderCollage({
+  memberIds,
+  creationsById,
+}: {
+  memberIds: readonly string[];
+  creationsById?: ReadonlyMap<string, Creation>;
+}) {
   const ids = memberIds.slice(0, 4);
-  const [urls, setUrls] = useState<(string | null)[]>([]);
+  const [urls, setUrls] = useState<(string | null)[]>(() =>
+    ids.map((id) => {
+      const creation = creationsById?.get(id);
+      return creation ? creationPreviewUrl(creation) : null;
+    }),
+  );
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all(
       ids.map(async (id) => {
+        const cached = creationsById?.get(id);
+        if (cached) return creationPreviewUrl(cached);
         try {
           const creation = await getCreation(id);
           return creationPreviewUrl(creation);
@@ -49,7 +69,7 @@ function FolderCollage({ memberIds }: { memberIds: string[] }) {
     return () => {
       cancelled = true;
     };
-  }, [ids.join("|")]);
+  }, [creationsById, ids.join("|")]);
 
   if (ids.length === 0) return <FolderGlyph />;
 
@@ -73,14 +93,19 @@ function FolderCollage({ memberIds }: { memberIds: string[] }) {
 export const FolderCard = memo(function FolderCard({
   folder,
   selected = false,
+  variant = "default",
+  collageMemberIds,
+  creationsById,
   onOpen,
   onToggleSelect,
   onContextMenu,
 }: FolderCardProps) {
+  const isBoard = variant === "board";
+  const thumbIds = collageMemberIds ?? folder.memberIds;
   return (
     <button
       type="button"
-      className={`folder-card${selected ? " is-selected" : ""}`}
+      className={`folder-card${isBoard ? " is-board" : ""}${selected ? " is-selected" : ""}`}
       onClick={(event) => {
         if (event.shiftKey && onToggleSelect) {
           event.preventDefault();
@@ -100,7 +125,7 @@ export const FolderCard = memo(function FolderCard({
       }
     >
       <div className="folder-card-thumb">
-        <FolderCollage memberIds={folder.memberIds} />
+        <FolderCollage memberIds={thumbIds} creationsById={creationsById} />
       </div>
       <span className="folder-card-title">{folder.title}</span>
       <span className="folder-card-meta muted">

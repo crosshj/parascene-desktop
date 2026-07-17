@@ -292,7 +292,43 @@ export function AssetBrowserPane({
     return kindFromCreation(creationsById[asset.id], asset.kind) === filter;
   });
 
-  const showRootFolders = !folderView && folders.length > 0;
+  const visibleFolders = useMemo(() => {
+    if (folderView || folders.length === 0) return [];
+    if (filter === "all") return folders;
+    return folders.filter((folder) =>
+      folder.memberIds.some((id) => {
+        const asset = assets.find((row) => row.id === id);
+        if (!asset) return false;
+        return kindFromCreation(creationsById[id], asset.kind) === filter;
+      }),
+    );
+  }, [assets, creationsById, filter, folderView, folders]);
+
+  const creationsByIdMap = useMemo(() => {
+    const map = new Map<string, Creation>();
+    for (const [id, creation] of Object.entries(creationsById)) {
+      map.set(id, creation);
+    }
+    return map;
+  }, [creationsById]);
+
+  const folderCollageIdsByFolderId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const folder of visibleFolders) {
+      const ids =
+        filter === "all"
+          ? folder.memberIds.slice(0, 4)
+          : folder.memberIds.filter((id) => {
+              const asset = assets.find((row) => row.id === id);
+              if (!asset) return false;
+              return kindFromCreation(creationsById[id], asset.kind) === filter;
+            });
+      map.set(folder.id, ids.slice(0, 4));
+    }
+    return map;
+  }, [assets, creationsById, filter, visibleFolders]);
+
+  const showRootFolders = visibleFolders.length > 0;
 
   const isLocalOnlyAsset = (assetId: string): boolean => {
     const creation = creationsById[assetId];
@@ -436,27 +472,31 @@ export function AssetBrowserPane({
       </div>
 
       <div className="editor-asset-scroll">
-        {showRootFolders ? (
-          <div className="editor-asset-folders" aria-label="Folders">
-            {folders.map((folder) => (
-              <FolderCard
-                key={folder.id}
-                folder={folder}
-                onOpen={(next) => {
-                  setFolderViewId(next.id);
-                  onSelectionChange([], null);
-                }}
-                onContextMenu={(next, event) =>
-                  openFolderContextMenu(next.id, event)
-                }
-              />
-            ))}
-          </div>
-        ) : null}
         {visible.length === 0 && !showRootFolders ? (
           <p className="muted editor-asset-empty">No assets in this filter.</p>
-        ) : visible.length === 0 ? null : (
+        ) : (
           <ul className="editor-asset-grid">
+            {showRootFolders
+              ? visibleFolders.map((folder) => (
+                  <li key={`folder:${folder.id}`}>
+                    <FolderCard
+                      folder={folder}
+                      collageMemberIds={
+                        folderCollageIdsByFolderId.get(folder.id) ??
+                        folder.memberIds
+                      }
+                      creationsById={creationsByIdMap}
+                      onOpen={(next) => {
+                        setFolderViewId(next.id);
+                        onSelectionChange([], null);
+                      }}
+                      onContextMenu={(next, event) =>
+                        openFolderContextMenu(next.id, event)
+                      }
+                    />
+                  </li>
+                ))
+              : null}
             {visible.map((asset) => {
               const creation = creationsById[asset.id];
               const kind = kindFromCreation(creation, asset.kind);

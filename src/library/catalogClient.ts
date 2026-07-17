@@ -46,16 +46,8 @@ export async function getCreation(id: string): Promise<Creation> {
 export async function getCreations(ids: string[]): Promise<Creation[]> {
   if (ids.length === 0) return [];
   const unique = [...new Set(ids)];
-  const byId = new Map<string, Creation>();
-  await Promise.all(
-    unique.map(async (id) => {
-      try {
-        byId.set(id, await getCreation(id));
-      } catch {
-        // Stale membership / deleted creation.
-      }
-    }),
-  );
+  const rows = await invoke<Creation[]>("library_get_creations", { ids: unique });
+  const byId = new Map(rows.map((row) => [row.id, row]));
   const out: Creation[] = [];
   const seen = new Set<string>();
   for (const id of ids) {

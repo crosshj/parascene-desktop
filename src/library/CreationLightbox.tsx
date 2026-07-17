@@ -202,6 +202,8 @@ export function CreationLightbox({
                 src={detail}
                 controls
                 autoPlay
+                loop
+                muted
               />
             ) : isAudio ? (
               <div className="creation-lightbox-audio">

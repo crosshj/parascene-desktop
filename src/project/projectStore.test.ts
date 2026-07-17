@@ -50,7 +50,15 @@ describe("projectStore", () => {
     expect(again.creationIds).toEqual(["c1", "c2", "c3"]);
   });
 
-  it("removes folder ids without removing member creations", () => {
+  it("removes folder ids and their member creations", () => {
+    let a = createStoredProject("Demo", ["c1", "c2", "c3"]);
+    a = mergeFolderIds(a, ["f1"], ["c2", "c3"]);
+    const next = removeFolderIds(a, ["f1"], ["c2", "c3"]);
+    expect(next.folderIds).toEqual([]);
+    expect(next.creationIds).toEqual(["c1"]);
+  });
+
+  it("can remove a folder id without member ids when none are provided", () => {
     let a = createStoredProject("Demo", ["c1", "c2"]);
     a = mergeFolderIds(a, ["f1"], ["c2"]);
     const next = removeFolderIds(a, ["f1"]);

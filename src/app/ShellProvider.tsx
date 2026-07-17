@@ -77,8 +77,11 @@ type ShellState = {
     folderIds: string[],
     memberCreationIds: string[],
   ) => void;
-  /** Detach local Library folders from the open project (members stay). */
-  removeFoldersFromOpenProject: (folderIds: string[]) => void;
+  /** Detach local Library folders from the open project (and their members). */
+  removeFoldersFromOpenProject: (
+    folderIds: string[],
+    memberCreationIds?: string[],
+  ) => void;
   /** Last Creations filter — survives Library ↔ Project switches. */
   creationsFilterId: FilterId;
   setCreationsFilterId: (id: FilterId) => void;
@@ -274,9 +277,11 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   );
 
   const removeFoldersFromOpenProject = useCallback(
-    (folderIds: string[]) => {
-      if (folderIds.length === 0) return;
-      patchOpenProject((p) => removeFolderIds(p, folderIds));
+    (folderIds: string[], memberCreationIds: string[] = []) => {
+      if (folderIds.length === 0 && memberCreationIds.length === 0) return;
+      patchOpenProject((p) =>
+        removeFolderIds(p, folderIds, memberCreationIds),
+      );
     },
     [patchOpenProject],
   );

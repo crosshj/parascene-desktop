@@ -823,6 +823,53 @@ export function EditorLayout() {
     }
   };
 
+  const removeFoldersFromProject = async (folderIds: string[]) => {
+    const chosen = projectFolders.filter((folder) =>
+      folderIds.includes(folder.id),
+    );
+    const memberIds = [
+      ...new Set(chosen.flatMap((folder) => folder.memberIds)),
+    ].filter((id) => project.assets.some((asset) => asset.id === id));
+    const usedIds = assetsUsedOnTimeline(memberIds);
+    if (usedIds.size > 0) {
+      await confirm({
+        title: usedIds.size === 1 ? "Asset in use" : "Assets in use",
+        message:
+          usedIds.size === 1
+            ? "An asset in this folder is used on the timeline. Remove its clips first, then try again."
+            : `${usedIds.size} assets in this folder are used on the timeline. Remove their clips first, then try again.`,
+        confirmLabel: "OK",
+        hideCancel: true,
+      });
+      return;
+    }
+    const folderCount = folderIds.length;
+    const memberCount = memberIds.length;
+    const ok = await confirm({
+      title:
+        folderCount === 1
+          ? "Remove folder from project?"
+          : `Remove ${folderCount} folders?`,
+      message:
+        memberCount === 0
+          ? folderCount === 1
+            ? "Do you want to remove this folder from the project?"
+            : `Do you want to remove these ${folderCount} folders from the project?`
+          : folderCount === 1
+            ? `Do you want to remove this folder and its ${memberCount} asset${memberCount === 1 ? "" : "s"} from the project?`
+            : `Do you want to remove these ${folderCount} folders and their ${memberCount} assets from the project?`,
+      confirmLabel: "Remove",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    removeFoldersFromOpenProject(folderIds, memberIds);
+    if (selectedAssetId && memberIds.includes(selectedAssetId)) {
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
+      setOpenProjectSelectedAssetId(null);
+    }
+  };
+
   const deleteAssetsFromProjectAndLibrary = async (assetIds: string[]) => {
     const usedIds = assetsUsedOnTimeline(assetIds);
     if (usedIds.size > 0) {
@@ -914,7 +961,7 @@ export function EditorLayout() {
             void removeAssetsFromProject(ids);
           }}
           onRemoveFolders={(ids) => {
-            removeFoldersFromOpenProject(ids);
+            void removeFoldersFromProject(ids);
           }}
         />
       ) : null}

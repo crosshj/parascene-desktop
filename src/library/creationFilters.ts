@@ -64,6 +64,19 @@ export const ASPECT_FILTER_PRESETS = {
 
 export type AspectFilterId = keyof typeof ASPECT_FILTER_PRESETS;
 
+/** Pack height / CSS aspect for folder tiles under an aspect filter (else 1:1). */
+export function folderBoardAspect(toggles: CreationFilterToggles): {
+  packHeight: number;
+  aspectCss: string;
+} {
+  const active = activeFilterId(toggles);
+  if (active in ASPECT_FILTER_PRESETS) {
+    const { w, h } = ASPECT_FILTER_PRESETS[active as AspectFilterId];
+    return { packHeight: h / w, aspectCss: `${w} / ${h}` };
+  }
+  return { packHeight: 1, aspectCss: "1 / 1" };
+}
+
 /**
  * Local-only = does not exist in Parascene cloud (desktop-origin).
  * Not the same as “downloaded / on disk.”
@@ -183,6 +196,124 @@ export function filterCreationsVisible(
   }
   return filterCreations(creations, toggles, selectedIds, inProjectIds);
 }
+
+/** Filters that need member creation rows to decide if a folder matches. */
+export function folderNeedsMemberCreations(
+  toggles: CreationFilterToggles,
+): boolean {
+  const active = activeFilterId(toggles);
+  switch (active) {
+    case "video":
+    case "image":
+    case "audio":
+    case "groups":
+    case "localOnly":
+    case "published":
+    case "unpublished":
+    case "aspect11":
+    case "aspect916":
+    case "aspect45":
+    case "aspect169":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Folder matches the active filter when any member matches (or the folder
+ * itself for selection / in-project).
+ */
+export function folderMatchesFilters(
+  folder: { id: string; memberIds: readonly string[] },
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  selectedFolderIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+  projectFolderIds: ReadonlySet<string> = emptyIdSet,
+  creationsById: ReadonlyMap<string, Creation> = emptyCreationMap,
+): boolean {
+  const active = activeFilterId(toggles);
+  if (active === "all") return true;
+
+  if (active === "selected") {
+    if (selectedFolderIds.has(folder.id)) return true;
+    return folder.memberIds.some((id) => selectedIds.has(id));
+  }
+  if (active === "notSelected") {
+    if (selectedFolderIds.has(folder.id)) return false;
+    return folder.memberIds.every((id) => !selectedIds.has(id));
+  }
+  if (active === "inProject") {
+    if (projectFolderIds.has(folder.id)) return true;
+    return folder.memberIds.some((id) => inProjectIds.has(id));
+  }
+
+  if (folder.memberIds.length === 0) return false;
+
+  for (const id of folder.memberIds) {
+    const creation = creationsById.get(id);
+    if (!creation) continue;
+    if (creationMatchesFilters(creation, toggles, selectedIds, inProjectIds)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Up to 4 member ids whose previews should appear on a folder tile. */
+export function folderCollageMemberIds(
+  folder: { id: string; memberIds: readonly string[] },
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  selectedFolderIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+  projectFolderIds: ReadonlySet<string> = emptyIdSet,
+  creationsById: ReadonlyMap<string, Creation> = emptyCreationMap,
+  limit = 4,
+): string[] {
+  const active = activeFilterId(toggles);
+  if (active === "all") return folder.memberIds.slice(0, limit);
+
+  if (active === "selected") {
+    const selectedMembers = folder.memberIds.filter((id) => selectedIds.has(id));
+    if (selectedMembers.length > 0) return selectedMembers.slice(0, limit);
+    // Folder tile selected but no selected members — keep generic collage.
+    if (selectedFolderIds.has(folder.id)) {
+      return folder.memberIds.slice(0, limit);
+    }
+    return [];
+  }
+  if (active === "notSelected") {
+    return folder.memberIds
+      .filter((id) => !selectedIds.has(id))
+      .slice(0, limit);
+  }
+  if (active === "inProject") {
+    const inProjectMembers = folder.memberIds.filter((id) =>
+      inProjectIds.has(id),
+    );
+    if (inProjectMembers.length > 0) return inProjectMembers.slice(0, limit);
+    if (projectFolderIds.has(folder.id)) {
+      return folder.memberIds.slice(0, limit);
+    }
+    return [];
+  }
+
+  const matching: string[] = [];
+  for (const id of folder.memberIds) {
+    const creation = creationsById.get(id);
+    if (!creation) continue;
+    if (!creationMatchesFilters(creation, toggles, selectedIds, inProjectIds)) {
+      continue;
+    }
+    matching.push(id);
+    if (matching.length >= limit) break;
+  }
+  return matching;
+}
+
+const emptyCreationMap: ReadonlyMap<string, Creation> = new Map();
 
 export type FilterCounts = Record<keyof CreationFilterToggles, number> & {
   all: number;

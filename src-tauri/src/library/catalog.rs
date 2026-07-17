@@ -494,12 +494,45 @@ pub(crate) fn get_creations_by_ids(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let all = list_creations(conn)?;
-    let wanted: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-    Ok(all
-        .into_iter()
-        .filter(|c| wanted.contains(c.id.as_str()))
-        .collect())
+    // Preserve caller order; de-dupe for the query.
+    let mut unique: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if seen.insert(id.as_str()) {
+            unique.push(id.clone());
+        }
+    }
+
+    let mut by_id: std::collections::HashMap<String, Creation> =
+        std::collections::HashMap::new();
+    const CHUNK: usize = 400;
+    for chunk in unique.chunks(CHUNK) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("{CREATION_SELECT} WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), map_creation_row)
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let creation = row.map_err(|e| e.to_string())?;
+            by_id.insert(creation.id.clone(), creation);
+        }
+    }
+
+    let mut out = Vec::with_capacity(ids.len());
+    let mut emitted = std::collections::HashSet::new();
+    for id in ids {
+        if !emitted.insert(id.as_str()) {
+            continue;
+        }
+        if let Some(creation) = by_id.remove(id) {
+            out.push(creation);
+        }
+    }
+    Ok(out)
 }
 
 pub(crate) fn get_creation_by_id(conn: &Connection, id: &str) -> Result<Option<Creation>, String> {
@@ -899,6 +932,13 @@ pub fn library_get_creation(id: String) -> Result<Creation, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
     get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Creation {id} not found"))
+}
+
+#[tauri::command]
+pub fn library_get_creations(ids: Vec<String>) -> Result<Vec<Creation>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    get_creations_by_ids(&conn, &ids)
 }
 
 #[tauri::command]

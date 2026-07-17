@@ -377,17 +377,6 @@ textarea {
   font-weight: 600;
 }
 
-.library-folder-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
-  gap: 0.55rem;
-  flex: 0 0 auto;
-  margin: 0 0 0.75rem;
-  max-height: 40%;
-  overflow: auto;
-  padding-bottom: 0.25rem;
-}
-
 .folder-card {
   display: flex;
   flex-direction: column;
@@ -404,6 +393,60 @@ textarea {
 .folder-card.is-selected {
   border-color: var(--select);
   box-shadow: inset 0 0 0 1px var(--select-soft);
+}
+
+.folder-card.is-board {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  gap: 0;
+  border: none;
+  background: transparent;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.folder-card.is-board .folder-card-thumb {
+  position: absolute;
+  inset: 0;
+  aspect-ratio: auto;
+  border-radius: 8px;
+}
+
+.folder-card.is-board .folder-card-title,
+.folder-card.is-board .folder-card-meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: 0.35rem 0.45rem;
+  margin: 0;
+  pointer-events: none;
+}
+
+.folder-card.is-board .folder-card-title {
+  bottom: 1.15rem;
+  font-size: 0.78rem;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+
+.folder-card.is-board .folder-card-meta {
+  bottom: 0.15rem;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+
+.folder-card.is-board.is-selected::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 2px var(--select);
 }
 
 .folder-card-thumb {
@@ -2426,15 +2469,10 @@ textarea {
   padding-top: 0.15rem;
 }
 
-.editor-asset-folders {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-  gap: 0.45rem;
-  margin: 0 0 0.55rem;
-}
-
-.editor-asset-folders .folder-card {
-  padding: 0.3rem;
+.editor-asset-grid .folder-card {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
 }
 
 .editor-asset-empty {

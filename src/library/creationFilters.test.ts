@@ -5,6 +5,9 @@ import {
   creationMatchesFilters,
   filterCreations,
   filterCreationsVisible,
+  folderBoardAspect,
+  folderCollageMemberIds,
+  folderMatchesFilters,
   isLocalOnlyCreation,
   mergeFilterCounts,
   selectFilter,
@@ -306,5 +309,140 @@ describe("creationFilters", () => {
     expect(merged.selected).toBe(3);
     expect(merged.notSelected).toBe(2839);
     expect(merged.inProject).toBe(2);
+  });
+});
+
+describe("folderMatchesFilters", () => {
+  const folder = { id: "f1", memberIds: ["v1", "i1"] };
+  const byId = new Map([
+    [
+      "v1",
+      makeCreation({ id: "v1", mediaType: "video", published: true }),
+    ],
+    [
+      "i1",
+      makeCreation({ id: "i1", mediaType: "image", published: false }),
+    ],
+  ]);
+
+  it("shows all folders when no filter is active", () => {
+    expect(
+      folderMatchesFilters(
+        folder,
+        EMPTY_FILTER_TOGGLES,
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        byId,
+      ),
+    ).toBe(true);
+  });
+
+  it("matches media filters when any member matches", () => {
+    expect(
+      folderMatchesFilters(
+        folder,
+        { ...EMPTY_FILTER_TOGGLES, video: true },
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        byId,
+      ),
+    ).toBe(true);
+    expect(
+      folderMatchesFilters(
+        folder,
+        { ...EMPTY_FILTER_TOGGLES, audio: true },
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        byId,
+      ),
+    ).toBe(false);
+  });
+
+  it("matches selected / in-project from folder or member ids", () => {
+    expect(
+      folderMatchesFilters(
+        folder,
+        { ...EMPTY_FILTER_TOGGLES, selected: true },
+        new Set(),
+        new Set(["f1"]),
+        new Set(),
+        new Set(),
+        byId,
+      ),
+    ).toBe(true);
+    expect(
+      folderMatchesFilters(
+        folder,
+        { ...EMPTY_FILTER_TOGGLES, inProject: true },
+        new Set(),
+        new Set(),
+        new Set(["i1"]),
+        new Set(),
+        byId,
+      ),
+    ).toBe(true);
+    expect(
+      folderMatchesFilters(
+        folder,
+        { ...EMPTY_FILTER_TOGGLES, inProject: true },
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(["f1"]),
+        byId,
+      ),
+    ).toBe(true);
+  });
+
+  it("limits collage thumbs to members that match the active filter", () => {
+    expect(
+      folderCollageMemberIds(
+        folder,
+        { ...EMPTY_FILTER_TOGGLES, video: true },
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        byId,
+      ),
+    ).toEqual(["v1"]);
+    expect(
+      folderCollageMemberIds(
+        folder,
+        EMPTY_FILTER_TOGGLES,
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        byId,
+      ),
+    ).toEqual(["v1", "i1"]);
+  });
+});
+
+describe("folderBoardAspect", () => {
+  it("uses the active aspect filter for folder tile packing", () => {
+    expect(folderBoardAspect(EMPTY_FILTER_TOGGLES)).toEqual({
+      packHeight: 1,
+      aspectCss: "1 / 1",
+    });
+    expect(
+      folderBoardAspect({ ...EMPTY_FILTER_TOGGLES, aspect916: true }),
+    ).toEqual({
+      packHeight: 16 / 9,
+      aspectCss: "9 / 16",
+    });
+    expect(
+      folderBoardAspect({ ...EMPTY_FILTER_TOGGLES, aspect169: true }),
+    ).toEqual({
+      packHeight: 9 / 16,
+      aspectCss: "16 / 9",
+    });
   });
 });
