@@ -176,10 +176,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   ]);
 
   // Drop In project filter memory when the project closes.
-  useEffect(() => {
-    if (openProjectId) return;
-    if (creationsFilterId === "inProject") setCreationsFilterId("all");
-  }, [creationsFilterId, openProjectId]);
+  if (!openProjectId && creationsFilterId === "inProject") {
+    setCreationsFilterId("all");
+  }
 
   /** Functional update so rapid sequential writes (e.g. activate + scrub) compose. */
   const updateStoredProjects = useCallback(
@@ -204,11 +203,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [openProjectId, updateStoredProjects],
   );
 
-  const project = useMemo(() => {
-    if (!openProjectId) return emptyUiProject();
-    const found = storedProjects.find((p) => p.id === openProjectId);
-    return found ? storedProjectToUi(found) : emptyUiProject();
-  }, [openProjectId, storedProjects]);
+  const project = !openProjectId
+    ? emptyUiProject()
+    : (() => {
+        const found = storedProjects.find((p) => p.id === openProjectId);
+        return found ? storedProjectToUi(found) : emptyUiProject();
+      })();
 
   const recentProjects = useMemo(
     () => storedProjects.map((p) => ({ id: p.id, title: p.title })),

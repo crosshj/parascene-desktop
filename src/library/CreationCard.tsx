@@ -187,6 +187,11 @@ export const CreationCard = memo(function CreationCard({
   const [paintSrc, setPaintSrc] = useState<string | null>(() =>
     preview && isPreviewDecoded(preview) ? preview : null,
   );
+  const [paintPreview, setPaintPreview] = useState(preview);
+  if (preview !== paintPreview) {
+    setPaintPreview(preview);
+    setPaintSrc(preview && isPreviewDecoded(preview) ? preview : null);
+  }
   const mediaType = String(creation.mediaType ?? "").trim().toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
@@ -199,14 +204,7 @@ export const CreationCard = memo(function CreationCard({
 
   // Don't mount <img> until decoded — avoids grey flash on virtual remount.
   useLayoutEffect(() => {
-    if (!preview) {
-      setPaintSrc(null);
-      return;
-    }
-    if (isPreviewDecoded(preview)) {
-      setPaintSrc(preview);
-      return;
-    }
+    if (!preview || isPreviewDecoded(preview)) return;
     let cancelled = false;
     void whenPreviewReady(preview).then(() => {
       if (!cancelled) setPaintSrc(preview);

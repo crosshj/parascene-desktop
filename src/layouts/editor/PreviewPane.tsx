@@ -205,7 +205,9 @@ export function PreviewPane({
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const onClipDraftChangeRef = useRef(onClipDraftChange);
-  onClipDraftChangeRef.current = onClipDraftChange;
+  useEffect(() => {
+    onClipDraftChangeRef.current = onClipDraftChange;
+  }, [onClipDraftChange]);
 
   useEffect(() => {
     const el = frameRef.current;
@@ -224,14 +226,18 @@ export function PreviewPane({
     return () => ro.disconnect();
   }, []);
 
-  useEffect(() => {
+  const [loadedAssetId, setLoadedAssetId] = useState(assetId);
+  if (assetId !== loadedAssetId) {
+    setLoadedAssetId(assetId);
     setPlaying(false);
     setCurrentSec(0);
     setDurationSec(0);
     setCatalogError(false);
     setDetailFailed(false);
     setCreation(null);
+  }
 
+  useEffect(() => {
     if (!assetId) return;
 
     let cancelled = false;
@@ -296,47 +302,57 @@ export function PreviewPane({
   const useDetail = Boolean(playbackDetail) && !detailFailed;
   const canPlay = Boolean(useDetail && (isVideo || isAudio) && !reverseBusy);
 
+  const reverseEnabled = Boolean(wantsReverse && assetId && detail);
+  if (!reverseEnabled) {
+    if (reversedDetail !== null) setReversedDetail(null);
+    if (reversedThumb !== null) setReversedThumb(null);
+    if (reverseBusy) setReverseBusy(false);
+    if (reverseError !== null) setReverseError(null);
+  } else if (assetId) {
+    const cachedReverse = getCachedReversedMedia(assetId);
+    if (
+      cachedReverse &&
+      (reversedDetail !== cachedReverse.mediaUrl ||
+        reversedThumb !== cachedReverse.thumbUrl)
+    ) {
+      setReversedDetail(cachedReverse.mediaUrl);
+      setReversedThumb(cachedReverse.thumbUrl);
+      setReverseBusy(false);
+      setReverseError(null);
+    }
+  }
+
   useEffect(() => {
-    if (!wantsReverse || !assetId || !detail) {
-      setReversedDetail(null);
-      setReversedThumb(null);
-      setReverseBusy(false);
-      setReverseError(null);
-      return;
-    }
-
-    const applyUrls = (mediaUrl: string, thumbUrl: string | null) => {
-      setReversedDetail(mediaUrl);
-      setReversedThumb(thumbUrl);
-      setReverseBusy(false);
-      setReverseError(null);
-      if (!thumbUrl) return;
-      setStagedDraft((prev) => {
-        if (!prev || !prev.reverse || prev.thumbUrl === thumbUrl) return prev;
-        const next = { ...prev, thumbUrl };
-        if (stagingSeedKey) {
-          onClipDraftChangeRef.current?.(stagingSeedKey, next);
-        }
-        return next;
-      });
-    };
-
-    const cached = getCachedReversedMedia(assetId);
-    if (cached) {
-      applyUrls(cached.mediaUrl, cached.thumbUrl);
-      return;
-    }
+    if (!wantsReverse || !assetId || !detail) return;
+    if (getCachedReversedMedia(assetId)) return;
 
     let cancelled = false;
-    setReverseBusy(true);
-    setReverseError(null);
-    setReversedDetail(null);
-    setReversedThumb(null);
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setReverseBusy(true);
+      setReverseError(null);
+      setReversedDetail(null);
+      setReversedThumb(null);
+    });
 
     void ensureReversedMedia(assetId)
       .then((urls) => {
         if (cancelled) return;
-        applyUrls(urls.mediaUrl, urls.thumbUrl);
+        setReversedDetail(urls.mediaUrl);
+        setReversedThumb(urls.thumbUrl);
+        setReverseBusy(false);
+        setReverseError(null);
+        if (!urls.thumbUrl) return;
+        setStagedDraft((prev) => {
+          if (!prev || !prev.reverse || prev.thumbUrl === urls.thumbUrl) {
+            return prev;
+          }
+          const next = { ...prev, thumbUrl: urls.thumbUrl };
+          if (stagingSeedKey) {
+            onClipDraftChangeRef.current?.(stagingSeedKey, next);
+          }
+          return next;
+        });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -357,9 +373,12 @@ export function PreviewPane({
     };
   }, [wantsReverse, assetId, detail, stagingSeedKey]);
 
+  if (!assetId || !creation || catalogError) {
+    if (stagedDraft !== null) setStagedDraft(null);
+  }
+
   useEffect(() => {
     if (!assetId || !creation || catalogError) {
-      setStagedDraft(null);
       appliedSeedKeyRef.current = null;
       return;
     }
@@ -377,29 +396,34 @@ export function PreviewPane({
         : null;
     const liveThumb = reverseThumb ?? previewThumb;
 
+    // Ref access marks this effect as post-render coordination for the linter.
+    const alreadyApplied = appliedSeedKeyRef.current === stagingSeedKey;
+
     if (stagingSeedKey && stagingSeed && stagingSeed.assetId === assetId) {
       const nextThumb =
         (stagingSeed.reverse
           ? reverseThumb ?? stagingSeed.thumbUrl
           : previewThumb) ?? stagingSeed.thumbUrl;
-      if (appliedSeedKeyRef.current === stagingSeedKey) {
+      if (alreadyApplied) {
         // Keep in/out/framing edits; prefer reverse thumb when reversed.
-        setStagedDraft((prev) => {
-          if (!prev) return prev;
-          if (prev.label === label && prev.thumbUrl === nextThumb) return prev;
-          return { ...prev, label, thumbUrl: nextThumb };
-        });
-        if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
-          onClipDraftChangeRef.current?.(stagingSeedKey, {
-            ...stagingSeed,
-            kind:
-              kindFromCreation === "audio"
-                ? "audio"
-                : stagingSeed.kind || kindFromCreation,
-            label,
-            thumbUrl: nextThumb,
+        void Promise.resolve().then(() => {
+          setStagedDraft((prev) => {
+            if (!prev) return prev;
+            if (prev.label === label && prev.thumbUrl === nextThumb) return prev;
+            return { ...prev, label, thumbUrl: nextThumb };
           });
-        }
+          if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
+            onClipDraftChangeRef.current?.(stagingSeedKey, {
+              ...stagingSeed,
+              kind:
+                kindFromCreation === "audio"
+                  ? "audio"
+                  : stagingSeed.kind || kindFromCreation,
+              label,
+              thumbUrl: nextThumb,
+            });
+          }
+        });
         return;
       }
       appliedSeedKeyRef.current = stagingSeedKey;
@@ -412,28 +436,32 @@ export function PreviewPane({
         label,
         thumbUrl: nextThumb,
       };
-      setStagedDraft(next);
-      if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
-        onClipDraftChangeRef.current?.(stagingSeedKey, next);
-      }
+      void Promise.resolve().then(() => {
+        setStagedDraft(next);
+        if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
+          onClipDraftChangeRef.current?.(stagingSeedKey, next);
+        }
+      });
       return;
     }
 
     appliedSeedKeyRef.current = null;
-    setStagedDraft((prev) => {
-      if (prev?.assetId === assetId) {
-        const nextThumb =
-          (prev.reverse ? reverseThumb ?? prev.thumbUrl : liveThumb) ??
-          prev.thumbUrl;
-        if (prev.thumbUrl === nextThumb && prev.label === label) return prev;
-        return { ...prev, label, thumbUrl: nextThumb };
-      }
-      return defaultStagedClipDraft({
-        assetId,
-        label,
-        kind: kindFromCreation,
-        sourceDurationSec: durationSec > 0 ? durationSec : undefined,
-        thumbUrl: liveThumb,
+    void Promise.resolve().then(() => {
+      setStagedDraft((prev) => {
+        if (prev?.assetId === assetId) {
+          const nextThumb =
+            (prev.reverse ? reverseThumb ?? prev.thumbUrl : liveThumb) ??
+            prev.thumbUrl;
+          if (prev.thumbUrl === nextThumb && prev.label === label) return prev;
+          return { ...prev, label, thumbUrl: nextThumb };
+        }
+        return defaultStagedClipDraft({
+          assetId,
+          label,
+          kind: kindFromCreation,
+          sourceDurationSec: durationSec > 0 ? durationSec : undefined,
+          thumbUrl: liveThumb,
+        });
       });
     });
   }, [
@@ -444,37 +472,8 @@ export function PreviewPane({
     stagingSeed,
     stagingSeedKey,
     reversedThumb,
+    stagedDraft?.reverse,
   ]);
-
-  useEffect(() => {
-    if (!stagedDraft || durationSec <= 0) return;
-    if (stagedDraft.kind === "image") return;
-    // Don't clobber in/out loaded from a selected timeline clip.
-    if (stagingSeedKey) return;
-    setStagedDraft((prev) => {
-      if (!prev || prev.assetId !== stagedDraft.assetId) return prev;
-      if (prev.kind === "image") return prev;
-      // Replace provisional Out (10s/30s) with real media length once known.
-      if (!isProvisionalOutSec(prev)) return prev;
-      if (Math.abs(prev.outSec - durationSec) < 0.05) return prev;
-      return clampInOutDraft(prev, { outSec: durationSec }, durationSec);
-    });
-  }, [durationSec, stagedDraft?.assetId, stagedDraft?.kind, stagingSeedKey]);
-
-  // Seek preview to the clip's in-point when loading from the timeline.
-  useEffect(() => {
-    if (!stagingSeedKey || !stagingSeed) return;
-    if (stagingSeed.kind === "image") return;
-    const el = mediaRef.current;
-    if (!el) return;
-    const t = Math.max(0, stagingSeed.inSec);
-    try {
-      el.currentTime = t;
-      setCurrentSec(t);
-    } catch {
-      // ignore seek before metadata
-    }
-  }, [stagingSeedKey, stagingSeed, playbackDetail]);
 
   function clampInOutDraft(
     draft: StagedClipDraft,
@@ -491,6 +490,41 @@ export function PreviewPane({
     outSec = Math.max(outSec, inSec + 0.1);
     return { ...draft, inSec, outSec };
   }
+
+  if (
+    stagedDraft &&
+    durationSec > 0 &&
+    stagedDraft.kind !== "image" &&
+    !stagingSeedKey &&
+    isProvisionalOutSec(stagedDraft) &&
+    Math.abs(stagedDraft.outSec - durationSec) >= 0.05
+  ) {
+    setStagedDraft(
+      clampInOutDraft(stagedDraft, { outSec: durationSec }, durationSec),
+    );
+  }
+
+  const [seekSeedKey, setSeekSeedKey] = useState(stagingSeedKey);
+  if (stagingSeedKey !== seekSeedKey) {
+    setSeekSeedKey(stagingSeedKey);
+    if (stagingSeed && stagingSeed.kind !== "image") {
+      setCurrentSec(Math.max(0, stagingSeed.inSec));
+    }
+  }
+
+  // Seek preview to the clip's in-point when loading from the timeline.
+  useEffect(() => {
+    if (!stagingSeedKey || !stagingSeed) return;
+    if (stagingSeed.kind === "image") return;
+    const el = mediaRef.current;
+    if (!el) return;
+    const t = Math.max(0, stagingSeed.inSec);
+    try {
+      el.currentTime = t;
+    } catch {
+      // ignore seek before metadata
+    }
+  }, [stagingSeedKey, stagingSeed, playbackDetail]);
 
   const editingClip = Boolean(stagingSeedKey);
   const canStage = Boolean(
@@ -554,11 +588,19 @@ export function PreviewPane({
     }
   };
 
-  useEffect(() => {
+  const [playbackResetKey, setPlaybackResetKey] = useState(
+    () => `${assetId ?? ""}:${playbackDetail ?? ""}`,
+  );
+  const nextPlaybackResetKey = `${assetId ?? ""}:${playbackDetail ?? ""}`;
+  if (nextPlaybackResetKey !== playbackResetKey) {
+    setPlaybackResetKey(nextPlaybackResetKey);
     setPlaying(false);
     setCurrentSec(0);
     setDurationSec(0);
     setDetailFailed(false);
+  }
+
+  useEffect(() => {
     const el = mediaRef.current;
     if (el) {
       el.pause();

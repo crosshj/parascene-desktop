@@ -197,12 +197,27 @@ function useCatalog() {
 
   useEffect(() => {
     let cancelled = false;
-    loadInitial().catch((e: unknown) => {
-      if (!cancelled) {
-        setError(e instanceof Error ? e.message : String(e));
-        setCreations([]);
+    void (async () => {
+      try {
+        const [page, sync] = await Promise.all([
+          listCreationsPage({ limit: CREATIONS_PAGE_SIZE, offset: 0 }),
+          getSyncStatus(),
+        ]);
+        if (cancelled) return;
+        offsetRef.current = page.creations.length;
+        creationsRef.current = page.creations;
+        setCreations(page.creations);
+        setTotal(page.total);
+        setHasMore(page.hasMore);
+        setStatus(sync);
+        setError(null);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+          setCreations([]);
+        }
       }
-    });
+    })();
     return () => {
       cancelled = true;
     };
@@ -605,7 +620,9 @@ function CreationsPanel({
   );
   const [gridBlank, setGridBlank] = useState(false);
   const sidebarFiltersRef = useRef(sidebarFilters);
-  sidebarFiltersRef.current = sidebarFilters;
+  useEffect(() => {
+    sidebarFiltersRef.current = sidebarFilters;
+  }, [sidebarFilters]);
   const filterApplyGen = useRef(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     try {
@@ -647,7 +664,29 @@ function CreationsPanel({
   }, []);
 
   useEffect(() => {
-    void refreshFolders();
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [nextFolders, filed] = await Promise.all([
+          listFolders(),
+          listFiledCreationIds(),
+        ]);
+        if (cancelled) return;
+        setFolders(nextFolders);
+        setFiledIds(new Set(filed));
+        setFolderViewId((current) => {
+          if (!current) return null;
+          return nextFolders.some((folder) => folder.id === current)
+            ? current
+            : null;
+        });
+      } catch (error) {
+        console.error("Failed to load folders", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [refreshFolders, creations?.length, total]);
 
   const folderView = useMemo(
@@ -667,15 +706,19 @@ function CreationsPanel({
   const folderFilterCacheRef = useRef<Map<string, Creation>>(new Map());
   const folderFilterFetchKeyRef = useRef<string>("");
 
-  useEffect(() => {
-    if (folderView || !needsFolderMemberFilter) {
-      setFolderFilterMembersLoading(false);
-      return;
+  if (folderView || !needsFolderMemberFilter) {
+    if (folderFilterMembersLoading) setFolderFilterMembersLoading(false);
+  } else if (folders.length === 0) {
+    if (folderFilterMembersById.size > 0) {
+      setFolderFilterMembersById(new Map());
     }
+    if (folderFilterMembersLoading) setFolderFilterMembersLoading(false);
+  }
+
+  useEffect(() => {
+    if (folderView || !needsFolderMemberFilter) return;
     if (folders.length === 0) {
       folderFilterFetchKeyRef.current = "";
-      setFolderFilterMembersById(new Map());
-      setFolderFilterMembersLoading(false);
       return;
     }
 
@@ -706,7 +749,9 @@ function CreationsPanel({
 
     let cancelled = false;
     // Keep showing previous matches while we fill gaps — only blank on cold start.
-    if (cache.size === 0) setFolderFilterMembersLoading(true);
+    void Promise.resolve().then(() => {
+      if (!cancelled && cache.size === 0) setFolderFilterMembersLoading(true);
+    });
 
     void getCreations(missing)
       .then((rows) => {
@@ -732,14 +777,17 @@ function CreationsPanel({
     needsFolderMemberFilter,
   ]);
 
+  if (!folderView) {
+    if (folderMembers !== null) setFolderMembers(null);
+    if (folderMembersLoading) setFolderMembersLoading(false);
+  }
+
   useEffect(() => {
-    if (!folderView) {
-      setFolderMembers(null);
-      setFolderMembersLoading(false);
-      return;
-    }
+    if (!folderView) return;
     let cancelled = false;
-    setFolderMembersLoading(true);
+    void Promise.resolve().then(() => {
+      if (!cancelled) setFolderMembersLoading(true);
+    });
     void getCreations(folderView.memberIds)
       .then((rows) => {
         if (cancelled) return;
@@ -813,21 +861,22 @@ function CreationsPanel({
   const gridFilterKey = activeFilterId(gridFilters);
 
   // Any sidebar filter change reconciles deferred dims (Selected / Not selected pins).
-  useEffect(() => {
+  const [deferredFilterKey, setDeferredFilterKey] = useState(sidebarFilterKey);
+  if (sidebarFilterKey !== deferredFilterKey) {
+    setDeferredFilterKey(sidebarFilterKey);
     setDeferredKeepIds(new Set());
-  }, [sidebarFilterKey]);
+  }
 
   // Drop In project filter when the project closes.
-  useEffect(() => {
-    if (openProjectId) return;
-    if (sidebarFilterKey !== "inProject" && gridFilterKey !== "inProject") {
-      return;
-    }
+  if (
+    !openProjectId &&
+    (sidebarFilterKey === "inProject" || gridFilterKey === "inProject")
+  ) {
     setSidebarFilters(EMPTY_FILTER_TOGGLES);
     setGridFilters(EMPTY_FILTER_TOGGLES);
     setGridBlank(false);
     setCreationsFilterId("all");
-  }, [gridFilterKey, openProjectId, setCreationsFilterId, sidebarFilterKey]);
+  }
 
   useEffect(() => {
     return () => {
@@ -951,11 +1000,11 @@ function CreationsPanel({
     visibleCreations.length === 0 &&
     homeFolders.length === 0;
   const [showFilterEmpty, setShowFilterEmpty] = useState(false);
+  if (!filterEmpty && showFilterEmpty) {
+    setShowFilterEmpty(false);
+  }
   useEffect(() => {
-    if (!filterEmpty) {
-      setShowFilterEmpty(false);
-      return;
-    }
+    if (!filterEmpty) return;
     const timer = window.setTimeout(() => setShowFilterEmpty(true), 320);
     return () => window.clearTimeout(timer);
   }, [filterEmpty, gridFilterKey]);
@@ -1478,11 +1527,11 @@ function SyncPanel({
     inFlight > 0 ||
     (status?.downloading ?? 0) > 0;
   const [stickyBusy, setStickyBusy] = useState(false);
+  if (rawBusy && !stickyBusy) {
+    setStickyBusy(true);
+  }
   useEffect(() => {
-    if (rawBusy) {
-      setStickyBusy(true);
-      return;
-    }
+    if (rawBusy) return;
     const t = window.setTimeout(() => setStickyBusy(false), 500);
     return () => window.clearTimeout(t);
   }, [rawBusy]);

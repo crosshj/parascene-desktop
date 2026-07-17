@@ -155,33 +155,34 @@ function useReversedDetail(
   enabled: boolean,
   sourceReady: boolean,
 ): { detail: string | null; busy: boolean; error: string | null } {
-  const cached = enabled ? getCachedReversedMedia(assetId) : null;
+  const cached = enabled && sourceReady ? getCachedReversedMedia(assetId) : null;
   const [detail, setDetail] = useState<string | null>(
     () => cached?.mediaUrl ?? null,
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!enabled || !sourceReady) {
-      setDetail(null);
-      setBusy(false);
-      setError(null);
-      return;
-    }
+  if (!enabled || !sourceReady) {
+    if (detail !== null) setDetail(null);
+    if (busy) setBusy(false);
+    if (error !== null) setError(null);
+  } else if (cached && detail !== cached.mediaUrl) {
+    setDetail(cached.mediaUrl);
+    if (busy) setBusy(false);
+    if (error !== null) setError(null);
+  }
 
-    const hit = getCachedReversedMedia(assetId);
-    if (hit) {
-      setDetail(hit.mediaUrl);
-      setBusy(false);
-      setError(null);
-      return;
-    }
+  useEffect(() => {
+    if (!enabled || !sourceReady) return;
+    if (getCachedReversedMedia(assetId)) return;
 
     let cancelled = false;
-    setBusy(true);
-    setError(null);
-    setDetail(null);
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setBusy(true);
+      setError(null);
+      setDetail(null);
+    });
 
     void ensureReversedMedia(assetId)
       .then((urls) => {
@@ -323,11 +324,13 @@ export function TimelineMonitor({
 
   const [visibleKey, setVisibleKey] = useState<AssetDecoderKey | null>(null);
   const activeKeyRef = useRef(activeKey);
-  activeKeyRef.current = activeKey;
-
   useEffect(() => {
-    if (!activeKey) setVisibleKey(null);
+    activeKeyRef.current = activeKey;
   }, [activeKey]);
+
+  if (!activeKey && visibleKey) {
+    setVisibleKey(null);
+  }
 
   const onDecoderReady = useCallback((key: AssetDecoderKey) => {
     if (activeKeyRef.current === key) setVisibleKey(key);

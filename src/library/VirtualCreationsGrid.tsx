@@ -160,9 +160,11 @@ export function VirtualCreationsGrid({
   const [viewportH, setViewportH] = useState(800);
   const nearEndSent = useRef(false);
   const ensuredIds = useRef(new Set<string>());
-  const assignmentRef = useRef(new Map<string, number>());
-  const colsRef = useRef(0);
-  const prevResetKeyRef = useRef(layoutResetKey);
+  const [packState, setPackState] = useState(() => ({
+    resetKey: layoutResetKey,
+    columnCount: 0,
+    assignment: new Map<string, number>(),
+  }));
   const rafScroll = useRef(0);
 
   const boardItems = useMemo<BoardItem[]>(() => {
@@ -177,25 +179,28 @@ export function VirtualCreationsGrid({
     return items;
   }, [creations, folders]);
 
+  // Only wipe sticky columns on filter / folder-view / column-count changes.
+  // Membership edits (file into folder, new folder tile) must keep existing
+  // cards in place so scroll and packing don't jump.
+  if (
+    packState.resetKey !== layoutResetKey ||
+    packState.columnCount !== layout.columnCount
+  ) {
+    setPackState({
+      resetKey: layoutResetKey,
+      columnCount: layout.columnCount,
+      assignment: new Map(),
+    });
+  }
+
   const { cards, totalHeight } = useMemo(() => {
     if (!layout.ready) return { cards: [] as CardLayout[], totalHeight: 0 };
-
-    const resetKeyChanged = prevResetKeyRef.current !== layoutResetKey;
-    prevResetKeyRef.current = layoutResetKey;
-
-    // Only wipe sticky columns on filter / folder-view / column-count changes.
-    // Membership edits (file into folder, new folder tile) must keep existing
-    // cards in place so scroll and packing don't jump.
-    if (resetKeyChanged || colsRef.current !== layout.columnCount) {
-      assignmentRef.current = new Map();
-      colsRef.current = layout.columnCount;
-    }
 
     return layoutBoardSticky(
       boardItems,
       layout.columnCount,
       layout.columnWidth,
-      assignmentRef.current,
+      packState.assignment,
       folderPackHeight,
       folderAspectCss,
     );
@@ -206,7 +211,7 @@ export function VirtualCreationsGrid({
     layout.ready,
     layout.columnCount,
     layout.columnWidth,
-    layoutResetKey,
+    packState.assignment,
   ]);
 
   // Filter / folder-view changes: jump to top so leftover scroll doesn't sit in

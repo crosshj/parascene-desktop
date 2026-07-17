@@ -91,16 +91,14 @@ function AssetThumb({
   const [paintSrc, setPaintSrc] = useState<string | null>(() =>
     preview && isPreviewDecoded(preview) ? preview : null,
   );
+  const [paintPreview, setPaintPreview] = useState(preview);
+  if (preview !== paintPreview) {
+    setPaintPreview(preview);
+    setPaintSrc(preview && isPreviewDecoded(preview) ? preview : null);
+  }
 
   useLayoutEffect(() => {
-    if (!preview) {
-      setPaintSrc(null);
-      return;
-    }
-    if (isPreviewDecoded(preview)) {
-      setPaintSrc(preview);
-      return;
-    }
+    if (!preview || isPreviewDecoded(preview)) return;
     let cancelled = false;
     void whenPreviewReady(preview).then(() => {
       if (!cancelled) setPaintSrc(preview);
@@ -181,11 +179,9 @@ export function AssetBrowserPane({
   const folderView =
     folders.find((folder) => folder.id === folderViewId) ?? null;
 
-  useEffect(() => {
-    if (folderViewId && !folders.some((folder) => folder.id === folderViewId)) {
-      setFolderViewId(null);
-    }
-  }, [folderViewId, folders]);
+  if (folderViewId && !folders.some((folder) => folder.id === folderViewId)) {
+    setFolderViewId(null);
+  }
 
   const filedInProjectFolders = useMemo(() => {
     const ids = new Set<string>();
@@ -235,16 +231,19 @@ export function AssetBrowserPane({
     };
   }, [contextMenu]);
 
-  useEffect(() => {
-    setContextMenu(null);
-  }, [assetIdsKey]);
+  const [menuAssetIdsKey, setMenuAssetIdsKey] = useState(assetIdsKey);
+  if (assetIdsKey !== menuAssetIdsKey) {
+    setMenuAssetIdsKey(assetIdsKey);
+    if (contextMenu) setContextMenu(null);
+  }
+
+  if (!assetIdsKey && Object.keys(creationsById).length > 0) {
+    setCreationsById({});
+  }
 
   useEffect(() => {
     const ids = assetIdsKey ? assetIdsKey.split("\0") : [];
-    if (ids.length === 0) {
-      setCreationsById({});
-      return;
-    }
+    if (ids.length === 0) return;
 
     let cancelled = false;
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useShell } from "../../app/ShellProvider";
 import {
   PROJECT_ASPECT_OPTIONS,
@@ -16,10 +16,14 @@ export function DirectorLayout() {
     closeProject,
   } = useShell();
   const [titleDraft, setTitleDraft] = useState(project.title);
-
-  useEffect(() => {
+  const [syncedTitle, setSyncedTitle] = useState({
+    id: project.id,
+    title: project.title,
+  });
+  if (project.id !== syncedTitle.id || project.title !== syncedTitle.title) {
+    setSyncedTitle({ id: project.id, title: project.title });
     setTitleDraft(project.title);
-  }, [project.id, project.title]);
+  }
 
   const commitTitle = () => {
     const next = titleDraft.trim() || "Untitled project";

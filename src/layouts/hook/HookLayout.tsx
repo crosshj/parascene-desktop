@@ -79,7 +79,6 @@ export function HookLayout() {
   const activeVideoSrc = renderVideoSrc(selectedRender);
 
   const refreshRenders = useCallback(async () => {
-    setRendersBusy(true);
     try {
       const rows = await listTimelineRenders(project.id);
       setRenders(rows);
@@ -94,17 +93,49 @@ export function HookLayout() {
     }
   }, [project.id]);
 
+  const [rendersProjectId, setRendersProjectId] = useState<string | null>(null);
+  if (project.id !== rendersProjectId) {
+    setRendersProjectId(project.id);
+    setRendersBusy(true);
+  }
+
   useEffect(() => {
-    void refreshRenders();
-  }, [refreshRenders]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await listTimelineRenders(project.id);
+        if (cancelled) return;
+        setRenders(rows);
+        setSelectedRenderId((current) => {
+          if (current && rows.some((row) => row.id === current)) return current;
+          return rows[0]?.id ?? null;
+        });
+      } catch (error) {
+        console.error("Failed to list timeline renders", error);
+      } finally {
+        if (!cancelled) setRendersBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
 
   useEffect(() => {
     playheadRef.current = playheadSec;
   }, [playheadSec]);
 
-  useEffect(() => {
+  const [playbackSourceKey, setPlaybackSourceKey] = useState(
+    () => `${selectedRenderId ?? ""}:${activeVideoSrc ?? ""}`,
+  );
+  const nextPlaybackSourceKey = `${selectedRenderId ?? ""}:${activeVideoSrc ?? ""}`;
+  if (nextPlaybackSourceKey !== playbackSourceKey) {
+    setPlaybackSourceKey(nextPlaybackSourceKey);
     setPlaying(false);
     setPlayheadSec(0);
+  }
+
+  useEffect(() => {
     playheadRef.current = 0;
     const el = videoRef.current;
     if (el) {

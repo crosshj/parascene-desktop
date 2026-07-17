@@ -1,7 +1,6 @@
 import {
   useMemo,
   useEffect,
-  useCallback,
   useRef,
   useState,
   type CSSProperties,
@@ -137,7 +136,9 @@ export function EditorLayout() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const prefsRef = useRef(prefs);
-  prefsRef.current = prefs;
+  useEffect(() => {
+    prefsRef.current = prefs;
+  }, [prefs]);
   /** Internal clipboard for Cmd/Ctrl+C / Cmd/Ctrl+V of timeline clips. */
   const clipClipboardRef = useRef<TimelineClip[]>([]);
   const mergeRunningRef = useRef(false);
@@ -183,24 +184,28 @@ export function EditorLayout() {
 
   const projectFolderIdsKey = project.folderIds.join("\0");
 
-  const refreshProjectFolders = useCallback(async () => {
-    const wanted = new Set(project.folderIds);
-    if (wanted.size === 0) {
-      setProjectFolders([]);
-      return;
-    }
-    try {
-      const all = await listFolders();
-      setProjectFolders(all.filter((folder) => wanted.has(folder.id)));
-    } catch (error) {
-      console.error("Failed to load project folders", error);
-      setProjectFolders([]);
-    }
-  }, [project.folderIds]);
+  if (project.folderIds.length === 0 && projectFolders.length > 0) {
+    setProjectFolders([]);
+  }
 
   useEffect(() => {
-    void refreshProjectFolders();
-  }, [refreshProjectFolders, projectFolderIdsKey, project.assets.length]);
+    if (project.folderIds.length === 0) return;
+    const wanted = new Set(project.folderIds);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all = await listFolders();
+        if (cancelled) return;
+        setProjectFolders(all.filter((folder) => wanted.has(folder.id)));
+      } catch (error) {
+        console.error("Failed to load project folders", error);
+        if (!cancelled) setProjectFolders([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectFolderIdsKey, project.assets.length, project.folderIds]);
 
   const pauseTimelinePlayback = () => {
     if (!timelinePlaying) return;
@@ -393,7 +398,9 @@ export function EditorLayout() {
     setOpenProjectSelectedTimelineClipId,
   ]);
 
-  useEffect(() => {
+  const [hydratedProjectId, setHydratedProjectId] = useState(project.id);
+  if (project.id !== hydratedProjectId) {
+    setHydratedProjectId(project.id);
     const savedClipId = project.selectedTimelineClipId;
     if (savedClipId) {
       const clip = project.timeline.find((c) => c.id === savedClipId);
@@ -404,81 +411,81 @@ export function EditorLayout() {
         setSelectedClipIds([clip.id]);
         const draft = timelineClipToStagedDraft(clip);
         setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
+      } else {
+        hydrateSelectionFromAssetOrClear();
+      }
+    } else {
+      hydrateSelectionFromAssetOrClear();
+    }
+
+    function hydrateSelectionFromAssetOrClear() {
+      const savedAssetId = project.selectedAssetId;
+      if (
+        savedAssetId &&
+        project.assets.some((asset) => asset.id === savedAssetId)
+      ) {
+        setSelectedClipId(null);
+        setSelectedClipIds([]);
+        setClipStagingSeed(null);
+        setSelectedAssetId(savedAssetId);
+        setSelectedAssetIds([savedAssetId]);
         return;
       }
-    }
-    const savedAssetId = project.selectedAssetId;
-    if (
-      savedAssetId &&
-      project.assets.some((asset) => asset.id === savedAssetId)
-    ) {
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
       setSelectedClipId(null);
       setSelectedClipIds([]);
       setClipStagingSeed(null);
-      setSelectedAssetId(savedAssetId);
-      setSelectedAssetIds([savedAssetId]);
-      return;
     }
-    setSelectedAssetId(null);
-    setSelectedAssetIds([]);
-    setSelectedClipId(null);
-    setSelectedClipIds([]);
-    setClipStagingSeed(null);
-  }, [project.id]);
+  }
 
   // Drop local selection if clips were removed from the timeline.
-  useEffect(() => {
-    if (selectedClipIds.length === 0) return;
+  if (selectedClipIds.length > 0) {
     const alive = new Set(project.timeline.map((c) => c.id));
     const nextIds = selectedClipIds.filter((id) => alive.has(id));
-    if (nextIds.length === selectedClipIds.length) {
-      if (selectedClipId && alive.has(selectedClipId)) return;
+    const clipSelectionStale =
+      nextIds.length !== selectedClipIds.length ||
+      (selectedClipId !== null && !alive.has(selectedClipId));
+    if (clipSelectionStale) {
+      if (nextIds.length === 0) {
+        setSelectedClipId(null);
+        setSelectedClipIds([]);
+        setClipStagingSeed(null);
+      } else {
+        setSelectedClipIds(nextIds);
+        const primaryId =
+          selectedClipId && nextIds.includes(selectedClipId)
+            ? selectedClipId
+            : nextIds[0];
+        const primary = project.timeline.find((c) => c.id === primaryId);
+        setSelectedClipId(primaryId);
+        if (primary) {
+          const draft = timelineClipToStagedDraft(primary);
+          setClipStagingSeed(draft ? { clipId: primary.id, draft } : null);
+        } else {
+          setClipStagingSeed(null);
+        }
+      }
     }
-    if (nextIds.length === 0) {
-      setSelectedClipId(null);
-      setSelectedClipIds([]);
-      setClipStagingSeed(null);
-      return;
-    }
-    setSelectedClipIds(nextIds);
-    const primaryId =
-      selectedClipId && nextIds.includes(selectedClipId)
-        ? selectedClipId
-        : nextIds[0];
-    const primary = project.timeline.find((c) => c.id === primaryId);
-    setSelectedClipId(primaryId);
-    if (primary) {
-      const draft = timelineClipToStagedDraft(primary);
-      setClipStagingSeed(draft ? { clipId: primary.id, draft } : null);
-    } else {
-      setClipStagingSeed(null);
-    }
-  }, [project.timeline, selectedClipId, selectedClipIds]);
+  }
 
   // Drop local asset selections if assets left the project.
-  useEffect(() => {
-    if (selectedAssetIds.length === 0 && !selectedAssetId) return;
+  if (selectedAssetIds.length > 0 || selectedAssetId) {
     const alive = new Set(project.assets.map((asset) => asset.id));
     const next = selectedAssetIds.filter((id) => alive.has(id));
-    if (
-      next.length === selectedAssetIds.length &&
-      (!selectedAssetId || alive.has(selectedAssetId))
-    ) {
-      return;
+    const assetSelectionStale =
+      next.length !== selectedAssetIds.length ||
+      (selectedAssetId !== null && !alive.has(selectedAssetId));
+    if (assetSelectionStale) {
+      const primary =
+        selectedAssetId && next.includes(selectedAssetId)
+          ? selectedAssetId
+          : (next[next.length - 1] ?? null);
+      setSelectedAssetIds(next);
+      setSelectedAssetId(primary);
+      setOpenProjectSelectedAssetId(primary);
     }
-    const primary =
-      selectedAssetId && next.includes(selectedAssetId)
-        ? selectedAssetId
-        : (next[next.length - 1] ?? null);
-    setSelectedAssetIds(next);
-    setSelectedAssetId(primary);
-    setOpenProjectSelectedAssetId(primary);
-  }, [
-    project.assets,
-    selectedAssetId,
-    selectedAssetIds,
-    setOpenProjectSelectedAssetId,
-  ]);
+  }
 
   useEffect(() => {
     let offProgress: (() => void) | undefined;
@@ -504,12 +511,10 @@ export function EditorLayout() {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  useEffect(() => {
-    if (!narrow) {
-      setAssetsDrawerOpen(false);
-      setAssistantDrawerOpen(false);
-    }
-  }, [narrow]);
+  if (!narrow && (assetsDrawerOpen || assistantDrawerOpen)) {
+    setAssetsDrawerOpen(false);
+    setAssistantDrawerOpen(false);
+  }
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {

@@ -451,21 +451,32 @@ export function TimelinePane({
     additive: boolean;
   } | null>(null);
   const clipsRef = useRef(clips);
-  clipsRef.current = clips;
   const selectedClipIdsRef = useRef(selectedClipIds);
-  selectedClipIdsRef.current = selectedClipIds;
   const onClipsChangeRef = useRef(onClipsChange);
-  onClipsChangeRef.current = onClipsChange;
   const onSelectClipRef = useRef(onSelectClip);
-  onSelectClipRef.current = onSelectClip;
   const onActivateMonitorRef = useRef(onActivateMonitor);
-  onActivateMonitorRef.current = onActivateMonitor;
   const onPlayheadChangeRef = useRef(onPlayheadChange);
-  onPlayheadChangeRef.current = onPlayheadChange;
   const magneticRef = useRef(magnetic);
-  magneticRef.current = magnetic;
   const pxPerSecRef = useRef(TIMELINE_PX_PER_SEC * zoom);
   const seekRef = useRef<{ pointerId: number } | null>(null);
+
+  useEffect(() => {
+    clipsRef.current = clips;
+    selectedClipIdsRef.current = selectedClipIds;
+    onClipsChangeRef.current = onClipsChange;
+    onSelectClipRef.current = onSelectClip;
+    onActivateMonitorRef.current = onActivateMonitor;
+    onPlayheadChangeRef.current = onPlayheadChange;
+    magneticRef.current = magnetic;
+  }, [
+    clips,
+    selectedClipIds,
+    onClipsChange,
+    onSelectClip,
+    onActivateMonitor,
+    onPlayheadChange,
+    magnetic,
+  ]);
 
   const commitClips = useCallback((next: TimelineClip[]) => {
     setClips(next);
@@ -497,12 +508,15 @@ export function TimelinePane({
     return [...ids].sort().join("\0");
   }, [clips]);
 
+  const [thumbKey, setThumbKey] = useState(clipAssetIdsKey);
+  if (clipAssetIdsKey !== thumbKey) {
+    setThumbKey(clipAssetIdsKey);
+    if (!clipAssetIdsKey) setThumbByAssetId({});
+  }
+
   useEffect(() => {
     const ids = clipAssetIdsKey ? clipAssetIdsKey.split("\0") : [];
-    if (ids.length === 0) {
-      setThumbByAssetId({});
-      return;
-    }
+    if (ids.length === 0) return;
 
     let cancelled = false;
 
@@ -532,7 +546,8 @@ export function TimelinePane({
       setThumbByAssetId((prev) => {
         if (!url) {
           if (!(row.id in prev)) return prev;
-          const { [row.id]: _, ...rest } = prev;
+          const rest = { ...prev };
+          delete rest[row.id];
           return rest;
         }
         if (prev[row.id] === url) return prev;
@@ -548,14 +563,19 @@ export function TimelinePane({
     };
   }, [clipAssetIdsKey]);
 
+  const [reverseThumbKey, setReverseThumbKey] = useState(
+    reversedVideoAssetIdsKey,
+  );
+  if (reversedVideoAssetIdsKey !== reverseThumbKey) {
+    setReverseThumbKey(reversedVideoAssetIdsKey);
+    if (!reversedVideoAssetIdsKey) setReverseThumbByAssetId({});
+  }
+
   useEffect(() => {
     const ids = reversedVideoAssetIdsKey
       ? reversedVideoAssetIdsKey.split("\0")
       : [];
-    if (ids.length === 0) {
-      setReverseThumbByAssetId({});
-      return;
-    }
+    if (ids.length === 0) return;
 
     let cancelled = false;
 
@@ -617,7 +637,9 @@ export function TimelinePane({
   }, []);
 
   const pxPerSec = TIMELINE_PX_PER_SEC * zoom;
-  pxPerSecRef.current = pxPerSec;
+  useEffect(() => {
+    pxPerSecRef.current = pxPerSec;
+  }, [pxPerSec]);
   const endSec = clips.reduce((max, c) => Math.max(max, c.endSec), 0);
   const contentDurationSec = Math.max(
     DEFAULT_DURATION_SEC,

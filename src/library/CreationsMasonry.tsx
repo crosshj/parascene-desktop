@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useState, type RefObject } from "react";
 import { creationPackHeight } from "./aspectRatio";
 import type { Creation } from "./types";
 
@@ -115,24 +115,27 @@ export function usePackedColumns(
   items: Creation[],
   layout: MasonryLayout,
 ): Creation[][] {
-  const assignmentRef = useRef(new Map<string, number>());
-  const colsRef = useRef(layout.columnCount);
-
-  if (colsRef.current !== layout.columnCount) {
-    colsRef.current = layout.columnCount;
-    assignmentRef.current = new Map();
+  const [packState, setPackState] = useState(() => ({
+    columnCount: layout.columnCount,
+    assignment: new Map<string, number>(),
+  }));
+  if (packState.columnCount !== layout.columnCount) {
+    setPackState({
+      columnCount: layout.columnCount,
+      assignment: new Map(),
+    });
   }
 
+  const aspectKey = items
+    .map(
+      (c) =>
+        `${c.id}:${c.aspectRatio ?? ""}:${c.width ?? ""}:${c.height ?? ""}`,
+    )
+    .join("|");
+
   return useMemo(
-    () => packByAspectStable(items, layout, assignmentRef.current),
+    () => packByAspectStable(items, layout, packState.assignment),
     // assignment map is mutated in place; columnCount/items/aspect drive recompute
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      items,
-      layout.columnCount,
-      layout.columnWidth,
-      // Re-pack heights if aspect mix changes, without clearing sticky columns.
-      items.map((c) => `${c.id}:${c.aspectRatio ?? ""}:${c.width ?? ""}:${c.height ?? ""}`).join("|"),
-    ],
+    [items, layout, packState.assignment, aspectKey],
   );
 }
