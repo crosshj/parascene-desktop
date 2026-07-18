@@ -3,6 +3,8 @@ import {
   createParasceneSdk,
   absolutizeAssetUrl,
   isAccessTokenExpiredOrNear,
+  LibraryFoldersConflictError,
+  LibraryFoldersUnavailableError,
 } from "./parascene";
 
 const invoke = vi.fn();
@@ -113,6 +115,117 @@ describe("ParasceneSdk", () => {
         url: "https://api.parascene.com/api/create/images?limit=50&offset=0",
         bearer: "access-jwt",
       }),
+    );
+  });
+
+  it("loads library folders from the API origin", async () => {
+    invoke.mockResolvedValueOnce({
+      status: 200,
+      body: JSON.stringify({
+        revision: 3,
+        folders: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            title: "Favorites",
+            description: "",
+            created_at: "2026-07-18T20:00:00.000Z",
+            updated_at: "2026-07-18T20:05:00.000Z",
+            creation_ids: [101, 102],
+            member_count: 2,
+          },
+        ],
+      }),
+    });
+
+    const sdk = createParasceneSdk({
+      baseUrl: "https://www.parascene.com",
+      apiBaseUrl: "https://api.parascene.com",
+      clientId: "app",
+      redirectUri: "http://127.0.0.1:17423/oauth/callback",
+      getAccessToken: async () => "access-jwt",
+    });
+    const snapshot = await sdk.getLibraryFolders();
+    expect(snapshot.revision).toBe(3);
+    expect(snapshot.folders).toHaveLength(1);
+    expect(snapshot.folders[0]?.creation_ids).toEqual([101, 102]);
+    expect(invoke).toHaveBeenCalledWith(
+      "http_get_bearer",
+      expect.objectContaining({
+        url: "https://api.parascene.com/api/library/folders",
+        bearer: "access-jwt",
+      }),
+    );
+  });
+
+  it("mutates library folders and surfaces 409 conflicts", async () => {
+    const sdk = createParasceneSdk({
+      baseUrl: "https://www.parascene.com",
+      apiBaseUrl: "https://api.parascene.com",
+      clientId: "app",
+      redirectUri: "http://127.0.0.1:17423/oauth/callback",
+      getAccessToken: async () => "access-jwt",
+    });
+
+    invoke.mockResolvedValueOnce({
+      status: 200,
+      body: JSON.stringify({
+        revision: 4,
+        folders: [],
+      }),
+    });
+    const ok = await sdk.mutateLibraryFolders({
+      baseRevision: 3,
+      operations: [
+        {
+          op: "create",
+          id: "22222222-2222-4222-8222-222222222222",
+          title: "B-roll",
+          creation_ids: [103],
+        },
+      ],
+    });
+    expect(ok.revision).toBe(4);
+    expect(invoke).toHaveBeenCalledWith(
+      "http_post_bearer",
+      expect.objectContaining({
+        url: "https://api.parascene.com/api/library/folders/mutate",
+        bearer: "access-jwt",
+        body: JSON.stringify({
+          base_revision: 3,
+          operations: [
+            {
+              op: "create",
+              id: "22222222-2222-4222-8222-222222222222",
+              title: "B-roll",
+              creation_ids: [103],
+            },
+          ],
+        }),
+      }),
+    );
+
+    invoke.mockResolvedValueOnce({
+      status: 409,
+      body: JSON.stringify({
+        error: "conflict",
+        message: "base_revision is stale; pull and retry",
+        revision: 5,
+        folders: [{ id: "a", title: "X", creation_ids: [] }],
+      }),
+    });
+    await expect(
+      sdk.mutateLibraryFolders({
+        baseRevision: 3,
+        operations: [{ op: "delete", id: "22222222-2222-4222-8222-222222222222" }],
+      }),
+    ).rejects.toBeInstanceOf(LibraryFoldersConflictError);
+
+    invoke.mockResolvedValueOnce({
+      status: 501,
+      body: JSON.stringify({ error: "Library folders are not available" }),
+    });
+    await expect(sdk.getLibraryFolders()).rejects.toBeInstanceOf(
+      LibraryFoldersUnavailableError,
     );
   });
 });

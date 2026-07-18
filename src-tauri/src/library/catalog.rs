@@ -194,6 +194,12 @@ fn migrate(conn: &Connection) -> Result<(), String> {
 
         CREATE UNIQUE INDEX IF NOT EXISTS folder_items_creation_unique
           ON folder_items(creation_id);
+
+        CREATE TABLE IF NOT EXISTS folder_pending_ops (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          op_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
         "#,
     )
     .map_err(|e| format!("Catalog migrate failed: {e}"))?;
@@ -237,13 +243,18 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         );
         CREATE UNIQUE INDEX IF NOT EXISTS folder_items_creation_unique
           ON folder_items(creation_id);
+        CREATE TABLE IF NOT EXISTS folder_pending_ops (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          op_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
         "#,
     );
 
     Ok(())
 }
 
-fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     let mut stmt = conn
         .prepare("SELECT value FROM sync_meta WHERE key = ?1")
         .map_err(|e| e.to_string())?;
@@ -255,7 +266,7 @@ fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
     conn.execute(
         "INSERT INTO sync_meta(key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -265,7 +276,7 @@ fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn meta_delete(conn: &Connection, key: &str) -> Result<(), String> {
+pub(crate) fn meta_delete(conn: &Connection, key: &str) -> Result<(), String> {
     conn.execute("DELETE FROM sync_meta WHERE key = ?1", params![key])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -917,6 +928,7 @@ pub(crate) fn ready_connection(paths: &ParascenePaths) -> Result<Connection, Str
     meta_set(&conn, "root_path", &paths.root.display().to_string())?;
     conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
         .map_err(|e| e.to_string())?;
+    super::folders::ensure_folder_sync_ready(&conn)?;
     Ok(conn)
 }
 

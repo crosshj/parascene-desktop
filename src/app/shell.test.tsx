@@ -112,6 +112,25 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
       aspect169: 0,
     };
   }
+  if (
+    cmd === "library_list_folders" ||
+    cmd === "library_list_filed_creation_ids"
+  ) {
+    return [];
+  }
+  if (
+    cmd === "library_folder_sync_state" ||
+    cmd === "library_folders_ack_ops" ||
+    cmd === "library_folders_set_pending_ops" ||
+    cmd === "library_folders_apply_snapshot"
+  ) {
+    return {
+      revision: null,
+      pendingOps: [],
+      folders: [],
+      baselineFolders: [],
+    };
+  }
   throw new Error(`unexpected invoke: ${cmd}`);
 });
 
@@ -308,6 +327,8 @@ describe("auth shell", () => {
     expect(screen.getByLabelText("Sync")).toBeInTheDocument();
     expect(await screen.findByText(/0 creations/)).toBeInTheDocument();
     expect(screen.getByText(/0 local · 0 remote/)).toBeInTheDocument();
+    expect(await screen.findByText(/Folders: 0/)).toBeInTheDocument();
+    expect(screen.getByText(/not synced/)).toBeInTheDocument();
     expect(screen.getByLabelText("Sync activity")).toBeInTheDocument();
     expect(
       screen.getByText(/Items appear as they queue/),

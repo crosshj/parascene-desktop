@@ -17,6 +17,12 @@ import { useShell } from "../app/ShellProvider";
 import { CreationsFilterEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
+  folderConflictKindLabel,
+  syncLibraryFolders,
+  type FolderConflict,
+  type FolderSyncResult,
+} from "../sync/folderSync";
+import {
   syncCreationsManifest,
   syncCreationsMetadata,
 } from "../sync/manifestSync";
@@ -72,11 +78,13 @@ import { FolderPickModal } from "./FolderPickModal";
 import {
   addToFolder,
   createFolder,
+  getFolderSyncState,
   listFiledCreationIds,
   listFolders,
   omitFiledCreations,
   removeFromFolder,
   renameFolder,
+  type FolderSyncState,
   type LibraryFolder,
 } from "./folderClient";
 import { VirtualCreationsGrid } from "./VirtualCreationsGrid";
@@ -147,10 +155,27 @@ function useCatalog() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [activity, setActivity] = useState<SyncActivityItem[]>([]);
+  const [folderSync, setFolderSync] = useState<FolderSyncState | null>(null);
+  const [folderSyncResult, setFolderSyncResult] =
+    useState<FolderSyncResult | null>(null);
+  const [folderConflicts, setFolderConflicts] = useState<FolderConflict[]>([]);
+  const [folderResolutions, setFolderResolutions] = useState<
+    Record<string, "local" | "cloud">
+  >({});
+  const [resolvingFolders, setResolvingFolders] = useState(false);
   const offsetRef = useRef(0);
   const creationsRef = useRef<Creation[]>([]);
   const aspectBackfillStarted = useRef(false);
   const loadingMoreRef = useRef(false);
+
+  const refreshFolderSync = useCallback(async () => {
+    try {
+      const next = await getFolderSyncState();
+      setFolderSync(next);
+    } catch {
+      /* Sync page can still show creation status */
+    }
+  }, []);
 
   const loadInitial = useCallback(async () => {
     const [page, sync] = await Promise.all([
@@ -332,9 +357,36 @@ function useCatalog() {
     };
   }, []);
 
+  const runFolderSync = useCallback(
+    async (opts?: {
+      resolutions?: Record<string, "local" | "cloud">;
+      priorConflicts?: FolderConflict[];
+    }) => {
+      const folderResult = await syncLibraryFolders(opts);
+      setFolderSyncResult(folderResult);
+      if (folderResult.conflicts.length > 0) {
+        setFolderConflicts(folderResult.conflicts);
+        setFolderResolutions((prev) => {
+          const next = { ...prev };
+          for (const conflict of folderResult.conflicts) {
+            if (!next[conflict.id]) next[conflict.id] = "local";
+          }
+          return next;
+        });
+      } else {
+        setFolderConflicts([]);
+        setFolderResolutions({});
+      }
+      await refreshFolderSync();
+      return folderResult;
+    },
+    [refreshFolderSync],
+  );
+
   const runSync = useCallback(async () => {
     setSyncing(true);
     setError(null);
+    setFolderSyncResult(null);
     setProgress({
       done: 0,
       total: 0,
@@ -345,14 +397,53 @@ function useCatalog() {
     try {
       const next = await syncCreationsManifest();
       setStatus(next);
+      setProgress({
+        done: 0,
+        total: 0,
+        currentId: "Syncing folders…",
+        failed: 0,
+        phase: "catalog",
+      });
+      const folderResult = await runFolderSync();
       await loadInitial();
+      await refreshFolderSync();
+      if (!folderResult.ok && folderResult.message && folderResult.conflicts.length === 0) {
+        setError(folderResult.message);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSyncing(false);
       // Keep last progress visible briefly; background ensure may still emit.
     }
-  }, [loadInitial]);
+  }, [loadInitial, refreshFolderSync, runFolderSync]);
+
+  const runResolveFolderConflicts = useCallback(async () => {
+    if (folderConflicts.length === 0) return;
+    const missing = folderConflicts.some((c) => !folderResolutions[c.id]);
+    if (missing) return;
+    setResolvingFolders(true);
+    setError(null);
+    try {
+      const folderResult = await runFolderSync({
+        resolutions: folderResolutions,
+        priorConflicts: folderConflicts,
+      });
+      await loadInitial();
+      if (!folderResult.ok && folderResult.conflicts.length === 0 && folderResult.message) {
+        setError(folderResult.message);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResolvingFolders(false);
+    }
+  }, [
+    folderConflicts,
+    folderResolutions,
+    loadInitial,
+    runFolderSync,
+  ]);
 
   const runCacheThumbs = useCallback(async () => {
     setError(null);
@@ -510,7 +601,14 @@ function useCatalog() {
     importing,
     progress,
     activity,
+    folderSync,
+    folderSyncResult,
+    folderConflicts,
+    folderResolutions,
+    setFolderResolutions,
+    resolvingFolders,
     runSync,
+    runResolveFolderConflicts,
     runCacheThumbs,
     runCacheMedia,
     runCloudRepair,
@@ -518,6 +616,7 @@ function useCatalog() {
     clearFinishedActivity,
     loadMore,
     refreshStatus,
+    refreshFolderSync,
   };
 }
 
@@ -688,6 +787,18 @@ function CreationsPanel({
       cancelled = true;
     };
   }, [refreshFolders, creations?.length, total]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<LibraryFolder[]>("library-folders-updated", () => {
+      void refreshFolders();
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [refreshFolders]);
 
   const folderView = useMemo(
     () => folders.find((folder) => folder.id === folderViewId) ?? null,
@@ -1447,12 +1558,20 @@ function SyncPanel({
   repairing,
   progress,
   activity,
+  folderSync,
+  folderSyncResult,
+  folderConflicts,
+  folderResolutions,
+  onFolderResolution,
+  onResolveFolderConflicts,
+  resolvingFolders,
   onSync,
   onCacheThumbs,
   onCacheMedia,
   onCloudRepair,
   onClearFinished,
   onRefreshStatus,
+  onRefreshFolderSync,
 }: {
   status: SyncStatus | null;
   error: string | null;
@@ -1460,21 +1579,33 @@ function SyncPanel({
   repairing: boolean;
   progress: DownloadProgress | null;
   activity: SyncActivityItem[];
+  folderSync: FolderSyncState | null;
+  folderSyncResult: FolderSyncResult | null;
+  folderConflicts: FolderConflict[];
+  folderResolutions: Record<string, "local" | "cloud">;
+  onFolderResolution: (conflictId: string, choice: "local" | "cloud") => void;
+  onResolveFolderConflicts: () => void;
+  resolvingFolders: boolean;
   onSync: () => void;
   onCacheThumbs: () => void;
   onCacheMedia: () => void;
   onCloudRepair: () => void;
   onClearFinished: () => void;
   onRefreshStatus: () => void;
+  onRefreshFolderSync: () => void;
 }) {
   const [active, setActive] = useState<Creation | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
 
   useEffect(() => {
     onRefreshStatus();
-    const id = window.setInterval(onRefreshStatus, 2000);
+    onRefreshFolderSync();
+    const id = window.setInterval(() => {
+      onRefreshStatus();
+      onRefreshFolderSync();
+    }, 2000);
     return () => window.clearInterval(id);
-  }, [onRefreshStatus]);
+  }, [onRefreshFolderSync, onRefreshStatus]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -1522,10 +1653,18 @@ function SyncPanel({
   const rawBusy =
     syncing ||
     repairing ||
+    resolvingFolders ||
     cachingThumbs ||
     cachingMedia ||
     inFlight > 0 ||
     (status?.downloading ?? 0) > 0;
+  const folderPending = folderSync?.pendingOps.length ?? 0;
+  const folderRevision =
+    folderSync?.revision == null ? "not synced" : `rev ${folderSync.revision}`;
+  const folderCount = folderSync?.folders.length ?? 0;
+  const allConflictsResolved =
+    folderConflicts.length > 0 &&
+    folderConflicts.every((conflict) => folderResolutions[conflict.id]);
   const [stickyBusy, setStickyBusy] = useState(false);
   if (rawBusy && !stickyBusy) {
     setStickyBusy(true);
@@ -1536,14 +1675,15 @@ function SyncPanel({
     return () => window.clearTimeout(t);
   }, [rawBusy]);
   const busy = stickyBusy || rawBusy;
-  const repairNote =
-    repairing &&
+  const progressNote =
+    (repairing || syncing) &&
     typeof progress?.currentId === "string" &&
-    progress.currentId.length > 0
+    progress.currentId.length > 0 &&
+    !/^\d+$/.test(progress.currentId)
       ? progress.currentId
       : null;
-  const batchLabel = repairNote
-    ? repairNote
+  const batchLabel = progressNote
+    ? progressNote
     : syncing && progress?.phase === "catalog"
       ? "Updating catalog…"
       : repairing
@@ -1606,8 +1746,8 @@ function SyncPanel({
               disabled={busy}
               title="Prefer local media to rebuild mismatched thumbs and upload fit; only call Parascene for leftovers without local files"
             >
-              {repairNote
-                ? repairNote
+              {progressNote && repairing
+                ? progressNote
                 : repairing
                   ? "Repairing library…"
                   : "Repair group aspects + fit thumbs"}
@@ -1625,6 +1765,18 @@ function SyncPanel({
             {batchLabel ? ` · ${batchLabel}` : ""}
           </p>
           <p className="muted sync-summary-line">
+            Folders: {folderCount.toLocaleString()}
+            {" · "}
+            {folderRevision}
+            {" · "}
+            {folderPending === 0
+              ? "no pending changes"
+              : `${folderPending.toLocaleString()} pending change${folderPending === 1 ? "" : "s"}`}
+            {folderSyncResult?.unavailable
+              ? " · cloud folders unavailable"
+              : ""}
+          </p>
+          <p className="muted sync-summary-line">
             On disk: {syncDiskSummary(status)}
           </p>
           <p className="muted sync-summary-line sync-summary-meta">
@@ -1632,6 +1784,61 @@ function SyncPanel({
             {" · "}
             {status.rootPath}
           </p>
+
+          {folderConflicts.length > 0 ? (
+            <div
+              className="sync-folder-conflicts"
+              aria-label="Folder sync conflicts"
+            >
+              <p className="sync-folder-conflicts-title">
+                Folder conflicts — choose which side to keep, then apply
+              </p>
+              <ul className="sync-folder-conflicts-list">
+                {folderConflicts.map((conflict) => (
+                  <li key={conflict.id} className="sync-folder-conflict">
+                    <div className="sync-folder-conflict-copy">
+                      <strong>{folderConflictKindLabel(conflict.kind)}</strong>
+                      <span className="muted">{conflict.summary}</span>
+                    </div>
+                    <div className="sync-folder-conflict-choices">
+                      <label className="sync-folder-choice">
+                        <input
+                          type="radio"
+                          name={`folder-conflict-${conflict.id}`}
+                          checked={folderResolutions[conflict.id] === "local"}
+                          onChange={() =>
+                            onFolderResolution(conflict.id, "local")
+                          }
+                        />
+                        This desktop ({conflict.localLabel})
+                      </label>
+                      <label className="sync-folder-choice">
+                        <input
+                          type="radio"
+                          name={`folder-conflict-${conflict.id}`}
+                          checked={folderResolutions[conflict.id] === "cloud"}
+                          onChange={() =>
+                            onFolderResolution(conflict.id, "cloud")
+                          }
+                        />
+                        Cloud ({conflict.cloudLabel})
+                      </label>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!allConflictsResolved || busy}
+                onClick={onResolveFolderConflicts}
+              >
+                {resolvingFolders
+                  ? "Applying resolutions…"
+                  : "Apply resolutions and retry"}
+              </button>
+            </div>
+          ) : null}
           {status.withoutCloudUrls.length > 0 ? (
             <div className="sync-uncacheable" aria-label="Creations without cloud URLs">
               <p className="muted sync-summary-line">
@@ -1756,14 +1963,22 @@ export function LibraryView() {
     loadingMore,
     progress,
     runSync,
+    runResolveFolderConflicts,
     runCacheThumbs,
     runCacheMedia,
     runCloudRepair,
     runImportFromDisk,
     clearFinishedActivity,
     activity,
+    folderSync,
+    folderSyncResult,
+    folderConflicts,
+    folderResolutions,
+    setFolderResolutions,
+    resolvingFolders,
     loadMore,
     refreshStatus,
+    refreshFolderSync,
     importing,
   } = useCatalog();
 
@@ -1777,12 +1992,29 @@ export function LibraryView() {
           repairing={repairing}
           progress={progress}
           activity={activity}
+          folderSync={folderSync}
+          folderSyncResult={folderSyncResult}
+          folderConflicts={folderConflicts}
+          folderResolutions={folderResolutions}
+          onFolderResolution={(conflictId, choice) => {
+            setFolderResolutions((prev) => ({
+              ...prev,
+              [conflictId]: choice,
+            }));
+          }}
+          onResolveFolderConflicts={() => {
+            void runResolveFolderConflicts();
+          }}
+          resolvingFolders={resolvingFolders}
           onSync={runSync}
           onCacheThumbs={runCacheThumbs}
           onCacheMedia={runCacheMedia}
           onCloudRepair={runCloudRepair}
           onClearFinished={clearFinishedActivity}
           onRefreshStatus={refreshStatus}
+          onRefreshFolderSync={() => {
+            void refreshFolderSync();
+          }}
         />
       ) : (
         <CreationsPanel

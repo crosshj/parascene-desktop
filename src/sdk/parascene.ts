@@ -67,6 +67,121 @@ export type RepairBatchResult = {
   exhausted?: boolean;
 };
 
+/** Folder row from `GET/POST /api/library/folders` (snake_case). */
+export type RemoteLibraryFolder = {
+  id: string;
+  title: string;
+  description: string;
+  created_at: string | null;
+  updated_at: string | null;
+  creation_ids: number[];
+  member_count: number;
+};
+
+export type LibraryFoldersSnapshot = {
+  revision: number;
+  folders: RemoteLibraryFolder[];
+};
+
+export type LibraryFolderCreateOp = {
+  op: "create";
+  id: string;
+  title?: string;
+  description?: string;
+  creation_ids?: number[];
+};
+
+export type LibraryFolderUpdateOp = {
+  op: "update";
+  id: string;
+  title?: string;
+  description?: string;
+};
+
+export type LibraryFolderDeleteOp = {
+  op: "delete";
+  id: string;
+};
+
+export type LibraryFolderMoveOp = {
+  op: "move";
+  folder_id: string | null;
+  creation_ids: number[];
+};
+
+export type LibraryFolderOperation =
+  | LibraryFolderCreateOp
+  | LibraryFolderUpdateOp
+  | LibraryFolderDeleteOp
+  | LibraryFolderMoveOp;
+
+export class LibraryFoldersConflictError extends Error {
+  readonly revision: number;
+  readonly folders: RemoteLibraryFolder[];
+
+  constructor(snapshot: LibraryFoldersSnapshot, message?: string) {
+    super(message || "base_revision is stale; pull and retry");
+    this.name = "LibraryFoldersConflictError";
+    this.revision = snapshot.revision;
+    this.folders = snapshot.folders;
+  }
+}
+
+export class LibraryFoldersUnavailableError extends Error {
+  constructor(message = "Library folders are not available") {
+    super(message);
+    this.name = "LibraryFoldersUnavailableError";
+  }
+}
+
+function parseLibraryFoldersSnapshot(raw: unknown): LibraryFoldersSnapshot {
+  const data =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const revision = Number(data.revision);
+  const foldersRaw = Array.isArray(data.folders) ? data.folders : [];
+  return {
+    revision: Number.isFinite(revision) && revision >= 0 ? Math.floor(revision) : 0,
+    folders: foldersRaw.map((item) => {
+      const folder =
+        item && typeof item === "object"
+          ? (item as Record<string, unknown>)
+          : {};
+      const creationIds = Array.isArray(folder.creation_ids)
+        ? folder.creation_ids
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0 && Number.isInteger(id))
+        : [];
+      return {
+        id: String(folder.id ?? ""),
+        title: typeof folder.title === "string" ? folder.title : "",
+        description:
+          typeof folder.description === "string" ? folder.description : "",
+        created_at:
+          typeof folder.created_at === "string" ? folder.created_at : null,
+        updated_at:
+          typeof folder.updated_at === "string" ? folder.updated_at : null,
+        creation_ids: creationIds,
+        member_count:
+          typeof folder.member_count === "number"
+            ? folder.member_count
+            : creationIds.length,
+      };
+    }),
+  };
+}
+
+function libraryFoldersErrorMessage(
+  res: HttpJsonResult,
+  fallback: string,
+): string {
+  try {
+    const err = JSON.parse(res.body) as { error?: string; message?: string };
+    return err.message || err.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 type HttpJsonResult = {
   status: number;
   body: string;
@@ -319,6 +434,91 @@ export class ParasceneSdk {
       images: Array.isArray(data.images) ? data.images : [],
       hasMore: data.has_more === true,
     };
+  }
+
+  /**
+   * Full Library folders snapshot for the signed-in user.
+   * `GET /api/library/folders`
+   */
+  async getLibraryFolders(): Promise<LibraryFoldersSnapshot> {
+    const token = await this.requireAccessToken();
+    const res = await getBearer(
+      `${this.apiBaseUrl}/api/library/folders`,
+      token,
+    );
+    if (res.status === 501) {
+      throw new LibraryFoldersUnavailableError(
+        libraryFoldersErrorMessage(res, "Library folders are not available"),
+      );
+    }
+    if (res.status >= 400) {
+      throw new Error(
+        libraryFoldersErrorMessage(
+          res,
+          `list library folders failed (${res.status})`,
+        ),
+      );
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(res.body) as unknown;
+    } catch {
+      throw new Error("list library folders failed (bad response)");
+    }
+    return parseLibraryFoldersSnapshot(raw);
+  }
+
+  /**
+   * Apply a batch of folder operations when `baseRevision` matches the server.
+   * `POST /api/library/folders/mutate`
+   * Throws {@link LibraryFoldersConflictError} on 409.
+   */
+  async mutateLibraryFolders(opts: {
+    baseRevision: number;
+    operations: LibraryFolderOperation[];
+  }): Promise<LibraryFoldersSnapshot> {
+    const token = await this.requireAccessToken();
+    const res = await postBearer(
+      `${this.apiBaseUrl}/api/library/folders/mutate`,
+      {
+        base_revision: opts.baseRevision,
+        operations: opts.operations,
+      },
+      token,
+    );
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(res.body) as unknown;
+    } catch {
+      /* keep null */
+    }
+    if (res.status === 409) {
+      const snapshot = parseLibraryFoldersSnapshot(raw);
+      throw new LibraryFoldersConflictError(
+        snapshot,
+        libraryFoldersErrorMessage(
+          res,
+          "base_revision is stale; pull and retry",
+        ),
+      );
+    }
+    if (res.status === 501) {
+      throw new LibraryFoldersUnavailableError(
+        libraryFoldersErrorMessage(res, "Library folders are not available"),
+      );
+    }
+    if (res.status >= 400) {
+      throw new Error(
+        libraryFoldersErrorMessage(
+          res,
+          `mutate library folders failed (${res.status})`,
+        ),
+      );
+    }
+    if (raw == null) {
+      throw new Error("mutate library folders failed (bad response)");
+    }
+    return parseLibraryFoldersSnapshot(raw);
   }
 
   /**

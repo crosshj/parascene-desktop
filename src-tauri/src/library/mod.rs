@@ -24,9 +24,10 @@ pub use download::{
     library_invalidate_mismatched_thumbs, library_local_fit_plan,
 };
 pub use folders::{
-    library_add_to_folder, library_create_folder, library_delete_folder, library_get_folder,
-    library_list_filed_creation_ids, library_list_folders, library_remove_from_folder,
-    library_rename_folder,
+    library_add_to_folder, library_create_folder, library_delete_folder, library_folder_sync_state,
+    library_folders_ack_ops, library_folders_apply_snapshot, library_folders_set_pending_ops,
+    library_get_folder, library_list_filed_creation_ids, library_list_folders,
+    library_remove_from_folder, library_rename_folder,
 };
 pub use import_local::{library_import_from_disk, library_import_local_paths};
 pub use merge::library_merge_timeline_clips;
