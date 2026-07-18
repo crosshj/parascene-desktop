@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   creationCardTitle,
+  groupEmbeddedSourceCreations,
+  groupSourceCreationIds,
   isGroupCreation,
   isPublishedCreation,
 } from "./creationFlags";
@@ -29,6 +31,59 @@ describe("creationFlags", () => {
         remoteJson: JSON.stringify({ meta: {} }),
       }),
     ).toBe(false);
+  });
+
+  it("reads ordered source creation ids from groups", () => {
+    expect(
+      groupSourceCreationIds({
+        remoteJson: JSON.stringify({
+          meta: {
+            group: {
+              source_creations: [
+                { id: "12" },
+                { id: 7 },
+                { id: "12" },
+              ],
+            },
+          },
+        }),
+      }),
+    ).toEqual(["12", "7"]);
+  });
+
+  it("prefers source_creation_ids order when present", () => {
+    expect(
+      groupSourceCreationIds({
+        remoteJson: JSON.stringify({
+          meta: {
+            group: {
+              source_creation_ids: [3, 1, 2],
+              source_creations: [{ id: 1 }, { id: 2 }, { id: 3 }],
+            },
+          },
+        }),
+      }),
+    ).toEqual(["3", "1", "2"]);
+  });
+
+  it("extracts embedded source creation rows", () => {
+    expect(
+      groupEmbeddedSourceCreations({
+        remoteJson: JSON.stringify({
+          meta: {
+            group: {
+              source_creations: [
+                { id: 9, file_path: "/api/images/created/a.png", width: 10 },
+                { id: "9" },
+                "skip",
+              ],
+            },
+          },
+        }),
+      }),
+    ).toEqual([
+      { id: "9", file_path: "/api/images/created/a.png", width: 10 },
+    ]);
   });
 
   it("reads published flag", () => {

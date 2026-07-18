@@ -6,7 +6,12 @@ import {
   type CSSProperties,
   type SyntheticEvent,
 } from "react";
-import { ensureLocal, getCreation, getCreations } from "../../library/catalogClient";
+import {
+  applyManifest,
+  ensureLocal,
+  getCreation,
+  getCreations,
+} from "../../library/catalogClient";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import {
   clipThumbnailKey,
@@ -47,11 +52,18 @@ import {
   framingViewportStyle,
   isProvisionalOutSec,
   normalizeFraming,
+  slideshowRecipesEqual,
   type StagedClipDraft,
   type StagedClipFraming,
   type StagedClipKind,
 } from "./stagedClip";
-import { creationCardTitle } from "../../library/creationFlags";
+import {
+  creationCardTitle,
+  groupEmbeddedSourceCreations,
+  groupSourceCreationIds,
+  isGroupCreation,
+} from "../../library/creationFlags";
+import { mapGroupSourceCreations } from "../../sync/manifestSync";
 import {
   mediaUrlForBakePath,
   type BakeInfo,
@@ -300,22 +312,29 @@ export function PreviewPane({
     setSelectionClass(null);
     setSlideshowThumbs([]);
     setSelectionLoading(sourceSelectionIds.length > 0);
-    if (!editingClip && sourceSelectionIds.length < 2) {
-      // Leave single-asset staging controls in place: convert a leftover
-      // slideshow draft into a provisional single-asset draft instead of
-      // flashing the empty "prepare a clip" row.
-      const nextId = sourceSelectionIds[0] ?? assetId;
+    if (!editingClip && sourceSelectionIds.length >= 2) {
+      // Optimistic slideshow staging so Mode/Random appear immediately,
+      // before async classify finishes.
       setStagedDraft((prev) => {
-        if (prev?.kind !== "slideshow") return prev;
-        if (!nextId) return null;
-        return defaultStagedClipDraft({
-          assetId: nextId,
-          label: prev.label,
-          kind: "image",
-          thumbUrl: prev.thumbUrl,
+        const ids = sourceSelectionIds;
+        if (
+          prev?.kind === "slideshow" &&
+          prev.slideshow &&
+          prev.slideshow.imageAssetIds.length === ids.length &&
+          prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
+        ) {
+          return prev;
+        }
+        return defaultSlideshowDraft({
+          imageAssetIds: ids,
+          label: `Slideshow (${ids.length})`,
+          thumbUrl: prev?.thumbUrl ?? null,
         });
       });
     }
+    // Single selection (including a group cover): leave the draft alone until
+    // classify finishes. Groups expand into composite slideshows; a leftover
+    // slideshow from a prior multi-select is cleared by the classify effect.
   }
 
   useEffect(() => {
@@ -336,10 +355,39 @@ export function PreviewPane({
     setSelectionLoading(true);
     void (async () => {
       try {
-        const rows = await getCreations(sourceSelectionIds);
+        const selectedRows = await getCreations(sourceSelectionIds);
         if (cancelled) return;
-        const byId = new Map(rows.map((row) => [row.id, row]));
-        const classified = classifyAssetSelection(sourceSelectionIds, byId);
+        const selectedById = new Map(
+          selectedRows.map((row) => [row.id, row]),
+        );
+        const expandedIds = sourceSelectionIds.flatMap((id) => {
+          const row = selectedById.get(id);
+          if (!row || !isGroupCreation(row)) return [id];
+          return groupSourceCreationIds(row);
+        });
+        const uniqueExpandedIds = [...new Set(expandedIds)];
+        let rows = await getCreations(uniqueExpandedIds);
+        if (cancelled) return;
+        let byId = new Map(rows.map((row) => [row.id, row]));
+        const missingIds = uniqueExpandedIds.filter((id) => !byId.has(id));
+        if (missingIds.length > 0) {
+          const missingSet = new Set(missingIds);
+          const upserts = selectedRows
+            .filter((row) => isGroupCreation(row))
+            .flatMap((row) =>
+              mapGroupSourceCreations(groupEmbeddedSourceCreations(row)).filter(
+                (u) => missingSet.has(u.id),
+              ),
+            );
+          if (upserts.length > 0) {
+            await applyManifest(upserts);
+            if (cancelled) return;
+            rows = await getCreations(uniqueExpandedIds);
+            if (cancelled) return;
+            byId = new Map(rows.map((row) => [row.id, row]));
+          }
+        }
+        const classified = classifyAssetSelection(uniqueExpandedIds, byId);
         setSelectionClass(classified);
         if (classified?.type === "compositeImages") {
           // Only need a representative thumb for the staged-clip cartridge.
@@ -669,6 +717,18 @@ export function PreviewPane({
     // Wait until the catalog row matches the selected asset so we don't
     // rebuild staging from a stale previous creation.
     if (creation.id !== assetId) return;
+    // Multi-image slideshow staging owns the draft; don't rebuild a single
+    // asset draft over it (that left Mode stuck on still-image controls).
+    // Also wait while classify may expand a group into composite images.
+    if (
+      !stagingSeedKey &&
+      (isCompositeSelection ||
+        selectionOwnsPreview ||
+        selectionLoading ||
+        sourceSelectionIds.length > 1)
+    ) {
+      return;
+    }
 
     const mt = String(creation.mediaType ?? "image").trim().toLowerCase();
     const kindFromCreation = kindFromMediaType(mt);
@@ -698,12 +758,33 @@ export function PreviewPane({
             ? "audio"
             : stagingSeed.kind || kindFromCreation;
       if (alreadyApplied) {
-        // Keep in/out/framing edits; prefer reverse thumb when reversed.
+        // Keep in/out/framing edits; sync bake + label/thumb when seed updates
+        // (e.g. slideshow render finished on the same clip).
         void Promise.resolve().then(() => {
           setStagedDraft((prev) => {
             if (!prev) return prev;
-            if (prev.label === label && prev.thumbUrl === nextThumb) return prev;
-            return { ...prev, label, thumbUrl: nextThumb };
+            const nextBakePath = stagingSeed.bakePath ?? null;
+            const nextBakeKey = stagingSeed.bakeKey ?? null;
+            const nextSlideshow = stagingSeed.slideshow;
+            const bakeChanged =
+              (prev.bakePath ?? null) !== nextBakePath ||
+              (prev.bakeKey ?? null) !== nextBakeKey ||
+              !slideshowRecipesEqual(prev.slideshow, nextSlideshow);
+            if (
+              prev.label === label &&
+              prev.thumbUrl === nextThumb &&
+              !bakeChanged
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              label,
+              thumbUrl: nextThumb,
+              bakeKey: nextBakeKey,
+              bakePath: nextBakePath,
+              slideshow: nextSlideshow ?? prev.slideshow,
+            };
           });
           if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
             onClipDraftChangeRef.current?.(stagingSeedKey, {
@@ -735,17 +816,8 @@ export function PreviewPane({
     appliedSeedKeyRef.current = null;
     void Promise.resolve().then(() => {
       setStagedDraft((prev) => {
-        // Never keep a leftover composite slideshow draft when staging a
-        // single asset — even if assetId matches the slideshow primary.
-        if (prev?.kind === "slideshow" && !stagingSeedKey) {
-          return defaultStagedClipDraft({
-            assetId,
-            label,
-            kind: kindFromCreation,
-            sourceDurationSec: durationSec > 0 ? durationSec : undefined,
-            thumbUrl: liveThumb,
-          });
-        }
+        // Composite / slideshow drafts are owned by the multi-select effect.
+        if (prev?.kind === "slideshow") return prev;
         if (prev?.assetId === assetId) {
           const nextThumb =
             (prev.reverse ? reverseThumb ?? prev.thumbUrl : liveThumb) ??
@@ -771,6 +843,44 @@ export function PreviewPane({
     stagingSeedKey,
     reversedThumb,
     stagedDraft?.reverse,
+    isCompositeSelection,
+    selectionOwnsPreview,
+    selectionLoading,
+    sourceSelectionIds.length,
+  ]);
+
+  // Slideshow bake completion updates seed bakePath without changing clip id —
+  // sync it into the live draft so the preview swaps to the rendered video.
+  useEffect(() => {
+    if (!stagingSeedKey || !stagingSeed || stagingSeed.kind !== "slideshow") {
+      return;
+    }
+    void Promise.resolve().then(() => {
+      setStagedDraft((prev) => {
+        if (!prev || prev.kind !== "slideshow") return prev;
+        const bakePath = stagingSeed.bakePath ?? null;
+        const bakeKey = stagingSeed.bakeKey ?? null;
+        if (
+          (prev.bakePath ?? null) === bakePath &&
+          (prev.bakeKey ?? null) === bakeKey &&
+          slideshowRecipesEqual(prev.slideshow, stagingSeed.slideshow)
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          bakePath,
+          bakeKey,
+          slideshow: stagingSeed.slideshow ?? prev.slideshow,
+        };
+      });
+    });
+  }, [
+    stagingSeed,
+    stagingSeedKey,
+    stagingSeed?.bakeKey,
+    stagingSeed?.bakePath,
+    stagingSeed?.slideshow,
   ]);
 
   function clampInOutDraft(

@@ -1,5 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { mapRemoteCreation, syncCreationsManifest } from "./manifestSync";
+import {
+  mapGroupSourceCreations,
+  mapRemoteCreation,
+  remoteFromGroupSource,
+  syncCreationsManifest,
+  withEmbeddedGroupMembers,
+} from "./manifestSync";
 
 const invoke = vi.fn();
 
@@ -112,6 +118,91 @@ describe("manifestSync", () => {
       created_at: "2026-01-01T00:00:00Z",
     });
     expect(mapped.aspectRatio).toBe("768:1376");
+  });
+
+  it("maps embedded group source_creations via file_path", () => {
+    const remote = remoteFromGroupSource({
+      id: 17804,
+      file_path: "/api/images/created/26_17804_x.png",
+      filename: "26_17804_x.png",
+      width: 1024,
+      height: 1024,
+      meta: { media_type: "image", args: { aspect_ratio: "1:1" } },
+    });
+    expect(remote).toMatchObject({
+      id: "17804",
+      url: "/api/images/created/26_17804_x.png",
+      thumbnail_url: "/api/images/created/26_17804_x.png?variant=thumbnail",
+      media_type: "image",
+    });
+
+    const upserts = mapGroupSourceCreations([
+      {
+        id: 17804,
+        file_path: "/api/images/created/26_17804_x.png",
+        width: 1024,
+        height: 1024,
+        meta: { media_type: "image" },
+      },
+    ]);
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({
+      id: "17804",
+      mediaType: "image",
+      remoteUrl: "https://www.parascene.com/api/images/created/26_17804_x.png",
+      thumbnailUrl:
+        "https://www.parascene.com/api/images/created/26_17804_x.png?variant=thumbnail",
+      downloadState: "remote",
+    });
+  });
+
+  it("adds embedded group members missing as standalone rows", () => {
+    const cover = mapRemoteCreation({
+      id: 17810,
+      filename: "group/cover.png",
+      url: "https://cdn.example/cover.png",
+      media_type: "image",
+      created_at: "2026-07-13T00:00:00Z",
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creation_ids: [17804, 17805],
+          source_creations: [
+            {
+              id: 17804,
+              file_path: "/api/images/created/26_17804_x.png",
+              width: 1024,
+              height: 1024,
+              meta: { media_type: "image" },
+            },
+            {
+              id: 17805,
+              file_path: "/api/images/created/26_17805_y.png",
+              width: 1024,
+              height: 1024,
+              meta: { media_type: "image" },
+            },
+          ],
+        },
+      },
+    });
+    // 17805 already returned by the API as its own row — richer, keep it.
+    const standalone = mapRemoteCreation({
+      id: 17805,
+      url: "https://cdn.example/17805.png",
+      media_type: "image",
+      created_at: "2026-07-13T00:00:00Z",
+    });
+
+    const expanded = withEmbeddedGroupMembers([cover, standalone]);
+    const ids = expanded.map((c) => c.id);
+    expect(ids).toContain("17804");
+    // 17805 not duplicated; original standalone row preserved.
+    expect(ids.filter((id) => id === "17805")).toHaveLength(1);
+    const added = expanded.find((c) => c.id === "17804");
+    expect(added?.remoteUrl).toBe(
+      "https://www.parascene.com/api/images/created/26_17804_x.png",
+    );
   });
 
   it("paginates creations, applies the manifest, then downloads", async () => {

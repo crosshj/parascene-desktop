@@ -10,7 +10,10 @@ import {
 import { createPortal } from "react-dom";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import { ensureLocal, getCreation } from "../../library/catalogClient";
-import { creationCardTitle } from "../../library/creationFlags";
+import {
+  creationCardTitle,
+  isGroupCreation,
+} from "../../library/creationFlags";
 import { isLocalOnlyCreation } from "../../library/creationFilters";
 import { FolderCard } from "../../library/FolderCard";
 import type { LibraryFolder } from "../../library/folderClient";
@@ -81,9 +84,11 @@ function displayName(
 function AssetThumb({
   kind,
   creation,
+  isGroup = false,
 }: {
   kind: ProjectAsset["kind"];
   creation: Creation | undefined;
+  isGroup?: boolean;
 }) {
   const preview = creation ? creationPreviewUrl(creation) : null;
   const unavailable = creation ? isParasceneUnavailable(creation) : false;
@@ -149,6 +154,19 @@ function AssetThumb({
       )}
       {kind === "video" && showImage ? (
         <span className="editor-asset-play-badge" />
+      ) : null}
+      {isGroup ? (
+        <span className="editor-asset-group-badge" title="Group">
+          <svg
+            viewBox="0 0 16 16"
+            width="12"
+            height="12"
+            aria-hidden
+          >
+            <rect x="2.5" y="4.5" width="8" height="8" rx="1.2" />
+            <rect x="5.5" y="2.5" width="8" height="8" rx="1.2" />
+          </svg>
+        </span>
       ) : null}
     </div>
   );
@@ -499,6 +517,7 @@ export function AssetBrowserPane({
             {visible.map((asset) => {
               const creation = creationsById[asset.id];
               const kind = kindFromCreation(creation, asset.kind);
+              const isGroup = creation ? isGroupCreation(creation) : false;
               const name = displayName(asset, creation);
               return (
                 <li key={asset.id}>
@@ -513,9 +532,15 @@ export function AssetBrowserPane({
                     onContextMenu={(event) => openContextMenu(asset.id, event)}
                     title={name}
                   >
-                    <AssetThumb kind={kind} creation={creation} />
+                    <AssetThumb
+                      kind={kind}
+                      creation={creation}
+                      isGroup={isGroup}
+                    />
                     <span className="editor-asset-meta">
-                      <span className="editor-asset-kind">{kind}</span>
+                      <span className="editor-asset-kind">
+                        {isGroup ? "group" : kind}
+                      </span>
                       <span className="editor-asset-name">{name}</span>
                       {(kind === "video" || kind === "audio") && (
                         <span className="editor-asset-duration muted">

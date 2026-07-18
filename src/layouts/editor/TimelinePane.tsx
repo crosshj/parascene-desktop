@@ -951,6 +951,7 @@ export function TimelinePane({
       );
       const placed = draftToClip(draft, startSec, lane, clips);
       commitClips([...clips, placed]);
+      onSelectClipRef.current?.(placed);
       setGhost(null);
     },
     [

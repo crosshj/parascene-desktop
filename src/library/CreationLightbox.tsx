@@ -1,16 +1,27 @@
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getEnvConfig } from "../auth/session";
+import {
+  mapGroupSourceCreations,
+} from "../sync/manifestSync";
 import { creationPageUrl } from "../sync/syncState";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { creationAspectCss } from "./aspectRatio";
 import { AudioWaveform } from "./AudioWaveform";
 import {
+  applyManifest,
   deleteLocal,
   ensureLocal,
   fillThumbAndPushToCloud,
   getCreation,
+  getCreations,
 } from "./catalogClient";
+import {
+  groupEmbeddedSourceCreations,
+  groupSourceCreationIds,
+  isGroupCreation,
+} from "./creationFlags";
 import {
   canFetchLocal,
   creationDetailUrl,
@@ -43,13 +54,29 @@ export function CreationLightbox({
   onDeleted?: (id: string) => void;
 }) {
   const confirm = useConfirm();
-  const detail = creationDetailUrl(creation);
-  const thumb = creationPreviewUrl(creation);
-  const aspectCss = creationAspectCss(creation);
-  const unavailable = isParasceneUnavailable(creation);
+  const groupIds = useMemo(
+    () => (isGroupCreation(creation) ? groupSourceCreationIds(creation) : []),
+    [creation],
+  );
+  const [loadedGroup, setLoadedGroup] = useState<{
+    ownerId: string;
+    members: Creation[];
+  } | null>(null);
+  const groupMembers =
+    loadedGroup?.ownerId === creation.id ? loadedGroup.members : [];
+  const [groupIndex, setGroupIndex] = useState(0);
+  const isGroupCarousel = groupMembers.length > 1;
+  const displayedCreation = groupMembers[groupIndex] ?? creation;
+  const detail = creationDetailUrl(displayedCreation);
+  const thumb = creationPreviewUrl(displayedCreation);
+  const aspectCss = creationAspectCss(displayedCreation);
+  const unavailable = isParasceneUnavailable(displayedCreation);
   const canOpenOnWeb = canFetchLocal(creation);
-  const waiting = !detail && canOpenOnWeb && !unavailable;
-  const mediaType = String(creation.mediaType ?? "").trim().toLowerCase();
+  const waiting =
+    !detail && canFetchLocal(displayedCreation) && !unavailable;
+  const mediaType = String(displayedCreation.mediaType ?? "")
+    .trim()
+    .toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
   const webUrl = creationPageUrl(getEnvConfig().baseUrl, creation.id);
@@ -57,19 +84,111 @@ export function CreationLightbox({
   const busy = busyKind !== null;
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const stepGroup = useCallback((direction: -1 | 1) => {
+    setGroupIndex((current) => {
+      if (groupMembers.length <= 1) return current;
+      return (
+        (current + direction + groupMembers.length) % groupMembers.length
+      );
+    });
+  }, [groupMembers.length]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key === "ArrowLeft" && isGroupCarousel) {
+        e.preventDefault();
+        stepGroup(-1);
+        return;
+      }
+      if (e.key === "ArrowRight" && isGroupCarousel) {
+        e.preventDefault();
+        stepGroup(1);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [isGroupCarousel, onClose, stepGroup]);
+
+  useEffect(() => {
+    if (groupIds.length === 0) return;
+    let cancelled = false;
+    const load = async () => {
+      let rows = await getCreations(groupIds);
+      if (cancelled) return;
+      const found = new Set(rows.map((row) => row.id));
+      const missing = new Set(groupIds.filter((id) => !found.has(id)));
+      if (missing.size > 0) {
+        const upserts = mapGroupSourceCreations(
+          groupEmbeddedSourceCreations(creation),
+        ).filter((row) => missing.has(row.id));
+        if (upserts.length > 0) {
+          await applyManifest(upserts);
+          if (cancelled) return;
+          rows = await getCreations(groupIds);
+        }
+      }
+      if (cancelled) return;
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const ordered = groupIds
+        .map((id) => byId.get(id))
+        .filter((row): row is Creation => Boolean(row));
+      setLoadedGroup({ ownerId: creation.id, members: ordered });
+      setGroupIndex(0);
+      void ensureLocal(
+        ordered
+          .filter(
+            (row) =>
+              !creationDetailUrl(row) &&
+              canFetchLocal(row) &&
+              !isParasceneUnavailable(row),
+          )
+          .map((row) => row.id),
+        { fullMedia: true, urgent: true },
+      );
+    };
+    void load().catch(() => {
+      if (!cancelled) {
+        setLoadedGroup({ ownerId: creation.id, members: [] });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [creation, groupIds]);
+
+  useEffect(() => {
+    if (groupIds.length === 0) return;
+    const memberIds = new Set(groupIds);
+    let unlisten: (() => void) | undefined;
+    void listen<Creation>("library-creation-updated", (event) => {
+      if (!memberIds.has(event.payload.id)) return;
+      setLoadedGroup((current) => {
+        if (!current || current.ownerId !== creation.id) return current;
+        return {
+          ...current,
+          members: current.members.map((row) =>
+            row.id === event.payload.id ? event.payload : row,
+          ),
+        };
+      });
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => unlisten?.();
+  }, [creation.id, groupIds]);
 
   // Utmost priority: jump the download queue the moment the lightbox opens.
   useEffect(() => {
-    if (detail || unavailable || !canFetchLocal(creation)) return;
-    void ensureLocal([creation.id], { fullMedia: true, urgent: true });
-  }, [creation.id, detail, unavailable, creation]);
+    if (detail || unavailable || !canFetchLocal(displayedCreation)) return;
+    void ensureLocal([displayedCreation.id], {
+      fullMedia: true,
+      urgent: true,
+    });
+  }, [detail, displayedCreation, unavailable]);
 
   async function onFillThumb() {
     if (busy) return;
@@ -135,7 +254,7 @@ export function CreationLightbox({
       className="creation-lightbox"
       role="dialog"
       aria-modal="true"
-      aria-label={creation.title}
+      aria-label={displayedCreation.title}
       onClick={onClose}
     >
       <div
@@ -220,7 +339,7 @@ export function CreationLightbox({
               <img
                 className="creation-lightbox-media"
                 src={detail}
-                alt={creation.title}
+                alt={displayedCreation.title}
               />
             )
           ) : (
@@ -248,17 +367,46 @@ export function CreationLightbox({
               )}
             </>
           )}
+          {isGroupCarousel ? (
+            <>
+              <button
+                type="button"
+                className="creation-lightbox-group-nav creation-lightbox-group-nav-prev"
+                aria-label="Previous grouped image"
+                onClick={() => stepGroup(-1)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden focusable="false">
+                  <path d="M14.5 6.5L9 12l5.5 5.5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="creation-lightbox-group-nav creation-lightbox-group-nav-next"
+                aria-label="Next grouped image"
+                onClick={() => stepGroup(1)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden focusable="false">
+                  <path d="M9.5 6.5L15 12l-5.5 5.5" />
+                </svg>
+              </button>
+            </>
+          ) : null}
         </div>
         <div className="creation-lightbox-meta">
-          <h2>{creation.title}</h2>
+          <h2>{displayedCreation.title}</h2>
           <p className="muted">
-            {creation.mediaType}
+            {displayedCreation.mediaType}
             {" · "}
-            {creation.downloadState}
-            {creation.published ? " · published" : ""}
+            {displayedCreation.downloadState}
+            {displayedCreation.published ? " · published" : ""}
+            {isGroupCarousel
+              ? ` · ${groupIndex + 1} of ${groupMembers.length}`
+              : ""}
           </p>
-          {creation.prompt ? (
-            <p className="creation-lightbox-prompt">{creation.prompt}</p>
+          {displayedCreation.prompt ? (
+            <p className="creation-lightbox-prompt">
+              {displayedCreation.prompt}
+            </p>
           ) : null}
         </div>
       </div>

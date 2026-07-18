@@ -1,17 +1,11 @@
-import {
-  useRef,
-  type DragEvent,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useEffect, useRef } from "react";
 import {
   clearStagedClipDrag,
   getActiveStagedClipDrag,
   newSlideshowSeed,
   remapTrimForReverse,
-  serializeStagedClip,
   setActiveStagedClipDrag,
   setStagedClipPointer,
-  STAGED_CLIP_MIME,
   stagedClipDuration,
   targetLaneForDraft,
   type SlideshowMode,
@@ -324,47 +318,21 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
   const draggingRef = useRef(false);
   const originRef = useRef<{ x: number; y: number } | null>(null);
   const pointerIdRef = useRef<number | null>(null);
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
-  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    pointerIdRef.current = event.pointerId;
-    originRef.current = { x: event.clientX, y: event.clientY };
-    draggingRef.current = false;
-  };
-
-  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (pointerIdRef.current !== event.pointerId || !originRef.current) return;
-    const dx = event.clientX - originRef.current.x;
-    const dy = event.clientY - originRef.current.y;
-    if (!draggingRef.current && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) {
-      return;
-    }
-    if (!draggingRef.current) {
-      draggingRef.current = true;
-      setActiveStagedClipDrag(draft);
-      document.body.classList.add("is-staged-clip-dragging");
-    }
-    setStagedClipPointer({ x: event.clientX, y: event.clientY });
-  };
-
-  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (pointerIdRef.current !== event.pointerId) return;
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    } catch {
-      // ignore
-    }
+  const endDrag = (clientX: number, clientY: number, drop: boolean) => {
     const wasDragging = draggingRef.current;
     document.body.classList.remove("is-staged-clip-dragging");
-    if (wasDragging) {
-      const dropped = getActiveStagedClipDrag() ?? draft;
+    if (drop && wasDragging) {
+      const dropped = getActiveStagedClipDrag() ?? draftRef.current;
       window.dispatchEvent(
         new CustomEvent("parascene-staged-clip-drop", {
           detail: {
             draft: dropped,
-            point: { x: event.clientX, y: event.clientY },
+            point: { x: clientX, y: clientY },
           },
         }),
       );
@@ -375,31 +343,43 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     clearStagedClipDrag();
   };
 
-  const onPointerCancel = () => {
-    document.body.classList.remove("is-staged-clip-dragging");
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    // Prevent native HTML5 drag / text selection from stealing the gesture.
+    event.preventDefault();
+    event.stopPropagation();
+
+    const pointerId = event.pointerId;
+    pointerIdRef.current = pointerId;
+    originRef.current = { x: event.clientX, y: event.clientY };
     draggingRef.current = false;
-    originRef.current = null;
-    pointerIdRef.current = null;
-    clearStagedClipDrag();
-  };
 
-  // HTML5 DnD secondary path (Chromium).
-  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
-    const payload = serializeStagedClip(draft);
-    try {
-      event.dataTransfer.setData(STAGED_CLIP_MIME, payload);
-      event.dataTransfer.setData("text/plain", payload);
-    } catch {
-      // WebKit may reject custom MIME types.
-    }
-    event.dataTransfer.effectAllowed = "copy";
-    setActiveStagedClipDrag(draft);
-    document.body.classList.add("is-staged-clip-dragging");
-  };
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId || !originRef.current) return;
+      const dx = ev.clientX - originRef.current.x;
+      const dy = ev.clientY - originRef.current.y;
+      if (!draggingRef.current && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) {
+        return;
+      }
+      if (!draggingRef.current) {
+        draggingRef.current = true;
+        setActiveStagedClipDrag(draftRef.current);
+        document.body.classList.add("is-staged-clip-dragging");
+      }
+      setStagedClipPointer({ x: ev.clientX, y: ev.clientY });
+    };
 
-  const onDragEnd = () => {
-    document.body.classList.remove("is-staged-clip-dragging");
-    clearStagedClipDrag();
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      endDrag(ev.clientX, ev.clientY, true);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   };
 
   return (
@@ -407,13 +387,7 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
       role="button"
       tabIndex={0}
       className="editor-cartridge-grip"
-      draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
       onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
       title="Drag to timeline"
       aria-label="Drag prepared clip to timeline"
     >

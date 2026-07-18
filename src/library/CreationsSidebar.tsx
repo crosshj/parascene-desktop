@@ -299,16 +299,27 @@ export function CreationsSidebar({
       style={{ width }}
       aria-label="Creation filters"
     >
-      <p className="creations-sidebar-title">Library</p>
       {onAddFromDisk ? (
         <div className="creations-sidebar-actions creations-sidebar-import">
           <button
             type="button"
-            className="creations-sidebar-action-btn"
+            className="creations-sidebar-action-btn creations-sidebar-import-btn"
             onClick={onAddFromDisk}
             disabled={importing}
           >
-            {importing ? "Adding…" : "Add from disk…"}
+            <svg
+              className="creations-sidebar-import-icon"
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              aria-hidden
+            >
+              <path
+                fill="currentColor"
+                d="M7.25 2.5v4.75H2.5v1.5h4.75V13.5h1.5V8.75H13.5v-1.5H8.75V2.5z"
+              />
+            </svg>
+            <span>{importing ? "Adding…" : "Add from disk…"}</span>
           </button>
         </div>
       ) : null}

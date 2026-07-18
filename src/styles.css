@@ -176,7 +176,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  padding: 0.85rem 0.65rem;
+  padding: 1.1rem 0.65rem 0.85rem;
   background: var(--surface);
   border-right: 1px solid var(--border);
   overflow: auto;
@@ -670,9 +670,35 @@ textarea {
 }
 
 .creations-sidebar-import {
-  margin: 0 0 0.65rem;
-  padding: 0 0.35rem 0.55rem;
+  margin: 0 0 0.75rem;
+  padding: 0 0.35rem 0.75rem;
+  border-top: none;
   border-bottom: 1px solid var(--border);
+}
+
+.creations-sidebar-import-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: color-mix(in srgb, var(--text) 4%, var(--surface));
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.creations-sidebar-import-btn:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.creations-sidebar-import-icon {
+  flex: 0 0 auto;
+  opacity: 0.9;
+}
+
+.creations-sidebar-import-btn:hover .creations-sidebar-import-icon {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .sync-panel {
@@ -1216,6 +1242,60 @@ textarea {
   max-height: min(70vh, 720px);
   object-fit: contain;
   background: #000;
+}
+
+/* Match parascene chat inline gallery lightbox controls. */
+.creation-lightbox-group-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.54);
+  color: rgba(255, 255, 255, 0.94);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  z-index: 4;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.creation-lightbox-group-nav svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  pointer-events: none;
+}
+
+.creation-lightbox-group-nav:hover {
+  background: rgba(0, 0, 0, 0.66);
+}
+
+.creation-lightbox-group-nav:active {
+  transform: translateY(-50%);
+}
+
+.creation-lightbox-group-nav:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: 2px;
+}
+
+.creation-lightbox-group-nav-prev {
+  left: 8px;
+}
+
+.creation-lightbox-group-nav-next {
+  right: 8px;
 }
 
 .creation-lightbox-audio {
@@ -2696,6 +2776,28 @@ textarea {
   border-color: transparent transparent transparent var(--text);
 }
 
+.editor-asset-group-badge {
+  position: absolute;
+  left: 0.3rem;
+  top: 0.3rem;
+  width: 1.35rem;
+  height: 1.35rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--border) 80%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.editor-asset-group-badge svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+}
+
 .editor-asset-meta {
   display: flex;
   flex-direction: column;
@@ -3388,7 +3490,7 @@ textarea {
   color: var(--text);
   cursor: grab;
   user-select: none;
-  -webkit-user-drag: element;
+  -webkit-user-drag: none;
   touch-action: none;
 }
 
