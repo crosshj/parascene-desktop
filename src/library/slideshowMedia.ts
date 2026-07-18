@@ -1,11 +1,15 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { SlideshowRecipe } from "../project/types";
+import {
+  normalizeSlideshowMode,
+  type SlideshowMode,
+  type SlideshowRecipe,
+} from "../project/types";
 import type { StagedClipFraming } from "../layouts/editor/stagedClip";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 
 export type SlideshowEnsureInput = {
   imageAssetIds: string[];
-  mode: "even" | "beat";
+  mode: SlideshowMode;
   random?: boolean;
   seed?: number;
   durationSec: number;
@@ -17,6 +21,7 @@ export type SlideshowEnsureInput = {
   audioOutSec?: number;
   audioStartSec?: number;
   audioEndSec?: number;
+  sensitivity?: number;
 };
 
 export type SlideshowEnsureResult = {
@@ -56,7 +61,7 @@ export function slideshowEnsureInputFromRecipe(opts: {
   const { recipe } = opts;
   return {
     imageAssetIds: recipe.imageAssetIds,
-    mode: recipe.mode === "beat" ? "beat" : "even",
+    mode: normalizeSlideshowMode(recipe.mode),
     random: recipe.random === true,
     seed: recipe.random ? recipe.seed : undefined,
     durationSec: opts.durationSec,
@@ -68,6 +73,7 @@ export function slideshowEnsureInputFromRecipe(opts: {
     audioOutSec: recipe.audioOutSec,
     audioStartSec: recipe.audioStartSec,
     audioEndSec: recipe.audioEndSec,
+    sensitivity: recipe.sensitivity,
   };
 }
 

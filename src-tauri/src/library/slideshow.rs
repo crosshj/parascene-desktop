@@ -1,6 +1,6 @@
 //! Cached silent image-slideshow bakes for composite timeline clips.
 
-use super::beats::{ensure_beats, map_beats_to_clip};
+use super::beats::{ensure_beats_for_mode, ensure_energy, map_beats_to_clip};
 use super::catalog::{default_paths, get_creation_by_id, ready_connection};
 use super::ffmpeg::resolve_ffmpeg;
 use super::paths::ParascenePaths;
@@ -12,9 +12,16 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CACHE_VERSION: &str = "v1";
+const CACHE_VERSION: &str = "v3";
 const PREVIEW_STAGE_W: u32 = 1920;
 const PREVIEW_STAGE_H: u32 = 1080;
+
+fn is_beat_mode(mode: &str) -> bool {
+    matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "beat" | "beat_classic" | "beat_grid" | "beat_drums" | "beat_energy"
+    )
+}
 
 fn safe_id(id: &str) -> String {
     id.chars()
@@ -122,6 +129,9 @@ pub struct SlideshowEnsureInput {
     pub audio_out_sec: Option<f64>,
     pub audio_start_sec: Option<f64>,
     pub audio_end_sec: Option<f64>,
+    /// Per-mode tuning dial (0..1); `None` uses the neutral default.
+    #[serde(default)]
+    pub sensitivity: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -273,7 +283,7 @@ pub fn build_boundaries(
         return Err("Slideshow duration must be positive".into());
     }
     let mut cuts = vec![0.0];
-    if mode.eq_ignore_ascii_case("beat") {
+    if is_beat_mode(mode) {
         for &t in beat_times_clip_local {
             if t > 0.05 && t < duration_sec - 0.05 {
                 cuts.push(t);
@@ -322,7 +332,7 @@ pub fn bake_key_for(input: &SlideshowEnsureInput) -> String {
     let mode = input.mode.trim().to_ascii_lowercase();
     let random = input.random.unwrap_or(false);
     let payload = format!(
-        "{CACHE_VERSION}|{ids}|{mode}|{}|{}|{:.3}|{framing}|{}|{}|{:.3}|{:.3}|{:.3}|{:.3}|{:.3}",
+        "{CACHE_VERSION}|{ids}|{mode}|{}|{}|{:.3}|{framing}|{}|{}|{:.3}|{:.3}|{:.3}|{:.3}|{:.3}|{:.3}",
         if random { 1 } else { 0 },
         input.seed.unwrap_or(0),
         input.duration_sec,
@@ -333,6 +343,7 @@ pub fn bake_key_for(input: &SlideshowEnsureInput) -> String {
         input.audio_start_sec.unwrap_or(0.0),
         input.audio_end_sec.unwrap_or(0.0),
         input.clip_start_sec,
+        input.sensitivity.unwrap_or(-1.0),
     );
     format!("{}-{}", CACHE_VERSION, fnv1a64(&payload))
 }
@@ -345,10 +356,64 @@ fn cache_dest(paths: &ParascenePaths, bake_key: &str) -> PathBuf {
         .join(format!("{}.mp4", safe_id(bake_key)))
 }
 
-fn resolve_image_paths(
-    paths: &ParascenePaths,
-    ids: &[String],
-) -> Result<Vec<PathBuf>, String> {
+/// A slideshow source image plus a `[0,1]` "visual energy" derived from its
+/// dominant color (bright + saturated reads as high energy).
+#[derive(Clone)]
+struct SlideImage {
+    path: PathBuf,
+    energy: f32,
+}
+
+/// Loudness envelope of the overlapping audio, addressable by clip-local time.
+struct AudioEnergy {
+    env: Vec<f32>,
+    hz: f64,
+    /// Audio source seconds at clip-local time 0.
+    base_sec: f64,
+}
+
+impl AudioEnergy {
+    /// RMS loudness at a clip-local time (seconds).
+    fn sample(&self, clip_sec: f64) -> f32 {
+        if self.env.is_empty() {
+            return 0.0;
+        }
+        let src = (self.base_sec + clip_sec).max(0.0);
+        let idx = (src * self.hz).round() as isize;
+        let clamped = idx.clamp(0, self.env.len() as isize - 1) as usize;
+        self.env[clamped]
+    }
+}
+
+/// Map a `#rrggbb` dominant color to a `[0,1]` visual energy. Bright, saturated
+/// colors score high; dark/desaturated score low. Missing/invalid -> 0.5.
+fn visual_energy_from_color(color: Option<&str>) -> f32 {
+    let hex = match color {
+        Some(c) => c.trim().trim_start_matches('#'),
+        None => return 0.5,
+    };
+    if hex.len() < 6 {
+        return 0.5;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16);
+    let g = u8::from_str_radix(&hex[2..4], 16);
+    let b = u8::from_str_radix(&hex[4..6], 16);
+    match (r, g, b) {
+        (Ok(r), Ok(g), Ok(b)) => {
+            let rf = r as f32 / 255.0;
+            let gf = g as f32 / 255.0;
+            let bf = b as f32 / 255.0;
+            let brightness = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
+            let max = rf.max(gf).max(bf);
+            let min = rf.min(gf).min(bf);
+            let saturation = max - min;
+            (0.6 * brightness + 0.4 * saturation).clamp(0.0, 1.0)
+        }
+        _ => 0.5,
+    }
+}
+
+fn resolve_images(paths: &ParascenePaths, ids: &[String]) -> Result<Vec<SlideImage>, String> {
     let conn = ready_connection(paths)?;
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
@@ -362,12 +427,72 @@ fn resolve_image_paths(
             .local_path
             .clone()
             .ok_or_else(|| format!("No local media on disk yet for {trimmed}"))?;
-        out.push(path_under_root(&paths.root, &local_path)?);
+        out.push(SlideImage {
+            path: path_under_root(&paths.root, &local_path)?,
+            energy: visual_energy_from_color(creation.color.as_deref()),
+        });
     }
     if out.len() < 2 {
         return Err("Slideshow requires at least two local images".into());
     }
     Ok(out)
+}
+
+/// Assign an image (index into `images`) to each of `segment_count` segments.
+///
+/// Baseline is round-robin so every image gets even screen time. When
+/// `segment_energy` is present (Color Current with audio), we keep that usage
+/// histogram but reorder placements so louder segments show higher-energy
+/// images and quiet segments show calmer ones — a monotonic rank match that
+/// follows the music's loudness contour.
+///
+/// `strength` (0..1) blends between plain round-robin (0) and full loudness
+/// matching (1) by matching an evenly-spread subset of segments.
+fn assign_images(
+    segment_count: usize,
+    image_energy: &[f32],
+    segment_energy: Option<&[f32]>,
+    strength: f64,
+) -> Vec<usize> {
+    let n = image_energy.len();
+    if n == 0 || segment_count == 0 {
+        return Vec::new();
+    }
+    let base: Vec<usize> = (0..segment_count).map(|i| i % n).collect();
+    let strength = strength.clamp(0.0, 1.0);
+    let seg_energy = match segment_energy {
+        Some(e) if e.len() == segment_count && strength > 0.0 => e,
+        _ => return base,
+    };
+
+    // Rank segments (quiet -> loud) and playlist slots (calm -> vivid image).
+    let mut seg_order: Vec<usize> = (0..segment_count).collect();
+    seg_order.sort_by(|&a, &b| {
+        seg_energy[a]
+            .partial_cmp(&seg_energy[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut slot_order: Vec<usize> = (0..segment_count).collect();
+    slot_order.sort_by(|&a, &b| {
+        image_energy[base[a]]
+            .partial_cmp(&image_energy[base[b]])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Start from round-robin, then swap in the loudness match for an evenly
+    // spread `strength` fraction of segments (Bresenham selection).
+    let mut assignment = base.clone();
+    let selected = (strength * segment_count as f64).round() as usize;
+    let mut acc = 0usize;
+    for rank in 0..segment_count {
+        acc += selected;
+        if acc >= segment_count {
+            acc -= segment_count;
+            let seg = seg_order[rank];
+            assignment[seg] = base[slot_order[rank]];
+        }
+    }
+    assignment
 }
 
 fn unique_partial(dest: &Path) -> PathBuf {
@@ -403,18 +528,19 @@ fn encode_slideshow(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    let mut image_paths = resolve_image_paths(paths, &image_ids)?;
+    let mut images = resolve_images(paths, &image_ids)?;
     let duration_sec = input.duration_sec.max(0.1);
     let mode = input.mode.trim().to_ascii_lowercase();
-    if input.random.unwrap_or(false) {
-        let order = shuffled_indices(image_paths.len(), input.seed.unwrap_or(0));
-        image_paths = order
-            .into_iter()
-            .map(|index| image_paths[index].clone())
-            .collect();
+    let random = input.random.unwrap_or(false);
+    if random {
+        let order = shuffled_indices(images.len(), input.seed.unwrap_or(0));
+        images = order.into_iter().map(|index| images[index].clone()).collect();
     }
+    let image_paths: Vec<PathBuf> = images.iter().map(|img| img.path.clone()).collect();
+    let image_energy: Vec<f32> = images.iter().map(|img| img.energy).collect();
 
-    let beat_times = if mode == "beat" {
+    let mut audio_energy: Option<AudioEnergy> = None;
+    let beat_times = if is_beat_mode(&mode) {
         let audio_id = input
             .audio_asset_id
             .as_deref()
@@ -431,7 +557,7 @@ fn encode_slideshow(
         let audio_in = input.audio_in_sec.unwrap_or(0.0).max(0.0);
         let visual_start = input.clip_start_sec.max(0.0);
         let visual_end = visual_start + duration_sec;
-        let source_beats = ensure_beats(paths, audio_id)?;
+        let source_beats = ensure_beats_for_mode(paths, audio_id, &mode, input.sensitivity)?;
         let mapped = map_beats_to_clip(
             &source_beats,
             visual_start,
@@ -445,12 +571,40 @@ fn encode_slideshow(
                 "No beats found in the overlapping audio range for this slideshow".into(),
             );
         }
+        if !random && (mode == "beat_energy" || mode == "beat") {
+            if let Ok((env, hz)) = ensure_energy(paths, audio_id) {
+                if !env.is_empty() && hz > 0.0 {
+                    audio_energy = Some(AudioEnergy {
+                        env,
+                        hz,
+                        base_sec: audio_in + visual_start - audio_start,
+                    });
+                }
+            }
+        }
         mapped
     } else {
         Vec::new()
     };
 
     let boundaries = build_boundaries(&mode, duration_sec, image_paths.len(), &beat_times)?;
+    let segment_count = boundaries.len().saturating_sub(1);
+    let segment_energy = audio_energy.as_ref().map(|ae| {
+        (0..segment_count)
+            .map(|i| {
+                let mid = (boundaries[i] + boundaries[i + 1]) * 0.5;
+                ae.sample(mid)
+            })
+            .collect::<Vec<f32>>()
+    });
+    // Color Current uses sensitivity as loudness-match strength (default full).
+    let match_strength = input.sensitivity.unwrap_or(1.0);
+    let image_assignment = assign_images(
+        segment_count,
+        &image_energy,
+        segment_energy.as_deref(),
+        match_strength,
+    );
     let (width, height) = output_size(&input.aspect_ratio);
     let (aw, ah) = aspect_parts(&input.aspect_ratio);
     let (crop_w, crop_h) = fit_inside(PREVIEW_STAGE_W, PREVIEW_STAGE_H, aw, ah);
@@ -469,7 +623,7 @@ fn encode_slideshow(
         let start = boundaries[i];
         let end = boundaries[i + 1];
         let seg_dur = (end - start).max(1.0 / 30.0);
-        let image_path = &image_paths[i % image_paths.len()];
+        let image_path = &image_paths[image_assignment[i]];
         let seg_path = work_dir.join(format!("seg_{i:03}.mp4"));
         let frames = (seg_dur * 30.0).round().max(1.0) as u32;
         let mut args: Vec<String> = vec![
@@ -594,6 +748,49 @@ mod tests {
     }
 
     #[test]
+    fn visual_energy_orders_bright_over_dark() {
+        let bright = visual_energy_from_color(Some("#ffffff"));
+        let vivid = visual_energy_from_color(Some("#ff0000"));
+        let dark = visual_energy_from_color(Some("#101010"));
+        assert!(bright > dark);
+        assert!(vivid > dark);
+        assert_eq!(visual_energy_from_color(None), 0.5);
+        assert_eq!(visual_energy_from_color(Some("nope")), 0.5);
+    }
+
+    #[test]
+    fn assign_images_round_robins_without_audio() {
+        let energy = [0.2, 0.8, 0.5];
+        assert_eq!(assign_images(5, &energy, None, 1.0), vec![0, 1, 2, 0, 1]);
+    }
+
+    #[test]
+    fn assign_images_matches_loud_segments_to_vivid_images() {
+        // images: index 0 calm, 1 vivid, 2 mid
+        let image_energy = [0.1, 0.9, 0.5];
+        // segments: loud, quiet, mid  (3 segments -> base playlist 0,1,2)
+        let seg_energy = [0.9, 0.1, 0.5];
+        let out = assign_images(3, &image_energy, Some(&seg_energy), 1.0);
+        // Loudest segment (0) gets the most vivid image (1),
+        // quietest (1) gets the calmest (0), mid (2) gets mid (2).
+        assert_eq!(out, vec![1, 0, 2]);
+        // Every image still used exactly once (even screen time preserved).
+        let mut used = out.clone();
+        used.sort_unstable();
+        assert_eq!(used, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn assign_images_zero_strength_is_round_robin() {
+        let image_energy = [0.1, 0.9, 0.5];
+        let seg_energy = [0.9, 0.1, 0.5];
+        assert_eq!(
+            assign_images(3, &image_energy, Some(&seg_energy), 0.0),
+            vec![0, 1, 2],
+        );
+    }
+
+    #[test]
     fn beat_boundaries_include_start_end_and_beats() {
         let cuts = build_boundaries("beat", 10.0, 3, &[1.0, 4.0, 9.0]).unwrap();
         assert_eq!(cuts, vec![0.0, 1.0, 4.0, 9.0, 10.0]);
@@ -615,6 +812,7 @@ mod tests {
             audio_out_sec: None,
             audio_start_sec: None,
             audio_end_sec: None,
+            sensitivity: None,
         };
         assert_eq!(bake_key_for(&input), bake_key_for(&input));
     }

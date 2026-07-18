@@ -18,7 +18,14 @@ import {
 import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import type { BakeInfo, BakeStatus } from "../../library/slideshowMedia";
-import type { TimelineClip } from "../../project/types";
+import {
+  projectAspectCss,
+  type ProjectAspectRatio,
+} from "../../project/aspectRatios";
+import {
+  isBeatSlideshowMode,
+  type TimelineClip,
+} from "../../project/types";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import {
   getActiveStagedClipDrag,
@@ -39,6 +46,8 @@ import { timelineSequenceDuration } from "./timelineCompose";
 
 type TimelinePaneProps = {
   clips: TimelineClip[];
+  /** Project frame used by timeline image/video thumbnails. */
+  aspectRatio?: ProjectAspectRatio;
   /** Reset local drops when the open project changes. */
   projectId?: string;
   /** Persist timeline clips on the open project. */
@@ -166,7 +175,9 @@ function draftToClip(
 ): TimelineClip {
   const duration = stagedClipDuration(draft);
   let slideshow = draft.kind === "slideshow" ? draft.slideshow : undefined;
-  if (slideshow?.mode === "beat") {
+  // A rendered slideshow can be placed again like any other source clip.
+  // Keep its original beat edit instead of rebinding and baking at the copy.
+  if (isBeatSlideshowMode(slideshow?.mode) && !draft.bakePath?.trim()) {
     const visual = { startSec, endSec: startSec + duration };
     const audio = findOverlappingAudioClip(allClips, visual);
     if (audio?.assetId) {
@@ -196,8 +207,8 @@ function draftToClip(
     transform: draft.transform,
     framing: draft.framing,
     slideshow,
-    bakeKey: null,
-    bakePath: null,
+    bakeKey: draft.bakeKey ?? null,
+    bakePath: draft.bakePath ?? null,
   };
 }
 
@@ -273,6 +284,7 @@ function MiniClip({
   audio = false,
   reversed = false,
   framing = "fit",
+  thumbAspectRatio = "16 / 9",
   bakeStatus,
   bakeError,
   waveSeed,
@@ -292,6 +304,7 @@ function MiniClip({
   /** Show a small left-pointing play mark (reversed clip). */
   reversed?: boolean;
   framing?: StagedClipFraming;
+  thumbAspectRatio?: string;
   bakeStatus?: BakeStatus;
   bakeError?: string | null;
   waveSeed?: string;
@@ -309,18 +322,19 @@ function MiniClip({
     selected ? "is-selected" : "",
     audio ? "is-audio" : "",
     reversed ? "is-reversed" : "",
+    !audio ? "is-video-clip" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
-  let background: string | undefined = "rgba(88, 40, 140, 0.92)";
-  let border: string | undefined = "1.5px solid #c084fc";
+  let background: string | undefined = "rgba(36, 48, 78, 0.96)";
+  let border: string | undefined = "1px solid rgba(90, 110, 160, 0.55)";
   if (isGhost) {
-    background = "rgba(168, 85, 247, 0.22)";
-    border = "1.5px dashed #c084fc";
+    background = "rgba(59, 80, 130, 0.28)";
+    border = "1.5px dashed rgba(140, 165, 220, 0.7)";
   } else if (moving) {
-    background = "rgba(110, 55, 170, 0.96)";
-    border = "1.5px solid #e9d5ff";
+    background = "rgba(48, 64, 104, 0.98)";
+    border = "1px solid rgba(160, 180, 230, 0.75)";
   } else if (selected) {
     background = undefined;
     border = undefined;
@@ -328,6 +342,9 @@ function MiniClip({
     background = "rgba(55, 40, 100, 0.94)";
     border = "1.5px solid #a78bfa";
   }
+
+  // One project-aspect start-frame thumb; hide when too narrow to read.
+  const showThumb = !audio && widthPx >= 48;
 
   return (
     <div
@@ -341,12 +358,6 @@ function MiniClip({
         left: Math.max(0, startSec) * pxPerSec,
         width: widthPx,
         boxSizing: "border-box",
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: audio ? "2px 6px" : "2px 6px 2px 4px",
-        borderRadius: 3,
-        overflow: "hidden",
         zIndex: moving ? 4 : selected ? 2 : isGhost ? 3 : 1,
         background,
         border,
@@ -358,6 +369,11 @@ function MiniClip({
         minWidth: 0,
       }}
     >
+      {widthPx >= 36 ? (
+        <span className="editor-timeline-clip-dur">
+          {label ?? formatClipDuration(safeDuration)}
+        </span>
+      ) : null}
       {reversed ? (
         <span className="editor-timeline-clip-reverse" aria-hidden title="Reversed">
           <svg viewBox="0 0 8 8" width="7" height="7">
@@ -385,58 +401,25 @@ function MiniClip({
           widthPx={widthPx}
           seed={waveSeed ?? label ?? "audio"}
         />
-      ) : thumbUrl && widthPx >= 40 ? (
+      ) : showThumb && thumbUrl ? (
         <img
-          className="editor-timeline-clip-thumb"
+          className={`editor-timeline-clip-thumb${
+            framing === "fit"
+              ? " is-fit"
+              : framing === "stretch"
+                ? " is-stretch"
+                : ""
+          }`}
           src={thumbUrl}
           alt=""
           draggable={false}
-          style={{
-            width: Math.min(32, Math.max(16, widthPx * 0.35)),
-            height: Math.min(32, Math.max(16, widthPx * 0.35)),
-            flexShrink: 0,
-            objectFit:
-              framing === "fit"
-                ? "contain"
-                : framing === "stretch"
-                  ? "fill"
-                  : "cover",
-            borderRadius: 2,
-            background: "#0a0a0e",
-            pointerEvents: "none",
-          }}
+          style={{ aspectRatio: thumbAspectRatio }}
         />
-      ) : !audio && widthPx >= 28 ? (
+      ) : showThumb ? (
         <span
           className="editor-timeline-clip-thumb is-empty"
-          style={{
-            width: 20,
-            height: 20,
-            flexShrink: 0,
-            borderRadius: 2,
-            background: "rgba(168, 85, 247, 0.35)",
-          }}
+          style={{ aspectRatio: thumbAspectRatio }}
         />
-      ) : null}
-      {widthPx >= 36 ? (
-        <span
-          className="editor-timeline-clip-dur"
-          style={{
-            position: audio ? "relative" : undefined,
-            zIndex: audio ? 1 : undefined,
-            color: "#f0f0f5",
-            fontSize: widthPx < 56 ? 11 : 13,
-            fontWeight: 600,
-            fontVariantNumeric: "tabular-nums",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            pointerEvents: "none",
-            textShadow: audio ? "0 1px 2px rgba(0,0,0,0.65)" : undefined,
-          }}
-        >
-          {label ?? formatClipDuration(safeDuration)}
-        </span>
       ) : null}
     </div>
   );
@@ -445,6 +428,7 @@ function MiniClip({
 export function TimelinePane({
   clips: seedClips,
   projectId = "",
+  aspectRatio = "16:9",
   onClipsChange,
   bakeInfoByClipId,
   selectedClipIds = [],
@@ -463,6 +447,7 @@ export function TimelinePane({
   onMergeSelected,
   mergeBusy = false,
 }: TimelinePaneProps) {
+  const thumbAspectRatio = projectAspectCss(aspectRatio);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
   const [ghost, setGhost] = useState<TimelineGhostClip | null>(null);
@@ -1293,6 +1278,13 @@ export function TimelinePane({
             step={0.25}
             value={zoom}
             aria-label="Timeline zoom"
+            style={
+              {
+                ["--scrub-progress" as string]: `${
+                  ((zoom - 0.5) / (3 - 0.5)) * 100
+                }%`,
+              } as CSSProperties
+            }
             onChange={(e) => setZoom(Number(e.target.value))}
           />
           <button
@@ -1404,6 +1396,7 @@ export function TimelinePane({
                     selected={selectedClipIds.includes(clip.id)}
                     reversed={Boolean(clip.reverse)}
                     framing={normalizeFraming(clip.framing)}
+                    thumbAspectRatio={thumbAspectRatio}
                     bakeStatus={
                       clip.kind === "slideshow"
                         ? bakeInfoByClipId?.get(clip.id)?.status ??
@@ -1426,6 +1419,7 @@ export function TimelinePane({
                   durationSec={ghost.durationSec}
                   thumbUrl={ghost.thumbUrl}
                   pxPerSec={pxPerSec}
+                  thumbAspectRatio={thumbAspectRatio}
                 />
               ) : null}
             </div>

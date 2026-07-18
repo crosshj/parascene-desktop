@@ -35,6 +35,7 @@ import {
 } from "../../project/aspectRatios";
 import type { TimelineClip } from "../../project/types";
 import { kindFromMediaType } from "./stagingKind";
+import { PreviewScrubber } from "./PreviewScrubber";
 import {
   classifyAssetSelection,
   unsupportedSelectionMessage,
@@ -68,6 +69,7 @@ import {
   mediaUrlForBakePath,
   type BakeInfo,
 } from "../../library/slideshowMedia";
+import { pendingDraftMatchesSelection } from "./editorSelection";
 import { TimelineMonitor } from "./TimelineMonitor";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
 
@@ -93,6 +95,13 @@ type PreviewPaneProps = {
   stagingSeedKey?: string | null;
   /** Persist staging edits onto the selected timeline clip. */
   onClipDraftChange?: (clipId: string, draft: StagedClipDraft) => void;
+  /**
+   * Source-only staging restored from the project (pre-drop). Used when no
+   * timeline clip is selected so Mode/sensitivity/etc. survive page switches.
+   */
+  restoredSourceDraft?: StagedClipDraft | null;
+  /** Persist source-only staging onto the open project. */
+  onSourceDraftChange?: (draft: StagedClipDraft) => void;
   /** Runtime bake status when editing a slideshow timeline clip. */
   bakeInfo?: BakeInfo | null;
   /** Runtime bake status for all slideshow clips (timeline monitor). */
@@ -224,6 +233,8 @@ export function PreviewPane({
   stagingSeed = null,
   stagingSeedKey = null,
   onClipDraftChange,
+  restoredSourceDraft = null,
+  onSourceDraftChange,
   bakeInfo = null,
   bakeInfoByClipId,
   onSlideshowRender = null,
@@ -314,7 +325,7 @@ export function PreviewPane({
     setSelectionLoading(sourceSelectionIds.length > 0);
     if (!editingClip && sourceSelectionIds.length >= 2) {
       // Optimistic slideshow staging so Mode/Random appear immediately,
-      // before async classify finishes.
+      // before async classify finishes. Prefer a restored project draft.
       setStagedDraft((prev) => {
         const ids = sourceSelectionIds;
         if (
@@ -324,6 +335,12 @@ export function PreviewPane({
           prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
         ) {
           return prev;
+        }
+        if (
+          restoredSourceDraft &&
+          pendingDraftMatchesSelection(restoredSourceDraft, ids)
+        ) {
+          return restoredSourceDraft;
         }
         return defaultSlideshowDraft({
           imageAssetIds: ids,
@@ -505,6 +522,12 @@ export function PreviewPane({
           if (prev.thumbUrl === thumb) return prev;
           return { ...prev, thumbUrl: thumb };
         }
+        if (pendingDraftMatchesSelection(restoredSourceDraft, ids)) {
+          const restored = restoredSourceDraft!;
+          return thumb && restored.thumbUrl !== thumb
+            ? { ...restored, thumbUrl: thumb }
+            : restored;
+        }
         return defaultSlideshowDraft({
           imageAssetIds: ids,
           label: `Slideshow (${ids.length})`,
@@ -524,6 +547,7 @@ export function PreviewPane({
     selectionLoading,
     slideshowThumbs,
     unsupportedSelection,
+    restoredSourceDraft,
   ]);
 
   const creationMatchesAsset = Boolean(
@@ -825,6 +849,17 @@ export function PreviewPane({
           if (prev.thumbUrl === nextThumb && prev.label === label) return prev;
           return { ...prev, label, thumbUrl: nextThumb };
         }
+        if (
+          assetId &&
+          pendingDraftMatchesSelection(restoredSourceDraft, [assetId]) &&
+          restoredSourceDraft!.kind !== "slideshow"
+        ) {
+          return {
+            ...restoredSourceDraft!,
+            label,
+            thumbUrl: liveThumb ?? restoredSourceDraft!.thumbUrl,
+          };
+        }
         return defaultStagedClipDraft({
           assetId,
           label,
@@ -843,6 +878,7 @@ export function PreviewPane({
     stagingSeedKey,
     reversedThumb,
     stagedDraft?.reverse,
+    restoredSourceDraft,
     isCompositeSelection,
     selectionOwnsPreview,
     selectionLoading,
@@ -919,7 +955,7 @@ export function PreviewPane({
     if (
       stagingSeed &&
       stagingSeed.kind !== "image" &&
-      stagingSeed.kind !== "slideshow"
+      (stagingSeed.kind !== "slideshow" || stagingSeed.bakePath)
     ) {
       setCurrentSec(Math.max(0, stagingSeed.inSec));
     }
@@ -928,7 +964,12 @@ export function PreviewPane({
   // Seek preview to the clip's in-point when loading from the timeline.
   useEffect(() => {
     if (!stagingSeedKey || !stagingSeed) return;
-    if (stagingSeed.kind === "image" || stagingSeed.kind === "slideshow") return;
+    if (
+      stagingSeed.kind === "image" ||
+      (stagingSeed.kind === "slideshow" && !stagingSeed.bakePath)
+    ) {
+      return;
+    }
     const el = mediaRef.current;
     if (!el) return;
     const t = Math.max(0, stagingSeed.inSec);
@@ -1036,6 +1077,8 @@ export function PreviewPane({
     setStagedDraft(next);
     if (stagingSeedKey) {
       onClipDraftChange?.(stagingSeedKey, next);
+    } else {
+      onSourceDraftChange?.(next);
     }
   };
 
@@ -1232,10 +1275,12 @@ export function PreviewPane({
   const transportSec = currentSec;
   const transportCanPlay = monitorMode === "source" && canPlay;
   const scrubMax = Math.max(durationSec, 0.1);
-  const scrubProgress =
-    durationSec > 0
-      ? Math.min(100, Math.max(0, (transportSec / durationSec) * 100))
-      : 0;
+  const showTrimHandles =
+    Boolean(stagedDraft) &&
+    (stagedDraft?.kind === "video" ||
+      stagedDraft?.kind === "audio" ||
+      (stagedDraft?.kind === "slideshow" && Boolean(stagedDraft.bakePath))) &&
+    durationSec > 0;
 
   return (
     <section
@@ -1397,23 +1442,28 @@ export function PreviewPane({
         </div>
         {monitorMode !== "timeline" ? (
         <div className="editor-preview-deck" aria-label="Preview controls">
-          <input
-            type="range"
-            className="editor-transport-scrub"
-            min={0}
-            max={scrubMax}
-            step={0.01}
-            value={Math.min(transportSec, scrubMax)}
+          <PreviewScrubber
+            currentSec={Math.min(transportSec, scrubMax)}
+            durationSec={scrubMax}
+            onSeek={seekTo}
             disabled={!transportCanPlay}
-            aria-label="Seek"
-            style={
-              {
-                ["--scrub-progress" as string]: `${scrubProgress}%`,
-              } as CSSProperties
+            trim={
+              showTrimHandles && stagedDraft
+                ? {
+                    inSec: stagedDraft.inSec,
+                    outSec: stagedDraft.outSec,
+                    onChange: ({ inSec, outSec }) => {
+                      onStagingDraftChange(
+                        clampInOutDraft(
+                          stagedDraft,
+                          { inSec, outSec },
+                          scrubMax,
+                        ),
+                      );
+                    },
+                  }
+                : null
             }
-            onChange={(event) => {
-              seekTo(Number(event.target.value));
-            }}
           />
 
           <div className="editor-preview-deck-body">
@@ -1453,6 +1503,11 @@ export function PreviewPane({
                 <span className="editor-transport-tc">
                   {formatClock(transportSec)}
                 </span>
+                {durationSec > 0 ? (
+                  <span className="editor-transport-tc is-duration" title="Duration">
+                    {formatClock(durationSec)}
+                  </span>
+                ) : null}
               </div>
               <div className="editor-transport-utils">
                 <label

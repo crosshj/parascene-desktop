@@ -1,8 +1,10 @@
-import type {
-  Project,
-  ProjectAsset,
-  SlideshowRecipe,
-  TimelineClip,
+import {
+  clampSensitivity,
+  normalizeSlideshowMode,
+  type Project,
+  type ProjectAsset,
+  type SlideshowRecipe,
+  type TimelineClip,
 } from "./types";
 import {
   DEFAULT_PROJECT_ASPECT_RATIO,
@@ -24,6 +26,11 @@ export type StoredProject = {
   selectedTimelineClipId?: string | null;
   /** Selected asset in the editor assets pane; omitted → null. */
   selectedAssetId?: string | null;
+  /**
+   * Source-preview staging draft persisted across page switches; omitted → null.
+   * Normalized by editor staging helpers on read.
+   */
+  pendingStagedDraft?: unknown | null;
   /** Timeline zoom (0.5–3); omitted → 1. */
   timelineZoom?: number;
   /** Preview follows timeline; omitted → false. */
@@ -150,7 +157,7 @@ function normalizeStoredSlideshow(value: unknown): SlideshowRecipe | undefined {
   if (imageAssetIds.length < 2) return undefined;
   // Legacy projects stored mode:"random" (even timing + shuffle).
   const legacyRandom = s.mode === "random";
-  const mode = s.mode === "beat" ? ("beat" as const) : ("even" as const);
+  const mode = normalizeSlideshowMode(s.mode);
   const random = s.random === true || legacyRandom;
   const recipe: SlideshowRecipe = { imageAssetIds, mode };
   if (random) recipe.random = true;
@@ -169,6 +176,8 @@ function normalizeStoredSlideshow(value: unknown): SlideshowRecipe | undefined {
   if (Number.isFinite(audioOutSec)) recipe.audioOutSec = audioOutSec;
   if (Number.isFinite(audioStartSec)) recipe.audioStartSec = audioStartSec;
   if (Number.isFinite(audioEndSec)) recipe.audioEndSec = audioEndSec;
+  const sensitivity = clampSensitivity(s.sensitivity);
+  if (sensitivity !== undefined) recipe.sensitivity = sensitivity;
   return recipe;
 }
 
@@ -245,6 +254,10 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     timeline,
     selectedTimelineClipId: selectedClipId,
     selectedAssetId,
+    // Keep raw JSON; editor helpers validate shape on use.
+    pendingStagedDraft: selectedClipId
+      ? null
+      : (project.pendingStagedDraft ?? null),
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
@@ -277,6 +290,7 @@ export function createStoredProject(
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,
+    pendingStagedDraft: null,
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
@@ -386,9 +400,15 @@ export function setStoredProjectAspectRatio(
   if (next === (project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO)) {
     return project;
   }
+  const timeline = normalizeStoredTimeline(project.timeline).map((clip) =>
+    clip.kind === "slideshow"
+      ? { ...clip, bakeKey: null, bakePath: null }
+      : clip,
+  );
   return {
     ...project,
     aspectRatio: next,
+    timeline,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -397,7 +417,21 @@ export function setStoredProjectTimeline(
   project: StoredProject,
   timeline: TimelineClip[],
 ): StoredProject {
-  const nextTimeline = normalizeStoredTimeline(timeline);
+  const prevById = new Map(
+    normalizeStoredTimeline(project.timeline).map((c) => [c.id, c]),
+  );
+  const nextTimeline = normalizeStoredTimeline(timeline).map((clip) => {
+    if (clip.kind !== "slideshow") return clip;
+    const prev = prevById.get(clip.id);
+    if (!prev || prev.kind !== "slideshow") return clip;
+    // Timeline placement and in/out points select from an existing bake.
+    // Only edits that change the baked pixels make that source stale.
+    const pixelsChanged =
+      (prev.framing ?? "fit") !== (clip.framing ?? "fit") ||
+      JSON.stringify(prev.slideshow) !== JSON.stringify(clip.slideshow);
+    if (!pixelsChanged) return clip;
+    return { ...clip, bakeKey: null, bakePath: null };
+  });
   return {
     ...project,
     timeline: nextTimeline,
@@ -422,10 +456,13 @@ export function setStoredProjectSelectedTimelineClipId(
   const nextMonitorActive = next
     ? false
     : normalizeTimelineMonitorActive(project.timelineMonitorActive);
+  const nextPending = next ? null : (project.pendingStagedDraft ?? null);
   if (
     next === (project.selectedTimelineClipId ?? null) &&
     nextAssetId === (project.selectedAssetId ?? null) &&
-    nextMonitorActive === normalizeTimelineMonitorActive(project.timelineMonitorActive)
+    nextMonitorActive ===
+      normalizeTimelineMonitorActive(project.timelineMonitorActive) &&
+    nextPending === (project.pendingStagedDraft ?? null)
   ) {
     return project;
   }
@@ -434,6 +471,7 @@ export function setStoredProjectSelectedTimelineClipId(
     selectedTimelineClipId: next,
     selectedAssetId: nextAssetId,
     timelineMonitorActive: nextMonitorActive,
+    pendingStagedDraft: nextPending,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -452,10 +490,15 @@ export function setStoredProjectSelectedAssetId(
   const nextMonitorActive = next
     ? false
     : normalizeTimelineMonitorActive(project.timelineMonitorActive);
+  // Clearing asset selection drops the pending source draft; switching assets
+  // keeps it until the editor decides the draft no longer matches.
+  const nextPending = next ? (project.pendingStagedDraft ?? null) : null;
   if (
     next === (project.selectedAssetId ?? null) &&
     nextClipId === (project.selectedTimelineClipId ?? null) &&
-    nextMonitorActive === normalizeTimelineMonitorActive(project.timelineMonitorActive)
+    nextMonitorActive ===
+      normalizeTimelineMonitorActive(project.timelineMonitorActive) &&
+    nextPending === (project.pendingStagedDraft ?? null)
   ) {
     return project;
   }
@@ -464,6 +507,29 @@ export function setStoredProjectSelectedAssetId(
     selectedAssetId: next,
     selectedTimelineClipId: nextClipId,
     timelineMonitorActive: nextMonitorActive,
+    pendingStagedDraft: nextPending,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectPendingStagedDraft(
+  project: StoredProject,
+  draft: unknown | null,
+): StoredProject {
+  const next = draft ?? null;
+  if (next === (project.pendingStagedDraft ?? null)) return project;
+  // Avoid writing when a timeline clip owns the selection.
+  if (project.selectedTimelineClipId) {
+    if ((project.pendingStagedDraft ?? null) === null) return project;
+    return {
+      ...project,
+      pendingStagedDraft: null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return {
+    ...project,
+    pendingStagedDraft: next,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -495,6 +561,7 @@ export function setStoredProjectTimelineMonitorActive(
     // Timeline owns the monitor — clear clip / asset selection.
     selectedTimelineClipId: next ? null : project.selectedTimelineClipId ?? null,
     selectedAssetId: next ? null : project.selectedAssetId ?? null,
+    pendingStagedDraft: next ? null : project.pendingStagedDraft ?? null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -550,6 +617,9 @@ export function storedProjectToUi(project: StoredProject): Project {
     timeline,
     selectedTimelineClipId,
     selectedAssetId,
+    pendingStagedDraft: selectedTimelineClipId
+      ? null
+      : (project.pendingStagedDraft ?? null),
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
@@ -569,6 +639,7 @@ export function emptyUiProject(): Project {
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,
+    pendingStagedDraft: null,
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,

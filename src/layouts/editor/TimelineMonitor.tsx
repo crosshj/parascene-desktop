@@ -555,8 +555,8 @@ function SlideshowDecoder({
     return null;
   }
 
-  // Slideshow bakes are silent MP4s starting at t=0 for the clip span.
-  // Staging uses inSec=0 / outSec=duration, so sourceSec == localSec.
+  // Slideshow bakes are silent source MP4s. Copies and trims retain the bake,
+  // so sourceSec includes the clip's in-point just like ordinary video.
   // Clock-sync (not free-run): silent stills must follow the playhead so a
   // timeline loop can leave EOF and advance through images again.
   return (

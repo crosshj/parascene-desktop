@@ -30,6 +30,8 @@ pub struct RenderSlideshowRecipe {
     pub audio_start_sec: Option<f64>,
     #[serde(default)]
     pub audio_end_sec: Option<f64>,
+    #[serde(default)]
+    pub sensitivity: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -560,42 +562,43 @@ fn build_video_segments(
                 .slideshow
                 .as_ref()
                 .ok_or_else(|| "Slideshow clip is missing its recipe".to_string())?;
-            let ensure_input = SlideshowEnsureInput {
-                image_asset_ids: recipe.image_asset_ids.clone(),
-                mode: recipe.mode.clone(),
-                random: recipe.random,
-                seed: recipe.seed,
-                duration_sec: timeline_dur,
-                framing: clip.framing.clone(),
-                aspect_ratio: aspect_ratio.into(),
-                clip_start_sec: clip.start_sec,
-                audio_asset_id: recipe.audio_asset_id.clone(),
-                audio_in_sec: recipe.audio_in_sec,
-                audio_out_sec: recipe.audio_out_sec,
-                audio_start_sec: recipe.audio_start_sec,
-                audio_end_sec: recipe.audio_end_sec,
-            };
-            // Prefer a persisted bake when its key still matches this recipe.
-            let expected_key = super::slideshow::bake_key_for(&ensure_input);
-            let path = if clip.bake_key.as_deref() == Some(expected_key.as_str()) {
-                if let Some(stored) = clip.bake_path.as_deref().map(str::trim).filter(|s| !s.is_empty())
-                {
-                    match PathBuf::from(stored).canonicalize() {
-                        Ok(existing) if existing.is_file() => existing,
-                        _ => PathBuf::from(ensure_slideshow(paths, &ensure_input)?.path),
-                    }
-                } else {
-                    PathBuf::from(ensure_slideshow(paths, &ensure_input)?.path)
-                }
+            // Once rendered, a slideshow bake is immutable source media.
+            // Timeline placement and in/out edits must reuse it just like a
+            // normal video clip; recipe/framing edits clear bake_path upstream.
+            let stored_path = clip
+                .bake_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .and_then(|stored| PathBuf::from(stored).canonicalize().ok())
+                .filter(|stored| stored.is_file());
+            let path = if let Some(stored) = stored_path {
+                stored
             } else {
+                let ensure_input = SlideshowEnsureInput {
+                    image_asset_ids: recipe.image_asset_ids.clone(),
+                    mode: recipe.mode.clone(),
+                    random: recipe.random,
+                    seed: recipe.seed,
+                    duration_sec: out_sec.max(timeline_dur),
+                    framing: clip.framing.clone(),
+                    aspect_ratio: aspect_ratio.into(),
+                    clip_start_sec: clip.start_sec - in_sec,
+                    audio_asset_id: recipe.audio_asset_id.clone(),
+                    audio_in_sec: recipe.audio_in_sec,
+                    audio_out_sec: recipe.audio_out_sec,
+                    audio_start_sec: recipe.audio_start_sec,
+                    audio_end_sec: recipe.audio_end_sec,
+                    sensitivity: recipe.sensitivity,
+                };
                 PathBuf::from(ensure_slideshow(paths, &ensure_input)?.path)
             };
             segments.push(VideoSegment {
                 duration_sec,
                 source: Some(VideoSource {
                     path,
-                    in_sec: local_offset.max(0.0),
-                    out_sec: (local_offset + duration_sec).max(local_offset + 0.001),
+                    in_sec: source_in,
+                    out_sec: source_out.max(source_in + 0.001),
                     is_image: false,
                     // Bake already framed; stretch into the segment frame.
                     framing: Framing::Stretch,

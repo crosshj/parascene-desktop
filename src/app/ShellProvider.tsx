@@ -22,6 +22,7 @@ import {
   setStoredProjectAspectRatio,
   setStoredProjectSelectedTimelineClipId,
   setStoredProjectSelectedAssetId,
+  setStoredProjectPendingStagedDraft,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
   setStoredProjectTimelineMonitorActive,
@@ -62,6 +63,7 @@ type ShellState = {
   setOpenProjectSelectedTimelineClipId: (clipId: string | null) => void;
   /** Remember which asset is selected in the editor. */
   setOpenProjectSelectedAssetId: (assetId: string | null) => void;
+  setOpenProjectPendingStagedDraft: (draft: unknown | null) => void;
   /** Remember timeline zoom for the open project. */
   setOpenProjectTimelineZoom: (zoom: number) => void;
   /** Remember whether the preview follows the timeline. */
@@ -321,6 +323,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectPendingStagedDraft = useCallback(
+    (draft: unknown | null) => {
+      patchOpenProject((p) => setStoredProjectPendingStagedDraft(p, draft));
+    },
+    [patchOpenProject],
+  );
+
   const setOpenProjectTimelineZoom = useCallback(
     (zoom: number) => {
       patchOpenProject((p) => setStoredProjectTimelineZoom(p, zoom));
@@ -359,6 +368,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimeline,
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
+      setOpenProjectPendingStagedDraft,
       setOpenProjectTimelineZoom,
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
@@ -396,6 +406,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimeline,
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
+      setOpenProjectPendingStagedDraft,
       setOpenProjectTimelineZoom,
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,

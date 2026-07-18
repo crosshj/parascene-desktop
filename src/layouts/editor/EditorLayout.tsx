@@ -37,6 +37,10 @@ import {
 import { PreviewPane } from "./PreviewPane";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import {
+  selectionFromProject,
+  pendingDraftMatchesSelection,
+} from "./editorSelection";
+import {
   applyDraftToTimelineClip,
   newSlideshowSeed,
   slideshowRecipesEqual,
@@ -50,7 +54,10 @@ import {
   TimelineMergeModal,
   type TimelineMergeModalState,
 } from "./TimelineMergeModal";
-import type { TimelineClip } from "../../project/types";
+import {
+  isBeatSlideshowMode,
+  type TimelineClip,
+} from "../../project/types";
 import { useConfirm } from "../../ui/ConfirmDialog";
 
 const NARROW_MQ = "(max-width: 1100px)";
@@ -107,6 +114,7 @@ export function EditorLayout() {
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
+    setOpenProjectPendingStagedDraft,
     setOpenProjectTimelineZoom,
     setOpenProjectTimelineMonitorActive,
     setOpenProjectTimelinePlayheadSec,
@@ -120,17 +128,31 @@ export function EditorLayout() {
   const [prefs, setPrefs] = useState<EditorLayoutPrefs>(() =>
     loadEditorLayoutPrefs(),
   );
-  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  // Hydrate selection/staging from the project on mount so page switches
+  // (which remount Editor) restore place instead of an empty preview.
+  const [initialSelection] = useState(() => selectionFromProject(project));
+  const [selectedAssetId, setSelectedAssetId] = useState(
+    initialSelection.selectedAssetId,
+  );
+  const [selectedAssetIds, setSelectedAssetIds] = useState(
+    initialSelection.selectedAssetIds,
+  );
   /** Primary selected clip (drives preview staging). */
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState(
+    initialSelection.selectedClipId,
+  );
   /** All selected timeline clips (includes primary). */
-  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  const [selectedClipIds, setSelectedClipIds] = useState(
+    initialSelection.selectedClipIds,
+  );
   /** Staging fields taken from the clicked timeline clip. */
-  const [clipStagingSeed, setClipStagingSeed] = useState<{
-    clipId: string;
-    draft: StagedClipDraft;
-  } | null>(null);
+  const [clipStagingSeed, setClipStagingSeed] = useState(
+    initialSelection.clipStagingSeed,
+  );
+  /** Source-only staging restored across remounts (pre-drop settings). */
+  const [pendingStagedDraft, setPendingStagedDraft] = useState(
+    initialSelection.pendingStagedDraft,
+  );
   const [previewVolume, setPreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
   const [projectFolders, setProjectFolders] = useState<LibraryFolder[]>([]);
@@ -159,9 +181,15 @@ export function EditorLayout() {
     setOpenProjectSelectedTimelineClipId(null);
   };
 
+  const clearPendingStagedDraft = () => {
+    setPendingStagedDraft(null);
+    setOpenProjectPendingStagedDraft(null);
+  };
+
   const applyPrimaryClip = (clip: TimelineClip) => {
     setSelectedAssetId(null);
     setSelectedAssetIds([]);
+    clearPendingStagedDraft();
     setSelectedClipId(clip.id);
     const draft = timelineClipToStagedDraft(clip);
     setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
@@ -412,42 +440,13 @@ export function EditorLayout() {
   const [hydratedProjectId, setHydratedProjectId] = useState(project.id);
   if (project.id !== hydratedProjectId) {
     setHydratedProjectId(project.id);
-    const savedClipId = project.selectedTimelineClipId;
-    if (savedClipId) {
-      const clip = project.timeline.find((c) => c.id === savedClipId);
-      if (clip) {
-        setSelectedAssetId(null);
-        setSelectedAssetIds([]);
-        setSelectedClipId(clip.id);
-        setSelectedClipIds([clip.id]);
-        const draft = timelineClipToStagedDraft(clip);
-        setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
-      } else {
-        hydrateSelectionFromAssetOrClear();
-      }
-    } else {
-      hydrateSelectionFromAssetOrClear();
-    }
-
-    function hydrateSelectionFromAssetOrClear() {
-      const savedAssetId = project.selectedAssetId;
-      if (
-        savedAssetId &&
-        project.assets.some((asset) => asset.id === savedAssetId)
-      ) {
-        setSelectedClipId(null);
-        setSelectedClipIds([]);
-        setClipStagingSeed(null);
-        setSelectedAssetId(savedAssetId);
-        setSelectedAssetIds([savedAssetId]);
-        return;
-      }
-      setSelectedAssetId(null);
-      setSelectedAssetIds([]);
-      setSelectedClipId(null);
-      setSelectedClipIds([]);
-      setClipStagingSeed(null);
-    }
+    const next = selectionFromProject(project);
+    setSelectedAssetId(next.selectedAssetId);
+    setSelectedAssetIds(next.selectedAssetIds);
+    setSelectedClipId(next.selectedClipId);
+    setSelectedClipIds(next.selectedClipIds);
+    setClipStagingSeed(next.clipStagingSeed);
+    setPendingStagedDraft(next.pendingStagedDraft);
   }
 
   // Drop local selection if clips were removed from the timeline.
@@ -651,6 +650,14 @@ export function EditorLayout() {
     setSelectedAssetIds(ids);
     setSelectedAssetId(primaryId);
     setOpenProjectSelectedAssetId(primaryId);
+    if (!pendingDraftMatchesSelection(pendingStagedDraft, ids)) {
+      clearPendingStagedDraft();
+    }
+  };
+
+  const onSourceDraftChange = (draft: StagedClipDraft) => {
+    setPendingStagedDraft(draft);
+    setOpenProjectPendingStagedDraft(draft);
   };
 
   const selectClip = (
@@ -694,6 +701,7 @@ export function EditorLayout() {
     setClipStagingSeed(null);
     setSelectedAssetId(null);
     setSelectedAssetIds([]);
+    clearPendingStagedDraft();
     setOpenProjectTimelineMonitorActive(true);
   };
 
@@ -709,9 +717,15 @@ export function EditorLayout() {
   const ensureSlideshowBake = (clip: TimelineClip) => {
     if (clip.kind !== "slideshow" || !clip.slideshow) return;
     if (bakeInflightRef.current.has(clip.id)) return;
-    const durationSec = Math.max(0.1, clip.endSec - clip.startSec);
+    const timelineDurationSec = Math.max(0.1, clip.endSec - clip.startSec);
+    const sourceInSec = Number.isFinite(clip.inSec)
+      ? Math.max(0, Number(clip.inSec))
+      : 0;
+    const durationSec = Number.isFinite(clip.outSec)
+      ? Math.max(timelineDurationSec, Number(clip.outSec))
+      : sourceInSec + timelineDurationSec;
     if (
-      clip.slideshow.mode === "beat" &&
+      isBeatSlideshowMode(clip.slideshow.mode) &&
       !clip.slideshow.audioAssetId?.trim()
     ) {
       setBakeInfoByClipId((prev) => {
@@ -736,7 +750,7 @@ export function EditorLayout() {
       durationSec,
       framing: clip.framing,
       aspectRatio: aspectRatioRef.current,
-      clipStartSec: clip.startSec,
+      clipStartSec: clip.startSec - sourceInSec,
     });
     void ensureSlideshowMedia(input)
       .then((result) => {
@@ -787,7 +801,11 @@ export function EditorLayout() {
   useEffect(() => {
     let changed = false;
     const rebound = project.timeline.map((clip) => {
-      if (clip.kind !== "slideshow" || clip.slideshow?.mode !== "beat") {
+      if (
+        clip.kind !== "slideshow" ||
+        clip.bakePath?.trim() ||
+        !isBeatSlideshowMode(clip.slideshow?.mode)
+      ) {
         return clip;
       }
       const audio = findOverlappingAudioClip(project.timeline, {
@@ -830,6 +848,13 @@ export function EditorLayout() {
         return next;
       });
       setOpenProjectTimeline(rebound);
+      setClipStagingSeed((prev) => {
+        if (!prev) return prev;
+        const updated = rebound.find((c) => c.id === prev.clipId);
+        if (!updated) return prev;
+        const draft = timelineClipToStagedDraft(updated);
+        return draft ? { clipId: updated.id, draft } : prev;
+      });
       return;
     }
 
@@ -843,15 +868,42 @@ export function EditorLayout() {
         return next;
       });
     }
-    // Intentionally keyed on timeline identity + bake paths.
+    // Intentionally keyed on timeline identity + bake-sensitive fields.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     project.id,
     project.aspectRatio,
     project.timeline
+      .map((c) => {
+        const s = c.slideshow;
+        return [
+          c.id,
+          c.kind,
+          c.bakePath ?? "",
+          c.startSec,
+          c.endSec,
+          c.inSec ?? "",
+          c.outSec ?? "",
+          c.framing ?? "",
+          s?.mode ?? "",
+          s?.random ? 1 : 0,
+          s?.seed ?? "",
+          s?.sensitivity ?? "",
+          (s?.imageAssetIds ?? []).join(","),
+          s?.audioAssetId ?? "",
+          s?.audioInSec ?? "",
+          s?.audioOutSec ?? "",
+          s?.audioStartSec ?? "",
+          s?.audioEndSec ?? "",
+        ].join(":");
+      })
+      .join("|"),
+    // Audio clip identity/trims affect beat rebind even when slideshow rows are unchanged.
+    project.timeline
+      .filter((c) => c.lane === "audio" || c.kind === "audio")
       .map(
         (c) =>
-          `${c.id}:${c.kind}:${c.bakePath ?? ""}:${c.slideshow?.mode ?? ""}:${c.slideshow?.random ? 1 : 0}:${(c.slideshow?.imageAssetIds ?? []).join(",")}:${c.startSec}:${c.endSec}:${c.framing ?? ""}:${c.slideshow?.audioAssetId ?? ""}:${c.slideshow?.audioStartSec ?? ""}`,
+          `${c.id}:${c.assetId ?? ""}:${c.startSec}:${c.endSec}:${c.inSec ?? ""}:${c.outSec ?? ""}`,
       )
       .join("|"),
   ]);
@@ -1221,6 +1273,16 @@ export function EditorLayout() {
           monitorMode === "source" ? (clipStagingSeed?.clipId ?? null) : null
         }
         onClipDraftChange={onClipDraftChange}
+        restoredSourceDraft={
+          monitorMode === "source" && !clipStagingSeed
+            ? pendingStagedDraft
+            : null
+        }
+        onSourceDraftChange={
+          monitorMode === "source" && !clipStagingSeed
+            ? onSourceDraftChange
+            : undefined
+        }
         bakeInfo={clipStagingSeed ? (selectedBakeInfo ?? null) : null}
         bakeInfoByClipId={bakeInfoByClipId}
         onSlideshowRender={
@@ -1280,6 +1342,7 @@ export function EditorLayout() {
       <TimelinePane
         clips={project.timeline}
         projectId={project.id}
+        aspectRatio={project.aspectRatio}
         onClipsChange={setOpenProjectTimeline}
         bakeInfoByClipId={bakeInfoByClipId}
         selectedClipIds={selectedClipIds}

@@ -1,10 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
-import type { TimelineClip } from "../project/types";
+import {
+  normalizeSlideshowMode,
+  type SlideshowMode,
+  type TimelineClip,
+} from "../project/types";
 
 export type RenderSlideshowRecipe = {
   imageAssetIds: string[];
-  mode: "even" | "beat";
+  mode: SlideshowMode;
   random?: boolean;
   seed?: number;
   audioAssetId?: string;
@@ -12,6 +16,7 @@ export type RenderSlideshowRecipe = {
   audioOutSec?: number;
   audioStartSec?: number;
   audioEndSec?: number;
+  sensitivity?: number;
 };
 
 export type RenderTimelineClipInput = {
@@ -75,7 +80,7 @@ export function timelineClipsToRenderInput(
     slideshow: clip.slideshow
       ? {
           imageAssetIds: clip.slideshow.imageAssetIds,
-          mode: clip.slideshow.mode === "beat" ? "beat" : "even",
+          mode: normalizeSlideshowMode(clip.slideshow.mode),
           random: clip.slideshow.random === true,
           seed: clip.slideshow.random ? clip.slideshow.seed : undefined,
           audioAssetId: clip.slideshow.audioAssetId,
@@ -83,6 +88,7 @@ export function timelineClipsToRenderInput(
           audioOutSec: clip.slideshow.audioOutSec,
           audioStartSec: clip.slideshow.audioStartSec,
           audioEndSec: clip.slideshow.audioEndSec,
+          sensitivity: clip.slideshow.sensitivity,
         }
       : undefined,
     bakeKey: clip.bakeKey,

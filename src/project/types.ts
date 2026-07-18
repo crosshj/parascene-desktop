@@ -17,7 +17,40 @@ export type ProjectAsset = {
 };
 
 /** How a composite image slideshow assigns image spans. */
-export type SlideshowMode = "even" | "beat";
+export type SlideshowMode =
+  | "even"
+  | "beat_classic"
+  | "beat_grid"
+  | "beat_drums"
+  | "beat_energy";
+
+export function isBeatSlideshowMode(mode: unknown): mode is Exclude<
+  SlideshowMode,
+  "even"
+> {
+  return (
+    mode === "beat_classic" ||
+    mode === "beat_grid" ||
+    mode === "beat_drums" ||
+    mode === "beat_energy"
+  );
+}
+
+/** Normalize persisted modes; legacy `beat` means the latest full algorithm. */
+export function normalizeSlideshowMode(mode: unknown): SlideshowMode {
+  if (isBeatSlideshowMode(mode)) return mode;
+  return mode === "beat" ? "beat_energy" : "even";
+}
+
+/** Neutral sensitivity reproducing each mode's default feel. */
+export const DEFAULT_SLIDESHOW_SENSITIVITY = 0.5;
+
+/** Clamp a persisted/user sensitivity into the valid 0..1 range. */
+export function clampSensitivity(value: unknown): number | undefined {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(1, Math.max(0, n));
+}
 
 /** Recipe for a composite image slideshow clip. */
 export type SlideshowRecipe = {
@@ -35,6 +68,8 @@ export type SlideshowRecipe = {
   /** Timeline placement of the overlapping audio clip. */
   audioStartSec?: number;
   audioEndSec?: number;
+  /** Per-mode tuning dial (0..1); undefined uses the neutral default. */
+  sensitivity?: number;
 };
 
 export type TimelineClip = {
@@ -85,6 +120,12 @@ export type Project = {
   selectedTimelineClipId: string | null;
   /** Selected library asset id in the editor; null when none. */
   selectedAssetId: string | null;
+  /**
+   * Source-preview staging draft (mode, sensitivity, duration, etc.) saved
+   * before the clip is dropped on the timeline. Cleared when a timeline clip
+   * is selected. Opaque JSON — normalized by the editor staging helpers.
+   */
+  pendingStagedDraft?: unknown | null;
   /** Timeline zoom multiplier (0.5–3). */
   timelineZoom: number;
   /** Preview follows the timeline (program monitor). */

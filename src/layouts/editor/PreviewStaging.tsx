@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import {
   clearStagedClipDrag,
   getActiveStagedClipDrag,
@@ -14,6 +14,41 @@ import {
   type StagedClipTransform,
 } from "./stagedClip";
 import type { BakeInfo } from "../../library/slideshowMedia";
+import {
+  DEFAULT_SLIDESHOW_SENSITIVITY,
+  isBeatSlideshowMode,
+} from "../../project/types";
+
+/** Per-mode label + endpoint hints for the sensitivity dial. */
+const SENSITIVITY_LABELS: Record<
+  string,
+  { label: string; low: string; high: string; title: string }
+> = {
+  beat_classic: {
+    label: "Sensitivity",
+    low: "Sparse",
+    high: "Busy",
+    title: "Onset threshold — how easily subtle hits become cuts",
+  },
+  beat_grid: {
+    label: "Looseness",
+    low: "Strict",
+    high: "Organic",
+    title: "Snap looseness — how far beats slide to hug real onsets",
+  },
+  beat_drums: {
+    label: "Fills",
+    low: "Rare",
+    high: "Eager",
+    title: "Fill threshold — how readily fast passages subdivide",
+  },
+  beat_energy: {
+    label: "Match",
+    low: "Subtle",
+    high: "Dramatic",
+    title: "Loudness match strength between image energy and the music",
+  },
+};
 
 type StagingFieldsProps = {
   draft: StagedClipDraft;
@@ -31,22 +66,6 @@ type SlideshowRenderHandleProps = {
   onRender: () => void;
   rendering?: boolean;
 };
-
-function clampInOut(
-  draft: StagedClipDraft,
-  patch: Partial<Pick<StagedClipDraft, "inSec" | "outSec">>,
-  maxSec: number,
-): StagedClipDraft {
-  let inSec = patch.inSec ?? draft.inSec;
-  let outSec = patch.outSec ?? draft.outSec;
-  inSec = Math.max(0, inSec);
-  if (maxSec > 0) {
-    inSec = Math.min(inSec, maxSec);
-    outSec = Math.min(outSec, maxSec);
-  }
-  outSec = Math.max(outSec, inSec + 0.1);
-  return { ...draft, inSec, outSec };
-}
 
 function formatDurationInput(sec: number): string {
   if (!Number.isFinite(sec)) return "0";
@@ -66,8 +85,7 @@ export function StagingFields({
       : sourceDurationSec > 0
         ? sourceDurationSec
         : draft.outSec;
-  const slideshowMode: SlideshowMode =
-    draft.slideshow?.mode === "beat" ? "beat" : "even";
+  const slideshowMode: SlideshowMode = draft.slideshow?.mode ?? "even";
   const slideshowRandom = draft.slideshow?.random === true;
 
   return (
@@ -120,8 +138,11 @@ export function StagingFields({
                 });
               }}
             >
-              <option value="even">Slideshow</option>
-              <option value="beat">Beat sync</option>
+              <option value="even">🎞️ Storyboard Drift</option>
+              <option value="beat_classic">✨ Spark Cut — Original</option>
+              <option value="beat_grid">💜 Pulse Grid — Tempo locked</option>
+              <option value="beat_drums">🔥 Drumfire — Fast fills</option>
+              <option value="beat_energy">🌈 Color Current — Energy matched</option>
             </select>
           </label>
           <label className="editor-staging-field editor-staging-field-check">
@@ -145,6 +166,51 @@ export function StagingFields({
               }}
             />
           </label>
+          {isBeatSlideshowMode(slideshowMode) ? (
+            <label
+              className="editor-staging-field editor-staging-field-slider"
+              title={SENSITIVITY_LABELS[slideshowMode]?.title}
+            >
+              <span>{SENSITIVITY_LABELS[slideshowMode]?.label ?? "Sensitivity"}</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={
+                  draft.slideshow?.sensitivity ?? DEFAULT_SLIDESHOW_SENSITIVITY
+                }
+                style={
+                  {
+                    ["--scrub-progress" as string]: `${
+                      (draft.slideshow?.sensitivity ??
+                        DEFAULT_SLIDESHOW_SENSITIVITY) * 100
+                    }%`,
+                  } as CSSProperties
+                }
+                onChange={(e) => {
+                  if (!draft.slideshow) return;
+                  const sensitivity = Number(e.target.value);
+                  onDraftChange({
+                    ...draft,
+                    slideshow: {
+                      ...draft.slideshow,
+                      sensitivity: Number.isFinite(sensitivity)
+                        ? sensitivity
+                        : undefined,
+                    },
+                    bakeKey: null,
+                    bakePath: null,
+                  });
+                }}
+              />
+              <span className="muted editor-staging-slider-hint">
+                {SENSITIVITY_LABELS[slideshowMode]?.low}
+                {" · "}
+                {SENSITIVITY_LABELS[slideshowMode]?.high}
+              </span>
+            </label>
+          ) : null}
           {bakeInfo?.status === "failed" ? (
             <p className="editor-staging-error" role="alert">
               {bakeInfo.error?.trim() || "Slideshow render failed"}
@@ -219,38 +285,6 @@ export function StagingFields({
 
       {draft.kind === "video" || draft.kind === "audio" ? (
         <>
-          <label className="editor-staging-field">
-            <span>In</span>
-            <input
-              type="number"
-              min={0}
-              max={maxSec}
-              step={0.1}
-              value={formatDurationInput(draft.inSec)}
-              onChange={(e) => {
-                const next = Number(e.target.value);
-                if (!Number.isFinite(next)) return;
-                onDraftChange(clampInOut(draft, { inSec: next }, maxSec));
-              }}
-            />
-            <span className="muted">sec</span>
-          </label>
-          <label className="editor-staging-field">
-            <span>Out</span>
-            <input
-              type="number"
-              min={draft.inSec + 0.1}
-              max={maxSec}
-              step={0.1}
-              value={formatDurationInput(draft.outSec)}
-              onChange={(e) => {
-                const next = Number(e.target.value);
-                if (!Number.isFinite(next)) return;
-                onDraftChange(clampInOut(draft, { outSec: next }, maxSec));
-              }}
-            />
-            <span className="muted">sec</span>
-          </label>
           {draft.kind === "video" ? (
             <label className="editor-staging-field editor-staging-field-check">
               <span>Audio</span>

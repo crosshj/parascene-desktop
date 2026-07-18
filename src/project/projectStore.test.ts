@@ -12,6 +12,7 @@ import {
   setStoredProjectAspectRatio,
   setStoredProjectSelectedTimelineClipId,
   setStoredProjectSelectedAssetId,
+  setStoredProjectPendingStagedDraft,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
   setStoredProjectTimelineMonitorActive,
@@ -164,7 +165,8 @@ describe("projectStore", () => {
         framing: "fit",
         slideshow: {
           imageAssetIds: ["i1", "i2"],
-          mode: "beat",
+          // Simulate a project saved before named beat algorithms existed.
+          mode: "beat" as never,
           audioAssetId: "a1",
           audioInSec: 0,
           audioOutSec: 30,
@@ -179,7 +181,7 @@ describe("projectStore", () => {
     const clip = loadStoredProjects()[0].timeline?.[0];
     expect(clip?.kind).toBe("slideshow");
     expect(clip?.slideshow?.imageAssetIds).toEqual(["i1", "i2"]);
-    expect(clip?.slideshow?.mode).toBe("beat");
+    expect(clip?.slideshow?.mode).toBe("beat_energy");
     expect(clip?.slideshow?.audioAssetId).toBe("a1");
     expect(clip?.bakeKey).toBe("v1-abc");
     expect(clip?.bakePath).toContain("slideshows");
@@ -345,5 +347,105 @@ describe("projectStore", () => {
     expect(ui.aspectRatio).toBe("16:9");
     expect(ui.assets).toEqual([{ id: "x", name: "x", kind: "image" }]);
     expect(ui.scenes).toHaveLength(1);
+  });
+
+  it("persists pending source staged draft and clears it on clip select", () => {
+    let a = createStoredProject("Demo", ["a1", "a2"]);
+    a = setStoredProjectSelectedAssetId(a, "a1");
+    const draft = {
+      assetId: "a1",
+      label: "Slideshow (2)",
+      kind: "slideshow",
+      inSec: 0,
+      outSec: 10,
+      includeAudio: false,
+      reverse: false,
+      transform: "hold",
+      framing: "fit",
+      slideshow: {
+        imageAssetIds: ["a1", "a2"],
+        mode: "beat_classic",
+        sensitivity: 0.7,
+      },
+    };
+    a = setStoredProjectPendingStagedDraft(a, draft);
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects()[0];
+    expect(loaded.pendingStagedDraft).toEqual(draft);
+    expect(storedProjectToUi(loaded).pendingStagedDraft).toEqual(draft);
+
+    a = setStoredProjectTimeline(loaded, [
+      {
+        id: "clip-1",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        assetId: "a1",
+        lane: "video",
+        kind: "image",
+      },
+    ]);
+    a = setStoredProjectSelectedTimelineClipId(a, "clip-1");
+    expect(a.pendingStagedDraft).toBeNull();
+  });
+
+  it("keeps slideshow bake when a clip is moved or trimmed", () => {
+    let a = createStoredProject("Demo", ["a1", "a2"]);
+    a = setStoredProjectTimeline(a, [
+      {
+        id: "clip-1",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        assetId: "a1",
+        lane: "video",
+        kind: "slideshow",
+        inSec: 0,
+        outSec: 10,
+        framing: "fit",
+        slideshow: {
+          imageAssetIds: ["a1", "a2"],
+          mode: "beat_grid",
+        },
+        bakeKey: "v3-abc",
+        bakePath: "/tmp/bake.mp4",
+      },
+    ]);
+    a = setStoredProjectTimeline(a, [
+      {
+        ...a.timeline![0],
+        startSec: 2,
+        endSec: 8,
+        inSec: 2,
+        outSec: 8,
+      },
+    ]);
+    expect(a.timeline?.[0].bakeKey).toBe("v3-abc");
+    expect(a.timeline?.[0].bakePath).toBe("/tmp/bake.mp4");
+  });
+
+  it("clears slideshow bake when its recipe changes", () => {
+    let project = createStoredProject("Demo", ["a1", "a2"]);
+    project = setStoredProjectTimeline(project, [
+      {
+        id: "clip-1",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        kind: "slideshow",
+        slideshow: { imageAssetIds: ["a1", "a2"], mode: "even" },
+        bakeKey: "v3-abc",
+        bakePath: "/tmp/bake.mp4",
+      },
+    ]);
+    project = setStoredProjectTimeline(project, [
+      {
+        ...project.timeline![0],
+        slideshow: { imageAssetIds: ["a1", "a2"], mode: "beat_grid" },
+      },
+    ]);
+
+    expect(project.timeline?.[0].bakeKey).toBeNull();
+    expect(project.timeline?.[0].bakePath).toBeNull();
   });
 });

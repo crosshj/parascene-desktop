@@ -1,4 +1,9 @@
-import type { SlideshowMode, SlideshowRecipe } from "../../project/types";
+import {
+  clampSensitivity,
+  normalizeSlideshowMode,
+  type SlideshowMode,
+  type SlideshowRecipe,
+} from "../../project/types";
 
 export const STAGED_CLIP_MIME = "application/x-parascene-staged-clip";
 
@@ -141,7 +146,7 @@ export function normalizeSlideshowRecipe(
   if (imageAssetIds.length < 2) return undefined;
   // Legacy projects stored mode:"random" (even timing + shuffle).
   const legacyRandom = s.mode === "random";
-  const mode: SlideshowMode = s.mode === "beat" ? "beat" : "even";
+  const mode = normalizeSlideshowMode(s.mode);
   const random = s.random === true || legacyRandom;
   const recipe: SlideshowRecipe = { imageAssetIds, mode };
   if (random) recipe.random = true;
@@ -160,6 +165,8 @@ export function normalizeSlideshowRecipe(
   if (Number.isFinite(audioOutSec)) recipe.audioOutSec = audioOutSec;
   if (Number.isFinite(audioStartSec)) recipe.audioStartSec = audioStartSec;
   if (Number.isFinite(audioEndSec)) recipe.audioEndSec = audioEndSec;
+  const sensitivity = clampSensitivity(s.sensitivity);
+  if (sensitivity !== undefined) recipe.sensitivity = sensitivity;
   return recipe;
 }
 
@@ -183,7 +190,8 @@ export function slideshowRecipesEqual(
     numEq(a.audioInSec, b.audioInSec) &&
     numEq(a.audioOutSec, b.audioOutSec) &&
     numEq(a.audioStartSec, b.audioStartSec) &&
-    numEq(a.audioEndSec, b.audioEndSec)
+    numEq(a.audioEndSec, b.audioEndSec) &&
+    numEq(a.sensitivity, b.sensitivity)
   );
 }
 
@@ -214,7 +222,7 @@ export function defaultSlideshowDraft(opts: {
     thumbUrl: opts.thumbUrl ?? null,
     slideshow: {
       imageAssetIds,
-      mode: opts.mode === "beat" ? "beat" : "even",
+      mode: normalizeSlideshowMode(opts.mode),
       ...(random ? { random: true, seed: newSlideshowSeed() } : {}),
     },
     bakeKey: null,
@@ -281,11 +289,11 @@ export function applyDraftToTimelineClip(
     Number.isFinite(duration) && duration > 0
       ? `${(Math.round(duration * 10) / 10).toFixed(1)}s`
       : clip.label;
+  // A rendered slideshow is source media: in/out edits only select a range
+  // from that bake. Re-render only when pixels in the bake would change.
   const recipeChanged =
     draft.kind === "slideshow" &&
     (!slideshowRecipesEqual(clip.slideshow, draft.slideshow) ||
-      Math.abs((clip.outSec ?? 0) - draft.outSec) > 0.001 ||
-      Math.abs((clip.inSec ?? 0) - draft.inSec) > 0.001 ||
       normalizeFraming(clip.framing) !== draft.framing);
   return {
     ...clip,

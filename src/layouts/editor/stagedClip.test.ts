@@ -282,6 +282,36 @@ describe("stagedClip", () => {
     expect(restored?.slideshow?.imageAssetIds).toEqual(["i1", "i2", "i3"]);
   });
 
+  it("keeps a rendered slideshow bake when trimming its source range", () => {
+    const draft = defaultSlideshowDraft({
+      imageAssetIds: ["i1", "i2"],
+      label: "Slideshow",
+      durationSec: 10,
+      mode: "even",
+    });
+    const clip = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "10.0s",
+        startSec: 4,
+        endSec: 14,
+        kind: "slideshow",
+        inSec: 0,
+        outSec: 10,
+        framing: "fit",
+        slideshow: draft.slideshow,
+        bakeKey: "bake-1",
+        bakePath: "/tmp/bake.mp4",
+      },
+      { ...draft, inSec: 2, outSec: 8 },
+    );
+
+    expect(clip.startSec).toBe(4);
+    expect(clip.endSec).toBe(10);
+    expect(clip.bakeKey).toBe("bake-1");
+    expect(clip.bakePath).toBe("/tmp/bake.mp4");
+  });
+
   it("round-trips random flag and deterministically shuffles by seed", () => {
     const draft = defaultSlideshowDraft({
       imageAssetIds: ["i1", "i2", "i3", "i4"],
@@ -314,5 +344,50 @@ describe("stagedClip", () => {
       random: true,
       seed: 42,
     });
+  });
+
+  it("preserves named beat algorithms and upgrades legacy beat mode", () => {
+    for (const mode of [
+      "beat_classic",
+      "beat_grid",
+      "beat_drums",
+      "beat_energy",
+    ] as const) {
+      expect(
+        normalizeSlideshowRecipe({
+          imageAssetIds: ["i1", "i2"],
+          mode,
+        })?.mode,
+      ).toBe(mode);
+    }
+    expect(
+      normalizeSlideshowRecipe({
+        imageAssetIds: ["i1", "i2"],
+        mode: "beat",
+      })?.mode,
+    ).toBe("beat_energy");
+  });
+
+  it("clamps and round-trips sensitivity", () => {
+    expect(
+      normalizeSlideshowRecipe({
+        imageAssetIds: ["i1", "i2"],
+        mode: "beat_classic",
+        sensitivity: 0.8,
+      })?.sensitivity,
+    ).toBe(0.8);
+    expect(
+      normalizeSlideshowRecipe({
+        imageAssetIds: ["i1", "i2"],
+        mode: "beat_classic",
+        sensitivity: 5,
+      })?.sensitivity,
+    ).toBe(1);
+    expect(
+      normalizeSlideshowRecipe({
+        imageAssetIds: ["i1", "i2"],
+        mode: "beat_classic",
+      })?.sensitivity,
+    ).toBeUndefined();
   });
 });
