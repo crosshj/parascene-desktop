@@ -1,6 +1,7 @@
 mod auth_store;
 mod http_client;
 mod library;
+mod media_stream;
 mod oauth_listener;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
@@ -9,13 +10,13 @@ use library::{
     library_add_to_folder, library_apply_manifest, library_cache_missing_media,
     library_cache_missing_thumbs, library_create_folder, library_delete_folder,
     library_delete_local, library_download_ids, library_download_pending, library_download_thumbs,
-    library_ensure_local, library_ensure_ready, library_ensure_reversed, library_fill_thumb,
-    library_filter_counts, library_get_creation, library_get_creations, library_get_folder,
-    library_import_from_disk,
-    library_import_local_paths, library_invalidate_mismatched_thumbs, library_invalidate_thumbs,
-    library_list_creations, library_list_creations_page, library_list_filed_creation_ids,
-    library_list_folders, library_local_fit_plan, library_merge_timeline_clips,
-    library_read_local_thumb_base64, library_remove_from_folder, library_rename_folder,
+    library_ensure_clip_thumb, library_ensure_local, library_ensure_ready, library_ensure_reversed,
+    library_fill_thumb, library_filter_counts, library_get_creation, library_get_creations,
+    library_get_folder, library_import_from_disk, library_import_local_paths,
+    library_invalidate_mismatched_thumbs, library_invalidate_thumbs, library_list_creations,
+    library_list_creations_page, library_list_filed_creation_ids, library_list_folders,
+    library_local_fit_plan, library_merge_timeline_clips, library_read_local_thumb_base64,
+    library_rebuild_reversed, library_remove_from_folder, library_rename_folder,
     library_sync_status, publisher_delete_render, publisher_export_render, publisher_list_renders,
     publisher_render_timeline,
 };
@@ -27,6 +28,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
+        .register_asynchronous_uri_scheme_protocol("media", |_ctx, request, responder| {
+            match media_stream::media_response(request) {
+                Ok(response) => responder.respond(response),
+                Err(error) => {
+                    let body = error.to_string().into_bytes();
+                    let response = http::Response::builder()
+                        .status(http::StatusCode::BAD_REQUEST)
+                        .header(http::header::CONTENT_TYPE, "text/plain")
+                        .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(body)
+                        .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                    responder.respond(response);
+                }
+            }
+        })
         .setup(|app| {
             // Deep link (parascene://…) just focuses the window after browser return.
             #[cfg(desktop)]
@@ -74,7 +90,9 @@ pub fn run() {
             library_local_fit_plan,
             library_fill_thumb,
             library_read_local_thumb_base64,
+            library_ensure_clip_thumb,
             library_ensure_reversed,
+            library_rebuild_reversed,
             library_merge_timeline_clips,
             library_list_folders,
             library_list_filed_creation_ids,

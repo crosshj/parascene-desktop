@@ -1,15 +1,21 @@
 //! Ensure a behind-the-scenes reversed copy of local media via FFmpeg.
 //!
-//! Writes under `Cache/reversed/{id}.reversed.{ext}` (plus a first-frame
+//! Writes under `Cache/reversed/v2/{id}.reversed.{ext}` (plus a first-frame
 //! `.reversed.thumb.jpg` for video) and reuses those files when present.
+//! Concurrent callers for the same asset are serialized; encodes land via
+//! temp + rename so two writers cannot corrupt one destination.
 
 use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
+use super::clip_thumb::delete_clip_thumbs_for_asset;
 use super::ffmpeg::resolve_ffmpeg;
 use super::paths::ParascenePaths;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn safe_id(id: &str) -> String {
     id.chars()
@@ -21,6 +27,20 @@ fn safe_id(id: &str) -> String {
             }
         })
         .collect()
+}
+
+fn reverse_gates() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn gate_for_asset(id: &str) -> Arc<Mutex<()>> {
+    let mut map = reverse_gates()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.entry(id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 fn path_under_root(root: &Path, stored: &str) -> Result<PathBuf, String> {
@@ -84,7 +104,8 @@ fn is_audio_creation(creation: &Creation, local_path: &Path) -> bool {
 
 fn reversed_dest(paths: &ParascenePaths, creation: &Creation, src: &Path) -> PathBuf {
     let stem = safe_id(&creation.id);
-    let dir = paths.cache.join("reversed");
+    // v2: CFR / no-B-frame reverses (v1 open-GOP files freeze HW playback).
+    let dir = paths.cache.join("reversed").join("v2");
     if is_video_creation(creation, src) {
         dir.join(format!("{stem}.reversed.mp4"))
     } else {
@@ -98,7 +119,24 @@ fn reversed_thumb_dest(paths: &ParascenePaths, creation: &Creation) -> PathBuf {
     paths
         .cache
         .join("reversed")
+        .join("v2")
         .join(format!("{stem}.reversed.thumb.jpg"))
+}
+
+fn partial_path(dest: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = format!(
+        "{}.partial.{}.{}",
+        dest.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("reversed"),
+        std::process::id(),
+        nanos
+    );
+    dest.with_file_name(name)
 }
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
@@ -133,10 +171,56 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
+fn file_nonempty(path: &Path) -> bool {
+    path.is_file() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+}
+
+fn publish_partial(partial: &Path, dest: &Path) -> Result<(), String> {
+    if !file_nonempty(partial) {
+        let _ = fs::remove_file(partial);
+        return Err("ffmpeg reverse produced no output file".into());
+    }
+    let _ = fs::remove_file(dest);
+    fs::rename(partial, dest).map_err(|e| {
+        let _ = fs::remove_file(partial);
+        format!("Could not finalize reversed media: {e}")
+    })?;
+    Ok(())
+}
+
+/// Confirm a reversed video can decode at least one frame (catches corrupt
+/// caches from concurrent writers / truncated encodes).
+fn verify_reversed_video(ffmpeg: &Path, path: &Path) -> Result<(), String> {
+    let path_s = path.display().to_string();
+    run_ffmpeg(
+        ffmpeg,
+        &[
+            "-v",
+            "error",
+            "-i",
+            &path_s,
+            "-an",
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ],
+    )
+    .map_err(|e| format!("Reversed video is unreadable (will rebuild): {e}"))
+}
+
 fn reverse_video(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
     let src_s = src.display().to_string();
-    let dest_s = dest.display().to_string();
+    let partial = partial_path(dest);
+    let partial_s = partial.display().to_string();
     // Prefer A/V reverse; fall back to silent video when the source has no audio.
+    // No B-frames + explicit CFR timestamps: reversed files with open-GOP B-frames
+    // (negative DTS) confuse later trim/concat and HW playback.
+    // Always encode to a unique partial path, then rename — concurrent `-y` writes
+    // to the same dest produced duplicated MOOV / undecodable NAL caches.
     let with_audio = run_ffmpeg(
         ffmpeg,
         &[
@@ -144,26 +228,35 @@ fn reverse_video(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
             "-i",
             &src_s,
             "-vf",
-            "reverse",
+            "reverse,setpts=PTS-STARTPTS",
             "-af",
-            "areverse",
+            "areverse,asetpts=PTS-STARTPTS",
             "-c:v",
             "libx264",
             "-preset",
             "veryfast",
             "-crf",
             "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-bf",
+            "0",
             "-c:a",
             "aac",
             "-movflags",
             "+faststart",
-            &dest_s,
+            &partial_s,
         ],
     );
-    if with_audio.is_ok() && dest.is_file() {
+    if with_audio.is_ok() {
+        publish_partial(&partial, dest)?;
+        verify_reversed_video(ffmpeg, dest).map_err(|e| {
+            let _ = fs::remove_file(dest);
+            e
+        })?;
         return Ok(());
     }
-    let _ = fs::remove_file(dest);
+    let _ = fs::remove_file(&partial);
     run_ffmpeg(
         ffmpeg,
         &[
@@ -171,7 +264,7 @@ fn reverse_video(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
             "-i",
             &src_s,
             "-vf",
-            "reverse",
+            "reverse,setpts=PTS-STARTPTS",
             "-an",
             "-c:v",
             "libx264",
@@ -179,21 +272,27 @@ fn reverse_video(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
             "veryfast",
             "-crf",
             "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-bf",
+            "0",
             "-movflags",
             "+faststart",
-            &dest_s,
+            &partial_s,
         ],
     )?;
-    if dest.is_file() {
-        Ok(())
-    } else {
-        Err("ffmpeg reverse produced no output file".into())
-    }
+    publish_partial(&partial, dest)?;
+    verify_reversed_video(ffmpeg, dest).map_err(|e| {
+        let _ = fs::remove_file(dest);
+        e
+    })?;
+    Ok(())
 }
 
 fn reverse_audio(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
     let src_s = src.display().to_string();
-    let dest_s = dest.display().to_string();
+    let partial = partial_path(dest);
+    let partial_s = partial.display().to_string();
     // Explicit -vn: sources may be audio-only .mp4; never open a video encoder.
     run_ffmpeg(
         ffmpeg,
@@ -210,36 +309,40 @@ fn reverse_audio(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), String> {
             "192k",
             "-movflags",
             "+faststart",
-            &dest_s,
+            &partial_s,
         ],
     )?;
-    if dest.is_file() {
-        Ok(())
-    } else {
-        Err("ffmpeg reverse produced no output file".into())
-    }
+    publish_partial(&partial, dest)
 }
 
 /// First frame of the reversed video — matches what preview/timeline show at t=0.
 fn extract_reversed_thumb(ffmpeg: &Path, video: &Path, dest: &Path) -> Result<(), String> {
+    let partial = partial_path(dest);
+    let video_s = video.display().to_string();
+    let partial_s = partial.display().to_string();
+    // FFmpeg 7+/8 image2 wants `-update 1` for a single still; map video explicitly
+    // and force a JPEG-friendly pixel format.
     run_ffmpeg(
         ffmpeg,
         &[
             "-y",
             "-i",
-            &video.display().to_string(),
+            &video_s,
+            "-an",
+            "-map",
+            "0:v:0",
             "-frames:v",
             "1",
+            "-vf",
+            "scale=720:-2:flags=lanczos,format=yuvj420p",
             "-q:v",
             "2",
-            &dest.display().to_string(),
+            "-update",
+            "1",
+            &partial_s,
         ],
     )?;
-    if dest.is_file() {
-        Ok(())
-    } else {
-        Err("ffmpeg produced no reversed thumb".into())
-    }
+    publish_partial(&partial, dest)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -253,6 +356,10 @@ pub(crate) fn ensure_reversed_media(
     paths: &ParascenePaths,
     creation: &Creation,
 ) -> Result<ReversedMedia, String> {
+    // Preview + clip-thumb + timeline can all request the same reverse at once.
+    let gate = gate_for_asset(&creation.id);
+    let _guard = gate.lock().unwrap_or_else(|e| e.into_inner());
+
     let Some(local) = creation.local_path.as_deref().filter(|p| !p.is_empty()) else {
         return Err("No local media on disk yet — wait for download, then try again.".into());
     };
@@ -269,63 +376,92 @@ pub(crate) fn ensure_reversed_media(
         .ok_or_else(|| "Invalid reversed cache path".to_string())?;
     fs::create_dir_all(dir).map_err(|e| format!("Could not create reverse cache: {e}"))?;
 
-    let dest_usable = dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    if dest.is_file() && !dest_usable {
-        let _ = fs::remove_file(&dest);
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required to reverse media. Install with: brew install ffmpeg".to_string()
+    })?;
+
+    let mut dest_usable = file_nonempty(&dest);
+    // Drop corrupt caches (e.g. duplicated MOOV from an earlier race) so we rebuild.
+    if dest_usable && is_video {
+        if verify_reversed_video(&ffmpeg, &dest).is_err() {
+            let _ = fs::remove_file(&dest);
+            dest_usable = false;
+        }
     }
 
-    let need_media = !dest_usable;
     let thumb_dest_path = if is_video {
         Some(reversed_thumb_dest(paths, creation))
     } else {
         None
     };
-    let need_thumb = thumb_dest_path.as_ref().is_some_and(|p| !p.is_file());
-    let mut produced_video = is_video && dest.is_file() && !need_media;
+    let need_thumb = thumb_dest_path.as_ref().is_some_and(|p| !file_nonempty(p));
+    let need_media = !dest_usable;
+    let mut produced_video = is_video && dest_usable;
 
-    if need_media || need_thumb {
-        let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-            "FFmpeg is required to reverse media. Install with: brew install ffmpeg".to_string()
-        })?;
-
-        if need_media {
-            if is_video {
-                match reverse_video(&ffmpeg, &src, &dest) {
-                    Ok(()) => {
-                        produced_video = true;
-                    }
-                    // Audio-only file mis-tagged / in a video container.
-                    Err(video_err) => {
-                        let _ = fs::remove_file(&dest);
-                        reverse_audio(&ffmpeg, &src, &dest).map_err(|audio_err| {
-                            format!("{video_err}\n(audio fallback also failed: {audio_err})")
-                        })?;
-                        produced_video = false;
-                    }
+    if need_media {
+        if is_video {
+            let video_result = reverse_video(&ffmpeg, &src, &dest);
+            match video_result {
+                Ok(()) => {
+                    produced_video = true;
                 }
-            } else {
-                reverse_audio(&ffmpeg, &src, &dest)?;
-                produced_video = false;
+                Err(video_err) => {
+                    let _ = fs::remove_file(&dest);
+                    // Only fall back when the catalog type is ambiguous (container
+                    // looked like video). Hard-tagged video must not become audio.
+                    let tagged_video = creation.media_type.trim().eq_ignore_ascii_case("video");
+                    if tagged_video {
+                        return Err(video_err);
+                    }
+                    reverse_audio(&ffmpeg, &src, &dest).map_err(|audio_err| {
+                        format!("{video_err}\n(audio fallback also failed: {audio_err})")
+                    })?;
+                    produced_video = false;
+                }
             }
+        } else {
+            reverse_audio(&ffmpeg, &src, &dest)?;
+            produced_video = false;
         }
+    }
 
-        if produced_video {
-            if let Some(thumb) = thumb_dest_path.as_ref() {
-                if !thumb.is_file() {
-                    extract_reversed_thumb(&ffmpeg, &dest, thumb)?;
+    if produced_video {
+        if let Some(thumb) = thumb_dest_path.as_ref() {
+            if need_thumb || !file_nonempty(thumb) {
+                // Thumb is best-effort — a readable reverse is enough to preview.
+                if let Err(err) = extract_reversed_thumb(&ffmpeg, &dest, thumb) {
+                    eprintln!("reversed thumb skipped for {}: {err}", creation.id);
+                    let _ = fs::remove_file(thumb);
                 }
             }
         }
     }
 
     let thumb_path = thumb_dest_path
-        .filter(|p| produced_video && p.is_file())
+        .filter(|p| produced_video && file_nonempty(p))
         .map(|p| p.display().to_string());
 
     Ok(ReversedMedia {
         path: dest.display().to_string(),
         thumb_path,
     })
+}
+
+/// Remove any cached reversed media (+ thumb) for a creation, ignoring absent files.
+fn delete_reversed_cache(paths: &ParascenePaths, creation: &Creation) -> Result<(), String> {
+    let Some(local) = creation.local_path.as_deref().filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    let src = path_under_root(&paths.root, local)?;
+    let dest = reversed_dest(paths, creation, &src);
+    if dest.is_file() {
+        fs::remove_file(&dest).map_err(|e| format!("Could not delete reversed media: {e}"))?;
+    }
+    let thumb = reversed_thumb_dest(paths, creation);
+    if thumb.is_file() {
+        let _ = fs::remove_file(&thumb);
+    }
+    Ok(())
 }
 
 /// Return paths for a cached reversed copy (+ first-frame thumb for video).
@@ -341,4 +477,49 @@ pub async fn library_ensure_reversed(id: String) -> Result<ReversedMedia, String
     })
     .await
     .map_err(|e| format!("Reverse task failed: {e}"))?
+}
+
+/// Force-rebuild reversed media for the given creation ids: delete the cached
+/// files, then regenerate. Missing / non-reversible ids are skipped. Returns
+/// the number of assets rebuilt.
+#[tauri::command]
+pub async fn library_rebuild_reversed(ids: Vec<String>) -> Result<usize, String> {
+    let paths = default_paths()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = ready_connection(&paths)?;
+        let mut rebuilt = 0usize;
+        let mut seen: Vec<String> = Vec::new();
+        for id in ids {
+            let id = id.trim().to_string();
+            if id.is_empty() || seen.contains(&id) {
+                continue;
+            }
+            seen.push(id.clone());
+            let Some(creation) = get_creation_by_id(&conn, &id)? else {
+                continue;
+            };
+            // Skip assets that can't be reversed (e.g. stills) instead of failing.
+            let has_local = creation
+                .local_path
+                .as_deref()
+                .is_some_and(|p| !p.is_empty());
+            if !has_local {
+                continue;
+            }
+            let src = match path_under_root(&paths.root, creation.local_path.as_deref().unwrap()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !is_video_creation(&creation, &src) && !is_audio_creation(&creation, &src) {
+                continue;
+            }
+            delete_reversed_cache(&paths, &creation)?;
+            delete_clip_thumbs_for_asset(&paths, &id)?;
+            ensure_reversed_media(&paths, &creation)?;
+            rebuilt += 1;
+        }
+        Ok(rebuilt)
+    })
+    .await
+    .map_err(|e| format!("Rebuild reversed task failed: {e}"))?
 }

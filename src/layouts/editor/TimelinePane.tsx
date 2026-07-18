@@ -10,11 +10,12 @@ import {
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCreation } from "../../library/catalogClient";
-import { creationPreviewUrl } from "../../library/previewUrl";
 import {
-  ensureReversedMedia,
-  getCachedReversedMedia,
-} from "../../library/reversedMedia";
+  clipThumbnailKey,
+  ensureClipThumbnail,
+  getCachedClipThumbnail,
+} from "../../library/clipThumbnail";
+import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
@@ -27,7 +28,9 @@ import {
   subscribeStagedClipPointer,
   targetLaneForDraft,
   TIMELINE_PX_PER_SEC,
+  normalizeFraming,
   type StagedClipDraft,
+  type StagedClipFraming,
   type TimelineGhostClip,
 } from "./stagedClip";
 import { timelineSequenceDuration } from "./timelineCompose";
@@ -95,17 +98,17 @@ function formatClipDuration(sec: number): string {
 
 function clipDisplayThumbUrl(
   clip: TimelineClip,
+  clipThumbByKey: Record<string, string>,
   catalogByAssetId: Record<string, string>,
-  reverseByAssetId: Record<string, string>,
 ): string | null {
-  const assetId = clip.assetId;
-  if (clip.reverse && assetId) {
-    return (
-      reverseByAssetId[assetId] ||
-      clip.thumbUrl ||
-      catalogByAssetId[assetId] ||
-      null
+  const assetId = clip.assetId?.trim();
+  if (assetId && clip.kind !== "image" && clip.kind !== "audio") {
+    const key = clipThumbnailKey(
+      assetId,
+      Boolean(clip.reverse),
+      Number(clip.inSec) || 0,
     );
+    if (clipThumbByKey[key]) return clipThumbByKey[key];
   }
   if (assetId && catalogByAssetId[assetId]) return catalogByAssetId[assetId];
   return clip.thumbUrl || null;
@@ -246,6 +249,7 @@ function MiniClip({
   selected = false,
   audio = false,
   reversed = false,
+  framing = "fit",
   waveSeed,
   onPointerDown,
 }: {
@@ -262,6 +266,7 @@ function MiniClip({
   audio?: boolean;
   /** Show a small left-pointing play mark (reversed clip). */
   reversed?: boolean;
+  framing?: StagedClipFraming;
   waveSeed?: string;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
@@ -348,7 +353,12 @@ function MiniClip({
             width: Math.min(32, Math.max(16, widthPx * 0.35)),
             height: Math.min(32, Math.max(16, widthPx * 0.35)),
             flexShrink: 0,
-            objectFit: "cover",
+            objectFit:
+              framing === "fit"
+                ? "contain"
+                : framing === "stretch"
+                  ? "fill"
+                  : "cover",
             borderRadius: 2,
             background: "#0a0a0e",
             pointerEvents: "none",
@@ -420,7 +430,7 @@ export function TimelinePane({
   const [thumbByAssetId, setThumbByAssetId] = useState<Record<string, string>>(
     {},
   );
-  const [reverseThumbByAssetId, setReverseThumbByAssetId] = useState<
+  const [clipThumbByKey, setClipThumbByKey] = useState<
     Record<string, string>
   >({});
   const zoom = zoomProp;
@@ -498,14 +508,31 @@ export function TimelinePane({
     return [...ids].sort().join("\0");
   }, [clips]);
 
-  const reversedVideoAssetIdsKey = useMemo(() => {
-    const ids = new Set<string>();
+  const clipThumbRequestsKey = useMemo(() => {
+    const requests = new Map<
+      string,
+      { assetId: string; reverse: boolean; inSec: number }
+    >();
     for (const clip of clips) {
-      if (clip.reverse && clip.kind !== "audio" && clip.assetId) {
-        ids.add(clip.assetId);
+      const assetId = clip.assetId?.trim();
+      if (
+        !assetId ||
+        clip.lane === "audio" ||
+        clip.kind === "audio" ||
+        clip.kind === "image"
+      ) {
+        continue;
       }
+      const reverse = Boolean(clip.reverse);
+      const inSec = Math.max(0, Number(clip.inSec) || 0);
+      const key = clipThumbnailKey(assetId, reverse, inSec);
+      requests.set(key, { assetId, reverse, inSec });
     }
-    return [...ids].sort().join("\0");
+    return JSON.stringify(
+      [...requests.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, request]) => request),
+    );
   }, [clips]);
 
   const [thumbKey, setThumbKey] = useState(clipAssetIdsKey);
@@ -563,61 +590,44 @@ export function TimelinePane({
     };
   }, [clipAssetIdsKey]);
 
-  const [reverseThumbKey, setReverseThumbKey] = useState(
-    reversedVideoAssetIdsKey,
-  );
-  if (reversedVideoAssetIdsKey !== reverseThumbKey) {
-    setReverseThumbKey(reversedVideoAssetIdsKey);
-    if (!reversedVideoAssetIdsKey) setReverseThumbByAssetId({});
-  }
-
   useEffect(() => {
-    const ids = reversedVideoAssetIdsKey
-      ? reversedVideoAssetIdsKey.split("\0")
-      : [];
-    if (ids.length === 0) return;
+    const requests = JSON.parse(clipThumbRequestsKey) as Array<{
+      assetId: string;
+      reverse: boolean;
+      inSec: number;
+    }>;
+    if (requests.length === 0) {
+      void Promise.resolve().then(() => setClipThumbByKey({}));
+      return;
+    }
 
     let cancelled = false;
 
     const load = async () => {
       const next: Record<string, string> = {};
       await Promise.all(
-        ids.map(async (id) => {
-          const cached = getCachedReversedMedia(id);
-          if (cached?.thumbUrl) {
-            next[id] = cached.thumbUrl;
+        requests.map(async ({ assetId, reverse, inSec }) => {
+          const key = clipThumbnailKey(assetId, reverse, inSec);
+          const cached = getCachedClipThumbnail(assetId, reverse, inSec);
+          if (cached) {
+            next[key] = cached;
             return;
           }
           try {
-            const urls = await ensureReversedMedia(id);
-            if (urls.thumbUrl) next[id] = urls.thumbUrl;
+            next[key] = await ensureClipThumbnail(assetId, reverse, inSec);
           } catch {
-            // Keep clip.thumbUrl / catalog fallback.
+            // Keep the catalog / stored thumbnail fallback.
           }
         }),
       );
-      if (cancelled) return;
-      setReverseThumbByAssetId(next);
-
-      // Persist reverse first-frame thumbs onto clips that still hold the original.
-      const current = clipsRef.current;
-      const patched = current.map((clip) => {
-        if (!clip.reverse || !clip.assetId) return clip;
-        const thumb = next[clip.assetId];
-        if (!thumb || clip.thumbUrl === thumb) return clip;
-        return { ...clip, thumbUrl: thumb };
-      });
-      const changed = patched.some(
-        (c, i) => c.thumbUrl !== current[i]?.thumbUrl,
-      );
-      if (changed) commitClips(patched);
+      if (!cancelled) setClipThumbByKey(next);
     };
 
     void load();
     return () => {
       cancelled = true;
     };
-  }, [reversedVideoAssetIdsKey, commitClips]);
+  }, [clipThumbRequestsKey]);
 
   useEffect(() => {
     return subscribeStagedClipDrag((draft) => {
@@ -1321,8 +1331,8 @@ export function TimelinePane({
                     durationSec={clip.endSec - clip.startSec}
                     thumbUrl={clipDisplayThumbUrl(
                       clip,
+                      clipThumbByKey,
                       thumbByAssetId,
-                      reverseThumbByAssetId,
                     )}
                     label={clip.label}
                     title={clip.assetId ?? clip.label}
@@ -1330,6 +1340,7 @@ export function TimelinePane({
                     moving={movingClipIds.includes(clip.id)}
                     selected={selectedClipIds.includes(clip.id)}
                     reversed={Boolean(clip.reverse)}
+                    framing={normalizeFraming(clip.framing)}
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />
                 ))
@@ -1362,8 +1373,8 @@ export function TimelinePane({
                     durationSec={clip.endSec - clip.startSec}
                     thumbUrl={clipDisplayThumbUrl(
                       clip,
+                      clipThumbByKey,
                       thumbByAssetId,
-                      reverseThumbByAssetId,
                     )}
                     label={clip.label}
                     title={clip.assetId ?? clip.label}

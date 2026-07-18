@@ -14,11 +14,18 @@ import {
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
+  framingClassName,
+  framingViewportStyle,
+  normalizeFraming,
+  type StagedClipFraming,
+} from "./stagedClip";
+import {
   clipInSec,
   peekNextVisualClip,
   resolveTimelineFrame,
   type TimelineLayer,
 } from "./timelineCompose";
+import { useVideoStretchStyle } from "./useVideoStretchStyle";
 
 type TimelineMonitorProps = {
   clips: TimelineClip[];
@@ -26,6 +33,12 @@ type TimelineMonitorProps = {
   playing: boolean;
   mediaSeekEpoch?: number;
   volume: number;
+  /** 16:9 preview stage size in CSS px. */
+  stageW: number;
+  stageH: number;
+  /** Project aspect matte size in CSS px (centered in the stage). */
+  matteW: number;
+  matteH: number;
 };
 
 type MediaUrls = {
@@ -310,6 +323,10 @@ export function TimelineMonitor({
   playing,
   mediaSeekEpoch = 0,
   volume,
+  stageW,
+  stageH,
+  matteW,
+  matteH,
 }: TimelineMonitorProps) {
   const frame = resolveTimelineFrame(clips, playheadSec);
   const visual = frame.visual;
@@ -323,17 +340,16 @@ export function TimelineMonitor({
     : null;
 
   const [visibleKey, setVisibleKey] = useState<AssetDecoderKey | null>(null);
-  const activeKeyRef = useRef(activeKey);
-  useEffect(() => {
-    activeKeyRef.current = activeKey;
-  }, [activeKey]);
 
   if (!activeKey && visibleKey) {
     setVisibleKey(null);
   }
 
+  // Decoders only report ready from active effects, whose cleanup cancels
+  // pending async video work. Accepting that signal directly avoids the
+  // parent/child effect-order race on immediate image handoffs.
   const onDecoderReady = useCallback((key: AssetDecoderKey) => {
-    if (activeKeyRef.current === key) setVisibleKey(key);
+    setVisibleKey(key);
   }, []);
 
   const nextClip = useMemo(() => {
@@ -344,7 +360,7 @@ export function TimelineMonitor({
    * Standby park times: earliest in-point per decoder, with look-ahead
    * override for the upcoming cut (play or scrub).
    */
-  const prepByKey = useMemo(() => {
+  const prepByKey = (() => {
     const map = parkSourceByKey(clips);
     if (nextClip?.assetId?.trim()) {
       const key = assetDecoderKey(nextClip);
@@ -353,7 +369,7 @@ export function TimelineMonitor({
       }
     }
     return map;
-  }, [clips, nextClip, activeKey]);
+  })();
 
   return (
     <>
@@ -361,6 +377,10 @@ export function TimelineMonitor({
         const isActive = key === activeKey;
         const isVisible = key === visibleKey;
         const parkSec = prepByKey.get(key) ?? 0;
+        const framing =
+          isActive && visual?.clip
+            ? normalizeFraming(visual.clip.framing)
+            : "fit";
         return (
           <AssetDecoder
             key={key}
@@ -368,6 +388,11 @@ export function TimelineMonitor({
             kind={kind}
             active={isActive}
             visible={isVisible}
+            framing={framing}
+            stageW={stageW}
+            stageH={stageH}
+            matteW={matteW}
+            matteH={matteH}
             liveLayer={isActive ? visual : null}
             prepSourceSec={isActive ? null : parkSec}
             playing={isActive && playing}
@@ -400,6 +425,11 @@ function AssetDecoder({
   kind,
   active,
   visible,
+  framing,
+  stageW,
+  stageH,
+  matteW,
+  matteH,
   liveLayer,
   prepSourceSec,
   playing,
@@ -412,6 +442,11 @@ function AssetDecoder({
   active: boolean;
   /** Actually painted in the preview (after seek alignment). */
   visible: boolean;
+  framing: StagedClipFraming;
+  stageW: number;
+  stageH: number;
+  matteW: number;
+  matteH: number;
   liveLayer: TimelineLayer | null;
   /** Parked source time while standby (always set for non-active videos). */
   prepSourceSec: number | null;
@@ -419,6 +454,16 @@ function AssetDecoder({
   mediaSeekEpoch: number;
   onReady: (key: AssetDecoderKey) => void;
 }) {
+  // Hold the last framing used while this decoder was active. When a cut
+  // begins, the outgoing decoder can remain visible briefly while the incoming
+  // frame primes, and must not snap back to Fit during that hold.
+  const [paintedFraming, setPaintedFraming] =
+    useState<StagedClipFraming>(framing);
+  if (active && paintedFraming !== framing) {
+    setPaintedFraming(framing);
+  }
+  const effectiveFraming = active ? framing : paintedFraming;
+
   const assetId = assetIdFromKey(decoderKey);
   const reverse = isReverseKey(decoderKey);
   const media = useAssetMedia(assetId);
@@ -449,6 +494,11 @@ function AssetDecoder({
         src={videoSrc}
         active={active}
         visible={visible}
+        framing={effectiveFraming}
+        stageW={stageW}
+        stageH={stageH}
+        matteW={matteW}
+        matteH={matteH}
         sourceSec={active ? (liveLayer?.sourceSec ?? 0) : (prepSourceSec ?? 0)}
         playing={playing}
         mediaSeekEpoch={mediaSeekEpoch}
@@ -465,6 +515,11 @@ function AssetDecoder({
         src={imageSrc}
         active={active}
         visible={visible}
+        framing={effectiveFraming}
+        stageW={stageW}
+        stageH={stageH}
+        matteW={matteW}
+        matteH={matteH}
         onReady={onReady}
       />
     );
@@ -481,27 +536,52 @@ function PersistentImage({
   src,
   active,
   visible,
+  framing,
+  stageW,
+  stageH,
+  matteW,
+  matteH,
   onReady,
 }: {
   decoderKey: AssetDecoderKey;
   src: string;
   active: boolean;
   visible: boolean;
+  framing: StagedClipFraming;
+  stageW: number;
+  stageH: number;
+  matteW: number;
+  matteH: number;
   onReady: (key: AssetDecoderKey) => void;
 }) {
   useEffect(() => {
     if (active) onReady(decoderKey);
   }, [active, decoderKey, onReady, src]);
 
+  const viewport = framingViewportStyle(
+    framing,
+    stageW,
+    stageH,
+    matteW,
+    matteH,
+  );
+
   return (
-    <img
-      className={`editor-preview-media editor-preview-detail${
-        visible ? "" : " is-standby"
+    <div
+      className={`editor-preview-framing-viewport${
+        viewport ? " is-project-matte" : ""
       }`}
-      src={src}
-      alt=""
-      draggable={false}
-    />
+      style={viewport}
+    >
+      <img
+        className={`editor-preview-media editor-preview-detail ${framingClassName(framing)}${
+          visible ? "" : " is-standby"
+        }`}
+        src={src}
+        alt=""
+        draggable={false}
+      />
+    </div>
   );
 }
 
@@ -518,6 +598,11 @@ function PersistentVideo({
   src,
   active,
   visible,
+  framing,
+  stageW,
+  stageH,
+  matteW,
+  matteH,
   sourceSec,
   playing,
   mediaSeekEpoch,
@@ -528,6 +613,11 @@ function PersistentVideo({
   src: string;
   active: boolean;
   visible: boolean;
+  framing: StagedClipFraming;
+  stageW: number;
+  stageH: number;
+  matteW: number;
+  matteH: number;
   sourceSec: number;
   playing: boolean;
   mediaSeekEpoch: number;
@@ -541,6 +631,14 @@ function PersistentVideo({
   const onReadyRef = useRef(onReady);
   /** Has decoded at least one frame at some parked/commanded time. */
   const [warm, setWarm] = useState(false);
+  const stretchStyle = useVideoStretchStyle(framing, ref, src);
+  const viewport = framingViewportStyle(
+    framing,
+    stageW,
+    stageH,
+    matteW,
+    matteH,
+  );
 
   useEffect(() => {
     sourceSecRef.current = sourceSec;
@@ -690,16 +788,24 @@ function PersistentVideo({
   }, [active, visible]);
 
   return (
-    <video
-      ref={ref}
-      className={`editor-preview-media editor-preview-detail${
-        visible && warm ? "" : " is-standby"
+    <div
+      className={`editor-preview-framing-viewport${
+        viewport ? " is-project-matte" : ""
       }`}
-      src={src}
-      playsInline
-      preload="auto"
-      muted
-    />
+      style={viewport}
+    >
+      <video
+        ref={ref}
+        className={`editor-preview-media editor-preview-detail ${framingClassName(framing)}${
+          visible && warm ? "" : " is-standby"
+        }`}
+        style={stretchStyle}
+        src={src}
+        playsInline
+        preload="auto"
+        muted
+      />
+    </div>
   );
 }
 

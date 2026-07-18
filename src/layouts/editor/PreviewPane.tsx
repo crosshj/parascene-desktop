@@ -9,6 +9,11 @@ import {
 import { ensureLocal, getCreation } from "../../library/catalogClient";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import {
+  clipThumbnailKey,
+  ensureClipThumbnail,
+  getCachedClipThumbnail,
+} from "../../library/clipThumbnail";
+import {
   canFetchLocal,
   creationDetailUrl,
   creationPreviewUrl,
@@ -28,11 +33,16 @@ import { kindFromMediaType } from "./stagingKind";
 import { ClipDragHandle, StagingFields } from "./PreviewStaging";
 import {
   defaultStagedClipDraft,
+  framingClassName,
+  framingViewportStyle,
   isProvisionalOutSec,
+  normalizeFraming,
   type StagedClipDraft,
+  type StagedClipFraming,
 } from "./stagedClip";
 import { creationCardTitle } from "../../library/creationFlags";
 import { TimelineMonitor } from "./TimelineMonitor";
+import { useVideoStretchStyle } from "./useVideoStretchStyle";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -199,10 +209,15 @@ export function PreviewPane({
   const [stagedDraft, setStagedDraft] = useState<StagedClipDraft | null>(null);
   const [reversedDetail, setReversedDetail] = useState<string | null>(null);
   const [reversedThumb, setReversedThumb] = useState<string | null>(null);
+  const [clipFrameThumb, setClipFrameThumb] = useState<{
+    key: string;
+    url: string;
+  } | null>(null);
   const [reverseBusy, setReverseBusy] = useState(false);
   const [reverseError, setReverseError] = useState<string | null>(null);
   const appliedSeedKeyRef = useRef<string | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const onClipDraftChangeRef = useRef(onClipDraftChange);
   useEffect(() => {
@@ -296,11 +311,26 @@ export function PreviewPane({
   const isAudio = mediaType === "audio";
   const wantsReverse =
     Boolean(stagedDraft?.reverse) && (isVideo || isAudio);
-  const thumb =
-    wantsReverse && reversedThumb ? reversedThumb : catalogThumb;
   const playbackDetail = wantsReverse ? reversedDetail : detail;
   const useDetail = Boolean(playbackDetail) && !detailFailed;
   const canPlay = Boolean(useDetail && (isVideo || isAudio) && !reverseBusy);
+  const clipFrameKey =
+    stagingSeedKey && stagedDraft?.kind === "video" && assetId
+      ? clipThumbnailKey(
+          assetId,
+          Boolean(stagedDraft.reverse),
+          stagedDraft.inSec,
+        )
+      : null;
+  const clipFrameReverse = Boolean(stagedDraft?.reverse);
+  const clipFrameInSec = Math.max(0, stagedDraft?.inSec ?? 0);
+  const activeClipFrameThumb =
+    clipFrameKey && clipFrameThumb?.key === clipFrameKey
+      ? clipFrameThumb.url
+      : null;
+  const thumb =
+    activeClipFrameThumb ??
+    (wantsReverse && reversedThumb ? reversedThumb : catalogThumb);
 
   const reverseEnabled = Boolean(wantsReverse && assetId && detail);
   if (!reverseEnabled) {
@@ -342,17 +372,6 @@ export function PreviewPane({
         setReversedThumb(urls.thumbUrl);
         setReverseBusy(false);
         setReverseError(null);
-        if (!urls.thumbUrl) return;
-        setStagedDraft((prev) => {
-          if (!prev || !prev.reverse || prev.thumbUrl === urls.thumbUrl) {
-            return prev;
-          }
-          const next = { ...prev, thumbUrl: urls.thumbUrl };
-          if (stagingSeedKey) {
-            onClipDraftChangeRef.current?.(stagingSeedKey, next);
-          }
-          return next;
-        });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -372,6 +391,45 @@ export function PreviewPane({
       cancelled = true;
     };
   }, [wantsReverse, assetId, detail, stagingSeedKey]);
+
+  useEffect(() => {
+    if (
+      !clipFrameKey ||
+      !assetId ||
+      !playbackDetail
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const cached = getCachedClipThumbnail(
+      assetId,
+      clipFrameReverse,
+      clipFrameInSec,
+    );
+    if (cached) {
+      void Promise.resolve().then(() => {
+        if (!cancelled) setClipFrameThumb({ key: clipFrameKey, url: cached });
+      });
+    } else {
+      void ensureClipThumbnail(assetId, clipFrameReverse, clipFrameInSec)
+        .then((url) => {
+          if (!cancelled) setClipFrameThumb({ key: clipFrameKey, url });
+        })
+        .catch(() => {
+          // The media element still seeks to the exact in-point; keep the asset
+          // thumbnail as a loading fallback if extraction fails.
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    assetId,
+    clipFrameKey,
+    clipFrameInSec,
+    clipFrameReverse,
+    playbackDetail,
+  ]);
 
   if (!assetId || !creation || catalogError) {
     if (stagedDraft !== null) setStagedDraft(null);
@@ -558,6 +616,18 @@ export function PreviewPane({
     ? Math.max(0, stagedDraft.outSec - stagedDraft.inSec)
     : 0;
   const clipTrack = stagedDraft?.kind === "audio" ? "A1" : "V1";
+  const mediaFraming: StagedClipFraming =
+    stagedDraft && (stagedDraft.kind === "image" || stagedDraft.kind === "video")
+      ? normalizeFraming(stagedDraft.framing)
+      : "fit";
+  const mediaFramingClass = framingClassName(mediaFraming);
+  const videoFraming: StagedClipFraming =
+    stagedDraft && stagedDraft.kind === "video" ? mediaFraming : "fit";
+  const videoStretchStyle = useVideoStretchStyle(
+    videoFraming,
+    videoRef,
+    playbackDetail,
+  );
   const sourceKind: "timeline" | "asset" | "clip" | null =
     monitorMode === "timeline"
       ? "timeline"
@@ -588,14 +658,18 @@ export function PreviewPane({
     }
   };
 
+  const playbackResetTarget =
+    stagingSeedKey && stagingSeed && stagingSeed.kind !== "image"
+      ? Math.max(0, stagingSeed.inSec)
+      : 0;
   const [playbackResetKey, setPlaybackResetKey] = useState(
-    () => `${assetId ?? ""}:${playbackDetail ?? ""}`,
+    () => `${assetId ?? ""}:${playbackDetail ?? ""}:${stagingSeedKey ?? ""}`,
   );
-  const nextPlaybackResetKey = `${assetId ?? ""}:${playbackDetail ?? ""}`;
+  const nextPlaybackResetKey = `${assetId ?? ""}:${playbackDetail ?? ""}:${stagingSeedKey ?? ""}`;
   if (nextPlaybackResetKey !== playbackResetKey) {
     setPlaybackResetKey(nextPlaybackResetKey);
     setPlaying(false);
-    setCurrentSec(0);
+    setCurrentSec(playbackResetTarget);
     setDurationSec(0);
     setDetailFailed(false);
   }
@@ -604,9 +678,9 @@ export function PreviewPane({
     const el = mediaRef.current;
     if (el) {
       el.pause();
-      el.currentTime = 0;
+      el.currentTime = playbackResetTarget;
     }
-  }, [assetId, playbackDetail]);
+  }, [assetId, playbackDetail, playbackResetTarget, stagingSeedKey]);
 
   const onTogglePlay = () => {
     const el = mediaRef.current;
@@ -680,6 +754,7 @@ export function PreviewPane({
 
   const bindVideo = (el: HTMLVideoElement | null) => {
     mediaRef.current = el;
+    videoRef.current = el;
     if (!el) return;
     el.muted = audioExcluded;
     el.volume = volume / 100;
@@ -718,6 +793,17 @@ export function PreviewPane({
 
   const matteStyle: CSSProperties | undefined =
     matte.w > 0 ? { width: matte.w, height: matte.h } : undefined;
+
+  const sourceViewport = framingViewportStyle(
+    mediaFraming,
+    stage.w,
+    stage.h,
+    matte.w,
+    matte.h,
+  );
+  const sourceViewportClass = `editor-preview-framing-viewport${
+    sourceViewport ? " is-project-matte" : ""
+  }`;
 
   let status: string | null = null;
   if (monitorMode === "timeline") {
@@ -773,49 +859,36 @@ export function PreviewPane({
                 playing={timelinePlaying}
                 mediaSeekEpoch={mediaSeekEpoch}
                 volume={volume}
+                stageW={stage.w}
+                stageH={stage.h}
+                matteW={matte.w}
+                matteH={matte.h}
               />
             ) : status ? (
               <span className="editor-preview-status muted">{status}</span>
             ) : (
               <>
-                {/* Thumb stays visible so detail load / cache misses aren't blank. */}
-                {thumb ? (
-                  <img
-                    key={`thumb:${thumb}`}
-                    className="editor-preview-media editor-preview-thumb"
-                    src={thumb}
-                    alt=""
-                    draggable={false}
-                  />
-                ) : null}
+                <div className={sourceViewportClass} style={sourceViewport}>
+                  {/* Thumb stays visible so detail load / cache misses aren't blank. */}
+                  {thumb ? (
+                    <img
+                      key={`thumb:${thumb}`}
+                      className={`editor-preview-media editor-preview-thumb ${mediaFramingClass}`}
+                      src={thumb}
+                      alt=""
+                      draggable={false}
+                    />
+                  ) : null}
 
-                {useDetail && isVideo ? (
-                  <video
-                    key={`detail:${playbackDetail}`}
-                    ref={bindVideo}
-                    className="editor-preview-media editor-preview-detail"
-                    src={playbackDetail!}
-                    poster={thumb ?? undefined}
-                    playsInline
-                    preload="auto"
-                    loop={sourcePreviewLoops && !clipLoopEnabled}
-                    onTimeUpdate={onTimeUpdate}
-                    onLoadedMetadata={onLoadedMeta}
-                    onPlay={() => setPlaying(true)}
-                    onPause={() => setPlaying(false)}
-                    onEnded={onSourceEnded}
-                    onError={() => setDetailFailed(true)}
-                  />
-                ) : null}
-
-                {useDetail && isAudio ? (
-                  <div className="editor-preview-audio">
-                    <AudioWaveform className="creation-audio-wave creation-audio-wave-lg editor-preview-audio-icon" />
-                    <audio
+                  {useDetail && isVideo ? (
+                    <video
                       key={`detail:${playbackDetail}`}
-                      ref={bindAudio}
-                      className="editor-preview-audio-el"
+                      ref={bindVideo}
+                      className={`editor-preview-media editor-preview-detail ${mediaFramingClass}`}
+                      style={videoStretchStyle}
                       src={playbackDetail!}
+                      poster={thumb ?? undefined}
+                      playsInline
                       preload="auto"
                       loop={sourcePreviewLoops && !clipLoopEnabled}
                       onTimeUpdate={onTimeUpdate}
@@ -825,19 +898,39 @@ export function PreviewPane({
                       onEnded={onSourceEnded}
                       onError={() => setDetailFailed(true)}
                     />
-                  </div>
-                ) : null}
+                  ) : null}
 
-                {useDetail && !isVideo && !isAudio ? (
-                  <img
-                    key={`detail:${playbackDetail}`}
-                    className="editor-preview-media editor-preview-detail"
-                    src={playbackDetail!}
-                    alt={creation?.title || "Asset preview"}
-                    draggable={false}
-                    onError={() => setDetailFailed(true)}
-                  />
-                ) : null}
+                  {useDetail && isAudio ? (
+                    <div className="editor-preview-audio">
+                      <AudioWaveform className="creation-audio-wave creation-audio-wave-lg editor-preview-audio-icon" />
+                      <audio
+                        key={`detail:${playbackDetail}`}
+                        ref={bindAudio}
+                        className="editor-preview-audio-el"
+                        src={playbackDetail!}
+                        preload="auto"
+                        loop={sourcePreviewLoops && !clipLoopEnabled}
+                        onTimeUpdate={onTimeUpdate}
+                        onLoadedMetadata={onLoadedMeta}
+                        onPlay={() => setPlaying(true)}
+                        onPause={() => setPlaying(false)}
+                        onEnded={onSourceEnded}
+                        onError={() => setDetailFailed(true)}
+                      />
+                    </div>
+                  ) : null}
+
+                  {useDetail && !isVideo && !isAudio ? (
+                    <img
+                      key={`detail:${playbackDetail}`}
+                      className={`editor-preview-media editor-preview-detail ${mediaFramingClass}`}
+                      src={playbackDetail!}
+                      alt={creation?.title || "Asset preview"}
+                      draggable={false}
+                      onError={() => setDetailFailed(true)}
+                    />
+                  ) : null}
+                </div>
 
                 {!useDetail && waitingLocal ? (
                   <span className="editor-preview-wait muted">

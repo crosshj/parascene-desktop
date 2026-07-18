@@ -64,3 +64,20 @@ export async function ensureReversedMediaUrl(assetId: string): Promise<string> {
   const urls = await ensureReversedMedia(assetId);
   return urls.mediaUrl;
 }
+
+/**
+ * Drop memoized reversed URLs so the next ensure re-fetches from disk. Pass
+ * specific ids after a rebuild, or omit to clear everything.
+ */
+export function invalidateReversedMedia(assetIds?: readonly string[]): void {
+  if (!assetIds) {
+    resolved.clear();
+    inflight.clear();
+    return;
+  }
+  for (const raw of assetIds) {
+    const id = raw.trim();
+    resolved.delete(id);
+    inflight.delete(id);
+  }
+}

@@ -161,6 +161,24 @@ export async function ensureReversed(id: string): Promise<ReversedMedia> {
   return invoke<ReversedMedia>("library_ensure_reversed", { id });
 }
 
+/** Cached frame at the first displayed source time for a trimmed clip. */
+export async function ensureClipThumb(
+  id: string,
+  reverse: boolean,
+  timeSec: number,
+): Promise<string> {
+  return invoke<string>("library_ensure_clip_thumb", {
+    id,
+    reverse,
+    timeSec,
+  });
+}
+
+/** Force-delete and regenerate reversed media for the given asset ids. */
+export async function rebuildReversed(ids: string[]): Promise<number> {
+  return invoke<number>("library_rebuild_reversed", { ids });
+}
+
 export type MergeTimelineClipInput = {
   assetId: string;
   inSec?: number;

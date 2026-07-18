@@ -23,17 +23,23 @@ export type TimelineRender = {
   aspectRatio: string;
   clipCount: number;
   commandLine: string;
+  status: "rendering" | "ready" | "failed";
+  progress: RenderProgress | null;
+  error: string | null;
 };
 
 export type RenderProgress = {
+  projectId: string;
+  renderId: string;
   phase: string;
   done: number;
   total: number;
 };
 
 export type RenderFinished = {
+  projectId: string;
   ok: boolean;
-  renderId: string | null;
+  renderId: string;
   error: string | null;
 };
 

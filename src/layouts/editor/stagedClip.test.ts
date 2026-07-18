@@ -3,13 +3,18 @@ import {
   applyDraftToTimelineClip,
   defaultStagedClipDraft,
   formatStagedDuration,
+  framingClassName,
+  framingUsesProjectMatte,
+  framingViewportStyle,
   isProvisionalOutSec,
+  normalizeFraming,
   parseStagedClipPayload,
   remapTrimForReverse,
   serializeStagedClip,
   stagedClipDuration,
   targetLaneForDraft,
   timelineClipToStagedDraft,
+  videoStretchStyle,
 } from "./stagedClip";
 
 describe("stagedClip", () => {
@@ -30,6 +35,50 @@ describe("stagedClip", () => {
     expect(video.outSec).toBe(12.5);
     expect(video.includeAudio).toBe(false);
     expect(targetLaneForDraft(video)).toBe("video");
+  });
+
+  it("normalizes framing and maps fill/stretch onto the project matte", () => {
+    expect(normalizeFraming("stretch")).toBe("stretch");
+    expect(normalizeFraming("fill")).toBe("fill");
+    expect(normalizeFraming("fit")).toBe("fit");
+    expect(normalizeFraming(undefined)).toBe("fit");
+    expect(framingClassName("stretch")).toBe("is-framing-stretch");
+    expect(framingUsesProjectMatte("fit")).toBe(false);
+    expect(framingUsesProjectMatte("fill")).toBe(true);
+    expect(framingUsesProjectMatte("stretch")).toBe(true);
+
+    // 16:9 stage with 4:5 matte — Stretch/Fill shrink to the matte box.
+    const stageW = 1600;
+    const stageH = 900;
+    const matteW = 720;
+    const matteH = 900;
+    expect(framingViewportStyle("fit", stageW, stageH, matteW, matteH)).toBeUndefined();
+    expect(framingViewportStyle("stretch", stageW, stageH, matteW, matteH)).toEqual({
+      width: 720,
+      height: 900,
+      left: 440,
+      top: 0,
+    });
+    expect(framingViewportStyle("fill", stageW, stageH, matteW, matteH)).toEqual({
+      width: 720,
+      height: 900,
+      left: 440,
+      top: 0,
+    });
+    // Project matches stage — no inset needed.
+    expect(
+      framingViewportStyle("stretch", stageW, stageH, stageW, stageH),
+    ).toBeUndefined();
+  });
+
+  it("computes non-uniform stretch into a taller project frame", () => {
+    // 16:9 media into a 4:5 box: contain letterboxes vertically, then scale Y.
+    const style = videoStretchStyle(1920, 1080, 400, 500);
+    expect(style).not.toBeNull();
+    expect(style!.objectFit).toBe("contain");
+    expect(style!.transformOrigin).toBe("center center");
+    // fitted = 400×225 → scale(1, 500/225)
+    expect(style!.transform).toBe(`scale(1, ${500 / 225})`);
   });
 
   it("marks Out as provisional until source duration is known", () => {

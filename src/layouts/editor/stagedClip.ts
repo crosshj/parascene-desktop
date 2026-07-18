@@ -6,6 +6,77 @@ export type StagedClipTransform = "hold" | "kenBurns";
 
 export type StagedClipFraming = "fit" | "fill" | "stretch";
 
+/** Normalize unknown / missing framing to a concrete preview/export mode. */
+export function normalizeFraming(
+  framing: StagedClipFraming | string | null | undefined,
+): StagedClipFraming {
+  return framing === "fill" || framing === "stretch" ? framing : "fit";
+}
+
+/** CSS modifier for `.editor-preview-media` object-fit modes. */
+export function framingClassName(framing: StagedClipFraming): string {
+  if (framing === "fill") return "is-framing-fill";
+  if (framing === "stretch") return "is-framing-stretch";
+  return "is-framing-fit";
+}
+
+/**
+ * Fill/Stretch map into the project aspect matte. Fit contains into the 16:9
+ * preview stage (matte then shows the export crop).
+ */
+export function framingUsesProjectMatte(framing: StagedClipFraming): boolean {
+  return framing === "fill" || framing === "stretch";
+}
+
+/**
+ * Position a media viewport inside the 16:9 stage. `undefined` → full stage
+ * (`inset: 0`). Fill/Stretch shrink to the centered project matte so framing
+ * matches export (which scales to the project frame, not the stage).
+ */
+export function framingViewportStyle(
+  framing: StagedClipFraming,
+  stageW: number,
+  stageH: number,
+  matteW: number,
+  matteH: number,
+): { width: number; height: number; left: number; top: number } | undefined {
+  if (!framingUsesProjectMatte(framing)) return undefined;
+  if (matteW <= 0 || matteH <= 0 || stageW <= 0 || stageH <= 0) {
+    return undefined;
+  }
+  if (matteW >= stageW && matteH >= stageH) return undefined;
+  return {
+    width: matteW,
+    height: matteH,
+    left: Math.round((stageW - matteW) / 2),
+    top: Math.round((stageH - matteH) / 2),
+  };
+}
+
+/**
+ * Chromium/Electron often ignores `object-fit: fill` on `<video>`. Stretch by
+ * painting with contain, then non-uniformly scaling so letterbox bars vanish.
+ * Parent must clip (`overflow: hidden`). `boxW`/`boxH` must be the project
+ * frame (matte), not the 16:9 stage, when the project aspect differs.
+ */
+export function videoStretchStyle(
+  mediaW: number,
+  mediaH: number,
+  boxW: number,
+  boxH: number,
+): { objectFit: "contain"; transform: string; transformOrigin: string } | null {
+  if (mediaW <= 0 || mediaH <= 0 || boxW <= 0 || boxH <= 0) return null;
+  const contain = Math.min(boxW / mediaW, boxH / mediaH);
+  const fittedW = mediaW * contain;
+  const fittedH = mediaH * contain;
+  if (fittedW <= 0 || fittedH <= 0) return null;
+  return {
+    objectFit: "contain",
+    transform: `scale(${boxW / fittedW}, ${boxH / fittedH})`,
+    transformOrigin: "center center",
+  };
+}
+
 export type StagedClipDraft = {
   assetId: string;
   label: string;
@@ -189,8 +260,7 @@ export function timelineClipToStagedDraft(clip: {
 
   const transform: StagedClipTransform =
     clip.transform === "kenBurns" ? "kenBurns" : "hold";
-  const framing: StagedClipFraming =
-    clip.framing === "fill" || clip.framing === "stretch" ? clip.framing : "fit";
+  const framing = normalizeFraming(clip.framing);
 
   return {
     assetId,
@@ -243,8 +313,9 @@ export function parseStagedClipPayload(raw: string): StagedClipDraft | null {
       includeAudio: Boolean(d.includeAudio),
       reverse: Boolean(d.reverse),
       transform: d.transform === "kenBurns" ? "kenBurns" : "hold",
-      framing:
-        d.framing === "fill" || d.framing === "stretch" ? d.framing : "fit",
+      framing: normalizeFraming(
+        typeof d.framing === "string" ? d.framing : undefined,
+      ),
       thumbUrl: typeof d.thumbUrl === "string" ? d.thumbUrl : null,
     };
   } catch {

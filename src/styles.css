@@ -1673,27 +1673,10 @@ textarea {
 }
 
 .hook-player-transport {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) 6rem;
-  align-items: center;
-  gap: 0.65rem;
-}
-
-.hook-player-play {
-  min-width: 4.5rem;
-}
-
-.hook-player-clock {
-  font-size: 0.82rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.hook-player-scrub,
-.hook-player-volume input {
+  flex: 0 0 auto;
+  align-self: stretch;
   width: 100%;
-  accent-color: var(--select);
+  padding-inline: 0;
 }
 
 .hook-side-copy {
@@ -1765,6 +1748,11 @@ textarea {
   box-shadow: inset 0 0 0 1px var(--select-soft);
 }
 
+.hook-render-item:disabled {
+  color: inherit;
+  cursor: default;
+}
+
 .hook-render-item-title {
   font-size: 0.86rem;
 }
@@ -1772,6 +1760,42 @@ textarea {
 .hook-render-item-meta {
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
+}
+
+.hook-render-progress {
+  width: 100%;
+  height: 4px;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.hook-render-progress-bar {
+  display: block;
+  min-width: 3px;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: hook-render-working 1.2s ease-in-out infinite;
+  transition: width 180ms ease;
+}
+
+@keyframes hook-render-working {
+  50% {
+    filter: brightness(1.35);
+    opacity: 0.72;
+  }
+}
+
+.hook-render-error {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 0.72rem;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .hook-render-actions {
@@ -2773,6 +2797,17 @@ textarea {
   overflow: hidden;
 }
 
+/* Fit: full 16:9 stage. Fill/Stretch: shrink to project matte (inline box). */
+.editor-preview-framing-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.editor-preview-framing-viewport.is-project-matte {
+  inset: auto;
+}
+
 .editor-preview-status {
   position: absolute;
   inset: 0;
@@ -2793,6 +2828,18 @@ textarea {
   object-position: center;
   display: block;
   background: transparent;
+}
+
+.editor-preview-media.is-framing-fit {
+  object-fit: contain;
+}
+
+.editor-preview-media.is-framing-fill {
+  object-fit: cover;
+}
+
+.editor-preview-media.is-framing-stretch {
+  object-fit: fill;
 }
 
 .editor-preview-thumb {

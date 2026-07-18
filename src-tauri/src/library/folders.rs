@@ -106,8 +106,7 @@ fn list_folders(conn: &Connection) -> Result<Vec<LibraryFolder>, String> {
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, description, created_at, updated_at) =
-            row.map_err(|e| e.to_string())?;
+        let (id, title, description, created_at, updated_at) = row.map_err(|e| e.to_string())?;
         out.push(folder_from_row(
             conn,
             id,
@@ -149,7 +148,9 @@ fn move_creations_into_folder(
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![creation_id, folder_id], |row| row.get::<_, String>(0))
+            .query_map(params![creation_id, folder_id], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|e| e.to_string())?;
         for row in rows {
             let id = row.map_err(|e| e.to_string())?;
@@ -351,8 +352,8 @@ pub async fn library_delete_folder(id: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::paths::{ensure_directories, resolve_paths};
+    use super::*;
     use std::env;
     use std::fs;
 

@@ -157,6 +157,8 @@ export function EditorLayout() {
     const draft = timelineClipToStagedDraft(clip);
     setClipStagingSeed(draft ? { clipId: clip.id, draft } : null);
     setOpenProjectSelectedTimelineClipId(clip.id);
+    setOpenProjectTimelineMonitorActive(false);
+    seekTimelinePlayhead(clip.startSec);
   };
 
   const monitorMode: "source" | "timeline" = project.timelineMonitorActive

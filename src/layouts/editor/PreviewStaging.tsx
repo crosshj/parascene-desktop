@@ -101,23 +101,26 @@ export function StagingFields({
               <option value="kenBurns">Ken Burns</option>
             </select>
           </label>
-          <label className="editor-staging-field">
-            <span>Framing</span>
-            <select
-              value={draft.framing}
-              onChange={(e) =>
-                onDraftChange({
-                  ...draft,
-                  framing: e.target.value as StagedClipFraming,
-                })
-              }
-            >
-              <option value="fit">Fit</option>
-              <option value="fill">Fill</option>
-              <option value="stretch">Stretch</option>
-            </select>
-          </label>
         </>
+      ) : null}
+
+      {draft.kind === "image" || draft.kind === "video" ? (
+        <label className="editor-staging-field">
+          <span>Framing</span>
+          <select
+            value={draft.framing}
+            onChange={(e) =>
+              onDraftChange({
+                ...draft,
+                framing: e.target.value as StagedClipFraming,
+              })
+            }
+          >
+            <option value="fit">Fit</option>
+            <option value="fill">Fill</option>
+            <option value="stretch">Stretch</option>
+          </select>
+        </label>
       ) : null}
 
       {draft.kind === "video" || draft.kind === "audio" ? (

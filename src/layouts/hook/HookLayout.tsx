@@ -15,10 +15,14 @@ import {
   listTimelineRenders,
   renderTimeline,
   timelineClipsToRenderInput,
+  type RenderFinished,
   type RenderProgress,
   type TimelineRender,
 } from "../../publisher/renderClient";
 import { timelineSequenceDuration } from "../editor/timelineCompose";
+import { rebuildReversed } from "../../library/catalogClient";
+import { invalidateClipThumbnails } from "../../library/clipThumbnail";
+import { invalidateReversedMedia } from "../../library/reversedMedia";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import {
   PublisherRenderModal,
@@ -46,12 +50,36 @@ function formatRenderStamp(iso: string): string {
 }
 
 function renderVideoSrc(render: TimelineRender | null): string | null {
-  if (!render?.path) return null;
+  if (!render?.path || render.status !== "ready") return null;
   try {
-    return convertFileSrc(render.path);
+    // Use a dedicated Range-capable scheme. asset:// mid-stream freezes are a
+    // known WebKit/Tauri footgun for larger MP4s (looks like decode corruption).
+    return convertFileSrc(render.path, "media");
   } catch {
     return null;
   }
+}
+
+function renderProgressPercent(progress: RenderProgress | null): number {
+  if (!progress || progress.total <= 0) return 0;
+  const phaseProgress = Math.min(1, Math.max(0, progress.done / progress.total));
+  return progress.phase === "prepare"
+    ? phaseProgress * 20
+    : 20 + phaseProgress * 80;
+}
+
+function renderProgressLabel(progress: RenderProgress | null): string {
+  if (!progress) return "Starting FFmpeg…";
+  if (progress.phase === "prepare") return "Preparing clips…";
+  return "Rendering with FFmpeg…";
+}
+
+function isInteractiveKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(target.tagName) ||
+    target.isContentEditable
+  );
 }
 
 export function HookLayout() {
@@ -66,6 +94,8 @@ export function HookLayout() {
   );
   const [detailsRender, setDetailsRender] = useState<TimelineRender | null>(null);
   const [exportingRenderId, setExportingRenderId] = useState<string | null>(null);
+  const [rebuildingCache, setRebuildingCache] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [playheadSec, setPlayheadSec] = useState(0);
   const [volume, setVolume] = useState(80);
@@ -73,6 +103,7 @@ export function HookLayout() {
   const playheadRef = useRef(0);
 
   const hasTimeline = project.timeline.length > 0;
+  const renderInProgress = renders.some((render) => render.status === "rendering");
   const selectedRender =
     renders.find((render) => render.id === selectedRenderId) ?? null;
   const activeDurationSec = selectedRender?.durationSec ?? sequenceDurationSec;
@@ -83,8 +114,13 @@ export function HookLayout() {
       const rows = await listTimelineRenders(project.id);
       setRenders(rows);
       setSelectedRenderId((current) => {
-        if (current && rows.some((row) => row.id === current)) return current;
-        return rows[0]?.id ?? null;
+        if (
+          current &&
+          rows.some((row) => row.id === current && row.status === "ready")
+        ) {
+          return current;
+        }
+        return rows.find((row) => row.status === "ready")?.id ?? null;
       });
     } catch (error) {
       console.error("Failed to list timeline renders", error);
@@ -107,8 +143,13 @@ export function HookLayout() {
         if (cancelled) return;
         setRenders(rows);
         setSelectedRenderId((current) => {
-          if (current && rows.some((row) => row.id === current)) return current;
-          return rows[0]?.id ?? null;
+          if (
+            current &&
+            rows.some((row) => row.id === current && row.status === "ready")
+          ) {
+            return current;
+          }
+          return rows.find((row) => row.status === "ready")?.id ?? null;
         });
       } catch (error) {
         console.error("Failed to list timeline renders", error);
@@ -150,22 +191,25 @@ export function HookLayout() {
   }, [volume, activeVideoSrc]);
 
   useEffect(() => {
-    if (!renderModal || renderModal.phase !== "running") return;
     let unlistenProgress: (() => void) | undefined;
     let unlistenFinished: (() => void) | undefined;
 
     void listen<RenderProgress>("publisher-render-progress", (event) => {
-      setRenderModal((current) =>
-        current?.phase === "running"
-          ? { ...current, progress: event.payload }
-          : current,
+      if (event.payload.projectId !== project.id) return;
+      setRenders((current) =>
+        current.map((render) =>
+          render.id === event.payload.renderId
+            ? { ...render, progress: event.payload }
+            : render,
+        ),
       );
     }).then((fn) => {
       unlistenProgress = fn;
     });
 
-    void listen("publisher-render-finished", () => {
-      // invoke result / error handling updates modal state.
+    void listen<RenderFinished>("publisher-render-finished", (event) => {
+      if (event.payload.projectId !== project.id) return;
+      void refreshRenders();
     }).then((fn) => {
       unlistenFinished = fn;
     });
@@ -174,24 +218,27 @@ export function HookLayout() {
       unlistenProgress?.();
       unlistenFinished?.();
     };
-  }, [renderModal?.phase]);
+  }, [project.id, refreshRenders]);
 
-  const seekTo = (sec: number) => {
-    const end = Math.max(activeDurationSec, 0.1);
-    const next = Math.max(0, Math.min(end, sec));
-    playheadRef.current = next;
-    setPlayheadSec(next);
-    const el = videoRef.current;
-    if (el) {
-      try {
-        el.currentTime = next;
-      } catch {
-        // ignore
+  const seekTo = useCallback(
+    (sec: number) => {
+      const end = Math.max(activeDurationSec, 0.1);
+      const next = Math.max(0, Math.min(end, sec));
+      playheadRef.current = next;
+      setPlayheadSec(next);
+      const el = videoRef.current;
+      if (el) {
+        try {
+          el.currentTime = next;
+        } catch {
+          // ignore
+        }
       }
-    }
-  };
+    },
+    [activeDurationSec],
+  );
 
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
     if (!activeVideoSrc || activeDurationSec <= 0) return;
     const el = videoRef.current;
     if (!el) return;
@@ -207,7 +254,47 @@ export function HookLayout() {
     }
     void el.play().catch(() => {});
     setPlaying(true);
-  };
+  }, [activeDurationSec, activeVideoSrc, playheadSec, playing]);
+
+  useEffect(() => {
+    if (!activeVideoSrc || renderModal || detailsRender) return;
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isInteractiveKeyboardTarget(event.target)) return;
+
+      if (event.code === "Space" || event.key === " ") {
+        event.preventDefault();
+        togglePlay();
+        return;
+      }
+
+      const step = event.shiftKey ? 5 : 1;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        seekTo(playheadRef.current - step);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        seekTo(playheadRef.current + step);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        seekTo(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        seekTo(activeDurationSec);
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    activeDurationSec,
+    activeVideoSrc,
+    detailsRender,
+    renderModal,
+    seekTo,
+    togglePlay,
+  ]);
 
   const startRender = () => {
     if (!hasTimeline || renderModal) return;
@@ -215,6 +302,39 @@ export function HookLayout() {
       phase: "confirm",
       clipCount: project.timeline.length,
     });
+  };
+
+  const reversedAssetIds = Array.from(
+    new Set(
+      project.timeline
+        .filter((clip) => clip.reverse && clip.assetId?.trim())
+        .map((clip) => clip.assetId!.trim()),
+    ),
+  );
+
+  const rebuildCache = async () => {
+    if (rebuildingCache) return;
+    setCacheStatus(null);
+    if (reversedAssetIds.length === 0) {
+      setCacheStatus("No reversed clips in this project.");
+      return;
+    }
+    setRebuildingCache(true);
+    try {
+      const count = await rebuildReversed(reversedAssetIds);
+      invalidateReversedMedia(reversedAssetIds);
+      invalidateClipThumbnails(reversedAssetIds);
+      setCacheStatus(
+        count === 1 ? "Rebuilt 1 reversed clip." : `Rebuilt ${count} reversed clips.`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Rebuild failed.";
+      setCacheStatus(message);
+      console.error(message);
+    } finally {
+      setRebuildingCache(false);
+    }
   };
 
   const runRender = async () => {
@@ -231,11 +351,13 @@ export function HookLayout() {
         timelineClipsToRenderInput(project.timeline),
       );
       setRenderModal(null);
-      await refreshRenders();
-      setSelectedRenderId(created.id);
+      setRenders((current) => [
+        created,
+        ...current.filter((render) => render.id !== created.id),
+      ]);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Timeline render failed.";
+        error instanceof Error ? error.message : "Could not start timeline render.";
       setRenderModal({
         phase: "error",
         clipCount: project.timeline.length,
@@ -352,28 +474,19 @@ export function HookLayout() {
             </div>
           </div>
 
-          <div className="hook-player-transport" aria-label="Playback controls">
-            <button
-              type="button"
-              className="btn ghost hook-player-play"
-              disabled={!activeVideoSrc}
-              onClick={togglePlay}
-              aria-label={playing ? "Pause" : "Play"}
-            >
-              {playing ? "Pause" : "Play"}
-            </button>
-            <span className="hook-player-clock">
-              {formatClock(playheadSec)} / {formatClock(activeDurationSec)}
-            </span>
+          <div
+            className="hook-player-transport editor-preview-deck"
+            aria-label="Publisher playback controls"
+          >
             <input
               type="range"
-              className="hook-player-scrub"
+              className="editor-transport-scrub"
               min={0}
               max={scrubMax}
-              step={0.05}
+              step={0.01}
               value={Math.min(playheadSec, scrubMax)}
               disabled={!activeVideoSrc}
-              aria-label="Render playhead"
+              aria-label="Seek render"
               style={
                 {
                   ["--scrub-progress" as string]: `${scrubProgress}%`,
@@ -381,23 +494,143 @@ export function HookLayout() {
               }
               onChange={(event) => seekTo(Number(event.target.value))}
             />
-            <label className="hook-player-volume">
-              <span className="visually-hidden">Volume</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={volume}
-                disabled={!activeVideoSrc}
-                aria-label="Volume"
-                onChange={(event) => {
-                  const next = Number(event.target.value);
-                  setVolume(next);
-                  const el = videoRef.current;
-                  if (el) el.volume = Math.max(0, Math.min(1, next / 100));
-                }}
-              />
-            </label>
+
+            <div className="editor-preview-deck-body">
+              <div className="editor-preview-deck-row is-timeline-transport">
+                <span className="editor-transport-tc">
+                  {formatClock(playheadSec)} / {formatClock(activeDurationSec)}
+                </span>
+
+                <div
+                  className="editor-transport-icons"
+                  aria-label="Playback controls"
+                >
+                  <button
+                    type="button"
+                    className="editor-transport-icon"
+                    disabled={!activeVideoSrc}
+                    title="Skip to beginning (Home)"
+                    aria-label="Skip to beginning"
+                    onClick={() => seekTo(0)}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden>
+                      <path
+                        fill="currentColor"
+                        d="M2.5 3h1.5v10H2.5zm2.5 5 8-5v10z"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-transport-icon"
+                    disabled={!activeVideoSrc}
+                    title="Rewind 1 second (←)"
+                    aria-label="Rewind 1 second"
+                    onClick={() => seekTo(playheadRef.current - 1)}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden>
+                      <path
+                        fill="currentColor"
+                        d="M3 8 9 3v3.2L14 3v10l-5-3.2V13z"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-transport-icon is-play"
+                    disabled={!activeVideoSrc}
+                    title={`${playing ? "Pause" : "Play"} (Space)`}
+                    aria-label={playing ? "Pause" : "Play"}
+                    onClick={togglePlay}
+                  >
+                    {playing ? (
+                      <svg viewBox="0 0 16 16" aria-hidden>
+                        <path
+                          fill="currentColor"
+                          d="M4 3h3v10H4zm5 0h3v10H9z"
+                        />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 16 16" aria-hidden>
+                        <path fill="currentColor" d="M4 2.5v11l10-5.5z" />
+                      </svg>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-transport-icon"
+                    disabled={!activeVideoSrc}
+                    title="Forward 1 second (→)"
+                    aria-label="Forward 1 second"
+                    onClick={() => seekTo(playheadRef.current + 1)}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden>
+                      <path
+                        fill="currentColor"
+                        d="m13 8-6-5v3.2L2 3v10l5-3.2V13z"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-transport-icon"
+                    disabled={!activeVideoSrc}
+                    title="Skip to end (End)"
+                    aria-label="Skip to end"
+                    onClick={() => seekTo(activeDurationSec)}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden>
+                      <path
+                        fill="currentColor"
+                        d="m3 3 8 5-8 5zm9 0h1.5v10H12z"
+                      />
+                    </svg>
+                  </button>
+                </div>
+
+                <div className="editor-transport-utils">
+                  <label
+                    className={`editor-transport-volume${
+                      activeVideoSrc ? "" : " is-disabled"
+                    }`}
+                  >
+                    <svg
+                      className="editor-transport-volume-icon"
+                      viewBox="0 0 16 16"
+                      aria-hidden
+                    >
+                      <path
+                        fill="currentColor"
+                        d="M2 6h3l3-3v10l-3-3H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
+                      />
+                    </svg>
+                    <span className="visually-hidden">Volume</span>
+                    <input
+                      type="range"
+                      className="editor-transport-scrub"
+                      min={0}
+                      max={100}
+                      value={volume}
+                      disabled={!activeVideoSrc}
+                      aria-label="Volume"
+                      style={
+                        {
+                          ["--scrub-progress" as string]: `${volume}%`,
+                        } as CSSProperties
+                      }
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        setVolume(next);
+                        const el = videoRef.current;
+                        if (el) {
+                          el.volume = Math.max(0, Math.min(1, next / 100));
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -426,11 +659,30 @@ export function HookLayout() {
         <button
           type="button"
           className="btn primary hook-render-btn"
-          disabled={!hasTimeline || Boolean(renderModal)}
+          disabled={!hasTimeline || Boolean(renderModal) || renderInProgress}
           onClick={startRender}
         >
-          Render timeline
+          {renderInProgress ? "Rendering in background…" : "Render timeline"}
         </button>
+
+        <button
+          type="button"
+          className="btn ghost hook-rebuild-btn"
+          disabled={
+            rebuildingCache || Boolean(renderModal) || reversedAssetIds.length === 0
+          }
+          onClick={() => void rebuildCache()}
+          title="Force-regenerate reversed clip cache for this project"
+        >
+          {rebuildingCache
+            ? "Rebuilding cache…"
+            : `Rebuild reversed cache${
+                reversedAssetIds.length > 0 ? ` (${reversedAssetIds.length})` : ""
+              }`}
+        </button>
+        {cacheStatus ? (
+          <p className="muted hook-cache-status">{cacheStatus}</p>
+        ) : null}
 
         <div className="hook-render-list-header">
           <h3>Scratch renders</h3>
@@ -445,25 +697,56 @@ export function HookLayout() {
           <ul className="hook-render-list" aria-label="Scratch renders">
             {renders.map((render) => {
               const selected = render.id === selectedRenderId;
+              const ready = render.status === "ready";
+              const rendering = render.status === "rendering";
+              const progressPercent = renderProgressPercent(render.progress);
               return (
-                <li key={render.id}>
+                <li
+                  key={render.id}
+                  className={`hook-render-row is-${render.status}`}
+                >
                   <button
                     type="button"
                     className={`hook-render-item${selected ? " is-selected" : ""}`}
-                    onClick={() => setSelectedRenderId(render.id)}
+                    disabled={!ready}
+                    onClick={() => {
+                      if (ready) setSelectedRenderId(render.id);
+                    }}
                   >
                     <span className="hook-render-item-title">
                       {formatRenderStamp(render.createdAt)}
                     </span>
                     <span className="hook-render-item-meta muted">
-                      {formatClock(render.durationSec)} · {render.clipCount} clips
+                      {rendering
+                        ? renderProgressLabel(render.progress)
+                        : render.status === "failed"
+                          ? "Render failed"
+                          : `${formatClock(render.durationSec)} · ${render.clipCount} clips`}
                     </span>
+                    {rendering ? (
+                      <span
+                        className="hook-render-progress"
+                        role="progressbar"
+                        aria-label="Timeline render progress"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(progressPercent)}
+                      >
+                        <span
+                          className="hook-render-progress-bar"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </span>
+                    ) : null}
+                    {render.status === "failed" && render.error ? (
+                      <span className="hook-render-error">{render.error}</span>
+                    ) : null}
                   </button>
                   <div className="hook-render-actions">
                     <button
                       type="button"
                       className="btn ghost hook-render-save"
-                      disabled={Boolean(exportingRenderId)}
+                      disabled={!ready || Boolean(exportingRenderId)}
                       onClick={() => void saveRenderToDisk(render)}
                     >
                       {exportingRenderId === render.id ? "Saving…" : "Save"}
@@ -471,6 +754,7 @@ export function HookLayout() {
                     <button
                       type="button"
                       className="btn ghost hook-render-details"
+                      disabled={!ready}
                       onClick={() => setDetailsRender(render)}
                     >
                       Details
@@ -478,6 +762,7 @@ export function HookLayout() {
                     <button
                       type="button"
                       className="btn ghost hook-render-delete"
+                      disabled={rendering}
                       aria-label={`Delete render from ${formatRenderStamp(render.createdAt)}`}
                       onClick={() => {
                         void deleteRender(render);

@@ -503,8 +503,7 @@ pub(crate) fn get_creations_by_ids(
         }
     }
 
-    let mut by_id: std::collections::HashMap<String, Creation> =
-        std::collections::HashMap::new();
+    let mut by_id: std::collections::HashMap<String, Creation> = std::collections::HashMap::new();
     const CHUNK: usize = 400;
     for chunk in unique.chunks(CHUNK) {
         let placeholders = std::iter::repeat("?")

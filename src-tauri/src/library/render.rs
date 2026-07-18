@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -39,6 +40,16 @@ pub struct TimelineRender {
     pub clip_count: u32,
     #[serde(default)]
     pub command_line: String,
+    #[serde(default = "ready_render_status")]
+    pub status: String,
+    #[serde(default)]
+    pub progress: Option<RenderProgress>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+fn ready_render_status() -> String {
+    "ready".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,9 +57,11 @@ struct RenderManifest {
     renders: Vec<TimelineRender>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderProgress {
+    pub project_id: String,
+    pub render_id: String,
     pub phase: String,
     pub done: u32,
     pub total: u32,
@@ -57,9 +70,16 @@ pub struct RenderProgress {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderFinished {
+    pub project_id: String,
     pub ok: bool,
-    pub render_id: Option<String>,
+    pub render_id: String,
     pub error: Option<String>,
+}
+
+static RENDER_MANIFEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn manifest_lock() -> &'static Mutex<()> {
+    RENDER_MANIFEST_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Clone, Debug)]
@@ -221,7 +241,9 @@ fn write_manifest(
     let path = manifest_path(paths, project_id);
     let raw = serde_json::to_string_pretty(manifest)
         .map_err(|e| format!("Could not serialize render manifest: {e}"))?;
-    fs::write(&path, raw).map_err(|e| format!("Could not write render manifest: {e}"))
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, raw).map_err(|e| format!("Could not write render manifest: {e}"))?;
+    fs::rename(&temp_path, &path).map_err(|e| format!("Could not replace render manifest: {e}"))
 }
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
@@ -255,21 +277,63 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
     ))
 }
 
-fn emit_progress(app: &AppHandle, phase: &str, done: u32, total: u32) {
-    let _ = app.emit(
-        "publisher-render-progress",
-        RenderProgress {
-            phase: phase.into(),
-            done,
-            total,
-        },
-    );
+fn update_render<F>(
+    paths: &ParascenePaths,
+    project_id: &str,
+    render_id: &str,
+    update: F,
+) -> Result<TimelineRender, String>
+where
+    F: FnOnce(&mut TimelineRender),
+{
+    let _guard = manifest_lock()
+        .lock()
+        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+    let mut manifest = read_manifest(paths, project_id)?;
+    let render = manifest
+        .renders
+        .iter_mut()
+        .find(|render| render.id == render_id)
+        .ok_or_else(|| format!("Render not found: {render_id}"))?;
+    update(render);
+    let updated = render.clone();
+    write_manifest(paths, project_id, &manifest)?;
+    Ok(updated)
 }
 
-fn emit_finished(app: &AppHandle, ok: bool, render_id: Option<String>, error: Option<String>) {
+fn emit_progress(
+    app: &AppHandle,
+    paths: &ParascenePaths,
+    project_id: &str,
+    render_id: &str,
+    phase: &str,
+    done: u32,
+    total: u32,
+) {
+    let progress = RenderProgress {
+        project_id: project_id.into(),
+        render_id: render_id.into(),
+        phase: phase.into(),
+        done,
+        total,
+    };
+    let _ = update_render(paths, project_id, render_id, |render| {
+        render.progress = Some(progress.clone());
+    });
+    let _ = app.emit("publisher-render-progress", progress);
+}
+
+fn emit_finished(
+    app: &AppHandle,
+    project_id: &str,
+    ok: bool,
+    render_id: String,
+    error: Option<String>,
+) {
     let _ = app.emit(
         "publisher-render-finished",
         RenderFinished {
+            project_id: project_id.into(),
             ok,
             render_id,
             error,
@@ -347,6 +411,8 @@ fn build_video_segments(
     clips: &[RenderTimelineClipInput],
     paths: &ParascenePaths,
     app: &AppHandle,
+    project_id: &str,
+    render_id: &str,
 ) -> Result<Vec<VideoSegment>, String> {
     let total = sequence_duration(clips);
     if total <= 0.0 {
@@ -408,7 +474,15 @@ fn build_video_segments(
     }
 
     let prepare_total = ranges.len().max(1) as u32;
-    emit_progress(app, "prepare", 0, prepare_total);
+    emit_progress(
+        app,
+        paths,
+        project_id,
+        render_id,
+        "prepare",
+        0,
+        prepare_total,
+    );
 
     let mut segments: Vec<VideoSegment> = Vec::with_capacity(ranges.len());
     for (index, range) in ranges.iter().enumerate() {
@@ -418,7 +492,15 @@ fn build_video_segments(
                 duration_sec,
                 source: None,
             });
-            emit_progress(app, "prepare", (index + 1) as u32, prepare_total);
+            emit_progress(
+                app,
+                paths,
+                project_id,
+                render_id,
+                "prepare",
+                (index + 1) as u32,
+                prepare_total,
+            );
             continue;
         };
         let clip = lane_clips[clip_index];
@@ -447,7 +529,15 @@ fn build_video_segments(
                 framing: clip_framing(clip),
             }),
         });
-        emit_progress(app, "prepare", (index + 1) as u32, prepare_total);
+        emit_progress(
+            app,
+            paths,
+            project_id,
+            render_id,
+            "prepare",
+            (index + 1) as u32,
+            prepare_total,
+        );
     }
 
     if segments.is_empty() {
@@ -495,21 +585,26 @@ fn collect_audio_segments(
 
 fn frame_filter(out_w: u32, out_h: u32, crop_w: u32, crop_h: u32, framing: Framing) -> String {
     // Browsers size by pixel dimensions (ignore SAR/DAR).
+    // Always end with fps + yuv420p so concat segments share one format/timebase.
+    // (PNG stills are rgb/rgba; mixing those with yuv video mid-concat is a
+    // common cause of "plays audio, freezes video until seek" in HW decoders.)
     let prefix = "setsar=1";
+    // Deterministic 30fps clock is appended by the segment encoder.
+    let tail = "fps=30,format=yuv420p";
     match framing {
         // Match editor TimelineMonitor: contain into the 16:9 preview stage, then
         // center-crop to the project aspect matte, then scale to the output size.
         // (A 1:1 clip in a 9:16 project fills height in the UI — not letterboxed.)
         Framing::Fit => format!(
-            "{prefix},scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,fps=30"
+            "{prefix},scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
         ),
         // object-fit: cover into the final project frame
         Framing::Fill => format!(
-            "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,fps=30"
+            "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,{tail}"
         ),
         // object-fit: fill
         Framing::Stretch => {
-            format!("{prefix},scale={out_w}:{out_h},setsar=1,fps=30")
+            format!("{prefix},scale={out_w}:{out_h},setsar=1,{tail}")
         }
     }
 }
@@ -533,9 +628,62 @@ fn ffmpeg_command_line(ffmpeg: &Path, args: &[String]) -> String {
         .join(" ")
 }
 
+fn concat_demixer_line(path: &Path) -> String {
+    let raw = path.display().to_string();
+    format!("file '{}'", raw.replace('\'', r"'\''"))
+}
+
+fn push_x264_encode(args: &mut Vec<String>) {
+    // Keep the HTML <video> path boring for WebKit/VideoToolbox: constrained
+    // baseline, closed GOPs, no CABAC/weighted preds, repeated headers + AUDs.
+    args.push("-c:v".into());
+    args.push("libx264".into());
+    args.push("-preset".into());
+    args.push("veryfast".into());
+    args.push("-crf".into());
+    args.push("20".into());
+    args.push("-pix_fmt".into());
+    args.push("yuv420p".into());
+    args.push("-profile:v".into());
+    args.push("baseline".into());
+    args.push("-level".into());
+    args.push("3.1".into());
+    args.push("-bf".into());
+    args.push("0".into());
+    args.push("-refs".into());
+    args.push("1".into());
+    args.push("-g".into());
+    args.push("30".into());
+    args.push("-keyint_min".into());
+    args.push("30".into());
+    args.push("-sc_threshold".into());
+    args.push("0".into());
+    args.push("-x264-params".into());
+    args.push(
+        "keyint=30:min-keyint=30:scenecut=0:open-gop=0:repeat-headers=1:aud=1:cabac=0:8x8dct=0:weightp=0:weightb=0".into(),
+    );
+    args.push("-colorspace".into());
+    args.push("bt709".into());
+    args.push("-color_primaries".into());
+    args.push("bt709".into());
+    args.push("-color_trc".into());
+    args.push("bt709".into());
+    args.push("-color_range".into());
+    args.push("tv".into());
+    args.push("-movflags".into());
+    args.push("+faststart".into());
+}
+
+fn push_x264_segment_encode(args: &mut Vec<String>) {
+    args.push("-an".into());
+    push_x264_encode(args);
+}
+
 fn render_timeline_file(
     app: &AppHandle,
     paths: &ParascenePaths,
+    project_id: &str,
+    render_id: &str,
     aspect_ratio: &str,
     clips: &[RenderTimelineClipInput],
     output_path: &Path,
@@ -551,14 +699,36 @@ fn render_timeline_file(
         return Err("Timeline has no clips to render".into());
     }
 
-    let video_segments = build_video_segments(clips, paths, app)?;
+    let video_segments = build_video_segments(clips, paths, app, project_id, render_id)?;
     let audio_segments = collect_audio_segments(clips, paths)?;
 
-    let mut args: Vec<String> = vec!["-y".into()];
-    let mut filter_parts: Vec<String> = Vec::new();
-    let mut input_index = 0usize;
+    // Encode each visual span to its own CFR mp4, then concat + re-encode.
+    // Stream-copying concat demuxer output still freezes Chromium/VideoToolbox
+    // around cut boundaries even when software decode looks fine.
+    let work_dir = output_path.with_extension("segments");
+    if work_dir.exists() {
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+    fs::create_dir_all(&work_dir)
+        .map_err(|e| format!("Could not create segment workspace: {e}"))?;
 
-    for segment in &video_segments {
+    let seg_total = video_segments.len().max(1) as u32;
+    let mut segment_paths: Vec<PathBuf> = Vec::with_capacity(video_segments.len());
+    let mut logged_commands: Vec<String> = Vec::new();
+
+    for (index, segment) in video_segments.iter().enumerate() {
+        emit_progress(
+            app,
+            paths,
+            project_id,
+            render_id,
+            "render",
+            index as u32,
+            seg_total + 1,
+        );
+        let seg_path = work_dir.join(format!("seg_{index:03}.mp4"));
+        let mut args: Vec<String> = vec!["-y".into()];
+
         if let Some(source) = &segment.source {
             let frame = frame_filter(width, height, crop_w, crop_h, source.framing);
             if source.is_image {
@@ -570,15 +740,17 @@ fn render_timeline_file(
                 args.push(format!("{:.3}", segment.duration_sec));
                 args.push("-i".into());
                 args.push(source.path.display().to_string());
-                filter_parts.push(format!(
-                    "[{input_index}:v]{frame},trim=duration={:.3},setpts=PTS-STARTPTS[v{input_index}]",
+                args.push("-vf".into());
+                args.push(format!(
+                    "{frame},trim=duration={:.3},setpts=PTS-STARTPTS",
                     segment.duration_sec
                 ));
             } else {
                 args.push("-i".into());
                 args.push(source.path.display().to_string());
-                filter_parts.push(format!(
-                    "[{input_index}:v]trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS,{frame}[v{input_index}]",
+                args.push("-vf".into());
+                args.push(format!(
+                    "trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS,{frame}",
                     source.in_sec, source.out_sec
                 ));
             }
@@ -590,25 +762,63 @@ fn render_timeline_file(
                 "color=c=black:s={width}x{height}:d={:.3}:rate=30",
                 segment.duration_sec
             ));
-            filter_parts.push(format!("[{input_index}:v]setsar=1[v{input_index}]"));
+            args.push("-vf".into());
+            args.push("setsar=1,fps=30,format=yuv420p".into());
         }
-        input_index += 1;
+
+        args.push("-fps_mode".into());
+        args.push("cfr".into());
+        push_x264_segment_encode(&mut args);
+        // Exact frame count keeps concat demuxer A/V aligned (seconds×30).
+        let frames = (segment.duration_sec * 30.0).round().max(1.0) as u32;
+        args.push("-frames:v".into());
+        args.push(frames.to_string());
+        args.push(seg_path.display().to_string());
+
+        logged_commands.push(ffmpeg_command_line(&ffmpeg, &args));
+        run_ffmpeg(&ffmpeg, &args)?;
+        if !seg_path.is_file() {
+            return Err(format!(
+                "Segment encode produced no file: {}",
+                seg_path.display()
+            ));
+        }
+        segment_paths.push(seg_path);
+        emit_progress(
+            app,
+            paths,
+            project_id,
+            render_id,
+            "render",
+            (index + 1) as u32,
+            seg_total + 1,
+        );
     }
 
-    let video_labels: String = (0..video_segments.len())
-        .map(|i| format!("[v{i}]"))
-        .collect();
-    filter_parts.push(format!(
-        "{video_labels}concat=n={}:v=1:a=0[vout]",
-        video_segments.len()
-    ));
+    let list_path = work_dir.join("concat.txt");
+    let list_body = segment_paths
+        .iter()
+        .map(|p| concat_demixer_line(p))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&list_path, list_body + "\n")
+        .map_err(|e| format!("Could not write concat list: {e}"))?;
 
-    let audio_start_index = input_index;
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-f".into(),
+        "concat".into(),
+        "-safe".into(),
+        "0".into(),
+        "-i".into(),
+        list_path.display().to_string(),
+    ];
+    let mut filter_parts: Vec<String> = Vec::new();
     let mut audio_labels: Vec<String> = Vec::new();
     for (offset, segment) in audio_segments.iter().enumerate() {
         args.push("-i".into());
         args.push(segment.path.display().to_string());
-        let idx = audio_start_index + offset;
+        let idx = offset + 1; // 0 is the concat video input
         let delay = segment.delay_ms;
         filter_parts.push(format!(
             "[{idx}:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS,adelay={delay}|{delay}[a{idx}]",
@@ -623,41 +833,54 @@ fn render_timeline_file(
             "{mix_inputs}amix=inputs={}:duration=longest:dropout_transition=0[aout]",
             audio_labels.len()
         ));
-    }
-
-    emit_progress(app, "render", 0, 1);
-    args.push("-filter_complex".into());
-    args.push(filter_parts.join(";"));
-    args.push("-map".into());
-    args.push("[vout]".into());
-    if audio_labels.is_empty() {
-        args.push("-an".into());
-    } else {
+        args.push("-filter_complex".into());
+        args.push(filter_parts.join(";"));
+        args.push("-map".into());
+        args.push("0:v".into());
         args.push("-map".into());
         args.push("[aout]".into());
+        // Re-encode the joined bitstream. Stream-copying concat demuxer output
+        // leaves mid-file SPS/GOP seams that freeze Chromium's VideoToolbox path
+        // (software decode still looks fine; scrubbing still works).
+        push_x264_encode(&mut args);
         args.push("-c:a".into());
         args.push("aac".into());
         args.push("-b:a".into());
         args.push("192k".into());
+    } else {
+        args.push("-map".into());
+        args.push("0:v".into());
+        push_x264_encode(&mut args);
+        args.push("-an".into());
     }
-    args.push("-c:v".into());
-    args.push("libx264".into());
-    args.push("-preset".into());
-    args.push("veryfast".into());
-    args.push("-crf".into());
-    args.push("20".into());
-    args.push("-movflags".into());
-    args.push("+faststart".into());
+    args.push("-fps_mode".into());
+    args.push("cfr".into());
     args.push("-t".into());
     args.push(format!("{duration_sec:.3}"));
     args.push(output_path.display().to_string());
 
-    let command_line = ffmpeg_command_line(&ffmpeg, &args);
+    logged_commands.push(ffmpeg_command_line(&ffmpeg, &args));
     run_ffmpeg(&ffmpeg, &args)?;
     if !output_path.is_file() {
         return Err("ffmpeg render produced no output file".into());
     }
-    emit_progress(app, "render", 1, 1);
+
+    let _ = fs::remove_dir_all(&work_dir);
+    emit_progress(
+        app,
+        paths,
+        project_id,
+        render_id,
+        "render",
+        seg_total + 1,
+        seg_total + 1,
+    );
+
+    let command_line = format!(
+        "# segment encode + concat re-encode ({} segments)\n{}",
+        segment_paths.len(),
+        logged_commands.join("\n\n")
+    );
     Ok((duration_sec, command_line))
 }
 
@@ -672,8 +895,38 @@ fn new_render_id() -> String {
 fn run_render(
     app: &AppHandle,
     project_id: &str,
+    render_id: &str,
     aspect_ratio: &str,
     clips: Vec<RenderTimelineClipInput>,
+) -> Result<TimelineRender, String> {
+    let paths = default_paths()?;
+    let dir = renders_dir(&paths, project_id);
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create render directory: {e}"))?;
+    let filename = format!("{}.mp4", safe_id(render_id));
+    let output_path = dir.join(&filename);
+    let (duration_sec, command_line) = render_timeline_file(
+        app,
+        &paths,
+        project_id,
+        render_id,
+        aspect_ratio,
+        &clips,
+        &output_path,
+    )?;
+
+    update_render(&paths, project_id, render_id, |render| {
+        render.duration_sec = duration_sec;
+        render.command_line = command_line;
+        render.status = "ready".into();
+        render.progress = None;
+        render.error = None;
+    })
+}
+
+fn create_pending_render(
+    project_id: &str,
+    aspect_ratio: &str,
+    clips: &[RenderTimelineClipInput],
 ) -> Result<TimelineRender, String> {
     if clips.is_empty() {
         return Err("Timeline is empty".into());
@@ -682,21 +935,25 @@ fn run_render(
     let id = new_render_id();
     let dir = renders_dir(&paths, project_id);
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create render directory: {e}"))?;
-    let filename = format!("{}.mp4", safe_id(&id));
-    let output_path = dir.join(&filename);
-    let (duration_sec, command_line) =
-        render_timeline_file(app, &paths, aspect_ratio, &clips, &output_path)?;
-
     let render = TimelineRender {
         id: id.clone(),
-        path: output_path.display().to_string(),
+        path: dir
+            .join(format!("{}.mp4", safe_id(&id)))
+            .display()
+            .to_string(),
         created_at: Utc::now().to_rfc3339(),
-        duration_sec,
+        duration_sec: sequence_duration(clips),
         aspect_ratio: aspect_ratio.into(),
         clip_count: clips.len() as u32,
-        command_line,
+        command_line: String::new(),
+        status: "rendering".into(),
+        progress: None,
+        error: None,
     };
 
+    let _guard = manifest_lock()
+        .lock()
+        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
     let mut manifest = read_manifest(&paths, project_id)?;
     manifest.renders.insert(0, render.clone());
     write_manifest(&paths, project_id, &manifest)?;
@@ -706,11 +963,14 @@ fn run_render(
 #[tauri::command]
 pub async fn publisher_list_renders(project_id: String) -> Result<Vec<TimelineRender>, String> {
     let paths = default_paths()?;
+    let _guard = manifest_lock()
+        .lock()
+        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
     let mut manifest = read_manifest(&paths, &project_id)?;
     let before = manifest.renders.len();
     manifest
         .renders
-        .retain(|render| Path::new(&render.path).is_file());
+        .retain(|render| render.status != "ready" || Path::new(&render.path).is_file());
     if manifest.renders.len() != before {
         write_manifest(&paths, &project_id, &manifest)?;
     }
@@ -724,27 +984,56 @@ pub async fn publisher_render_timeline(
     aspect_ratio: String,
     clips: Vec<RenderTimelineClipInput>,
 ) -> Result<TimelineRender, String> {
+    let pending = create_pending_render(&project_id, &aspect_ratio, &clips)?;
     let app_for_block = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        run_render(&app_for_block, &project_id, &aspect_ratio, clips)
-    })
-    .await
-    .map_err(|e| format!("Render task failed: {e}"))?;
-    match result {
-        Ok(render) => {
-            emit_finished(&app, true, Some(render.id.clone()), None);
-            Ok(render)
+    let project_for_block = project_id.clone();
+    let render_id = pending.id.clone();
+    let render_id_for_block = render_id.clone();
+    let _task = tauri::async_runtime::spawn_blocking(move || {
+        match run_render(
+            &app_for_block,
+            &project_for_block,
+            &render_id_for_block,
+            &aspect_ratio,
+            clips,
+        ) {
+            Ok(_) => {
+                emit_finished(
+                    &app_for_block,
+                    &project_for_block,
+                    true,
+                    render_id_for_block,
+                    None,
+                );
+            }
+            Err(error) => {
+                if let Ok(paths) = default_paths() {
+                    let _ =
+                        update_render(&paths, &project_for_block, &render_id_for_block, |render| {
+                            render.status = "failed".into();
+                            render.progress = None;
+                            render.error = Some(error.clone());
+                        });
+                }
+                emit_finished(
+                    &app_for_block,
+                    &project_for_block,
+                    false,
+                    render_id_for_block,
+                    Some(error),
+                );
+            }
         }
-        Err(error) => {
-            emit_finished(&app, false, None, Some(error.clone()));
-            Err(error)
-        }
-    }
+    });
+    Ok(pending)
 }
 
 #[tauri::command]
 pub async fn publisher_delete_render(project_id: String, render_id: String) -> Result<(), String> {
     let paths = default_paths()?;
+    let _guard = manifest_lock()
+        .lock()
+        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
     let mut manifest = read_manifest(&paths, &project_id)?;
     let Some(index) = manifest
         .renders
@@ -753,6 +1042,9 @@ pub async fn publisher_delete_render(project_id: String, render_id: String) -> R
     else {
         return Err("Render not found".into());
     };
+    if manifest.renders[index].status == "rendering" {
+        return Err("Cannot delete a render while FFmpeg is running".into());
+    }
     let render = manifest.renders.remove(index);
     if Path::new(&render.path).is_file() {
         fs::remove_file(&render.path).map_err(|e| format!("Could not delete render file: {e}"))?;
@@ -867,13 +1159,21 @@ pub async fn publisher_export_render(
 ) -> Result<ExportRenderResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = default_paths()?;
-        let manifest = read_manifest(&paths, &project_id)?;
-        let render = manifest
-            .renders
-            .iter()
-            .find(|render| render.id == render_id)
-            .cloned()
-            .ok_or_else(|| "Render not found".to_string())?;
+        let render = {
+            let _guard = manifest_lock()
+                .lock()
+                .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+            let manifest = read_manifest(&paths, &project_id)?;
+            manifest
+                .renders
+                .iter()
+                .find(|render| render.id == render_id)
+                .cloned()
+                .ok_or_else(|| "Render not found".to_string())?
+        };
+        if render.status != "ready" {
+            return Err("Render is not ready to save".into());
+        }
         if !Path::new(&render.path).is_file() {
             return Err("Render file is missing from disk".into());
         }

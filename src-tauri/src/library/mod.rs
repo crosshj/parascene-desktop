@@ -1,19 +1,20 @@
 mod catalog;
+mod clip_thumb;
 mod download;
 mod ffmpeg;
 mod folders;
 mod import_local;
 mod merge;
-mod paths;
+pub(crate) mod paths;
 mod render;
 mod reverse;
 mod thumb_fill;
 
 pub use catalog::{
     library_apply_manifest, library_ensure_ready, library_filter_counts, library_get_creation,
-    library_get_creations, library_invalidate_thumbs, library_list_creations,
-    library_sync_status,
+    library_get_creations, library_invalidate_thumbs, library_list_creations, library_sync_status,
 };
+pub use clip_thumb::library_ensure_clip_thumb;
 pub use download::{
     library_cache_missing_media, library_cache_missing_thumbs, library_delete_local,
     library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,
@@ -30,7 +31,7 @@ pub use render::{
     publisher_delete_render, publisher_export_render, publisher_list_renders,
     publisher_render_timeline,
 };
-pub use reverse::library_ensure_reversed;
+pub use reverse::{library_ensure_reversed, library_rebuild_reversed};
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
 use catalog::{query_creations_page, CreationPage};
