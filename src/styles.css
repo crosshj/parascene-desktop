@@ -3296,6 +3296,23 @@ textarea {
   opacity: 0.4;
 }
 
+.editor-transport-volume.is-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.editor-staging-controls.is-placeholder {
+  flex: 1 1 auto;
+  min-height: 2.25rem;
+  min-width: 12rem;
+}
+
+.editor-cartridge-grip.is-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+  cursor: default;
+}
+
 .editor-transport-volume-icon {
   flex: 0 0 auto;
   width: 16px;

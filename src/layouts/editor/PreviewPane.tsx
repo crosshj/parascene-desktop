@@ -280,7 +280,9 @@ export function PreviewPane({
     setDurationSec(0);
     setCatalogError(false);
     setDetailFailed(false);
-    setCreation(null);
+    // Keep the previous creation painted until the new one loads so the
+    // stage and staging deck don't collapse into an empty/loading layout.
+    if (!assetId) setCreation(null);
   }
 
   const editingClip = Boolean(stagingSeedKey);
@@ -289,6 +291,32 @@ export function PreviewPane({
       ? selectedAssetIds.map((id) => id.trim()).filter(Boolean)
       : [];
   const selectionKey = sourceSelectionIds.join("|");
+
+  // Drop stale multi-select classification immediately on selection change so
+  // the previous composite/unsupported class cannot own the preview for a beat.
+  const [loadedSelectionKey, setLoadedSelectionKey] = useState(selectionKey);
+  if (selectionKey !== loadedSelectionKey) {
+    setLoadedSelectionKey(selectionKey);
+    setSelectionClass(null);
+    setSlideshowThumbs([]);
+    setSelectionLoading(sourceSelectionIds.length > 0);
+    if (!editingClip && sourceSelectionIds.length < 2) {
+      // Leave single-asset staging controls in place: convert a leftover
+      // slideshow draft into a provisional single-asset draft instead of
+      // flashing the empty "prepare a clip" row.
+      const nextId = sourceSelectionIds[0] ?? assetId;
+      setStagedDraft((prev) => {
+        if (prev?.kind !== "slideshow") return prev;
+        if (!nextId) return null;
+        return defaultStagedClipDraft({
+          assetId: nextId,
+          label: prev.label,
+          kind: "image",
+          thumbUrl: prev.thumbUrl,
+        });
+      });
+    }
+  }
 
   useEffect(() => {
     if (monitorMode !== "source" || editingClip) {
@@ -416,43 +444,68 @@ export function PreviewPane({
       setStagedDraft(null);
       return;
     }
-    if (selectionClass?.type !== "compositeImages") return;
-    const ids = selectionClass.imageAssetIds;
-    const thumb = slideshowThumbs[0] ?? null;
-    setStagedDraft((prev) => {
-      if (
-        prev?.kind === "slideshow" &&
-        prev.slideshow &&
-        prev.slideshow.imageAssetIds.length === ids.length &&
-        prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
-      ) {
-        if (prev.thumbUrl === thumb) return prev;
-        return { ...prev, thumbUrl: thumb };
-      }
-      return defaultSlideshowDraft({
-        imageAssetIds: ids,
-        label: `Slideshow (${ids.length})`,
-        thumbUrl: thumb,
+    if (selectionClass?.type === "compositeImages") {
+      const ids = selectionClass.imageAssetIds;
+      const thumb = slideshowThumbs[0] ?? null;
+      setStagedDraft((prev) => {
+        if (
+          prev?.kind === "slideshow" &&
+          prev.slideshow &&
+          prev.slideshow.imageAssetIds.length === ids.length &&
+          prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
+        ) {
+          if (prev.thumbUrl === thumb) return prev;
+          return { ...prev, thumbUrl: thumb };
+        }
+        return defaultSlideshowDraft({
+          imageAssetIds: ids,
+          label: `Slideshow (${ids.length})`,
+          thumbUrl: thumb,
+        });
       });
-    });
+      return;
+    }
+    // Don't tear down staging while classification is still in flight —
+    // that flash is what makes asset switches feel jumpy.
+    if (selectionLoading || selectionClass == null) return;
+    setStagedDraft((prev) => (prev?.kind === "slideshow" ? null : prev));
   }, [
     editingClip,
     monitorMode,
     selectionClass,
+    selectionLoading,
     slideshowThumbs,
     unsupportedSelection,
   ]);
 
-  const detail = creation ? creationDetailUrl(creation) : null;
-  const catalogThumb = creation ? creationPreviewUrl(creation) : null;
-  const unavailable = creation ? isParasceneUnavailable(creation) : false;
+  const creationMatchesAsset = Boolean(
+    creation && assetId && creation.id === assetId,
+  );
+  const detail = creationMatchesAsset ? creationDetailUrl(creation!) : null;
+  const catalogThumb = creationMatchesAsset
+    ? creationPreviewUrl(creation!)
+    : creation && !assetId
+      ? creationPreviewUrl(creation)
+      : null;
+  // Keep painting the previous asset while the next catalog row loads.
+  const holdThumb =
+    !creationMatchesAsset && creation && assetId
+      ? creationPreviewUrl(creation)
+      : null;
+  const unavailable =
+    creationMatchesAsset && creation
+      ? isParasceneUnavailable(creation)
+      : false;
   const waitingLocal =
+    creationMatchesAsset &&
     Boolean(creation) &&
     !detail &&
     !catalogThumb &&
     canFetchLocal(creation!) &&
     !unavailable;
-  const mediaType = String(creation?.mediaType ?? "")
+  const mediaType = String(
+    (creationMatchesAsset ? creation?.mediaType : null) ?? "",
+  )
     .trim()
     .toLowerCase();
   const isVideo = mediaType === "video";
@@ -495,7 +548,8 @@ export function PreviewPane({
       : null;
   const thumb =
     activeClipFrameThumb ??
-    (wantsReverse && reversedThumb ? reversedThumb : catalogThumb);
+    (wantsReverse && reversedThumb ? reversedThumb : catalogThumb) ??
+    holdThumb;
 
   const reverseEnabled = Boolean(wantsReverse && assetId && detail);
   if (!reverseEnabled) {
@@ -598,8 +652,11 @@ export function PreviewPane({
 
   if (
     !selectionOwnsPreview &&
-    stagedDraft?.kind !== "slideshow" &&
-    (!assetId || !creation || catalogError)
+    !(
+      stagedDraft?.kind === "slideshow" &&
+      (isCompositeSelection || editingClip)
+    ) &&
+    (!assetId || catalogError)
   ) {
     if (stagedDraft !== null) setStagedDraft(null);
   }
@@ -609,6 +666,9 @@ export function PreviewPane({
       appliedSeedKeyRef.current = null;
       return;
     }
+    // Wait until the catalog row matches the selected asset so we don't
+    // rebuild staging from a stale previous creation.
+    if (creation.id !== assetId) return;
 
     const mt = String(creation.mediaType ?? "image").trim().toLowerCase();
     const kindFromCreation = kindFromMediaType(mt);
@@ -675,6 +735,17 @@ export function PreviewPane({
     appliedSeedKeyRef.current = null;
     void Promise.resolve().then(() => {
       setStagedDraft((prev) => {
+        // Never keep a leftover composite slideshow draft when staging a
+        // single asset — even if assetId matches the slideshow primary.
+        if (prev?.kind === "slideshow" && !stagingSeedKey) {
+          return defaultStagedClipDraft({
+            assetId,
+            label,
+            kind: kindFromCreation,
+            sourceDurationSec: durationSec > 0 ? durationSec : undefined,
+            thumbUrl: liveThumb,
+          });
+        }
         if (prev?.assetId === assetId) {
           const nextThumb =
             (prev.reverse ? reverseThumb ?? prev.thumbUrl : liveThumb) ??
@@ -761,9 +832,19 @@ export function PreviewPane({
   const canStageSlideshow =
     stagedDraft?.kind === "slideshow" &&
     Boolean(stagedDraft.slideshow?.imageAssetIds.length);
+  // Keep staging controls mounted across asset switches — even before the
+  // new creation/draft catches up — so the deck layout doesn't collapse.
   const canStage = canStageSlideshow
     ? true
-    : Boolean(assetId && creation && !catalogError && (useDetail || thumb));
+    : Boolean(
+        stagedDraft &&
+          assetId &&
+          !catalogError &&
+          !unsupportedSelection &&
+          (creationMatchesAsset
+            ? useDetail || thumb
+            : Boolean(stagedDraft)),
+      );
   /** Video with Audio Include unticked — mute preview and lock volume. */
   const audioExcluded =
     isVideo && stagedDraft != null && !stagedDraft.includeAudio;
@@ -782,7 +863,7 @@ export function PreviewPane({
 
   // Persistent source-ownership badge for the preview (Timeline / Asset / Clip).
   const assetDisplayName = (() => {
-    if (creation) {
+    if (creationMatchesAsset && creation) {
       const titled = creationCardTitle(creation);
       if (!titled.untitled) return titled.text;
       return creation.filename?.trim() || assetId || "";
@@ -1029,7 +1110,9 @@ export function PreviewPane({
     }
   } else if (!assetId) status = "Select an asset";
   else if (catalogError) status = "Asset not in local catalog";
-  else if (!creation) status = "Loading…";
+  else if (!creationMatchesAsset && !thumb && !holdThumb)
+    status = "Loading…";
+  else if (!creationMatchesAsset) status = null;
   else if (wantsReverse && reverseBusy) status = "Reversing…";
   else if (wantsReverse && reverseError) status = reverseError;
   else if (wantsReverse && !reversedDetail && detail) status = "Reversing…";
@@ -1262,53 +1345,55 @@ export function PreviewPane({
                 </span>
               </div>
               <div className="editor-transport-utils">
-                {isVideo || isAudio ? (
-                  <label
-                    className={`editor-transport-volume${
-                      volumeEnabled ? "" : " is-disabled"
-                    }`}
+                <label
+                  className={`editor-transport-volume${
+                    volumeEnabled ? "" : " is-disabled"
+                  }${
+                    isVideo || isAudio || canPlaySlideshow
+                      ? ""
+                      : " is-placeholder"
+                  }`}
+                >
+                  <svg
+                    className="editor-transport-volume-icon"
+                    viewBox="0 0 16 16"
+                    width="14"
+                    height="14"
+                    aria-hidden
                   >
-                    <svg
-                      className="editor-transport-volume-icon"
-                      viewBox="0 0 16 16"
-                      width="14"
-                      height="14"
-                      aria-hidden
-                    >
-                      <path
-                        fill="currentColor"
-                        d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
-                      />
-                    </svg>
-                    <span className="visually-hidden">Volume</span>
-                    <input
-                      type="range"
-                      className="editor-transport-scrub"
-                      min={0}
-                      max={100}
-                      value={volume}
-                      disabled={!volumeEnabled}
-                      aria-label="Volume"
-                      title={
-                        audioExcluded
-                          ? "Audio include is off for this clip"
-                          : undefined
-                      }
-                      style={
-                        {
-                          ["--scrub-progress" as string]: `${volume}%`,
-                        } as CSSProperties
-                      }
-                      onChange={(event) => {
-                        if (!volumeEnabled) return;
-                        const next = Number(event.target.value);
-                        setVolume(next);
-                        const el = mediaRef.current;
-                        if (el) el.volume = next / 100;
-                      }}
+                    <path
+                      fill="currentColor"
+                      d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
                     />
-                  </label>
-                ) : null}
+                  </svg>
+                  <span className="visually-hidden">Volume</span>
+                  <input
+                    type="range"
+                    className="editor-transport-scrub"
+                    min={0}
+                    max={100}
+                    value={volume}
+                    disabled={!volumeEnabled}
+                    aria-label="Volume"
+                    title={
+                      audioExcluded
+                        ? "Audio include is off for this clip"
+                        : undefined
+                    }
+                    style={
+                      {
+                        ["--scrub-progress" as string]: `${volume}%`,
+                      } as CSSProperties
+                    }
+                    onChange={(event) => {
+                      if (!volumeEnabled) return;
+                      const next = Number(event.target.value);
+                      setVolume(next);
+                      const el = mediaRef.current;
+                      if (el) el.volume = next / 100;
+                    }}
+                  />
+                </label>
               </div>
             </div>
 
@@ -1327,6 +1412,11 @@ export function PreviewPane({
                     stagedDraft.kind === "slideshow" ? bakeInfo : null
                   }
                 />
+              ) : assetId ? (
+                <div
+                  className="editor-staging-controls is-placeholder"
+                  aria-hidden
+                />
               ) : (
                 <p className="muted editor-staging-empty">
                   Select an asset to prepare a clip
@@ -1337,6 +1427,11 @@ export function PreviewPane({
               !editingClip &&
               !unsupportedMessage ? (
                 <ClipDragHandle draft={stagedDraft} />
+              ) : assetId && !editingClip && !unsupportedMessage ? (
+                <div
+                  className="editor-cartridge-grip is-placeholder"
+                  aria-hidden
+                />
               ) : null}
               {canStage &&
               stagedDraft?.kind === "slideshow" &&
