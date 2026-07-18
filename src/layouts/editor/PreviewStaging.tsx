@@ -27,12 +27,15 @@ type StagingFieldsProps = {
   onDraftChange: (draft: StagedClipDraft) => void;
   /** Runtime slideshow bake status when editing a timeline clip. */
   bakeInfo?: BakeInfo | null;
-  /** Bake the current slideshow recipe (timeline clips only). */
-  onRender?: (() => void) | null;
 };
 
 type ClipDragHandleProps = {
   draft: StagedClipDraft;
+};
+
+type SlideshowRenderHandleProps = {
+  onRender: () => void;
+  rendering?: boolean;
 };
 
 function clampInOut(
@@ -61,7 +64,6 @@ export function StagingFields({
   sourceDurationSec,
   onDraftChange,
   bakeInfo = null,
-  onRender = null,
 }: StagingFieldsProps) {
   const duration = stagedClipDuration(draft);
   const maxSec =
@@ -70,20 +72,14 @@ export function StagingFields({
       : sourceDurationSec > 0
         ? sourceDurationSec
         : draft.outSec;
-  const slideshowCount = draft.slideshow?.imageAssetIds.length ?? 0;
   const slideshowMode: SlideshowMode =
     draft.slideshow?.mode === "beat" ? "beat" : "even";
   const slideshowRandom = draft.slideshow?.random === true;
-  const rendering = bakeInfo?.status === "generating";
 
   return (
     <div className="editor-staging-controls">
       {draft.kind === "slideshow" ? (
         <>
-          <label className="editor-staging-field">
-            <span>Images</span>
-            <span className="editor-staging-static">{slideshowCount}</span>
-          </label>
           <label className="editor-staging-field">
             <span>Duration</span>
             <input
@@ -155,31 +151,10 @@ export function StagingFields({
               }}
             />
           </label>
-          {slideshowMode === "beat" ? (
-            <p className="muted editor-staging-hint">
-              Beat timing uses overlapping Master Audio after the clip is
-              dropped on the timeline.
-            </p>
-          ) : null}
-          {rendering ? (
-            <p className="muted editor-staging-hint" role="status">
-              Rendering slideshow…
-            </p>
-          ) : null}
           {bakeInfo?.status === "failed" ? (
             <p className="editor-staging-error" role="alert">
               {bakeInfo.error?.trim() || "Slideshow render failed"}
             </p>
-          ) : null}
-          {onRender ? (
-            <button
-              type="button"
-              className="btn ghost editor-staging-rerender"
-              disabled={rendering}
-              onClick={onRender}
-            >
-              {rendering ? "Rendering…" : "Render"}
-            </button>
           ) : null}
         </>
       ) : null}
@@ -317,6 +292,27 @@ export function StagingFields({
         </>
       ) : null}
     </div>
+  );
+}
+
+/** Far-right deck action — same shell as ClipDragHandle, for timeline slideshows. */
+export function SlideshowRenderHandle({
+  onRender,
+  rendering = false,
+}: SlideshowRenderHandleProps) {
+  return (
+    <button
+      type="button"
+      className="editor-cartridge-grip is-action"
+      disabled={rendering}
+      onClick={onRender}
+      title={rendering ? "Rendering slideshow…" : "Render slideshow"}
+      aria-label={rendering ? "Rendering slideshow" : "Render slideshow"}
+    >
+      <span className="editor-cartridge-grip-label">
+        {rendering ? "Rendering…" : "Render"}
+      </span>
+    </button>
   );
 }
 

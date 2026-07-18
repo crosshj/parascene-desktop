@@ -42,20 +42,14 @@ export function syncDiskSummary(status: SyncStatus): string {
   return `${formatBytes(status.mediaBytes)} media · ${formatBytes(status.thumbsBytes)} previews`;
 }
 
-/** Creations with no local thumb and no downloadable preview URL (e.g. WIP). */
+/** Cloud-backed creations with no local thumb and no downloadable preview URL (e.g. WIP). */
 export function unsyncableThumbCount(status: SyncStatus): number {
-  return Math.max(
-    0,
-    status.total - status.withThumb - status.missingThumbCacheable,
-  );
+  return Math.max(0, status.missingThumbUncacheable);
 }
 
-/** Creations with no local media and no remote URL. */
+/** Cloud-backed creations with no local media and no remote URL. */
 export function unsyncableMediaCount(status: SyncStatus): number {
-  return Math.max(
-    0,
-    status.total - status.withMedia - status.missingMediaCacheable,
-  );
+  return Math.max(0, status.missingMediaUncacheable);
 }
 
 /** Prefer filename, then title, then id — for Sync “can't cache” list. */

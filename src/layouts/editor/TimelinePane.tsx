@@ -1387,7 +1387,7 @@ export function TimelinePane({
                     )}
                     label={
                       clip.kind === "slideshow"
-                        ? `${clip.label} · ${clip.slideshow?.imageAssetIds.length ?? 0}`
+                        ? `${clip.label} · ${clip.slideshow?.imageAssetIds.length ?? 0} images`
                         : clip.label
                     }
                     title={

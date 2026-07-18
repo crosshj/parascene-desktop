@@ -11,7 +11,7 @@ import {
   ensureReversedMedia,
   getCachedReversedMedia,
 } from "../../library/reversedMedia";
-import { mediaUrlForBakePath } from "../../library/slideshowMedia";
+import { mediaUrlForBakePath, type BakeInfo } from "../../library/slideshowMedia";
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
@@ -33,6 +33,8 @@ type TimelineMonitorProps = {
   playheadSec: number;
   playing: boolean;
   mediaSeekEpoch?: number;
+  /** Runtime bake status for slideshow clips under the playhead. */
+  bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
   volume: number;
   /** 16:9 preview stage size in CSS px. */
   stageW: number;
@@ -357,6 +359,7 @@ export function TimelineMonitor({
   playheadSec,
   playing,
   mediaSeekEpoch = 0,
+  bakeInfoByClipId,
   volume,
   stageW,
   stageH,
@@ -421,11 +424,15 @@ export function TimelineMonitor({
             ? normalizeFraming(visual.clip.framing)
             : "fit";
         if (kind === "slideshow") {
+          const clipId = isActive ? visual?.clip.id : null;
+          const bakeInfo =
+            clipId && bakeInfoByClipId ? bakeInfoByClipId.get(clipId) : undefined;
           return (
             <SlideshowDecoder
               key={key}
               decoderKey={key}
               bakePath={bakePath ?? null}
+              bakeInfo={bakeInfo ?? null}
               active={isActive}
               visible={isVisible}
               framing={framing}
@@ -483,6 +490,7 @@ export function TimelineMonitor({
 function SlideshowDecoder({
   decoderKey,
   bakePath,
+  bakeInfo,
   active,
   visible,
   framing,
@@ -498,6 +506,7 @@ function SlideshowDecoder({
 }: {
   decoderKey: AssetDecoderKey;
   bakePath: string | null;
+  bakeInfo?: BakeInfo | null;
   active: boolean;
   visible: boolean;
   framing: StagedClipFraming;
@@ -519,9 +528,13 @@ function SlideshowDecoder({
   const effectiveFraming = active ? framing : paintedFraming;
 
   if (active && !bakePath) {
-    return (
-      <span className="editor-preview-wait muted">Hit Render to generate</span>
-    );
+    const status =
+      bakeInfo?.status === "generating"
+        ? "Rendering slideshow…"
+        : bakeInfo?.status === "failed"
+          ? bakeInfo.error?.trim() || "Slideshow render failed"
+          : "Hit Render to generate this slideshow";
+    return <span className="editor-preview-status muted">{status}</span>;
   }
   if (!bakePath) return null;
 

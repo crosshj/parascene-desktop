@@ -1222,6 +1222,7 @@ export function EditorLayout() {
         }
         onClipDraftChange={onClipDraftChange}
         bakeInfo={clipStagingSeed ? (selectedBakeInfo ?? null) : null}
+        bakeInfoByClipId={bakeInfoByClipId}
         onSlideshowRender={
           clipStagingSeed?.draft.kind === "slideshow"
             ? onSlideshowRender

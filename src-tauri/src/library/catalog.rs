@@ -85,11 +85,16 @@ pub struct SyncStatus {
     pub missing_thumb_cacheable: u32,
     /// Missing full media that still have a remote URL.
     pub missing_media_cacheable: u32,
+    /// Cloud-backed creations with no local thumb and no downloadable preview URL.
+    pub missing_thumb_uncacheable: u32,
+    /// Cloud-backed creations with no local media and no remote URL.
+    pub missing_media_uncacheable: u32,
     /// Bytes used under Library/media.
     pub media_bytes: u64,
     /// Bytes used under Library/thumbs.
     pub thumbs_bytes: u64,
-    /// Creations that can't be cached (no downloadable cloud URLs). Capped.
+    /// Cloud-backed creations that can't be cached (no downloadable URLs). Capped.
+    /// Excludes local-only imports (never existed in Parascene cloud).
     pub without_cloud_urls: Vec<WithoutCloudUrl>,
 }
 
@@ -585,30 +590,44 @@ fn dir_size_bytes(path: &Path) -> u64 {
 
 const WITHOUT_CLOUD_URLS_LIMIT: u32 = 50;
 
+/// Cloud-backed rows only (not desktop-local imports). Local-only never had
+/// cloud URLs, so they must not appear on Sync as “can't cache.”
+const CLOUD_BACKED: &str = r#"
+  (
+    (remote_url IS NOT NULL AND remote_url != '')
+    OR (remote_json IS NOT NULL AND remote_json != '')
+  )
+"#;
+
 fn list_without_cloud_urls(conn: &Connection) -> Result<Vec<WithoutCloudUrl>, String> {
-    // Matches unsyncableThumbCount ∪ unsyncableMediaCount: no local file and no
-    // downloadable URL under the same rules as cache-missing queries.
+    // Matches unsyncableThumbCount ∪ unsyncableMediaCount: cloud-backed, no local
+    // file, and no downloadable URL under the same rules as cache-missing queries.
     let mut stmt = conn
         .prepare(
-            r#"
+            &format!(
+                r#"
             SELECT id, title, filename FROM creations
             WHERE
-              (
-                (local_thumb_path IS NULL OR local_thumb_path = '')
-                AND NOT (
-                  (fit_thumbnail_url IS NOT NULL AND fit_thumbnail_url != '')
-                  OR (thumbnail_url IS NOT NULL AND thumbnail_url != '')
-                  OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
+              {CLOUD_BACKED}
+              AND (
+                (
+                  (local_thumb_path IS NULL OR local_thumb_path = '')
+                  AND NOT (
+                    (fit_thumbnail_url IS NOT NULL AND fit_thumbnail_url != '')
+                    OR (thumbnail_url IS NOT NULL AND thumbnail_url != '')
+                    OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
+                  )
                 )
-              )
-              OR
-              (
-                (local_path IS NULL OR local_path = '')
-                AND (remote_url IS NULL OR remote_url = '')
+                OR
+                (
+                  (local_path IS NULL OR local_path = '')
+                  AND (remote_url IS NULL OR remote_url = '')
+                )
               )
             ORDER BY created_at DESC
             LIMIT ?1
-            "#,
+            "#
+            ),
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -654,6 +673,28 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
            WHERE (local_path IS NULL OR local_path = '')
              AND remote_url IS NOT NULL AND remote_url != ''"#,
     )?;
+    let missing_thumb_uncacheable = count_where(
+        conn,
+        &format!(
+            r#"SELECT COUNT(*) FROM creations
+           WHERE {CLOUD_BACKED}
+             AND (local_thumb_path IS NULL OR local_thumb_path = '')
+             AND NOT (
+               (fit_thumbnail_url IS NOT NULL AND fit_thumbnail_url != '')
+               OR (thumbnail_url IS NOT NULL AND thumbnail_url != '')
+               OR (media_type = 'image' AND remote_url IS NOT NULL AND remote_url != '')
+             )"#
+        ),
+    )?;
+    let missing_media_uncacheable = count_where(
+        conn,
+        &format!(
+            r#"SELECT COUNT(*) FROM creations
+           WHERE {CLOUD_BACKED}
+             AND (local_path IS NULL OR local_path = '')
+             AND (remote_url IS NULL OR remote_url = '')"#
+        ),
+    )?;
     Ok(SyncStatus {
         root_path: paths.root.display().to_string(),
         last_sync_at: meta_get(conn, "last_sync_at")?,
@@ -667,6 +708,8 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
         with_media,
         missing_thumb_cacheable,
         missing_media_cacheable,
+        missing_thumb_uncacheable,
+        missing_media_uncacheable,
         media_bytes: dir_size_bytes(&paths.media),
         thumbs_bytes: dir_size_bytes(&paths.thumbs),
         without_cloud_urls: list_without_cloud_urls(conn)?,

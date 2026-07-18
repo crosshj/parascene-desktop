@@ -7,7 +7,6 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthProvider";
-import { getEnvConfig } from "../auth/session";
 import {
   useShell,
   type LibrarySurface,
@@ -44,8 +43,7 @@ function profilePageUrl(
 ): string | null {
   const handle = session.user.preferred_username?.trim().replace(/^@/, "");
   if (!handle) return null;
-  const base = getEnvConfig().baseUrl.replace(/\/$/, "");
-  return `${base}/@${encodeURIComponent(handle)}`;
+  return `https://www.parascene.com/p/${encodeURIComponent(handle)}`;
 }
 
 export function AppChrome({ children }: { children: ReactNode }) {

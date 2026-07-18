@@ -84,11 +84,18 @@ export type SyncStatus = {
   missingThumbCacheable: number;
   /** Missing media that still have a remote URL. */
   missingMediaCacheable: number;
+  /** Cloud-backed creations with no local thumb and no downloadable preview URL. */
+  missingThumbUncacheable: number;
+  /** Cloud-backed creations with no local media and no remote URL. */
+  missingMediaUncacheable: number;
   /** Bytes under Library/media. */
   mediaBytes: number;
   /** Bytes under Library/thumbs. */
   thumbsBytes: number;
-  /** Creations with nothing to download (no cloud URLs). Capped in the backend. */
+  /**
+   * Cloud-backed creations with nothing to download (no cloud URLs). Capped in the backend.
+   * Excludes local-only imports.
+   */
   withoutCloudUrls: WithoutCloudUrl[];
 };
 

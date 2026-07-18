@@ -23,6 +23,8 @@ const baseStatus = {
   withMedia: 1,
   missingThumbCacheable: 2,
   missingMediaCacheable: 2,
+  missingThumbUncacheable: 0,
+  missingMediaUncacheable: 0,
   mediaBytes: 0,
   thumbsBytes: 0,
   withoutCloudUrls: [],
@@ -52,23 +54,29 @@ describe("syncState", () => {
     ).toBe("4.7 GB media · 383 MB previews");
   });
 
-  it("counts creations without cloud URLs", () => {
+  it("counts cloud-backed creations without cloud URLs", () => {
     expect(
       unsyncableThumbCount({
         ...baseStatus,
-        total: 2842,
-        withThumb: 2839,
-        missingThumbCacheable: 0,
+        missingThumbUncacheable: 3,
       }),
     ).toBe(3);
     expect(
       unsyncableMediaCount({
         ...baseStatus,
-        total: 2842,
-        withMedia: 2839,
-        missingMediaCacheable: 0,
+        missingMediaUncacheable: 3,
       }),
     ).toBe(3);
+    expect(
+      unsyncableThumbCount({
+        ...baseStatus,
+        // Local-only leftovers must not inflate these (backend excludes them).
+        total: 2842,
+        withThumb: 2839,
+        missingThumbCacheable: 0,
+        missingThumbUncacheable: 0,
+      }),
+    ).toBe(0);
   });
 
   it("labels without-cloud-url rows", () => {

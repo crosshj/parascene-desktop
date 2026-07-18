@@ -3375,6 +3375,16 @@ textarea {
   touch-action: none;
 }
 
+.editor-cartridge-grip.is-action {
+  cursor: pointer;
+  -webkit-user-drag: none;
+}
+
+.editor-cartridge-grip.is-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 body.is-staged-clip-dragging,
 body.is-staged-clip-dragging * {
   cursor: grabbing !important;

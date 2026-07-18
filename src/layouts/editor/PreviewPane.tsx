@@ -35,7 +35,11 @@ import {
   unsupportedSelectionMessage,
   type MultiSelectionClass,
 } from "./selectionClassify";
-import { ClipDragHandle, StagingFields } from "./PreviewStaging";
+import {
+  ClipDragHandle,
+  SlideshowRenderHandle,
+  StagingFields,
+} from "./PreviewStaging";
 import {
   defaultSlideshowDraft,
   defaultStagedClipDraft,
@@ -79,6 +83,8 @@ type PreviewPaneProps = {
   onClipDraftChange?: (clipId: string, draft: StagedClipDraft) => void;
   /** Runtime bake status when editing a slideshow timeline clip. */
   bakeInfo?: BakeInfo | null;
+  /** Runtime bake status for all slideshow clips (timeline monitor). */
+  bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
   /** Explicit slideshow bake (timeline clips only). */
   onSlideshowRender?: (() => void) | null;
   /** Show a left-edge control to reopen the assets pane. */
@@ -207,6 +213,7 @@ export function PreviewPane({
   stagingSeedKey = null,
   onClipDraftChange,
   bakeInfo = null,
+  bakeInfoByClipId,
   onSlideshowRender = null,
   showAssetsExpand = false,
   onExpandAssets,
@@ -1070,6 +1077,7 @@ export function PreviewPane({
                 playheadSec={timelinePlayheadSec}
                 playing={timelinePlaying}
                 mediaSeekEpoch={mediaSeekEpoch}
+                bakeInfoByClipId={bakeInfoByClipId}
                 volume={volume}
                 stageW={stage.w}
                 stageH={stage.h}
@@ -1318,11 +1326,6 @@ export function PreviewPane({
                   bakeInfo={
                     stagedDraft.kind === "slideshow" ? bakeInfo : null
                   }
-                  onRender={
-                    stagedDraft.kind === "slideshow"
-                      ? onSlideshowRender
-                      : null
-                  }
                 />
               ) : (
                 <p className="muted editor-staging-empty">
@@ -1334,6 +1337,16 @@ export function PreviewPane({
               !editingClip &&
               !unsupportedMessage ? (
                 <ClipDragHandle draft={stagedDraft} />
+              ) : null}
+              {canStage &&
+              stagedDraft?.kind === "slideshow" &&
+              editingClip &&
+              onSlideshowRender &&
+              !unsupportedMessage ? (
+                <SlideshowRenderHandle
+                  onRender={onSlideshowRender}
+                  rendering={bakeInfo?.status === "generating"}
+                />
               ) : null}
             </div>
           </div>
