@@ -6,7 +6,7 @@ import {
   type CSSProperties,
   type SyntheticEvent,
 } from "react";
-import { ensureLocal, getCreation } from "../../library/catalogClient";
+import { ensureLocal, getCreation, getCreations } from "../../library/catalogClient";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import {
   clipThumbnailKey,
@@ -30,8 +30,14 @@ import {
 } from "../../project/aspectRatios";
 import type { TimelineClip } from "../../project/types";
 import { kindFromMediaType } from "./stagingKind";
+import {
+  classifyAssetSelection,
+  unsupportedSelectionMessage,
+  type MultiSelectionClass,
+} from "./selectionClassify";
 import { ClipDragHandle, StagingFields } from "./PreviewStaging";
 import {
+  defaultSlideshowDraft,
   defaultStagedClipDraft,
   framingClassName,
   framingViewportStyle,
@@ -39,13 +45,20 @@ import {
   normalizeFraming,
   type StagedClipDraft,
   type StagedClipFraming,
+  type StagedClipKind,
 } from "./stagedClip";
 import { creationCardTitle } from "../../library/creationFlags";
+import {
+  mediaUrlForBakePath,
+  type BakeInfo,
+} from "../../library/slideshowMedia";
 import { TimelineMonitor } from "./TimelineMonitor";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
 
 type PreviewPaneProps = {
   assetId: string | null;
+  /** Ordered Assets-pane multi-selection (source monitor). */
+  selectedAssetIds?: string[];
   /** Project creative frame shown as a matte overlay on the asset. */
   aspectRatio: ProjectAspectRatio;
   /** Source asset preview vs timeline-owned monitor. */
@@ -64,6 +77,10 @@ type PreviewPaneProps = {
   stagingSeedKey?: string | null;
   /** Persist staging edits onto the selected timeline clip. */
   onClipDraftChange?: (clipId: string, draft: StagedClipDraft) => void;
+  /** Runtime bake status when editing a slideshow timeline clip. */
+  bakeInfo?: BakeInfo | null;
+  /** Explicit slideshow bake (timeline clips only). */
+  onSlideshowRender?: (() => void) | null;
   /** Show a left-edge control to reopen the assets pane. */
   showAssetsExpand?: boolean;
   onExpandAssets?: () => void;
@@ -179,6 +196,7 @@ function SourceLabelIcon({
 
 export function PreviewPane({
   assetId,
+  selectedAssetIds = [],
   aspectRatio,
   monitorMode = "source",
   timelineClips = [],
@@ -188,12 +206,18 @@ export function PreviewPane({
   stagingSeed = null,
   stagingSeedKey = null,
   onClipDraftChange,
+  bakeInfo = null,
+  onSlideshowRender = null,
   showAssetsExpand = false,
   onExpandAssets,
   volume: volumeProp,
   onVolumeChange,
 }: PreviewPaneProps) {
   const [creation, setCreation] = useState<Creation | null>(null);
+  const [selectionClass, setSelectionClass] =
+    useState<MultiSelectionClass | null>(null);
+  const [selectionLoading, setSelectionLoading] = useState(false);
+  const [slideshowThumbs, setSlideshowThumbs] = useState<string[]>([]);
   const [catalogError, setCatalogError] = useState(false);
   const [detailFailed, setDetailFailed] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -252,8 +276,91 @@ export function PreviewPane({
     setCreation(null);
   }
 
+  const editingClip = Boolean(stagingSeedKey);
+  const sourceSelectionIds =
+    monitorMode === "source" && !editingClip
+      ? selectedAssetIds.map((id) => id.trim()).filter(Boolean)
+      : [];
+  const selectionKey = sourceSelectionIds.join("|");
+
+  useEffect(() => {
+    if (monitorMode !== "source" || editingClip) {
+      setSelectionClass(null);
+      setSelectionLoading(false);
+      setSlideshowThumbs([]);
+      return;
+    }
+    if (sourceSelectionIds.length === 0) {
+      setSelectionClass(null);
+      setSelectionLoading(false);
+      setSlideshowThumbs([]);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectionLoading(true);
+    void (async () => {
+      try {
+        const rows = await getCreations(sourceSelectionIds);
+        if (cancelled) return;
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        const classified = classifyAssetSelection(sourceSelectionIds, byId);
+        setSelectionClass(classified);
+        if (classified?.type === "compositeImages") {
+          // Only need a representative thumb for the staged-clip cartridge.
+          const first = classified.imageAssetIds
+            .map((id) => {
+              const row = byId.get(id);
+              return row ? creationPreviewUrl(row) : null;
+            })
+            .find((url): url is string => Boolean(url));
+          setSlideshowThumbs(first ? [first] : []);
+          for (const id of classified.imageAssetIds) {
+            const row = byId.get(id);
+            if (
+              row &&
+              !creationDetailUrl(row) &&
+              canFetchLocal(row) &&
+              !isParasceneUnavailable(row)
+            ) {
+              void ensureLocal([row.id], { fullMedia: true, urgent: true });
+            }
+          }
+        } else {
+          setSlideshowThumbs([]);
+        }
+      } catch {
+        if (!cancelled) {
+          setSelectionClass(null);
+          setSlideshowThumbs([]);
+        }
+      } finally {
+        if (!cancelled) setSelectionLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [monitorMode, editingClip, selectionKey]);
+
+  const unsupportedSelection =
+    selectionClass?.type === "unsupportedVideos" ||
+    selectionClass?.type === "unsupportedMixed"
+      ? selectionClass
+      : null;
+  const isCompositeSelection = selectionClass?.type === "compositeImages";
+
+  const selectionOwnsPreview =
+    !editingClip &&
+    (selectionClass?.type === "unsupportedVideos" ||
+      selectionClass?.type === "unsupportedMixed" ||
+      selectionClass?.type === "compositeImages");
+
   useEffect(() => {
     if (!assetId) return;
+    // Multi-select unsupported/composite paths own the preview surface.
+    if (selectionOwnsPreview) return;
 
     let cancelled = false;
 
@@ -293,7 +400,41 @@ export function PreviewPane({
       cancelled = true;
       unlisten?.();
     };
-  }, [assetId]);
+  }, [assetId, selectionOwnsPreview]);
+
+  // Build / clear composite draft from multi-image selection.
+  useEffect(() => {
+    if (editingClip || monitorMode !== "source") return;
+    if (unsupportedSelection) {
+      setStagedDraft(null);
+      return;
+    }
+    if (selectionClass?.type !== "compositeImages") return;
+    const ids = selectionClass.imageAssetIds;
+    const thumb = slideshowThumbs[0] ?? null;
+    setStagedDraft((prev) => {
+      if (
+        prev?.kind === "slideshow" &&
+        prev.slideshow &&
+        prev.slideshow.imageAssetIds.length === ids.length &&
+        prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
+      ) {
+        if (prev.thumbUrl === thumb) return prev;
+        return { ...prev, thumbUrl: thumb };
+      }
+      return defaultSlideshowDraft({
+        imageAssetIds: ids,
+        label: `Slideshow (${ids.length})`,
+        thumbUrl: thumb,
+      });
+    });
+  }, [
+    editingClip,
+    monitorMode,
+    selectionClass,
+    slideshowThumbs,
+    unsupportedSelection,
+  ]);
 
   const detail = creation ? creationDetailUrl(creation) : null;
   const catalogThumb = creation ? creationPreviewUrl(creation) : null;
@@ -313,7 +454,24 @@ export function PreviewPane({
     Boolean(stagedDraft?.reverse) && (isVideo || isAudio);
   const playbackDetail = wantsReverse ? reversedDetail : detail;
   const useDetail = Boolean(playbackDetail) && !detailFailed;
-  const canPlay = Boolean(useDetail && (isVideo || isAudio) && !reverseBusy);
+  const slideshowBakePath =
+    stagedDraft?.kind === "slideshow"
+      ? stagedDraft.bakePath?.trim() || null
+      : null;
+  let slideshowBakeUrl: string | null = null;
+  if (slideshowBakePath) {
+    try {
+      slideshowBakeUrl = mediaUrlForBakePath(slideshowBakePath);
+    } catch {
+      slideshowBakeUrl = null;
+    }
+  }
+  const isSlideshowPreview =
+    stagedDraft?.kind === "slideshow" || isCompositeSelection;
+  const canPlaySlideshow = Boolean(slideshowBakeUrl);
+  const canPlay =
+    canPlaySlideshow ||
+    Boolean(useDetail && (isVideo || isAudio) && !reverseBusy);
   const clipFrameKey =
     stagingSeedKey && stagedDraft?.kind === "video" && assetId
       ? clipThumbnailKey(
@@ -431,7 +589,11 @@ export function PreviewPane({
     playbackDetail,
   ]);
 
-  if (!assetId || !creation || catalogError) {
+  if (
+    !selectionOwnsPreview &&
+    stagedDraft?.kind !== "slideshow" &&
+    (!assetId || !creation || catalogError)
+  ) {
     if (stagedDraft !== null) setStagedDraft(null);
   }
 
@@ -462,6 +624,12 @@ export function PreviewPane({
         (stagingSeed.reverse
           ? reverseThumb ?? stagingSeed.thumbUrl
           : previewThumb) ?? stagingSeed.thumbUrl;
+      const resolvedKind: StagedClipKind =
+        stagingSeed.kind === "slideshow"
+          ? "slideshow"
+          : kindFromCreation === "audio"
+            ? "audio"
+            : stagingSeed.kind || kindFromCreation;
       if (alreadyApplied) {
         // Keep in/out/framing edits; prefer reverse thumb when reversed.
         void Promise.resolve().then(() => {
@@ -473,10 +641,7 @@ export function PreviewPane({
           if (nextThumb && nextThumb !== stagingSeed.thumbUrl) {
             onClipDraftChangeRef.current?.(stagingSeedKey, {
               ...stagingSeed,
-              kind:
-                kindFromCreation === "audio"
-                  ? "audio"
-                  : stagingSeed.kind || kindFromCreation,
+              kind: resolvedKind,
               label,
               thumbUrl: nextThumb,
             });
@@ -487,10 +652,7 @@ export function PreviewPane({
       appliedSeedKeyRef.current = stagingSeedKey;
       const next = {
         ...stagingSeed,
-        kind:
-          kindFromCreation === "audio"
-            ? "audio"
-            : stagingSeed.kind || kindFromCreation,
+        kind: resolvedKind,
         label,
         thumbUrl: nextThumb,
       };
@@ -553,6 +715,7 @@ export function PreviewPane({
     stagedDraft &&
     durationSec > 0 &&
     stagedDraft.kind !== "image" &&
+    stagedDraft.kind !== "slideshow" &&
     !stagingSeedKey &&
     isProvisionalOutSec(stagedDraft) &&
     Math.abs(stagedDraft.outSec - durationSec) >= 0.05
@@ -565,7 +728,11 @@ export function PreviewPane({
   const [seekSeedKey, setSeekSeedKey] = useState(stagingSeedKey);
   if (stagingSeedKey !== seekSeedKey) {
     setSeekSeedKey(stagingSeedKey);
-    if (stagingSeed && stagingSeed.kind !== "image") {
+    if (
+      stagingSeed &&
+      stagingSeed.kind !== "image" &&
+      stagingSeed.kind !== "slideshow"
+    ) {
       setCurrentSec(Math.max(0, stagingSeed.inSec));
     }
   }
@@ -573,7 +740,7 @@ export function PreviewPane({
   // Seek preview to the clip's in-point when loading from the timeline.
   useEffect(() => {
     if (!stagingSeedKey || !stagingSeed) return;
-    if (stagingSeed.kind === "image") return;
+    if (stagingSeed.kind === "image" || stagingSeed.kind === "slideshow") return;
     const el = mediaRef.current;
     if (!el) return;
     const t = Math.max(0, stagingSeed.inSec);
@@ -584,15 +751,18 @@ export function PreviewPane({
     }
   }, [stagingSeedKey, stagingSeed, playbackDetail]);
 
-  const editingClip = Boolean(stagingSeedKey);
-  const canStage = Boolean(
-    assetId && creation && !catalogError && (useDetail || thumb),
-  );
+  const canStageSlideshow =
+    stagedDraft?.kind === "slideshow" &&
+    Boolean(stagedDraft.slideshow?.imageAssetIds.length);
+  const canStage = canStageSlideshow
+    ? true
+    : Boolean(assetId && creation && !catalogError && (useDetail || thumb));
   /** Video with Audio Include unticked — mute preview and lock volume. */
   const audioExcluded =
     isVideo && stagedDraft != null && !stagedDraft.includeAudio;
-  const volumeEnabled = canPlay && !audioExcluded;
-  const sourcePreviewLoops = monitorMode === "source" && (isVideo || isAudio);
+  const volumeEnabled = canPlay && !audioExcluded && !canPlaySlideshow;
+  const sourcePreviewLoops =
+    monitorMode === "source" && (isVideo || isAudio || canPlaySlideshow);
   const clipLoopEnabled =
     sourcePreviewLoops &&
     editingClip &&
@@ -617,33 +787,46 @@ export function PreviewPane({
     : 0;
   const clipTrack = stagedDraft?.kind === "audio" ? "A1" : "V1";
   const mediaFraming: StagedClipFraming =
-    stagedDraft && (stagedDraft.kind === "image" || stagedDraft.kind === "video")
+    stagedDraft &&
+    (stagedDraft.kind === "image" ||
+      stagedDraft.kind === "video" ||
+      stagedDraft.kind === "slideshow")
       ? normalizeFraming(stagedDraft.framing)
       : "fit";
   const mediaFramingClass = framingClassName(mediaFraming);
   const videoFraming: StagedClipFraming =
-    stagedDraft && stagedDraft.kind === "video" ? mediaFraming : "fit";
+    stagedDraft &&
+    (stagedDraft.kind === "video" || stagedDraft.kind === "slideshow")
+      ? mediaFraming
+      : "fit";
   const videoStretchStyle = useVideoStretchStyle(
     videoFraming,
     videoRef,
-    playbackDetail,
+    slideshowBakeUrl ?? playbackDetail,
   );
+  const slideshowCount = stagedDraft?.slideshow?.imageAssetIds.length ?? 0;
   const sourceKind: "timeline" | "asset" | "clip" | null =
     monitorMode === "timeline"
       ? "timeline"
       : editingClip
         ? "clip"
-        : assetId
+        : isCompositeSelection || stagedDraft?.kind === "slideshow"
           ? "asset"
-          : null;
+          : assetId
+            ? "asset"
+            : null;
   const sourceLabelText =
     sourceKind === "timeline"
       ? "Timeline"
-      : sourceKind === "asset"
-        ? `Asset • ${assetDisplayName}`
-        : sourceKind === "clip"
-          ? `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s`
-          : null;
+      : sourceKind === "clip"
+        ? stagedDraft?.kind === "slideshow"
+          ? `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s • ${slideshowCount} images`
+          : `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s`
+        : stagedDraft?.kind === "slideshow" || isCompositeSelection
+          ? `Slideshow • ${slideshowCount || sourceSelectionIds.length} images`
+          : sourceKind === "asset"
+            ? `Asset • ${assetDisplayName}`
+            : null;
 
   const onStagingDraftChange = (draft: StagedClipDraft) => {
     const next =
@@ -663,9 +846,10 @@ export function PreviewPane({
       ? Math.max(0, stagingSeed.inSec)
       : 0;
   const [playbackResetKey, setPlaybackResetKey] = useState(
-    () => `${assetId ?? ""}:${playbackDetail ?? ""}:${stagingSeedKey ?? ""}`,
+    () =>
+      `${assetId ?? ""}:${playbackDetail ?? ""}:${slideshowBakePath ?? ""}:${stagingSeedKey ?? ""}`,
   );
-  const nextPlaybackResetKey = `${assetId ?? ""}:${playbackDetail ?? ""}:${stagingSeedKey ?? ""}`;
+  const nextPlaybackResetKey = `${assetId ?? ""}:${playbackDetail ?? ""}:${slideshowBakePath ?? ""}:${stagingSeedKey ?? ""}`;
   if (nextPlaybackResetKey !== playbackResetKey) {
     setPlaybackResetKey(nextPlaybackResetKey);
     setPlaying(false);
@@ -680,7 +864,13 @@ export function PreviewPane({
       el.pause();
       el.currentTime = playbackResetTarget;
     }
-  }, [assetId, playbackDetail, playbackResetTarget, stagingSeedKey]);
+  }, [
+    assetId,
+    playbackDetail,
+    slideshowBakePath,
+    playbackResetTarget,
+    stagingSeedKey,
+  ]);
 
   const onTogglePlay = () => {
     const el = mediaRef.current;
@@ -805,9 +995,31 @@ export function PreviewPane({
     sourceViewport ? " is-project-matte" : ""
   }`;
 
+  const unsupportedMessage = unsupportedSelection
+    ? unsupportedSelectionMessage(unsupportedSelection)
+    : null;
+
   let status: string | null = null;
   if (monitorMode === "timeline") {
     status = null;
+  } else if (unsupportedMessage) {
+    status = null;
+  } else if (selectionLoading && sourceSelectionIds.length > 1) {
+    status = "Loading selection…";
+  } else if (isSlideshowPreview) {
+    if (bakeInfo?.status === "generating") {
+      status = "Rendering slideshow…";
+    } else if (bakeInfo?.status === "failed") {
+      status = bakeInfo.error?.trim() || "Slideshow render failed";
+    } else if (slideshowBakeUrl && !detailFailed) {
+      status = null;
+    } else if (slideshowBakeUrl && detailFailed) {
+      status = "Slideshow bake unavailable";
+    } else if (editingClip) {
+      status = "Hit Render to generate this slideshow";
+    } else {
+      status = "Drop on the timeline, then hit Render";
+    }
   } else if (!assetId) status = "Select an asset";
   else if (catalogError) status = "Asset not in local catalog";
   else if (!creation) status = "Loading…";
@@ -864,8 +1076,30 @@ export function PreviewPane({
                 matteW={matte.w}
                 matteH={matte.h}
               />
+            ) : unsupportedMessage ? (
+              <div className="editor-preview-unsupported" role="status">
+                <strong>{unsupportedMessage.title}</strong>
+                <p className="muted">{unsupportedMessage.body}</p>
+              </div>
             ) : status ? (
               <span className="editor-preview-status muted">{status}</span>
+            ) : slideshowBakeUrl && !detailFailed ? (
+              <div className={sourceViewportClass} style={sourceViewport}>
+                <video
+                  key={`slideshow-bake:${slideshowBakePath}`}
+                  ref={bindVideo}
+                  className={`editor-preview-media editor-preview-detail ${mediaFramingClass}`}
+                  style={videoStretchStyle}
+                  src={slideshowBakeUrl}
+                  playsInline
+                  preload="auto"
+                  muted
+                  onLoadedMetadata={onLoadedMeta}
+                  onTimeUpdate={onTimeUpdate}
+                  onEnded={onSourceEnded}
+                  onError={() => setDetailFailed(true)}
+                />
+              </div>
             ) : (
               <>
                 <div className={sourceViewportClass} style={sourceViewport}>
@@ -1071,18 +1305,34 @@ export function PreviewPane({
             </div>
 
             <div className="editor-preview-deck-row">
-              {canStage && stagedDraft ? (
+              {unsupportedMessage ? (
+                <p className="muted editor-staging-empty">
+                  Unsupported multi-selection — choose images only for a
+                  slideshow, or select a single asset.
+                </p>
+              ) : canStage && stagedDraft ? (
                 <StagingFields
                   draft={stagedDraft}
                   sourceDurationSec={durationSec}
                   onDraftChange={onStagingDraftChange}
+                  bakeInfo={
+                    stagedDraft.kind === "slideshow" ? bakeInfo : null
+                  }
+                  onRender={
+                    stagedDraft.kind === "slideshow"
+                      ? onSlideshowRender
+                      : null
+                  }
                 />
               ) : (
                 <p className="muted editor-staging-empty">
                   Select an asset to prepare a clip
                 </p>
               )}
-              {canStage && stagedDraft && !editingClip ? (
+              {canStage &&
+              stagedDraft &&
+              !editingClip &&
+              !unsupportedMessage ? (
                 <ClipDragHandle draft={stagedDraft} />
               ) : null}
             </div>

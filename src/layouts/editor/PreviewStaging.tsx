@@ -6,6 +6,7 @@ import {
 import {
   clearStagedClipDrag,
   getActiveStagedClipDrag,
+  newSlideshowSeed,
   remapTrimForReverse,
   serializeStagedClip,
   setActiveStagedClipDrag,
@@ -13,15 +14,21 @@ import {
   STAGED_CLIP_MIME,
   stagedClipDuration,
   targetLaneForDraft,
+  type SlideshowMode,
   type StagedClipDraft,
   type StagedClipFraming,
   type StagedClipTransform,
 } from "./stagedClip";
+import type { BakeInfo } from "../../library/slideshowMedia";
 
 type StagingFieldsProps = {
   draft: StagedClipDraft;
   sourceDurationSec: number;
   onDraftChange: (draft: StagedClipDraft) => void;
+  /** Runtime slideshow bake status when editing a timeline clip. */
+  bakeInfo?: BakeInfo | null;
+  /** Bake the current slideshow recipe (timeline clips only). */
+  onRender?: (() => void) | null;
 };
 
 type ClipDragHandleProps = {
@@ -53,17 +60,130 @@ export function StagingFields({
   draft,
   sourceDurationSec,
   onDraftChange,
+  bakeInfo = null,
+  onRender = null,
 }: StagingFieldsProps) {
   const duration = stagedClipDuration(draft);
   const maxSec =
-    draft.kind === "image"
+    draft.kind === "image" || draft.kind === "slideshow"
       ? Math.max(60, draft.outSec)
       : sourceDurationSec > 0
         ? sourceDurationSec
         : draft.outSec;
+  const slideshowCount = draft.slideshow?.imageAssetIds.length ?? 0;
+  const slideshowMode: SlideshowMode =
+    draft.slideshow?.mode === "beat" ? "beat" : "even";
+  const slideshowRandom = draft.slideshow?.random === true;
+  const rendering = bakeInfo?.status === "generating";
 
   return (
     <div className="editor-staging-controls">
+      {draft.kind === "slideshow" ? (
+        <>
+          <label className="editor-staging-field">
+            <span>Images</span>
+            <span className="editor-staging-static">{slideshowCount}</span>
+          </label>
+          <label className="editor-staging-field">
+            <span>Duration</span>
+            <input
+              type="number"
+              min={0.5}
+              max={120}
+              step={0.5}
+              value={formatDurationInput(duration)}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (!Number.isFinite(next) || next <= 0) return;
+                onDraftChange({
+                  ...draft,
+                  inSec: 0,
+                  outSec: next,
+                  bakeKey: null,
+                  bakePath: null,
+                });
+              }}
+            />
+            <span className="muted">sec</span>
+          </label>
+          <label className="editor-staging-field">
+            <span>Mode</span>
+            <select
+              value={slideshowMode}
+              onChange={(e) => {
+                const mode = e.target.value as SlideshowMode;
+                if (!draft.slideshow) return;
+                onDraftChange({
+                  ...draft,
+                  slideshow: {
+                    ...draft.slideshow,
+                    mode,
+                    // Clear beat audio binding when switching modes; drop rebinds.
+                    audioAssetId: undefined,
+                    audioInSec: undefined,
+                    audioOutSec: undefined,
+                    audioStartSec: undefined,
+                    audioEndSec: undefined,
+                  },
+                  bakeKey: null,
+                  bakePath: null,
+                });
+              }}
+            >
+              <option value="even">Slideshow</option>
+              <option value="beat">Beat sync</option>
+            </select>
+          </label>
+          <label className="editor-staging-field editor-staging-field-check">
+            <span>Random</span>
+            <input
+              type="checkbox"
+              checked={slideshowRandom}
+              onChange={(e) => {
+                if (!draft.slideshow) return;
+                const random = e.target.checked;
+                onDraftChange({
+                  ...draft,
+                  slideshow: {
+                    ...draft.slideshow,
+                    random: random || undefined,
+                    seed: random ? newSlideshowSeed() : undefined,
+                  },
+                  bakeKey: null,
+                  bakePath: null,
+                });
+              }}
+            />
+          </label>
+          {slideshowMode === "beat" ? (
+            <p className="muted editor-staging-hint">
+              Beat timing uses overlapping Master Audio after the clip is
+              dropped on the timeline.
+            </p>
+          ) : null}
+          {rendering ? (
+            <p className="muted editor-staging-hint" role="status">
+              Rendering slideshow…
+            </p>
+          ) : null}
+          {bakeInfo?.status === "failed" ? (
+            <p className="editor-staging-error" role="alert">
+              {bakeInfo.error?.trim() || "Slideshow render failed"}
+            </p>
+          ) : null}
+          {onRender ? (
+            <button
+              type="button"
+              className="btn ghost editor-staging-rerender"
+              disabled={rendering}
+              onClick={onRender}
+            >
+              {rendering ? "Rendering…" : "Render"}
+            </button>
+          ) : null}
+        </>
+      ) : null}
+
       {draft.kind === "image" ? (
         <>
           <label className="editor-staging-field">
@@ -104,7 +224,9 @@ export function StagingFields({
         </>
       ) : null}
 
-      {draft.kind === "image" || draft.kind === "video" ? (
+      {draft.kind === "image" ||
+      draft.kind === "video" ||
+      draft.kind === "slideshow" ? (
         <label className="editor-staging-field">
           <span>Framing</span>
           <select
@@ -113,6 +235,9 @@ export function StagingFields({
               onDraftChange({
                 ...draft,
                 framing: e.target.value as StagedClipFraming,
+                ...(draft.kind === "slideshow"
+                  ? { bakeKey: null, bakePath: null }
+                  : {}),
               })
             }
           >

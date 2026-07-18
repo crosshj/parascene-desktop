@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyDraftToTimelineClip,
+  defaultSlideshowDraft,
   defaultStagedClipDraft,
   formatStagedDuration,
   framingClassName,
@@ -8,9 +9,12 @@ import {
   framingViewportStyle,
   isProvisionalOutSec,
   normalizeFraming,
+  normalizeSlideshowRecipe,
   parseStagedClipPayload,
   remapTrimForReverse,
   serializeStagedClip,
+  slideshowOrderIndices,
+  slideshowRecipesEqual,
   stagedClipDuration,
   targetLaneForDraft,
   timelineClipToStagedDraft,
@@ -225,5 +229,90 @@ describe("stagedClip", () => {
     draft.inSec = 2;
     draft.outSec = 5;
     expect(remapTrimForReverse(draft, 10)).toEqual({ inSec: 5, outSec: 8 });
+  });
+
+  it("builds and round-trips slideshow drafts", () => {
+    const draft = defaultSlideshowDraft({
+      imageAssetIds: ["i1", "i2", "i3"],
+      label: "Slideshow (3)",
+      thumbUrl: "asset://t",
+      durationSec: 12,
+      mode: "even",
+    });
+    expect(draft.kind).toBe("slideshow");
+    expect(draft.assetId).toBe("i1");
+    expect(draft.outSec).toBe(12);
+    expect(draft.slideshow?.imageAssetIds).toEqual(["i1", "i2", "i3"]);
+    expect(targetLaneForDraft(draft)).toBe("video");
+
+    const parsed = parseStagedClipPayload(serializeStagedClip(draft));
+    expect(parsed?.kind).toBe("slideshow");
+    expect(parsed?.slideshow?.imageAssetIds).toEqual(["i1", "i2", "i3"]);
+
+    const clip = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "10.0s",
+        startSec: 4,
+        endSec: 14,
+        assetId: "i1",
+        kind: "slideshow",
+        slideshow: {
+          imageAssetIds: ["i1", "i2", "i3"],
+          mode: "even",
+        },
+        bakeKey: "old",
+        bakePath: "/tmp/old.mp4",
+      },
+      { ...draft, outSec: 8, framing: "fill" },
+    );
+    expect(clip.endSec).toBe(12);
+    expect(clip.framing).toBe("fill");
+    expect(clip.bakePath).toBeNull();
+    expect(clip.bakeKey).toBeNull();
+    expect(
+      slideshowRecipesEqual(clip.slideshow, {
+        imageAssetIds: ["i1", "i2", "i3"],
+        mode: "even",
+      }),
+    ).toBe(true);
+
+    const restored = timelineClipToStagedDraft(clip);
+    expect(restored?.kind).toBe("slideshow");
+    expect(restored?.slideshow?.imageAssetIds).toEqual(["i1", "i2", "i3"]);
+  });
+
+  it("round-trips random flag and deterministically shuffles by seed", () => {
+    const draft = defaultSlideshowDraft({
+      imageAssetIds: ["i1", "i2", "i3", "i4"],
+      label: "Random",
+      random: true,
+    });
+    expect(draft.slideshow?.mode).toBe("even");
+    expect(draft.slideshow?.random).toBe(true);
+    expect(draft.slideshow?.seed).toEqual(expect.any(Number));
+
+    const parsed = parseStagedClipPayload(serializeStagedClip(draft));
+    expect(parsed?.slideshow).toEqual(draft.slideshow);
+    expect(slideshowOrderIndices(8, 123)).toEqual(
+      slideshowOrderIndices(8, 123),
+    );
+    expect(slideshowOrderIndices(8, 123)).not.toEqual(
+      slideshowOrderIndices(8, 456),
+    );
+  });
+
+  it("migrates legacy mode:random to even + random", () => {
+    const recipe = normalizeSlideshowRecipe({
+      imageAssetIds: ["i1", "i2"],
+      mode: "random",
+      seed: 42,
+    });
+    expect(recipe).toEqual({
+      imageAssetIds: ["i1", "i2"],
+      mode: "even",
+      random: true,
+      seed: 42,
+    });
   });
 });

@@ -2,17 +2,32 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import type { TimelineClip } from "../project/types";
 
+export type RenderSlideshowRecipe = {
+  imageAssetIds: string[];
+  mode: "even" | "beat";
+  random?: boolean;
+  seed?: number;
+  audioAssetId?: string;
+  audioInSec?: number;
+  audioOutSec?: number;
+  audioStartSec?: number;
+  audioEndSec?: number;
+};
+
 export type RenderTimelineClipInput = {
   assetId?: string;
   startSec: number;
   endSec: number;
   lane?: "video" | "audio";
-  kind?: "video" | "image" | "audio";
+  kind?: "video" | "image" | "audio" | "slideshow";
   inSec?: number;
   outSec?: number;
   includeAudio?: boolean;
   reverse?: boolean;
   framing?: "fit" | "fill" | "stretch";
+  slideshow?: RenderSlideshowRecipe;
+  bakeKey?: string | null;
+  bakePath?: string | null;
 };
 
 export type TimelineRender = {
@@ -57,6 +72,21 @@ export function timelineClipsToRenderInput(
     includeAudio: clip.includeAudio,
     reverse: clip.reverse,
     framing: clip.framing,
+    slideshow: clip.slideshow
+      ? {
+          imageAssetIds: clip.slideshow.imageAssetIds,
+          mode: clip.slideshow.mode === "beat" ? "beat" : "even",
+          random: clip.slideshow.random === true,
+          seed: clip.slideshow.random ? clip.slideshow.seed : undefined,
+          audioAssetId: clip.slideshow.audioAssetId,
+          audioInSec: clip.slideshow.audioInSec,
+          audioOutSec: clip.slideshow.audioOutSec,
+          audioStartSec: clip.slideshow.audioStartSec,
+          audioEndSec: clip.slideshow.audioEndSec,
+        }
+      : undefined,
+    bakeKey: clip.bakeKey,
+    bakePath: clip.bakePath,
   }));
 }
 

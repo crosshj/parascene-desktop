@@ -11,6 +11,7 @@ import {
   ensureReversedMedia,
   getCachedReversedMedia,
 } from "../../library/reversedMedia";
+import { mediaUrlForBakePath } from "../../library/slideshowMedia";
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
@@ -51,22 +52,33 @@ type MediaUrls = {
 export type AssetDecoderKey = string;
 
 export function assetDecoderKey(clip: TimelineClip): AssetDecoderKey {
+  if (clip.kind === "slideshow") {
+    const bake = clip.bakeKey?.trim() || clip.bakePath?.trim() || "pending";
+    return `slideshow:${clip.id}:${bake}`;
+  }
   const assetId = clip.assetId?.trim() || clip.id;
   return `${assetId}:${clip.reverse ? "r" : "f"}`;
 }
 
+function isSlideshowKey(key: AssetDecoderKey): boolean {
+  return key.startsWith("slideshow:");
+}
+
 function assetIdFromKey(key: AssetDecoderKey): string {
+  if (isSlideshowKey(key)) return "";
   const idx = key.lastIndexOf(":");
   return idx >= 0 ? key.slice(0, idx) : key;
 }
 
 function isReverseKey(key: AssetDecoderKey): boolean {
+  if (isSlideshowKey(key)) return false;
   return key.endsWith(":r");
 }
 
 type VisualDecoderMeta = {
   key: AssetDecoderKey;
-  kind: "video" | "image";
+  kind: "video" | "image" | "slideshow";
+  bakePath?: string | null;
 };
 
 /** Every unique video/image backing asset on the video lane. */
@@ -76,9 +88,18 @@ function listVisualDecoders(
   const byKey = new Map<AssetDecoderKey, VisualDecoderMeta>();
   for (const clip of clips) {
     if (clip.lane === "audio") continue;
+    if (clip.kind === "audio") continue;
+    if (clip.kind === "slideshow") {
+      const key = assetDecoderKey(clip);
+      byKey.set(key, {
+        key,
+        kind: "slideshow",
+        bakePath: clip.bakePath ?? null,
+      });
+      continue;
+    }
     if (!clip.assetId?.trim()) continue;
     const kind = clip.kind === "image" ? "image" : "video";
-    if (clip.kind === "audio") continue;
     const key = assetDecoderKey(clip);
     // Prefer video if the same key ever appears as both (shouldn't).
     const prev = byKey.get(key);
@@ -98,15 +119,21 @@ function parkSourceByKey(
 ): Map<AssetDecoderKey, number> {
   const map = new Map<AssetDecoderKey, number>();
   const videoClips = clips
-    .filter((c) => c.lane !== "audio" && Boolean(c.assetId?.trim()))
+    .filter((c) => c.lane !== "audio")
     .filter((c) => c.kind !== "audio")
+    .filter(
+      (c) =>
+        c.kind === "slideshow" || Boolean(c.assetId?.trim()),
+    )
     .slice()
     .sort(
       (a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id),
     );
   for (const clip of videoClips) {
     const key = assetDecoderKey(clip);
-    if (!map.has(key)) map.set(key, clipInSec(clip));
+    if (!map.has(key)) {
+      map.set(key, clip.kind === "slideshow" ? 0 : clipInSec(clip));
+    }
   }
   return map;
 }
@@ -226,8 +253,14 @@ function useReversedDetail(
 
 /** Resolves true when a seek was issued, false when already at the target. */
 function seekMedia(el: HTMLMediaElement, sec: number): Promise<boolean> {
-  const target = Math.max(0, sec);
+  let target = Math.max(0, sec);
+  // Stay off the exact EOF so we don't land in `ended` (WebKit then refuses
+  // to advance until a fresh seek after loop/wrap).
+  if (Number.isFinite(el.duration) && el.duration > 0) {
+    target = Math.min(target, Math.max(0, el.duration - 0.05));
+  }
   if (
+    !el.ended &&
     Number.isFinite(el.currentTime) &&
     Math.abs(el.currentTime - target) < 0.04
   ) {
@@ -245,6 +278,8 @@ function seekMedia(el: HTMLMediaElement, sec: number): Promise<boolean> {
     const fallback = window.setTimeout(finish, 800);
     el.addEventListener("seeked", finish);
     try {
+      // Clear ended before assigning; some WebKit builds no-op seeks while ended.
+      if (el.ended) el.pause();
       el.currentTime = target;
     } catch {
       finish();
@@ -335,9 +370,10 @@ export function TimelineMonitor({
 
   const decoders = useMemo(() => listVisualDecoders(clips), [clips]);
 
-  const activeKey = visual?.clip.assetId?.trim()
-    ? assetDecoderKey(visual.clip)
-    : null;
+  const activeKey =
+    visual?.clip.kind === "slideshow" || visual?.clip.assetId?.trim()
+      ? assetDecoderKey(visual.clip)
+      : null;
 
   const [visibleKey, setVisibleKey] = useState<AssetDecoderKey | null>(null);
 
@@ -362,10 +398,13 @@ export function TimelineMonitor({
    */
   const prepByKey = (() => {
     const map = parkSourceByKey(clips);
-    if (nextClip?.assetId?.trim()) {
+    if (
+      nextClip &&
+      (nextClip.kind === "slideshow" || nextClip.assetId?.trim())
+    ) {
       const key = assetDecoderKey(nextClip);
       if (!activeKey || key !== activeKey) {
-        map.set(key, clipInSec(nextClip));
+        map.set(key, nextClip.kind === "slideshow" ? 0 : clipInSec(nextClip));
       }
     }
     return map;
@@ -373,7 +412,7 @@ export function TimelineMonitor({
 
   return (
     <>
-      {decoders.map(({ key, kind }) => {
+      {decoders.map(({ key, kind, bakePath }) => {
         const isActive = key === activeKey;
         const isVisible = key === visibleKey;
         const parkSec = prepByKey.get(key) ?? 0;
@@ -381,6 +420,27 @@ export function TimelineMonitor({
           isActive && visual?.clip
             ? normalizeFraming(visual.clip.framing)
             : "fit";
+        if (kind === "slideshow") {
+          return (
+            <SlideshowDecoder
+              key={key}
+              decoderKey={key}
+              bakePath={bakePath ?? null}
+              active={isActive}
+              visible={isVisible}
+              framing={framing}
+              stageW={stageW}
+              stageH={stageH}
+              matteW={matteW}
+              matteH={matteH}
+              liveLayer={isActive ? visual : null}
+              prepSourceSec={isActive ? null : parkSec}
+              playing={isActive && playing}
+              mediaSeekEpoch={mediaSeekEpoch}
+              onReady={onDecoderReady}
+            />
+          );
+        }
         return (
           <AssetDecoder
             key={key}
@@ -417,6 +477,93 @@ export function TimelineMonitor({
         <span className="editor-preview-status muted">Timeline</span>
       ) : null}
     </>
+  );
+}
+
+function SlideshowDecoder({
+  decoderKey,
+  bakePath,
+  active,
+  visible,
+  framing,
+  stageW,
+  stageH,
+  matteW,
+  matteH,
+  liveLayer,
+  prepSourceSec,
+  playing,
+  mediaSeekEpoch,
+  onReady,
+}: {
+  decoderKey: AssetDecoderKey;
+  bakePath: string | null;
+  active: boolean;
+  visible: boolean;
+  framing: StagedClipFraming;
+  stageW: number;
+  stageH: number;
+  matteW: number;
+  matteH: number;
+  liveLayer: TimelineLayer | null;
+  prepSourceSec: number | null;
+  playing: boolean;
+  mediaSeekEpoch: number;
+  onReady: (key: AssetDecoderKey) => void;
+}) {
+  const [paintedFraming, setPaintedFraming] =
+    useState<StagedClipFraming>(framing);
+  if (active && paintedFraming !== framing) {
+    setPaintedFraming(framing);
+  }
+  const effectiveFraming = active ? framing : paintedFraming;
+
+  if (active && !bakePath) {
+    return (
+      <span className="editor-preview-wait muted">Hit Render to generate</span>
+    );
+  }
+  if (!bakePath) return null;
+
+  let videoSrc: string | null = null;
+  try {
+    videoSrc = mediaUrlForBakePath(bakePath);
+  } catch {
+    videoSrc = null;
+  }
+  if (!videoSrc) {
+    if (active) {
+      return (
+        <span className="editor-preview-status muted">
+          Slideshow bake unavailable
+        </span>
+      );
+    }
+    return null;
+  }
+
+  // Slideshow bakes are silent MP4s starting at t=0 for the clip span.
+  // Staging uses inSec=0 / outSec=duration, so sourceSec == localSec.
+  // Clock-sync (not free-run): silent stills must follow the playhead so a
+  // timeline loop can leave EOF and advance through images again.
+  return (
+    <PersistentVideo
+      decoderKey={decoderKey}
+      src={videoSrc}
+      active={active}
+      visible={visible}
+      framing={effectiveFraming}
+      stageW={stageW}
+      stageH={stageH}
+      matteW={matteW}
+      matteH={matteH}
+      sourceSec={active ? (liveLayer?.sourceSec ?? 0) : (prepSourceSec ?? 0)}
+      playing={playing}
+      mediaSeekEpoch={mediaSeekEpoch}
+      clipId={liveLayer?.clip.id ?? null}
+      clockSync
+      onReady={onReady}
+    />
   );
 }
 
@@ -607,6 +754,7 @@ function PersistentVideo({
   playing,
   mediaSeekEpoch,
   clipId,
+  clockSync = false,
   onReady,
 }: {
   decoderKey: AssetDecoderKey;
@@ -622,6 +770,12 @@ function PersistentVideo({
   playing: boolean;
   mediaSeekEpoch: number;
   clipId: string | null;
+  /**
+   * When true, keep media time glued to `sourceSec` (slideshow bakes).
+   * Free-run is wrong for silent still montages: hitting EOF hangs on the
+   * last image across a timeline loop.
+   */
+  clockSync?: boolean;
   onReady: (key: AssetDecoderKey) => void;
 }) {
   const ref = useRef<HTMLVideoElement | null>(null);
@@ -684,7 +838,7 @@ function PersistentVideo({
       el.pause();
       if (activeRef.current) {
         onReadyRef.current(decoderKey);
-        if (playingRef.current) {
+        if (playingRef.current && !clockSync) {
           await waitForCanPlay(el);
           if (cancelled || !playingRef.current || !activeRef.current) return;
           void el.play().catch(() => {});
@@ -697,7 +851,7 @@ function PersistentVideo({
     };
     // decoderKey/src identity only — align uses refs for the rest.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, decoderKey]);
+  }, [src, decoderKey, clockSync]);
 
   // Standby park: only once we've left the screen — never disturb a hold frame.
   useEffect(() => {
@@ -719,10 +873,40 @@ function PersistentVideo({
     };
   }, [active, visible, warm, sourceSec]);
 
+  // Slideshow / clock-sync: playhead is the clock. Keep the paused element on
+  // the commanded frame so timeline loops leave EOF and stills keep advancing.
+  useEffect(() => {
+    if (!clockSync || !active || !warm) return;
+    const el = ref.current;
+    if (!el) return;
+    let target = Math.max(0, sourceSec);
+    if (Number.isFinite(el.duration) && el.duration > 0) {
+      target = Math.min(target, Math.max(0, el.duration - 0.05));
+    }
+    if (el.ended || Math.abs(el.currentTime - target) >= 0.04) {
+      try {
+        if (el.ended) el.pause();
+        el.currentTime = target;
+      } catch {
+        // ignore seek errors on detached / not-ready elements
+      }
+    }
+    if (!el.paused) el.pause();
+    onReadyRef.current(decoderKey);
+  }, [
+    clockSync,
+    active,
+    warm,
+    sourceSec,
+    clipId,
+    mediaSeekEpoch,
+    decoderKey,
+  ]);
+
   // Scrub / pause: follow commanded sourceSec. Do NOT run this while playing —
   // playhead ticks every frame and would interrupt free-running media.
   useEffect(() => {
-    if (!active || !warm || playing) return;
+    if (clockSync || !active || !warm || playing) return;
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
@@ -736,12 +920,12 @@ function PersistentVideo({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, warm, playing, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
+  }, [clockSync, active, warm, playing, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
 
   // Cut / activate while playing: one align at the commanded in-point, then
   // free-run. Intentionally omits sourceSec so playhead ticks don't re-seek.
   useEffect(() => {
-    if (!active || !warm || !playing) return;
+    if (clockSync || !active || !warm || !playing) return;
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
@@ -757,10 +941,11 @@ function PersistentVideo({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, warm, playing, clipId, mediaSeekEpoch, decoderKey]);
+  }, [clockSync, active, warm, playing, clipId, mediaSeekEpoch, decoderKey]);
 
   // Keep play/pause in sync once this decoder is the painted one.
   useEffect(() => {
+    if (clockSync) return;
     const el = ref.current;
     if (!el || !active || !visible || !warm) return;
     if (!playing) {
@@ -777,7 +962,7 @@ function PersistentVideo({
     return () => {
       cancelled = true;
     };
-  }, [playing, active, visible, warm]);
+  }, [clockSync, playing, active, visible, warm]);
 
   // Inactive but still visible = hold last frame until the incoming decoder is ready.
   useEffect(() => {

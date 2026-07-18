@@ -17,6 +17,12 @@ import {
   listFolders,
   type LibraryFolder,
 } from "../../library/folderClient";
+import {
+  ensureSlideshowMedia,
+  formatBakeError,
+  slideshowEnsureInputFromRecipe,
+  type BakeInfo,
+} from "../../library/slideshowMedia";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
 import { AssistantPane } from "./AssistantPane";
 import {
@@ -29,8 +35,11 @@ import {
   type EditorLayoutPrefs,
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
+import { findOverlappingAudioClip } from "./audioOverlap";
 import {
   applyDraftToTimelineClip,
+  newSlideshowSeed,
+  slideshowRecipesEqual,
   timelineClipToStagedDraft,
   type StagedClipDraft,
 } from "./stagedClip";
@@ -688,13 +697,214 @@ export function EditorLayout() {
     setOpenProjectTimelineMonitorActive(true);
   };
 
+  const [bakeInfoByClipId, setBakeInfoByClipId] = useState<
+    Map<string, BakeInfo>
+  >(() => new Map());
+  const bakeInflightRef = useRef<Set<string>>(new Set());
+  const timelineRef = useRef(project.timeline);
+  timelineRef.current = project.timeline;
+  const aspectRatioRef = useRef(project.aspectRatio);
+  aspectRatioRef.current = project.aspectRatio;
+
+  const ensureSlideshowBake = (clip: TimelineClip) => {
+    if (clip.kind !== "slideshow" || !clip.slideshow) return;
+    if (bakeInflightRef.current.has(clip.id)) return;
+    const durationSec = Math.max(0.1, clip.endSec - clip.startSec);
+    if (
+      clip.slideshow.mode === "beat" &&
+      !clip.slideshow.audioAssetId?.trim()
+    ) {
+      setBakeInfoByClipId((prev) => {
+        const next = new Map(prev);
+        next.set(clip.id, {
+          status: "failed",
+          error:
+            "Beat sync needs overlapping Master Audio under this clip. Drop the slideshow over an audio clip, or switch Mode to Slideshow.",
+        });
+        return next;
+      });
+      return;
+    }
+    bakeInflightRef.current.add(clip.id);
+    setBakeInfoByClipId((prev) => {
+      const next = new Map(prev);
+      next.set(clip.id, { status: "generating", error: null });
+      return next;
+    });
+    const input = slideshowEnsureInputFromRecipe({
+      recipe: clip.slideshow,
+      durationSec,
+      framing: clip.framing,
+      aspectRatio: aspectRatioRef.current,
+      clipStartSec: clip.startSec,
+    });
+    void ensureSlideshowMedia(input)
+      .then((result) => {
+        bakeInflightRef.current.delete(clip.id);
+        setBakeInfoByClipId((prev) => {
+          const next = new Map(prev);
+          next.set(clip.id, { status: "ready", error: null });
+          return next;
+        });
+        setOpenProjectTimeline(
+          timelineRef.current.map((row) =>
+            row.id === clip.id
+              ? {
+                  ...row,
+                  slideshow: clip.slideshow,
+                  bakeKey: result.bakeKey,
+                  bakePath: result.path,
+                }
+              : row,
+          ),
+        );
+        setClipStagingSeed((prev) => {
+          if (!prev || prev.clipId !== clip.id) return prev;
+          return {
+            ...prev,
+            draft: {
+              ...prev.draft,
+              slideshow: clip.slideshow,
+              bakeKey: result.bakeKey,
+              bakePath: result.path,
+            },
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        bakeInflightRef.current.delete(clip.id);
+        const message = formatBakeError(error);
+        console.error("Slideshow bake failed", message);
+        setBakeInfoByClipId((prev) => {
+          const next = new Map(prev);
+          next.set(clip.id, { status: "failed", error: message });
+          return next;
+        });
+      });
+  };
+
+  // Rebind beat-sync audio from current overlap (does not bake).
+  useEffect(() => {
+    let changed = false;
+    const rebound = project.timeline.map((clip) => {
+      if (clip.kind !== "slideshow" || clip.slideshow?.mode !== "beat") {
+        return clip;
+      }
+      const audio = findOverlappingAudioClip(project.timeline, {
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+      });
+      const nextRecipe = {
+        ...clip.slideshow,
+        audioAssetId: audio?.assetId,
+        audioInSec: audio?.inSec ?? 0,
+        audioOutSec: audio?.outSec,
+        audioStartSec: audio?.startSec,
+        audioEndSec: audio?.endSec,
+      };
+      if (slideshowRecipesEqual(clip.slideshow, nextRecipe)) return clip;
+      changed = true;
+      return {
+        ...clip,
+        slideshow: nextRecipe,
+        bakeKey: null,
+        bakePath: null,
+      };
+    });
+    if (changed) {
+      setBakeInfoByClipId((prev) => {
+        const next = new Map(prev);
+        for (let i = 0; i < rebound.length; i += 1) {
+          const before = project.timeline[i];
+          const after = rebound[i];
+          if (
+            before &&
+            after &&
+            before.id === after.id &&
+            !slideshowRecipesEqual(before.slideshow, after.slideshow)
+          ) {
+            next.delete(after.id);
+            bakeInflightRef.current.delete(after.id);
+          }
+        }
+        return next;
+      });
+      setOpenProjectTimeline(rebound);
+      return;
+    }
+
+    for (const clip of project.timeline) {
+      if (clip.kind !== "slideshow" || !clip.slideshow) continue;
+      if (!clip.bakePath?.trim()) continue;
+      setBakeInfoByClipId((prev) => {
+        if (prev.get(clip.id)?.status === "ready") return prev;
+        const next = new Map(prev);
+        next.set(clip.id, { status: "ready", error: null });
+        return next;
+      });
+    }
+    // Intentionally keyed on timeline identity + bake paths.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    project.id,
+    project.aspectRatio,
+    project.timeline
+      .map(
+        (c) =>
+          `${c.id}:${c.kind}:${c.bakePath ?? ""}:${c.slideshow?.mode ?? ""}:${c.slideshow?.random ? 1 : 0}:${(c.slideshow?.imageAssetIds ?? []).join(",")}:${c.startSec}:${c.endSec}:${c.framing ?? ""}:${c.slideshow?.audioAssetId ?? ""}:${c.slideshow?.audioStartSec ?? ""}`,
+      )
+      .join("|"),
+  ]);
+
   const onClipDraftChange = (clipId: string, draft: StagedClipDraft) => {
     setClipStagingSeed({ clipId, draft });
     const next = project.timeline.map((clip) =>
       clip.id === clipId ? applyDraftToTimelineClip(clip, draft) : clip,
     );
     setOpenProjectTimeline(next);
+    const updated = next.find((clip) => clip.id === clipId);
+    if (updated?.kind === "slideshow" && !updated.bakePath) {
+      bakeInflightRef.current.delete(clipId);
+      setBakeInfoByClipId((prev) => {
+        const map = new Map(prev);
+        map.delete(clipId);
+        return map;
+      });
+    }
   };
+
+  const onSlideshowRender = () => {
+    const clipId = clipStagingSeed?.clipId;
+    if (!clipId) return;
+    const clip = timelineRef.current.find((row) => row.id === clipId);
+    if (!clip || clip.kind !== "slideshow" || !clip.slideshow) return;
+
+    let target = clip;
+    if (clip.slideshow.random) {
+      const seed = newSlideshowSeed();
+      const slideshow = { ...clip.slideshow, random: true as const, seed };
+      target = { ...clip, slideshow, bakeKey: null, bakePath: null };
+      setOpenProjectTimeline(
+        timelineRef.current.map((row) => (row.id === clipId ? target : row)),
+      );
+      setClipStagingSeed((prev) => {
+        if (!prev || prev.clipId !== clipId) return prev;
+        return {
+          ...prev,
+          draft: {
+            ...prev.draft,
+            slideshow,
+            bakeKey: null,
+            bakePath: null,
+          },
+        };
+      });
+    }
+    ensureSlideshowBake(target);
+  };
+
+  const selectedBakeInfo =
+    selectedClipId != null ? bakeInfoByClipId.get(selectedClipId) : undefined;
 
   const openMergeModal = () => {
     if (!mergeSelection || mergeRunningRef.current) return;
@@ -790,11 +1000,16 @@ export function EditorLayout() {
 
   const assetsUsedOnTimeline = (assetIds: readonly string[]) => {
     const selected = new Set(assetIds);
-    return new Set(
-      project.timeline
-        .filter((clip) => clip.assetId && selected.has(clip.assetId))
-        .map((clip) => clip.assetId as string),
-    );
+    const used = new Set<string>();
+    for (const clip of project.timeline) {
+      if (clip.assetId && selected.has(clip.assetId)) {
+        used.add(clip.assetId);
+      }
+      for (const id of clip.slideshow?.imageAssetIds ?? []) {
+        if (selected.has(id)) used.add(id);
+      }
+    }
+    return used;
   };
 
   const removeAssetsFromProject = async (assetIds: string[]) => {
@@ -988,6 +1203,11 @@ export function EditorLayout() {
 
       <PreviewPane
         assetId={previewAssetId}
+        selectedAssetIds={
+          monitorMode === "source" && !clipStagingSeed
+            ? selectedAssetIds
+            : []
+        }
         aspectRatio={project.aspectRatio}
         monitorMode={monitorMode}
         timelineClips={project.timeline}
@@ -1001,6 +1221,12 @@ export function EditorLayout() {
           monitorMode === "source" ? (clipStagingSeed?.clipId ?? null) : null
         }
         onClipDraftChange={onClipDraftChange}
+        bakeInfo={clipStagingSeed ? (selectedBakeInfo ?? null) : null}
+        onSlideshowRender={
+          clipStagingSeed?.draft.kind === "slideshow"
+            ? onSlideshowRender
+            : null
+        }
         showAssetsExpand={!showAssetsPane}
         onExpandAssets={expandAssets}
         volume={previewVolume}
@@ -1054,6 +1280,7 @@ export function EditorLayout() {
         clips={project.timeline}
         projectId={project.id}
         onClipsChange={setOpenProjectTimeline}
+        bakeInfoByClipId={bakeInfoByClipId}
         selectedClipIds={selectedClipIds}
         onSelectClip={selectClip}
         zoom={project.timelineZoom}

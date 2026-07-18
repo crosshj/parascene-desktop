@@ -1,4 +1,9 @@
-import type { Project, ProjectAsset, TimelineClip } from "./types";
+import type {
+  Project,
+  ProjectAsset,
+  SlideshowRecipe,
+  TimelineClip,
+} from "./types";
 import {
   DEFAULT_PROJECT_ASPECT_RATIO,
   isProjectAspectRatio,
@@ -74,7 +79,10 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     return null;
   }
   const kind =
-    c.kind === "video" || c.kind === "image" || c.kind === "audio"
+    c.kind === "video" ||
+    c.kind === "image" ||
+    c.kind === "audio" ||
+    c.kind === "slideshow"
       ? c.kind
       : undefined;
   const lane =
@@ -87,6 +95,16 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     kind ?? (lane === "audio" ? ("audio" as const) : undefined);
   const inSec = Number(c.inSec);
   const outSec = Number(c.outSec);
+  const slideshow =
+    resolvedKind === "slideshow"
+      ? normalizeStoredSlideshow(c.slideshow)
+      : undefined;
+  if (resolvedKind === "slideshow" && !slideshow) return null;
+  const bakeKey = typeof c.bakeKey === "string" ? c.bakeKey : null;
+  const bakePath =
+    typeof c.bakePath === "string" && c.bakePath.trim()
+      ? c.bakePath.trim()
+      : null;
   return {
     id: c.id,
     label: c.label,
@@ -99,7 +117,7 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     inSec: Number.isFinite(inSec) ? inSec : undefined,
     outSec: Number.isFinite(outSec) ? outSec : undefined,
     includeAudio:
-      resolvedKind === "audio"
+      resolvedKind === "audio" || resolvedKind === "slideshow"
         ? false
         : typeof c.includeAudio === "boolean"
           ? c.includeAudio
@@ -115,7 +133,43 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
       c.framing === "fit" || c.framing === "fill" || c.framing === "stretch"
         ? c.framing
         : undefined,
+    slideshow,
+    bakeKey,
+    bakePath,
   };
+}
+
+function normalizeStoredSlideshow(value: unknown): SlideshowRecipe | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const s = value as Record<string, unknown>;
+  if (!Array.isArray(s.imageAssetIds)) return undefined;
+  const imageAssetIds = s.imageAssetIds
+    .filter((id): id is string => typeof id === "string")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (imageAssetIds.length < 2) return undefined;
+  // Legacy projects stored mode:"random" (even timing + shuffle).
+  const legacyRandom = s.mode === "random";
+  const mode = s.mode === "beat" ? ("beat" as const) : ("even" as const);
+  const random = s.random === true || legacyRandom;
+  const recipe: SlideshowRecipe = { imageAssetIds, mode };
+  if (random) recipe.random = true;
+  const seed = Number(s.seed);
+  if (random && Number.isFinite(seed)) {
+    recipe.seed = Math.trunc(seed) >>> 0;
+  }
+  if (typeof s.audioAssetId === "string" && s.audioAssetId.trim()) {
+    recipe.audioAssetId = s.audioAssetId.trim();
+  }
+  const audioInSec = Number(s.audioInSec);
+  const audioOutSec = Number(s.audioOutSec);
+  const audioStartSec = Number(s.audioStartSec);
+  const audioEndSec = Number(s.audioEndSec);
+  if (Number.isFinite(audioInSec)) recipe.audioInSec = audioInSec;
+  if (Number.isFinite(audioOutSec)) recipe.audioOutSec = audioOutSec;
+  if (Number.isFinite(audioStartSec)) recipe.audioStartSec = audioStartSec;
+  if (Number.isFinite(audioEndSec)) recipe.audioEndSec = audioEndSec;
+  return recipe;
 }
 
 function normalizeStoredTimeline(value: unknown): TimelineClip[] {

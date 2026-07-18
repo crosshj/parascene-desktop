@@ -17,7 +17,9 @@ import {
 } from "../../library/clipThumbnail";
 import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
+import type { BakeInfo, BakeStatus } from "../../library/slideshowMedia";
 import type { TimelineClip } from "../../project/types";
+import { findOverlappingAudioClip } from "./audioOverlap";
 import {
   getActiveStagedClipDrag,
   parseStagedClipPayload,
@@ -41,6 +43,8 @@ type TimelinePaneProps = {
   projectId?: string;
   /** Persist timeline clips on the open project. */
   onClipsChange?: (clips: TimelineClip[]) => void;
+  /** Runtime bake status for slideshow clips (not persisted). */
+  bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
   /** Currently selected clip ids (multi-select). */
   selectedClipIds?: readonly string[];
   onSelectClip?: (
@@ -158,8 +162,24 @@ function draftToClip(
   draft: StagedClipDraft,
   startSec: number,
   lane: "video" | "audio",
+  allClips: readonly TimelineClip[],
 ): TimelineClip {
   const duration = stagedClipDuration(draft);
+  let slideshow = draft.kind === "slideshow" ? draft.slideshow : undefined;
+  if (slideshow?.mode === "beat") {
+    const visual = { startSec, endSec: startSec + duration };
+    const audio = findOverlappingAudioClip(allClips, visual);
+    if (audio?.assetId) {
+      slideshow = {
+        ...slideshow,
+        audioAssetId: audio.assetId,
+        audioInSec: audio.inSec ?? 0,
+        audioOutSec: audio.outSec,
+        audioStartSec: audio.startSec,
+        audioEndSec: audio.endSec,
+      };
+    }
+  }
   return {
     id: newClipId(),
     label: formatClipDuration(duration),
@@ -175,6 +195,9 @@ function draftToClip(
     reverse: draft.reverse,
     transform: draft.transform,
     framing: draft.framing,
+    slideshow,
+    bakeKey: null,
+    bakePath: null,
   };
 }
 
@@ -250,6 +273,8 @@ function MiniClip({
   audio = false,
   reversed = false,
   framing = "fit",
+  bakeStatus,
+  bakeError,
   waveSeed,
   onPointerDown,
 }: {
@@ -267,6 +292,8 @@ function MiniClip({
   /** Show a small left-pointing play mark (reversed clip). */
   reversed?: boolean;
   framing?: StagedClipFraming;
+  bakeStatus?: BakeStatus;
+  bakeError?: string | null;
   waveSeed?: string;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
@@ -338,6 +365,21 @@ function MiniClip({
           </svg>
         </span>
       ) : null}
+      {bakeStatus === "generating" ? (
+        <span
+          className="editor-timeline-clip-bake is-generating"
+          aria-label="Rendering slideshow"
+          title="Rendering slideshow…"
+        />
+      ) : bakeStatus === "failed" ? (
+        <span
+          className="editor-timeline-clip-bake is-failed"
+          aria-label={bakeError?.trim() || "Slideshow render failed"}
+          title={bakeError?.trim() || "Slideshow render failed"}
+        >
+          !
+        </span>
+      ) : null}
       {audio ? (
         <ClipAudioWaveform
           widthPx={widthPx}
@@ -404,6 +446,7 @@ export function TimelinePane({
   clips: seedClips,
   projectId = "",
   onClipsChange,
+  bakeInfoByClipId,
   selectedClipIds = [],
   onSelectClip,
   zoom: zoomProp = 1,
@@ -519,7 +562,8 @@ export function TimelinePane({
         !assetId ||
         clip.lane === "audio" ||
         clip.kind === "audio" ||
-        clip.kind === "image"
+        clip.kind === "image" ||
+        clip.kind === "slideshow"
       ) {
         continue;
       }
@@ -905,10 +949,17 @@ export function TimelinePane({
         laneClips,
         magnetic,
       );
-      commitClips([...clips, draftToClip(draft, startSec, lane)]);
+      const placed = draftToClip(draft, startSec, lane, clips);
+      commitClips([...clips, placed]);
       setGhost(null);
     },
-    [clips, commitClips, isOverTracks, magnetic, pointToStartSec],
+    [
+      clips,
+      commitClips,
+      isOverTracks,
+      magnetic,
+      pointToStartSec,
+    ],
   );
 
   const syncGhostFromPoint = useCallback(
@@ -1334,13 +1385,35 @@ export function TimelinePane({
                       clipThumbByKey,
                       thumbByAssetId,
                     )}
-                    label={clip.label}
-                    title={clip.assetId ?? clip.label}
+                    label={
+                      clip.kind === "slideshow"
+                        ? `${clip.label} · ${clip.slideshow?.imageAssetIds.length ?? 0}`
+                        : clip.label
+                    }
+                    title={
+                      clip.kind === "slideshow"
+                        ? bakeInfoByClipId?.get(clip.id)?.status === "failed"
+                          ? bakeInfoByClipId.get(clip.id)?.error?.trim() ||
+                            `Slideshow (${clip.slideshow?.imageAssetIds.length ?? 0} images) — render failed`
+                          : `Slideshow (${clip.slideshow?.imageAssetIds.length ?? 0} images)`
+                        : (clip.assetId ?? clip.label)
+                    }
                     pxPerSec={pxPerSec}
                     moving={movingClipIds.includes(clip.id)}
                     selected={selectedClipIds.includes(clip.id)}
                     reversed={Boolean(clip.reverse)}
                     framing={normalizeFraming(clip.framing)}
+                    bakeStatus={
+                      clip.kind === "slideshow"
+                        ? bakeInfoByClipId?.get(clip.id)?.status ??
+                          (clip.bakePath ? "ready" : "idle")
+                        : undefined
+                    }
+                    bakeError={
+                      clip.kind === "slideshow"
+                        ? bakeInfoByClipId?.get(clip.id)?.error
+                        : undefined
+                    }
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />
                 ))

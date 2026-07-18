@@ -16,6 +16,27 @@ export type ProjectAsset = {
   durationLabel?: string;
 };
 
+/** How a composite image slideshow assigns image spans. */
+export type SlideshowMode = "even" | "beat";
+
+/** Recipe for a composite image slideshow clip. */
+export type SlideshowRecipe = {
+  imageAssetIds: string[];
+  mode: SlideshowMode;
+  /** When true, images are shuffled with `seed` before even/beat timing. */
+  random?: boolean;
+  /** Deterministic shuffle seed used when `random` is true. */
+  seed?: number;
+  /** Audio asset used for beat mapping (set on drop for beat mode). */
+  audioAssetId?: string;
+  /** Source trim of the audio asset used for beat mapping. */
+  audioInSec?: number;
+  audioOutSec?: number;
+  /** Timeline placement of the overlapping audio clip. */
+  audioStartSec?: number;
+  audioEndSec?: number;
+};
+
 export type TimelineClip = {
   id: string;
   label: string;
@@ -26,7 +47,7 @@ export type TimelineClip = {
   thumbUrl?: string | null;
   lane?: "video" | "audio";
   /** Source media kind used when staging. */
-  kind?: "video" | "image" | "audio";
+  kind?: "video" | "image" | "audio" | "slideshow";
   /** Source in/out used to build this clip. */
   inSec?: number;
   outSec?: number;
@@ -35,6 +56,12 @@ export type TimelineClip = {
   reverse?: boolean;
   transform?: "hold" | "kenBurns";
   framing?: "fit" | "fill" | "stretch";
+  /** Composite image slideshow recipe when kind is "slideshow". */
+  slideshow?: SlideshowRecipe;
+  /** Content-addressed key for the cached silent bake. */
+  bakeKey?: string | null;
+  /** Absolute path to the cached silent bake MP4 when ready. */
+  bakePath?: string | null;
 };
 
 export type HookSuggestion = {

@@ -1,10 +1,43 @@
+import type { SlideshowMode, SlideshowRecipe } from "../../project/types";
+
 export const STAGED_CLIP_MIME = "application/x-parascene-staged-clip";
 
-export type StagedClipKind = "video" | "image" | "audio";
+export type StagedClipKind = "video" | "image" | "audio" | "slideshow";
 
 export type StagedClipTransform = "hold" | "kenBurns";
 
 export type StagedClipFraming = "fit" | "fill" | "stretch";
+
+export type { SlideshowMode, SlideshowRecipe };
+
+export const DEFAULT_IMAGE_DURATION_SEC = 10;
+/** Used only until source media duration is known; then Out becomes the real length. */
+export const PROVISIONAL_VIDEO_OUT_SEC = 10;
+export const PROVISIONAL_AUDIO_OUT_SEC = 30;
+
+export function newSlideshowSeed(): number {
+  if (typeof crypto !== "undefined" && "getRandomValues" in crypto) {
+    return crypto.getRandomValues(new Uint32Array(1))[0];
+  }
+  return Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
+}
+
+/** Deterministic Fisher-Yates order shared by source Preview. */
+export function slideshowOrderIndices(count: number, seed = 0): number[] {
+  const out = Array.from({ length: Math.max(0, count) }, (_, i) => i);
+  let state = seed >>> 0;
+  const next = () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = next() % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
 
 /** Normalize unknown / missing framing to a concrete preview/export mode. */
 export function normalizeFraming(
@@ -89,7 +122,105 @@ export type StagedClipDraft = {
   transform: StagedClipTransform;
   framing: StagedClipFraming;
   thumbUrl: string | null;
+  /** Composite slideshow recipe when kind is "slideshow". */
+  slideshow?: SlideshowRecipe;
+  bakeKey?: string | null;
+  bakePath?: string | null;
 };
+
+export function normalizeSlideshowRecipe(
+  value: unknown,
+): SlideshowRecipe | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const s = value as Record<string, unknown>;
+  if (!Array.isArray(s.imageAssetIds)) return undefined;
+  const imageAssetIds = s.imageAssetIds
+    .filter((id): id is string => typeof id === "string")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (imageAssetIds.length < 2) return undefined;
+  // Legacy projects stored mode:"random" (even timing + shuffle).
+  const legacyRandom = s.mode === "random";
+  const mode: SlideshowMode = s.mode === "beat" ? "beat" : "even";
+  const random = s.random === true || legacyRandom;
+  const recipe: SlideshowRecipe = { imageAssetIds, mode };
+  if (random) recipe.random = true;
+  const seed = Number(s.seed);
+  if (random && Number.isFinite(seed)) {
+    recipe.seed = Math.trunc(seed) >>> 0;
+  }
+  if (typeof s.audioAssetId === "string" && s.audioAssetId.trim()) {
+    recipe.audioAssetId = s.audioAssetId.trim();
+  }
+  const audioInSec = Number(s.audioInSec);
+  const audioOutSec = Number(s.audioOutSec);
+  const audioStartSec = Number(s.audioStartSec);
+  const audioEndSec = Number(s.audioEndSec);
+  if (Number.isFinite(audioInSec)) recipe.audioInSec = audioInSec;
+  if (Number.isFinite(audioOutSec)) recipe.audioOutSec = audioOutSec;
+  if (Number.isFinite(audioStartSec)) recipe.audioStartSec = audioStartSec;
+  if (Number.isFinite(audioEndSec)) recipe.audioEndSec = audioEndSec;
+  return recipe;
+}
+
+/** True when two slideshow recipes describe the same bake inputs. */
+export function slideshowRecipesEqual(
+  a: SlideshowRecipe | null | undefined,
+  b: SlideshowRecipe | null | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.mode !== b.mode) return false;
+  if (!!a.random !== !!b.random) return false;
+  if (!!a.random && (a.seed ?? 0) !== (b.seed ?? 0)) return false;
+  if (a.imageAssetIds.length !== b.imageAssetIds.length) return false;
+  if (a.imageAssetIds.some((id, i) => id !== b.imageAssetIds[i])) return false;
+  if ((a.audioAssetId ?? "") !== (b.audioAssetId ?? "")) return false;
+  const numEq = (x: number | undefined, y: number | undefined) =>
+    (Number.isFinite(x) ? Number(x) : null) ===
+    (Number.isFinite(y) ? Number(y) : null);
+  return (
+    numEq(a.audioInSec, b.audioInSec) &&
+    numEq(a.audioOutSec, b.audioOutSec) &&
+    numEq(a.audioStartSec, b.audioStartSec) &&
+    numEq(a.audioEndSec, b.audioEndSec)
+  );
+}
+
+export function defaultSlideshowDraft(opts: {
+  imageAssetIds: string[];
+  label: string;
+  thumbUrl?: string | null;
+  durationSec?: number;
+  mode?: SlideshowMode;
+  random?: boolean;
+}): StagedClipDraft {
+  const imageAssetIds = opts.imageAssetIds.map((id) => id.trim()).filter(Boolean);
+  const duration =
+    Number.isFinite(opts.durationSec) && (opts.durationSec as number) > 0
+      ? (opts.durationSec as number)
+      : DEFAULT_IMAGE_DURATION_SEC;
+  const random = opts.random === true;
+  return {
+    assetId: imageAssetIds[0] ?? "",
+    label: opts.label,
+    kind: "slideshow",
+    inSec: 0,
+    outSec: duration,
+    includeAudio: false,
+    reverse: false,
+    transform: "hold",
+    framing: "fit",
+    thumbUrl: opts.thumbUrl ?? null,
+    slideshow: {
+      imageAssetIds,
+      mode: opts.mode === "beat" ? "beat" : "even",
+      ...(random ? { random: true, seed: newSlideshowSeed() } : {}),
+    },
+    bakeKey: null,
+    bakePath: null,
+  };
+}
 
 /**
  * Mirror in/out across the source duration when toggling reverse so the same
@@ -108,14 +239,9 @@ export function remapTrimForReverse(
   return { inSec, outSec };
 }
 
-export const DEFAULT_IMAGE_DURATION_SEC = 10;
-/** Used only until source media duration is known; then Out becomes the real length. */
-export const PROVISIONAL_VIDEO_OUT_SEC = 10;
-export const PROVISIONAL_AUDIO_OUT_SEC = 30;
-
 /** True when Out is still the kind placeholder (not yet filled from media duration). */
 export function isProvisionalOutSec(draft: StagedClipDraft): boolean {
-  if (draft.kind === "image") return false;
+  if (draft.kind === "image" || draft.kind === "slideshow") return false;
   const provisional =
     draft.kind === "audio"
       ? PROVISIONAL_AUDIO_OUT_SEC
@@ -144,6 +270,9 @@ export function applyDraftToTimelineClip(
     reverse?: boolean;
     transform?: StagedClipTransform;
     framing?: StagedClipFraming;
+    slideshow?: SlideshowRecipe;
+    bakeKey?: string | null;
+    bakePath?: string | null;
   },
   draft: StagedClipDraft,
 ): typeof clip {
@@ -152,6 +281,12 @@ export function applyDraftToTimelineClip(
     Number.isFinite(duration) && duration > 0
       ? `${(Math.round(duration * 10) / 10).toFixed(1)}s`
       : clip.label;
+  const recipeChanged =
+    draft.kind === "slideshow" &&
+    (!slideshowRecipesEqual(clip.slideshow, draft.slideshow) ||
+      Math.abs((clip.outSec ?? 0) - draft.outSec) > 0.001 ||
+      Math.abs((clip.inSec ?? 0) - draft.inSec) > 0.001 ||
+      normalizeFraming(clip.framing) !== draft.framing);
   return {
     ...clip,
     label,
@@ -165,6 +300,9 @@ export function applyDraftToTimelineClip(
     reverse: draft.reverse,
     transform: draft.transform,
     framing: draft.framing,
+    slideshow: draft.kind === "slideshow" ? draft.slideshow : undefined,
+    bakeKey: recipeChanged ? null : (draft.bakeKey ?? clip.bakeKey ?? null),
+    bakePath: recipeChanged ? null : (draft.bakePath ?? clip.bakePath ?? null),
   };
 }
 
@@ -240,16 +378,28 @@ export function timelineClipToStagedDraft(clip: {
   transform?: StagedClipTransform;
   framing?: StagedClipFraming;
   thumbUrl?: string | null;
+  slideshow?: SlideshowRecipe;
+  bakeKey?: string | null;
+  bakePath?: string | null;
 }): StagedClipDraft | null {
-  const assetId = clip.assetId?.trim();
+  const slideshow =
+    clip.kind === "slideshow"
+      ? normalizeSlideshowRecipe(clip.slideshow)
+      : undefined;
+  const assetId =
+    clip.assetId?.trim() ||
+    slideshow?.imageAssetIds[0]?.trim() ||
+    "";
   if (!assetId) return null;
 
   const kind: StagedClipKind =
-    clip.kind === "image" || clip.kind === "audio" || clip.kind === "video"
-      ? clip.kind
-      : clip.lane === "audio"
-        ? "audio"
-        : "video";
+    clip.kind === "slideshow" && slideshow
+      ? "slideshow"
+      : clip.kind === "image" || clip.kind === "audio" || clip.kind === "video"
+        ? clip.kind
+        : clip.lane === "audio"
+          ? "audio"
+          : "video";
 
   const timelineDur = Math.max(0.1, clip.endSec - clip.startSec);
   const inSec = Number.isFinite(clip.inSec) ? Math.max(0, Number(clip.inSec)) : 0;
@@ -280,6 +430,9 @@ export function timelineClipToStagedDraft(clip: {
     transform,
     framing,
     thumbUrl: typeof clip.thumbUrl === "string" ? clip.thumbUrl : null,
+    slideshow,
+    bakeKey: typeof clip.bakeKey === "string" ? clip.bakeKey : null,
+    bakePath: typeof clip.bakePath === "string" ? clip.bakePath : null,
   };
 }
 
@@ -297,13 +450,23 @@ export function parseStagedClipPayload(raw: string): StagedClipDraft | null {
     if (!parsed || typeof parsed !== "object") return null;
     const d = parsed as Record<string, unknown>;
     const kind = d.kind;
-    if (kind !== "video" && kind !== "image" && kind !== "audio") return null;
+    if (
+      kind !== "video" &&
+      kind !== "image" &&
+      kind !== "audio" &&
+      kind !== "slideshow"
+    ) {
+      return null;
+    }
     if (typeof d.assetId !== "string") return null;
     const inSec = Number(d.inSec);
     const outSec = Number(d.outSec);
     if (!Number.isFinite(inSec) || !Number.isFinite(outSec) || outSec <= inSec) {
       return null;
     }
+    const slideshow =
+      kind === "slideshow" ? normalizeSlideshowRecipe(d.slideshow) : undefined;
+    if (kind === "slideshow" && !slideshow) return null;
     return {
       assetId: d.assetId,
       label: typeof d.label === "string" ? d.label : d.assetId,
@@ -317,6 +480,9 @@ export function parseStagedClipPayload(raw: string): StagedClipDraft | null {
         typeof d.framing === "string" ? d.framing : undefined,
       ),
       thumbUrl: typeof d.thumbUrl === "string" ? d.thumbUrl : null,
+      slideshow,
+      bakeKey: typeof d.bakeKey === "string" ? d.bakeKey : null,
+      bakePath: typeof d.bakePath === "string" ? d.bakePath : null,
     };
   } catch {
     return null;

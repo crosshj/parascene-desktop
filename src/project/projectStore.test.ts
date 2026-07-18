@@ -148,6 +148,107 @@ describe("projectStore", () => {
     expect(storedProjectToUi(loaded[0]).timeline[0].endSec).toBe(4);
   });
 
+  it("persists slideshow recipe and bake metadata", () => {
+    const a = createStoredProject("Demo", ["i1", "i2"]);
+    const withClips = setStoredProjectTimeline(a, [
+      {
+        id: "clip-s",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        assetId: "i1",
+        lane: "video",
+        kind: "slideshow",
+        inSec: 0,
+        outSec: 10,
+        framing: "fit",
+        slideshow: {
+          imageAssetIds: ["i1", "i2"],
+          mode: "beat",
+          audioAssetId: "a1",
+          audioInSec: 0,
+          audioOutSec: 30,
+          audioStartSec: 0,
+          audioEndSec: 30,
+        },
+        bakeKey: "v1-abc",
+        bakePath: "/Movies/Parascene/Cache/slideshows/v1/v1-abc.mp4",
+      },
+    ]);
+    saveStoredProjects([withClips]);
+    const clip = loadStoredProjects()[0].timeline?.[0];
+    expect(clip?.kind).toBe("slideshow");
+    expect(clip?.slideshow?.imageAssetIds).toEqual(["i1", "i2"]);
+    expect(clip?.slideshow?.mode).toBe("beat");
+    expect(clip?.slideshow?.audioAssetId).toBe("a1");
+    expect(clip?.bakeKey).toBe("v1-abc");
+    expect(clip?.bakePath).toContain("slideshows");
+  });
+
+  it("drops malformed slideshow clips without a valid recipe", () => {
+    const a = createStoredProject("Demo", ["i1"]);
+    const withClips = setStoredProjectTimeline(a, [
+      {
+        id: "clip-bad",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        kind: "slideshow",
+        slideshow: { imageAssetIds: ["only-one"], mode: "even" },
+      } as never,
+    ]);
+    expect(withClips.timeline).toHaveLength(0);
+  });
+
+  it("persists random slideshow seed", () => {
+    const a = createStoredProject("Demo", ["i1", "i2"]);
+    const withClips = setStoredProjectTimeline(a, [
+      {
+        id: "clip-random",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        kind: "slideshow",
+        slideshow: {
+          imageAssetIds: ["i1", "i2"],
+          mode: "even",
+          random: true,
+          seed: 4294967295,
+        },
+      },
+    ]);
+    expect(withClips.timeline?.[0].slideshow).toEqual({
+      imageAssetIds: ["i1", "i2"],
+      mode: "even",
+      random: true,
+      seed: 4294967295,
+    });
+  });
+
+  it("migrates legacy mode:random on load", () => {
+    const a = createStoredProject("Demo", ["i1", "i2"]);
+    const withClips = setStoredProjectTimeline(a, [
+      {
+        id: "clip-legacy-random",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        kind: "slideshow",
+        slideshow: {
+          imageAssetIds: ["i1", "i2"],
+          mode: "random",
+          seed: 99,
+        } as never,
+      },
+    ]);
+    expect(withClips.timeline?.[0].slideshow).toEqual({
+      imageAssetIds: ["i1", "i2"],
+      mode: "even",
+      random: true,
+      seed: 99,
+    });
+  });
+
   it("persists selected timeline clip and zoom", () => {
     let a = createStoredProject("Demo", ["c1"]);
     a = setStoredProjectTimeline(a, [

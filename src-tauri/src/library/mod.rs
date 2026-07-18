@@ -1,3 +1,4 @@
+mod beats;
 mod catalog;
 mod clip_thumb;
 mod download;
@@ -8,8 +9,10 @@ mod merge;
 pub(crate) mod paths;
 mod render;
 mod reverse;
+mod slideshow;
 mod thumb_fill;
 
+pub use beats::library_detect_beats;
 pub use catalog::{
     library_apply_manifest, library_ensure_ready, library_filter_counts, library_get_creation,
     library_get_creations, library_invalidate_thumbs, library_list_creations, library_sync_status,
@@ -32,6 +35,7 @@ pub use render::{
     publisher_render_timeline,
 };
 pub use reverse::{library_ensure_reversed, library_rebuild_reversed};
+pub use slideshow::library_ensure_slideshow;
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
 use catalog::{query_creations_page, CreationPage};

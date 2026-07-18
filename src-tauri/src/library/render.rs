@@ -2,6 +2,7 @@ use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creati
 use super::ffmpeg::resolve_ffmpeg;
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
+use super::slideshow::{ensure_slideshow, SlideshowEnsureInput};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -9,6 +10,27 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderSlideshowRecipe {
+    pub image_asset_ids: Vec<String>,
+    pub mode: String,
+    #[serde(default)]
+    pub random: Option<bool>,
+    #[serde(default)]
+    pub seed: Option<u32>,
+    #[serde(default)]
+    pub audio_asset_id: Option<String>,
+    #[serde(default)]
+    pub audio_in_sec: Option<f64>,
+    #[serde(default)]
+    pub audio_out_sec: Option<f64>,
+    #[serde(default)]
+    pub audio_start_sec: Option<f64>,
+    #[serde(default)]
+    pub audio_end_sec: Option<f64>,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +49,12 @@ pub struct RenderTimelineClipInput {
     /// Match editor staging: fit (contain), fill (cover), stretch.
     #[serde(default)]
     pub framing: Option<String>,
+    #[serde(default)]
+    pub slideshow: Option<RenderSlideshowRecipe>,
+    #[serde(default)]
+    pub bake_key: Option<String>,
+    #[serde(default)]
+    pub bake_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -413,6 +441,7 @@ fn build_video_segments(
     app: &AppHandle,
     project_id: &str,
     render_id: &str,
+    aspect_ratio: &str,
 ) -> Result<Vec<VideoSegment>, String> {
     let total = sequence_duration(clips);
     if total <= 0.0 {
@@ -424,11 +453,21 @@ fn build_video_segments(
         .iter()
         .filter(|c| clip_lane(c.lane.as_deref()) == "video")
         .filter(|c| {
-            c.asset_id
+            let is_slideshow = c
+                .kind
                 .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .is_some()
+                .map(|k| k.eq_ignore_ascii_case("slideshow"))
+                .unwrap_or(false)
+                && c.slideshow
+                    .as_ref()
+                    .map(|s| s.image_asset_ids.len() >= 2)
+                    .unwrap_or(false);
+            is_slideshow
+                || c.asset_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .is_some()
         })
         .collect();
 
@@ -504,31 +543,85 @@ fn build_video_segments(
             continue;
         };
         let clip = lane_clips[clip_index];
-        let asset_id = clip.asset_id.as_deref().unwrap_or("").trim();
         let timeline_dur = (clip.end_sec - clip.start_sec).max(0.1);
         let in_sec = clip_in_sec(clip.in_sec);
         let out_sec = clip_out_sec(in_sec, clip.out_sec, timeline_dur);
         let local_offset = (range.start - clip.start_sec).max(0.0);
         let source_in = (in_sec + local_offset).min(out_sec);
         let source_out = (source_in + duration_sec).min(out_sec);
-        let conn = ready_connection(paths)?;
-        let creation = get_creation_by_id(&conn, asset_id)?;
-        let path = resolve_media_path(paths, asset_id, clip.reverse)?;
-        let is_image = is_image_clip(clip, creation.as_ref());
-        segments.push(VideoSegment {
-            duration_sec,
-            source: Some(VideoSource {
-                path,
-                in_sec: source_in,
-                out_sec: if is_image {
-                    source_in + duration_sec
+
+        if clip
+            .kind
+            .as_deref()
+            .map(|k| k.eq_ignore_ascii_case("slideshow"))
+            .unwrap_or(false)
+        {
+            let recipe = clip
+                .slideshow
+                .as_ref()
+                .ok_or_else(|| "Slideshow clip is missing its recipe".to_string())?;
+            let ensure_input = SlideshowEnsureInput {
+                image_asset_ids: recipe.image_asset_ids.clone(),
+                mode: recipe.mode.clone(),
+                random: recipe.random,
+                seed: recipe.seed,
+                duration_sec: timeline_dur,
+                framing: clip.framing.clone(),
+                aspect_ratio: aspect_ratio.into(),
+                clip_start_sec: clip.start_sec,
+                audio_asset_id: recipe.audio_asset_id.clone(),
+                audio_in_sec: recipe.audio_in_sec,
+                audio_out_sec: recipe.audio_out_sec,
+                audio_start_sec: recipe.audio_start_sec,
+                audio_end_sec: recipe.audio_end_sec,
+            };
+            // Prefer a persisted bake when its key still matches this recipe.
+            let expected_key = super::slideshow::bake_key_for(&ensure_input);
+            let path = if clip.bake_key.as_deref() == Some(expected_key.as_str()) {
+                if let Some(stored) = clip.bake_path.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                {
+                    match PathBuf::from(stored).canonicalize() {
+                        Ok(existing) if existing.is_file() => existing,
+                        _ => PathBuf::from(ensure_slideshow(paths, &ensure_input)?.path),
+                    }
                 } else {
-                    source_out.max(source_in + 0.001)
-                },
-                is_image,
-                framing: clip_framing(clip),
-            }),
-        });
+                    PathBuf::from(ensure_slideshow(paths, &ensure_input)?.path)
+                }
+            } else {
+                PathBuf::from(ensure_slideshow(paths, &ensure_input)?.path)
+            };
+            segments.push(VideoSegment {
+                duration_sec,
+                source: Some(VideoSource {
+                    path,
+                    in_sec: local_offset.max(0.0),
+                    out_sec: (local_offset + duration_sec).max(local_offset + 0.001),
+                    is_image: false,
+                    // Bake already framed; stretch into the segment frame.
+                    framing: Framing::Stretch,
+                }),
+            });
+        } else {
+            let asset_id = clip.asset_id.as_deref().unwrap_or("").trim();
+            let conn = ready_connection(paths)?;
+            let creation = get_creation_by_id(&conn, asset_id)?;
+            let path = resolve_media_path(paths, asset_id, clip.reverse)?;
+            let is_image = is_image_clip(clip, creation.as_ref());
+            segments.push(VideoSegment {
+                duration_sec,
+                source: Some(VideoSource {
+                    path,
+                    in_sec: source_in,
+                    out_sec: if is_image {
+                        source_in + duration_sec
+                    } else {
+                        source_out.max(source_in + 0.001)
+                    },
+                    is_image,
+                    framing: clip_framing(clip),
+                }),
+            });
+        }
         emit_progress(
             app,
             paths,
@@ -699,7 +792,8 @@ fn render_timeline_file(
         return Err("Timeline has no clips to render".into());
     }
 
-    let video_segments = build_video_segments(clips, paths, app, project_id, render_id)?;
+    let video_segments =
+        build_video_segments(clips, paths, app, project_id, render_id, aspect_ratio)?;
     let audio_segments = collect_audio_segments(clips, paths)?;
 
     // Encode each visual span to its own CFR mp4, then concat + re-encode.
