@@ -710,9 +710,12 @@ export function EditorLayout() {
   >(() => new Map());
   const bakeInflightRef = useRef<Set<string>>(new Set());
   const timelineRef = useRef(project.timeline);
-  timelineRef.current = project.timeline;
   const aspectRatioRef = useRef(project.aspectRatio);
-  aspectRatioRef.current = project.aspectRatio;
+
+  useEffect(() => {
+    timelineRef.current = project.timeline;
+    aspectRatioRef.current = project.aspectRatio;
+  }, [project.timeline, project.aspectRatio]);
 
   const ensureSlideshowBake = (clip: TimelineClip) => {
     if (clip.kind !== "slideshow" || !clip.slideshow) return;

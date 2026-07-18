@@ -247,7 +247,6 @@ export function PreviewPane({
   const [selectionClass, setSelectionClass] =
     useState<MultiSelectionClass | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(false);
-  const [slideshowThumbs, setSlideshowThumbs] = useState<string[]>([]);
   const [catalogError, setCatalogError] = useState(false);
   const [detailFailed, setDetailFailed] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -321,7 +320,6 @@ export function PreviewPane({
   if (selectionKey !== loadedSelectionKey) {
     setLoadedSelectionKey(selectionKey);
     setSelectionClass(null);
-    setSlideshowThumbs([]);
     setSelectionLoading(sourceSelectionIds.length > 0);
     if (!editingClip && sourceSelectionIds.length >= 2) {
       // Optimistic slideshow staging so Mode/Random appear immediately,
@@ -356,20 +354,13 @@ export function PreviewPane({
 
   useEffect(() => {
     if (monitorMode !== "source" || editingClip) {
-      setSelectionClass(null);
-      setSelectionLoading(false);
-      setSlideshowThumbs([]);
       return;
     }
     if (sourceSelectionIds.length === 0) {
-      setSelectionClass(null);
-      setSelectionLoading(false);
-      setSlideshowThumbs([]);
       return;
     }
 
     let cancelled = false;
-    setSelectionLoading(true);
     void (async () => {
       try {
         const selectedRows = await getCreations(sourceSelectionIds);
@@ -414,7 +405,30 @@ export function PreviewPane({
               return row ? creationPreviewUrl(row) : null;
             })
             .find((url): url is string => Boolean(url));
-          setSlideshowThumbs(first ? [first] : []);
+          const thumb = first ?? null;
+          const ids = classified.imageAssetIds;
+          setStagedDraft((prev) => {
+            if (
+              prev?.kind === "slideshow" &&
+              prev.slideshow &&
+              prev.slideshow.imageAssetIds.length === ids.length &&
+              prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
+            ) {
+              if (prev.thumbUrl === thumb) return prev;
+              return { ...prev, thumbUrl: thumb };
+            }
+            if (pendingDraftMatchesSelection(restoredSourceDraft, ids)) {
+              const restored = restoredSourceDraft!;
+              return thumb && restored.thumbUrl !== thumb
+                ? { ...restored, thumbUrl: thumb }
+                : restored;
+            }
+            return defaultSlideshowDraft({
+              imageAssetIds: ids,
+              label: `Slideshow (${ids.length})`,
+              thumbUrl: thumb,
+            });
+          });
           for (const id of classified.imageAssetIds) {
             const row = byId.get(id);
             if (
@@ -427,12 +441,13 @@ export function PreviewPane({
             }
           }
         } else {
-          setSlideshowThumbs([]);
+          setStagedDraft((prev) =>
+            prev?.kind === "slideshow" ? null : prev,
+          );
         }
       } catch {
         if (!cancelled) {
           setSelectionClass(null);
-          setSlideshowThumbs([]);
         }
       } finally {
         if (!cancelled) setSelectionLoading(false);
@@ -501,54 +516,6 @@ export function PreviewPane({
       unlisten?.();
     };
   }, [assetId, selectionOwnsPreview]);
-
-  // Build / clear composite draft from multi-image selection.
-  useEffect(() => {
-    if (editingClip || monitorMode !== "source") return;
-    if (unsupportedSelection) {
-      setStagedDraft(null);
-      return;
-    }
-    if (selectionClass?.type === "compositeImages") {
-      const ids = selectionClass.imageAssetIds;
-      const thumb = slideshowThumbs[0] ?? null;
-      setStagedDraft((prev) => {
-        if (
-          prev?.kind === "slideshow" &&
-          prev.slideshow &&
-          prev.slideshow.imageAssetIds.length === ids.length &&
-          prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
-        ) {
-          if (prev.thumbUrl === thumb) return prev;
-          return { ...prev, thumbUrl: thumb };
-        }
-        if (pendingDraftMatchesSelection(restoredSourceDraft, ids)) {
-          const restored = restoredSourceDraft!;
-          return thumb && restored.thumbUrl !== thumb
-            ? { ...restored, thumbUrl: thumb }
-            : restored;
-        }
-        return defaultSlideshowDraft({
-          imageAssetIds: ids,
-          label: `Slideshow (${ids.length})`,
-          thumbUrl: thumb,
-        });
-      });
-      return;
-    }
-    // Don't tear down staging while classification is still in flight —
-    // that flash is what makes asset switches feel jumpy.
-    if (selectionLoading || selectionClass == null) return;
-    setStagedDraft((prev) => (prev?.kind === "slideshow" ? null : prev));
-  }, [
-    editingClip,
-    monitorMode,
-    selectionClass,
-    selectionLoading,
-    slideshowThumbs,
-    unsupportedSelection,
-    restoredSourceDraft,
-  ]);
 
   const creationMatchesAsset = Boolean(
     creation && assetId && creation.id === assetId,
