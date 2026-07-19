@@ -376,6 +376,14 @@ async fn download_url_authed_or_public(
         Ok(t) => Some(t),
         Err(err) => {
             eprintln!("[library] auth for download: {err}");
+            // Dead / missing session: fail fast. Trying anonymous for every thumb
+            // in a concurrent batch is what made the app feel stuck after logout
+            // or refresh-token invalidation.
+            if is_systemic_download_err(&err) || err.contains("Session expired") {
+                return Err(DownloadAttemptErr::Fatal(format!(
+                    "{err} (session rejected — try logging out/in)"
+                )));
+            }
             None
         }
     };
@@ -856,11 +864,13 @@ async fn download_thumbs_only(
     let mut downloaded = 0u32;
     let mut done = 0u32;
     let mut failed = 0u32;
+    let mut auth_fail_streak = 0u32;
     // Commit + progress as each fetch finishes — never wait for the whole batch.
     while let Some((id, title, result)) = stream.next().await {
         done += 1;
         match result {
             Ok(path_str) => {
+                auth_fail_streak = 0;
                 {
                     let conn = ready_connection(paths)?;
                     let _ = set_local_thumb_path(&conn, &id, &path_str);
@@ -882,6 +892,11 @@ async fn download_thumbs_only(
             }
             Err(err) => {
                 failed += 1;
+                if is_systemic_download_err(&err) {
+                    auth_fail_streak = auth_fail_streak.saturating_add(1);
+                } else {
+                    auth_fail_streak = 0;
+                }
                 let _ = app.emit(
                     "library-sync-item",
                     SyncItemEvent {
@@ -893,6 +908,14 @@ async fn download_thumbs_only(
                     },
                 );
                 emit_progress(app, done, total, Some(id), failed, "thumbs");
+                // Drop the rest of the concurrent stream — further GETs will fail the same way.
+                if media_fail_should_abort(auth_fail_streak, &err) {
+                    eprintln!(
+                        "[library] thumb batch abort after {auth_fail_streak} systemic failures · {}",
+                        short_download_err(&err)
+                    );
+                    break;
+                }
             }
         }
     }

@@ -54,6 +54,8 @@ pub struct RenderTimelineClipInput {
     #[serde(default)]
     pub slideshow: Option<RenderSlideshowRecipe>,
     #[serde(default)]
+    /// Wire field from timeline clips; bake lookup uses `bake_path`.
+    #[allow(dead_code)]
     pub bake_key: Option<String>,
     #[serde(default)]
     pub bake_path: Option<String>,

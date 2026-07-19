@@ -425,6 +425,12 @@ export async function syncLibraryFolders(opts?: {
         message: e.message,
       });
     }
+    const message = e instanceof Error ? e.message : String(e);
+    if (/unauthorized|session expired|not signed in/i.test(message)) {
+      throw new Error(
+        "Parascene rejected the session (Unauthorized). Try logging out and back in, then Sync again.",
+      );
+    }
     throw e;
   }
 

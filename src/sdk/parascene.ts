@@ -271,17 +271,47 @@ async function postBearer(
   });
 }
 
+function isUnauthorized(res: HttpJsonResult): boolean {
+  if (res.status === 401) return true;
+  try {
+    const err = JSON.parse(res.body) as { message?: string; error?: string };
+    const msg = `${err.message || ""} ${err.error || ""}`.toLowerCase();
+    return msg.includes("unauthorized");
+  } catch {
+    return false;
+  }
+}
+
 /** POST with bearer; wait and retry on 429/503 using Retry-After when present. */
 async function postBearerResilient(
   url: string,
   payload: unknown,
   bearer: string,
-  opts?: { maxAttempts?: number; onWait?: (ms: number) => void },
+  opts?: {
+    maxAttempts?: number;
+    onWait?: (ms: number) => void;
+    /** Called once on 401 to obtain a fresher bearer before retrying. */
+    onUnauthorized?: () => Promise<string | null>;
+  },
 ): Promise<HttpJsonResult> {
   const maxAttempts = opts?.maxAttempts ?? 8;
+  let token = bearer;
+  let refreshed = false;
   let last: HttpJsonResult = { status: 0, body: "" };
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    last = await postBearer(url, payload, bearer);
+    last = await postBearer(url, payload, token);
+    if (
+      isUnauthorized(last) &&
+      !refreshed &&
+      opts?.onUnauthorized
+    ) {
+      refreshed = true;
+      const fresh = await opts.onUnauthorized();
+      if (fresh && fresh !== token) {
+        token = fresh;
+        continue;
+      }
+    }
     if (!isRateLimited(last)) return last;
     const wait = retryAfterMs(last, attempt);
     opts?.onWait?.(wait);
@@ -389,8 +419,7 @@ export class ParasceneSdk {
   }
 
   async getUserInfo(): Promise<ParasceneUserInfo> {
-    const token = await this.requireAccessToken();
-    const res = await getBearer(`${this.baseUrl}/oauth/userinfo`, token);
+    const res = await this.getBearerAuthed(`${this.baseUrl}/oauth/userinfo`);
     if (res.status >= 400) {
       throw new Error(`userinfo failed (${res.status})`);
     }
@@ -409,13 +438,12 @@ export class ParasceneSdk {
     limit?: number;
     offset?: number;
   }): Promise<ListCreateImagesResult> {
-    const token = await this.requireAccessToken();
     const limit = Math.min(200, Math.max(1, opts?.limit ?? 50));
     const offset = Math.max(0, opts?.offset ?? 0);
     const url = new URL(`${this.apiBaseUrl}/api/create/images`);
     url.searchParams.set("limit", String(limit));
     url.searchParams.set("offset", String(offset));
-    const res = await getBearer(url.toString(), token);
+    const res = await this.getBearerAuthed(url.toString());
     if (res.status >= 400) {
       let message = `list creations failed (${res.status})`;
       try {
@@ -441,10 +469,8 @@ export class ParasceneSdk {
    * `GET /api/library/folders`
    */
   async getLibraryFolders(): Promise<LibraryFoldersSnapshot> {
-    const token = await this.requireAccessToken();
-    const res = await getBearer(
+    const res = await this.getBearerAuthed(
       `${this.apiBaseUrl}/api/library/folders`,
-      token,
     );
     if (res.status === 501) {
       throw new LibraryFoldersUnavailableError(
@@ -477,14 +503,12 @@ export class ParasceneSdk {
     baseRevision: number;
     operations: LibraryFolderOperation[];
   }): Promise<LibraryFoldersSnapshot> {
-    const token = await this.requireAccessToken();
-    const res = await postBearer(
+    const res = await this.postBearerAuthed(
       `${this.apiBaseUrl}/api/library/folders/mutate`,
       {
         base_revision: opts.baseRevision,
         operations: opts.operations,
       },
-      token,
     );
     let raw: unknown = null;
     try {
@@ -564,7 +588,10 @@ export class ParasceneSdk {
         content_type: "image/jpeg",
       },
       token,
-      { onWait: opts?.onWait },
+      {
+        onWait: opts?.onWait,
+        onUnauthorized: () => this.forceRefreshAccessToken(),
+      },
     );
     if (res.status >= 400) {
       let message = `upload fit thumb failed (${res.status})`;
@@ -599,7 +626,10 @@ export class ParasceneSdk {
       `${this.apiBaseUrl}${path}`,
       body,
       token,
-      { onWait: opts?.onWait },
+      {
+        onWait: opts?.onWait,
+        onUnauthorized: () => this.forceRefreshAccessToken(),
+      },
     );
     if (res.status >= 400) {
       let message = `repair failed (${res.status})`;
@@ -647,6 +677,40 @@ export class ParasceneSdk {
       throw new Error("Not signed in");
     }
     return token;
+  }
+
+  /** Force-refresh once when the server rejects a still-cached access JWT. */
+  private async forceRefreshAccessToken(): Promise<string | null> {
+    if (!this.onRefreshNeeded) return null;
+    const next = await this.onRefreshNeeded();
+    return next?.accessToken ?? null;
+  }
+
+  private async getBearerAuthed(url: string): Promise<HttpJsonResult> {
+    const token = await this.requireAccessToken();
+    let res = await getBearer(url, token);
+    if (isUnauthorized(res)) {
+      const fresh = await this.forceRefreshAccessToken();
+      if (fresh && fresh !== token) {
+        res = await getBearer(url, fresh);
+      }
+    }
+    return res;
+  }
+
+  private async postBearerAuthed(
+    url: string,
+    payload: unknown,
+  ): Promise<HttpJsonResult> {
+    const token = await this.requireAccessToken();
+    let res = await postBearer(url, payload, token);
+    if (isUnauthorized(res)) {
+      const fresh = await this.forceRefreshAccessToken();
+      if (fresh && fresh !== token) {
+        res = await postBearer(url, payload, fresh);
+      }
+    }
+    return res;
   }
 }
 

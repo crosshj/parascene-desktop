@@ -162,6 +162,7 @@ function useCatalog() {
   const [folderResolutions, setFolderResolutions] = useState<
     Record<string, "local" | "cloud">
   >({});
+  const [folderSyncing, setFolderSyncing] = useState(false);
   const [resolvingFolders, setResolvingFolders] = useState(false);
   const offsetRef = useRef(0);
   const creationsRef = useRef<Creation[]>([]);
@@ -418,6 +419,26 @@ function useCatalog() {
     }
   }, [loadInitial, refreshFolderSync, runFolderSync]);
 
+  const runFolderOnlySync = useCallback(async () => {
+    setFolderSyncing(true);
+    setError(null);
+    setFolderSyncResult(null);
+    try {
+      const folderResult = await runFolderSync();
+      if (
+        !folderResult.ok &&
+        folderResult.message &&
+        folderResult.conflicts.length === 0
+      ) {
+        setError(folderResult.message);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFolderSyncing(false);
+    }
+  }, [runFolderSync]);
+
   const runResolveFolderConflicts = useCallback(async () => {
     if (folderConflicts.length === 0) return;
     const missing = folderConflicts.some((c) => !folderResolutions[c.id]);
@@ -606,8 +627,10 @@ function useCatalog() {
     folderConflicts,
     folderResolutions,
     setFolderResolutions,
+    folderSyncing,
     resolvingFolders,
     runSync,
+    runFolderOnlySync,
     runResolveFolderConflicts,
     runCacheThumbs,
     runCacheMedia,
@@ -1564,8 +1587,10 @@ function SyncPanel({
   folderResolutions,
   onFolderResolution,
   onResolveFolderConflicts,
+  folderSyncing,
   resolvingFolders,
   onSync,
+  onFolderSync,
   onCacheThumbs,
   onCacheMedia,
   onCloudRepair,
@@ -1585,8 +1610,10 @@ function SyncPanel({
   folderResolutions: Record<string, "local" | "cloud">;
   onFolderResolution: (conflictId: string, choice: "local" | "cloud") => void;
   onResolveFolderConflicts: () => void;
+  folderSyncing: boolean;
   resolvingFolders: boolean;
   onSync: () => void;
+  onFolderSync: () => void;
   onCacheThumbs: () => void;
   onCacheMedia: () => void;
   onCloudRepair: () => void;
@@ -1653,6 +1680,7 @@ function SyncPanel({
   const rawBusy =
     syncing ||
     repairing ||
+    folderSyncing ||
     resolvingFolders ||
     cachingThumbs ||
     cachingMedia ||
@@ -1711,6 +1739,19 @@ function SyncPanel({
               onSync={onSync}
               progress={progress}
             />
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={onFolderSync}
+              disabled={busy}
+              title="Pull cloud folders and upload pending folder changes without syncing creations or media"
+            >
+              {folderSyncing
+                ? "Syncing folders…"
+                : folderPending > 0
+                  ? `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`
+                  : "Sync folders"}
+            </button>
             <button
               type="button"
               className="btn ghost"
@@ -1963,6 +2004,7 @@ export function LibraryView() {
     loadingMore,
     progress,
     runSync,
+    runFolderOnlySync,
     runResolveFolderConflicts,
     runCacheThumbs,
     runCacheMedia,
@@ -1975,6 +2017,7 @@ export function LibraryView() {
     folderConflicts,
     folderResolutions,
     setFolderResolutions,
+    folderSyncing,
     resolvingFolders,
     loadMore,
     refreshStatus,
@@ -2005,8 +2048,10 @@ export function LibraryView() {
           onResolveFolderConflicts={() => {
             void runResolveFolderConflicts();
           }}
+          folderSyncing={folderSyncing}
           resolvingFolders={resolvingFolders}
           onSync={runSync}
+          onFolderSync={runFolderOnlySync}
           onCacheThumbs={runCacheThumbs}
           onCacheMedia={runCacheMedia}
           onCloudRepair={runCloudRepair}

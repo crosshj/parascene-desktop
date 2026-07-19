@@ -10,6 +10,7 @@
 #[cfg(not(debug_assertions))]
 use keyring::Entry;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -22,6 +23,16 @@ const SESSION_KEY: &str = "parascene_session";
 const OAUTH_CLIENT_ID: &str = "c7826d84-92b2-42b5-92db-473662b51a77";
 const OAUTH_BASE_URL: &str = "https://www.parascene.com";
 const ACCESS_TOKEN_SKEW_MS: u64 = 60_000;
+const SESSION_EXPIRED_MSG: &str =
+    "Session expired — log out and log in again (refresh token invalidated)";
+
+/// After `invalid_grant` with no recovery, skip further refresh HTTP until a new
+/// session is written. Prevents download workers from serializing dozens of
+/// doomed `/oauth/token` calls (main source of UI sluggishness on dead sessions).
+fn refresh_invalidated() -> &'static AtomicBool {
+    static FLAG: AtomicBool = AtomicBool::new(false);
+    &FLAG
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -42,7 +53,9 @@ fn read_session_json() -> Option<Value> {
 
 fn write_session_json(value: &Value) -> Result<(), String> {
     let raw = serde_json::to_string(value).map_err(|e| e.to_string())?;
-    keychain_set(SESSION_KEY.to_string(), raw)
+    keychain_set(SESSION_KEY.to_string(), raw)?;
+    refresh_invalidated().store(false, Ordering::SeqCst);
+    Ok(())
 }
 
 fn access_from_session(session: &Value) -> Option<String> {
@@ -86,6 +99,10 @@ async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
     // Serialize all refreshers (FE invoke + download worker) so rotation can't race.
     let _guard = refresh_lock().lock().await;
 
+    if refresh_invalidated().load(Ordering::SeqCst) {
+        return Err(SESSION_EXPIRED_MSG.into());
+    }
+
     let mut session = read_session_json().ok_or_else(|| "Not signed in".to_string())?;
     let access = access_from_session(&session).ok_or_else(|| "Not signed in".to_string())?;
     if !force && access_still_fresh(&session) {
@@ -124,9 +141,9 @@ async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
                         }
                     }
                 }
-                return Err(
-                    "Session expired — log out and log in again (refresh token invalidated)".into(),
-                );
+                refresh_invalidated().store(true, Ordering::SeqCst);
+                eprintln!("[auth] refresh token invalidated — stopping further refresh attempts");
+                return Err(SESSION_EXPIRED_MSG.into());
             }
             Err(err)
         }
@@ -233,13 +250,17 @@ pub fn keychain_get(key: String) -> Result<Option<String>, String> {
 pub fn keychain_set(key: String, value: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     {
-        crate::library::auth_kv_set(&key, &value)
+        crate::library::auth_kv_set(&key, &value)?;
     }
     #[cfg(not(debug_assertions))]
     {
         let entry = Entry::new(SERVICE, &key).map_err(|e| e.to_string())?;
-        entry.set_password(&value).map_err(|e| e.to_string())
+        entry.set_password(&value).map_err(|e| e.to_string())?;
     }
+    if key == SESSION_KEY {
+        refresh_invalidated().store(false, Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 #[tauri::command]
