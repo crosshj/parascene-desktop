@@ -114,7 +114,8 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
   }
   if (
     cmd === "library_list_folders" ||
-    cmd === "library_list_filed_creation_ids"
+    cmd === "library_list_filed_creation_ids" ||
+    cmd === "library_list_group_member_ids"
   ) {
     return [];
   }

@@ -117,6 +117,9 @@ export function mapGroupSourceCreations(
  * Append catalog rows for group members embedded in group covers that the API
  * did not return as standalone creations. Existing standalone rows win — real
  * API records are richer than the denormalized `source_creations` snapshot.
+ *
+ * Used on demand when opening a group (lightbox / editor). Full library sync
+ * does **not** expand members onto the Creations board.
  */
 export function withEmbeddedGroupMembers(
   creations: CreationUpsert[],
@@ -243,7 +246,7 @@ async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
     throw e;
   }
 
-  return withEmbeddedGroupMembers(all.map(mapRemoteCreation));
+  return all.map(mapRemoteCreation);
 }
 
 /** Metadata only (full image records) — no media downloads. */

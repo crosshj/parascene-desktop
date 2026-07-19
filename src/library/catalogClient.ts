@@ -38,6 +38,11 @@ export async function getCatalogFilterCounts(): Promise<CatalogFilterCounts> {
   return invoke<CatalogFilterCounts>("library_filter_counts");
 }
 
+/** Creation ids that belong inside a group cover — hidden from the board / media filters. */
+export async function listGroupMemberIds(): Promise<string[]> {
+  return invoke<string[]>("library_list_group_member_ids");
+}
+
 export async function getCreation(id: string): Promise<Creation> {
   return invoke<Creation>("library_get_creation", { id });
 }

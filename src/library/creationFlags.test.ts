@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectGroupMemberIds,
   creationCardTitle,
   groupEmbeddedSourceCreations,
   groupSourceCreationIds,
   isGroupCreation,
   isPublishedCreation,
+  omitGroupMemberCreations,
 } from "./creationFlags";
 
 describe("creationFlags", () => {
@@ -84,6 +86,33 @@ describe("creationFlags", () => {
     ).toEqual([
       { id: "9", file_path: "/api/images/created/a.png", width: 10 },
     ]);
+  });
+
+  it("collects and omits group member ids from board lists", () => {
+    const cover = {
+      id: "g1",
+      filename: "group/cover.png",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: [10, 11],
+          },
+        },
+      }),
+    };
+    const members = collectGroupMemberIds([
+      cover,
+      { id: "10", remoteJson: null },
+      { id: "12", remoteJson: null },
+    ]);
+    expect([...members].sort()).toEqual(["10", "11"]);
+    expect(
+      omitGroupMemberCreations(
+        [{ id: "g1" }, { id: "10" }, { id: "12" }],
+        members,
+      ).map((r) => r.id),
+    ).toEqual(["g1", "12"]);
   });
 
   it("reads published flag", () => {

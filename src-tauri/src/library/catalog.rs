@@ -313,13 +313,36 @@ fn count_creations(conn: &Connection) -> Result<i64, String> {
 }
 
 fn catalog_filter_counts(conn: &Connection) -> Result<CatalogFilterCounts, String> {
-    conn.query_row(
+    let member_ids = collect_group_member_ids(conn)?;
+    let exclude_sql = group_member_exclude_sql(member_ids.len());
+    let sql = format!(
         r#"
         SELECT
           COUNT(*) AS all_count,
-          COALESCE(SUM(CASE WHEN lower(media_type) = 'video' THEN 1 ELSE 0 END), 0) AS video_count,
-          COALESCE(SUM(CASE WHEN lower(media_type) = 'image' THEN 1 ELSE 0 END), 0) AS image_count,
-          COALESCE(SUM(CASE WHEN lower(media_type) = 'audio' THEN 1 ELSE 0 END), 0) AS audio_count,
+          COALESCE(SUM(CASE
+            WHEN lower(media_type) = 'video'
+             AND NOT (
+               lower(COALESCE(filename, '')) LIKE 'group/%'
+               OR instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0
+               OR instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0
+             )
+            THEN 1 ELSE 0 END), 0) AS video_count,
+          COALESCE(SUM(CASE
+            WHEN lower(media_type) = 'image'
+             AND NOT (
+               lower(COALESCE(filename, '')) LIKE 'group/%'
+               OR instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0
+               OR instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0
+             )
+            THEN 1 ELSE 0 END), 0) AS image_count,
+          COALESCE(SUM(CASE
+            WHEN lower(media_type) = 'audio'
+             AND NOT (
+               lower(COALESCE(filename, '')) LIKE 'group/%'
+               OR instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0
+               OR instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0
+             )
+            THEN 1 ELSE 0 END), 0) AS audio_count,
           COALESCE(SUM(CASE
             WHEN lower(COALESCE(filename, '')) LIKE 'group/%' THEN 1
             WHEN instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0 THEN 1
@@ -360,26 +383,130 @@ fn catalog_filter_counts(conn: &Connection) -> Result<CatalogFilterCounts, Strin
             ELSE 0
           END), 0) AS aspect169_count
         FROM creations
-        "#,
-        [],
-        |row| {
-            Ok(CatalogFilterCounts {
-                all: row.get::<_, i64>(0)? as u32,
-                video: row.get::<_, i64>(1)? as u32,
-                image: row.get::<_, i64>(2)? as u32,
-                audio: row.get::<_, i64>(3)? as u32,
-                groups: row.get::<_, i64>(4)? as u32,
-                local_only: row.get::<_, i64>(5)? as u32,
-                published: row.get::<_, i64>(6)? as u32,
-                unpublished: row.get::<_, i64>(7)? as u32,
-                aspect11: row.get::<_, i64>(8)? as u32,
-                aspect916: row.get::<_, i64>(9)? as u32,
-                aspect45: row.get::<_, i64>(10)? as u32,
-                aspect169: row.get::<_, i64>(11)? as u32,
-            })
-        },
-    )
+        {exclude_sql}
+        "#
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params = rusqlite::params_from_iter(member_ids.iter());
+    stmt.query_row(params, |row| {
+        Ok(CatalogFilterCounts {
+            all: row.get::<_, i64>(0)? as u32,
+            video: row.get::<_, i64>(1)? as u32,
+            image: row.get::<_, i64>(2)? as u32,
+            audio: row.get::<_, i64>(3)? as u32,
+            groups: row.get::<_, i64>(4)? as u32,
+            local_only: row.get::<_, i64>(5)? as u32,
+            published: row.get::<_, i64>(6)? as u32,
+            unpublished: row.get::<_, i64>(7)? as u32,
+            aspect11: row.get::<_, i64>(8)? as u32,
+            aspect916: row.get::<_, i64>(9)? as u32,
+            aspect45: row.get::<_, i64>(10)? as u32,
+            aspect169: row.get::<_, i64>(11)? as u32,
+        })
+    })
     .map_err(|e| e.to_string())
+}
+
+/// Ids referenced by group covers — kept in SQLite for lightbox/editor, hidden on the board.
+fn collect_group_member_ids(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, filename, remote_json FROM creations
+            WHERE lower(COALESCE(filename, '')) LIKE 'group/%'
+               OR instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0
+               OR instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = std::collections::HashSet::new();
+    for row in rows {
+        let (cover_id, _filename, remote_json) = row.map_err(|e| e.to_string())?;
+        let Some(raw) = remote_json else { continue };
+        for id in group_member_ids_from_remote_json(&raw) {
+            if id != cover_id {
+                out.insert(id);
+            }
+        }
+    }
+    let mut list: Vec<String> = out.into_iter().collect();
+    list.sort();
+    Ok(list)
+}
+
+fn group_member_ids_from_remote_json(raw: &str) -> Vec<String> {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let group = parsed
+        .get("meta")
+        .and_then(|m| m.get("group"))
+        .or_else(|| parsed.get("group"));
+    let Some(group) = group else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(ids) = group.get("source_creation_ids").and_then(|v| v.as_array()) {
+        for id in ids {
+            let s = match id {
+                serde_json::Value::String(s) => s.trim().to_string(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => continue,
+            };
+            if s.is_empty() || !seen.insert(s.clone()) {
+                continue;
+            }
+            out.push(s);
+        }
+    }
+    if let Some(sources) = group.get("source_creations").and_then(|v| v.as_array()) {
+        for source in sources {
+            let id = source.get("id").and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s.trim().to_string()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            });
+            let Some(s) = id else { continue };
+            if s.is_empty() || !seen.insert(s.clone()) {
+                continue;
+            }
+            out.push(s);
+        }
+    }
+    out
+}
+
+fn group_member_exclude_sql(member_count: usize) -> String {
+    if member_count == 0 {
+        return String::new();
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(member_count)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("WHERE id NOT IN ({placeholders})")
+}
+
+fn count_board_creations(conn: &Connection, member_ids: &[String]) -> Result<i64, String> {
+    if member_ids.is_empty() {
+        return count_creations(conn);
+    }
+    let exclude = group_member_exclude_sql(member_ids.len());
+    let sql = format!("SELECT COUNT(*) FROM creations {exclude}");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    stmt.query_row(rusqlite::params_from_iter(member_ids.iter()), |row| row.get(0))
+        .map_err(|e| e.to_string())
 }
 
 /// Dev/test seed only — not called from ready_connection (real catalog comes from sync).
@@ -455,15 +582,17 @@ const CREATION_SELECT: &str = r#"
 "#;
 
 pub(crate) fn list_creations(conn: &Connection) -> Result<Vec<Creation>, String> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "{CREATION_SELECT} ORDER BY created_at DESC, title ASC"
-        ))
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map([], map_creation_row)
-        .map_err(|e| e.to_string())?;
+    let member_ids = collect_group_member_ids(conn)?;
+    let exclude = group_member_exclude_sql(member_ids.len());
+    let sql = format!("{CREATION_SELECT} {exclude} ORDER BY created_at DESC, title ASC");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = if member_ids.is_empty() {
+        stmt.query_map([], map_creation_row)
+            .map_err(|e| e.to_string())?
+    } else {
+        stmt.query_map(rusqlite::params_from_iter(member_ids.iter()), map_creation_row)
+            .map_err(|e| e.to_string())?
+    };
 
     let mut out = Vec::new();
     for row in rows {
@@ -478,15 +607,26 @@ pub(crate) fn list_creations_page(
     offset: u32,
 ) -> Result<CreationPage, String> {
     let limit = limit.clamp(1, 200);
-    let total = count_creations(conn)? as u32;
-    let mut stmt = conn
-        .prepare(&format!(
-            "{CREATION_SELECT} ORDER BY created_at DESC, title ASC LIMIT ?1 OFFSET ?2"
-        ))
-        .map_err(|e| e.to_string())?;
+    let member_ids = collect_group_member_ids(conn)?;
+    let total = count_board_creations(conn, &member_ids)? as u32;
+    let exclude = group_member_exclude_sql(member_ids.len());
+    let sql = format!(
+        "{CREATION_SELECT} {exclude} ORDER BY created_at DESC, title ASC LIMIT ? OFFSET ?"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    // Bind exclude ids first, then limit/offset.
+    let mut bindings: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    for id in &member_ids {
+        bindings.push(Box::new(id.clone()));
+    }
+    bindings.push(Box::new(limit));
+    bindings.push(Box::new(offset));
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        bindings.iter().map(|b| b.as_ref()).collect();
 
     let rows = stmt
-        .query_map(params![limit, offset], map_creation_row)
+        .query_map(param_refs.as_slice(), map_creation_row)
         .map_err(|e| e.to_string())?;
 
     let mut creations = Vec::new();
@@ -993,6 +1133,13 @@ pub fn library_get_creations(ids: Vec<String>) -> Result<Vec<Creation>, String> 
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
     get_creations_by_ids(&conn, &ids)
+}
+
+#[tauri::command]
+pub fn library_list_group_member_ids() -> Result<Vec<String>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    collect_group_member_ids(&conn)
 }
 
 #[tauri::command]

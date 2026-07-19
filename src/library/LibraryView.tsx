@@ -70,6 +70,7 @@ import {
   getSyncStatus,
   importFromDisk,
   listCreationsPage,
+  listGroupMemberIds,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
 import { FolderCreateModal } from "./FolderCreateModal";
@@ -87,6 +88,9 @@ import {
   type FolderSyncState,
   type LibraryFolder,
 } from "./folderClient";
+import {
+  omitGroupMemberCreations,
+} from "./creationFlags";
 import { VirtualCreationsGrid } from "./VirtualCreationsGrid";
 import {
   CREATIONS_LOAD_MORE_PAGES,
@@ -719,6 +723,9 @@ function CreationsPanel({
   );
   const [folders, setFolders] = useState<LibraryFolder[]>([]);
   const [filedIds, setFiledIds] = useState<Set<string>>(() => new Set());
+  const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [folderViewId, setFolderViewId] = useState<string | null>(null);
   /** Members loaded by id — not the paginated home catalog. */
   const [folderMembers, setFolderMembers] = useState<Creation[] | null>(null);
@@ -768,12 +775,14 @@ function CreationsPanel({
 
   const refreshFolders = useCallback(async () => {
     try {
-      const [nextFolders, filed] = await Promise.all([
+      const [nextFolders, filed, groupMembers] = await Promise.all([
         listFolders(),
         listFiledCreationIds(),
+        listGroupMemberIds(),
       ]);
       setFolders(nextFolders);
       setFiledIds(new Set(filed));
+      setGroupMemberIds(new Set(groupMembers));
       setFolderViewId((current) => {
         if (!current) return null;
         return nextFolders.some((folder) => folder.id === current)
@@ -789,13 +798,15 @@ function CreationsPanel({
     let cancelled = false;
     void (async () => {
       try {
-        const [nextFolders, filed] = await Promise.all([
+        const [nextFolders, filed, groupMembers] = await Promise.all([
           listFolders(),
           listFiledCreationIds(),
+          listGroupMemberIds(),
         ]);
         if (cancelled) return;
         setFolders(nextFolders);
         setFiledIds(new Set(filed));
+        setGroupMemberIds(new Set(groupMembers));
         setFolderViewId((current) => {
           if (!current) return null;
           return nextFolders.some((folder) => folder.id === current)
@@ -1022,6 +1033,7 @@ function CreationsPanel({
     if (gridBlank || !creations) return [];
     if (folderView) {
       if (!folderMembers) return [];
+      // Inside a folder, show members even if they also belong to a group.
       return filterCreationsVisible(
         folderMembers,
         gridFilters,
@@ -1030,13 +1042,17 @@ function CreationsPanel({
         inProjectIds,
       );
     }
-    const unfiled = omitFiledCreations(creations, filedIds);
+    const unfiled = omitGroupMemberCreations(
+      omitFiledCreations(creations, filedIds),
+      groupMemberIds,
+    );
     return filterCreationsVisible(
       unfiled,
       gridFilters,
       selectedIds,
       deferredKeepIds,
       inProjectIds,
+      groupMemberIds,
     );
   }, [
     creations,
@@ -1046,6 +1062,7 @@ function CreationsPanel({
     folderView,
     gridBlank,
     gridFilters,
+    groupMemberIds,
     inProjectIds,
     selectedIds,
   ]);
@@ -1083,6 +1100,7 @@ function CreationsPanel({
         inProjectIds,
         projectFolderIds,
         folderFilterCreationsById,
+        groupMemberIds,
       ),
     );
   }, [
@@ -1093,6 +1111,7 @@ function CreationsPanel({
     folders,
     gridBlank,
     gridFilters,
+    groupMemberIds,
     inProjectIds,
     needsFolderMemberFilter,
     projectFolderIds,
@@ -1113,6 +1132,8 @@ function CreationsPanel({
           inProjectIds,
           projectFolderIds,
           folderFilterCreationsById,
+          4,
+          groupMemberIds,
         ),
       );
     }
@@ -1120,6 +1141,7 @@ function CreationsPanel({
   }, [
     folderFilterCreationsById,
     gridFilters,
+    groupMemberIds,
     homeFolders,
     inProjectIds,
     projectFolderIds,

@@ -129,6 +129,70 @@ describe("creationFilters", () => {
         new Set(),
       ),
     ).toBe(true);
+    expect(
+      creationMatchesFilters(
+        items[2],
+        { ...EMPTY_FILTER_TOGGLES, image: true },
+        new Set(),
+      ),
+    ).toBe(false);
+  });
+
+  it("treats video groups as groups, not videos — members stay out of Videos", () => {
+    const videoGroup = makeCreation({
+      id: "vg1",
+      mediaType: "video",
+      filename: "group/cover.mp4",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: [201, 202],
+          },
+        },
+      }),
+    });
+    const member = makeCreation({
+      id: "201",
+      mediaType: "video",
+    });
+    const groupMembers = new Set(["201", "202"]);
+    expect(
+      creationMatchesFilters(
+        videoGroup,
+        { ...EMPTY_FILTER_TOGGLES, video: true },
+        new Set(),
+        new Set(),
+        groupMembers,
+      ),
+    ).toBe(false);
+    expect(
+      creationMatchesFilters(
+        videoGroup,
+        { ...EMPTY_FILTER_TOGGLES, groups: true },
+        new Set(),
+        new Set(),
+        groupMembers,
+      ),
+    ).toBe(true);
+    expect(
+      creationMatchesFilters(
+        member,
+        { ...EMPTY_FILTER_TOGGLES, video: true },
+        new Set(),
+        new Set(),
+        groupMembers,
+      ),
+    ).toBe(false);
+    expect(
+      filterCreations(
+        [videoGroup, member, items[0]],
+        { ...EMPTY_FILTER_TOGGLES, video: true },
+        new Set(),
+        new Set(),
+        groupMembers,
+      ).map((c) => c.id),
+    ).toEqual(["v1"]);
   });
 
   it("local-only means not in the cloud, not downloaded on disk", () => {
@@ -236,7 +300,7 @@ describe("creationFilters", () => {
     const counts = countFilterMatches(items, new Set(["v1"]));
     expect(counts.all).toBe(5);
     expect(counts.video).toBe(1);
-    expect(counts.image).toBe(3);
+    expect(counts.image).toBe(2);
     expect(counts.audio).toBe(1);
     expect(counts.groups).toBe(1);
     expect(counts.localOnly).toBe(1);

@@ -15,12 +15,12 @@ use library::{
     library_get_creation, library_get_creations, library_get_folder, library_import_from_disk,
     library_import_local_paths, library_invalidate_mismatched_thumbs, library_invalidate_thumbs,
     library_list_creations, library_list_creations_page, library_list_filed_creation_ids,
-    library_list_folders, library_local_fit_plan, library_merge_timeline_clips,
-    library_folder_sync_state, library_folders_ack_ops, library_folders_apply_snapshot,
-    library_folders_set_pending_ops, library_read_local_thumb_base64, library_rebuild_reversed,
-    library_remove_from_folder, library_rename_folder, library_sync_status,
-    publisher_delete_render, publisher_export_render, publisher_list_renders,
-    publisher_render_timeline,
+    library_list_folders, library_list_group_member_ids, library_local_fit_plan,
+    library_merge_timeline_clips, library_folder_sync_state, library_folders_ack_ops,
+    library_folders_apply_snapshot, library_folders_set_pending_ops,
+    library_read_local_thumb_base64, library_rebuild_reversed, library_remove_from_folder,
+    library_rename_folder, library_sync_status, publisher_delete_render, publisher_export_render,
+    publisher_list_renders, publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, start_oauth_listener};
 use tauri::Manager;
@@ -76,6 +76,7 @@ pub fn run() {
             library_list_creations,
             library_list_creations_page,
             library_filter_counts,
+            library_list_group_member_ids,
             library_sync_status,
             library_apply_manifest,
             library_download_pending,

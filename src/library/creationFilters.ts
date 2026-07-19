@@ -117,17 +117,20 @@ export function creationMatchesFilters(
   toggles: CreationFilterToggles,
   selectedIds: ReadonlySet<string>,
   inProjectIds: ReadonlySet<string> = emptyIdSet,
+  /** Creations that belong inside a group — never match media-type filters. */
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
 ): boolean {
   const active = activeFilterId(toggles);
   if (active === "all") return true;
   const mt = String(creation.mediaType ?? "").toLowerCase();
+  const inGroup = groupMemberIds.has(creation.id);
   switch (active) {
     case "video":
-      return mt === "video";
+      return mt === "video" && !isGroupCreation(creation) && !inGroup;
     case "image":
-      return mt === "image";
+      return mt === "image" && !isGroupCreation(creation) && !inGroup;
     case "audio":
-      return mt === "audio";
+      return mt === "audio" && !isGroupCreation(creation) && !inGroup;
     case "groups":
       return isGroupCreation(creation);
     case "localOnly":
@@ -159,10 +162,17 @@ export function filterCreations(
   toggles: CreationFilterToggles,
   selectedIds: ReadonlySet<string>,
   inProjectIds: ReadonlySet<string> = emptyIdSet,
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
 ): Creation[] {
   if (!anyFilterActive(toggles)) return creations;
   return creations.filter((c) =>
-    creationMatchesFilters(c, toggles, selectedIds, inProjectIds),
+    creationMatchesFilters(
+      c,
+      toggles,
+      selectedIds,
+      inProjectIds,
+      groupMemberIds,
+    ),
   );
 }
 
@@ -177,24 +187,49 @@ export function filterCreationsVisible(
   selectedIds: ReadonlySet<string>,
   deferredKeepIds: ReadonlySet<string>,
   inProjectIds: ReadonlySet<string> = emptyIdSet,
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
 ): Creation[] {
   const active = activeFilterId(toggles);
   if (deferredKeepIds.size === 0) {
-    return filterCreations(creations, toggles, selectedIds, inProjectIds);
+    return filterCreations(
+      creations,
+      toggles,
+      selectedIds,
+      inProjectIds,
+      groupMemberIds,
+    );
   }
   if (active === "notSelected") {
     return creations.filter((c) => {
       if (deferredKeepIds.has(c.id) && selectedIds.has(c.id)) return true;
-      return creationMatchesFilters(c, toggles, selectedIds, inProjectIds);
+      return creationMatchesFilters(
+        c,
+        toggles,
+        selectedIds,
+        inProjectIds,
+        groupMemberIds,
+      );
     });
   }
   if (active === "selected") {
     return creations.filter((c) => {
       if (deferredKeepIds.has(c.id) && !selectedIds.has(c.id)) return true;
-      return creationMatchesFilters(c, toggles, selectedIds, inProjectIds);
+      return creationMatchesFilters(
+        c,
+        toggles,
+        selectedIds,
+        inProjectIds,
+        groupMemberIds,
+      );
     });
   }
-  return filterCreations(creations, toggles, selectedIds, inProjectIds);
+  return filterCreations(
+    creations,
+    toggles,
+    selectedIds,
+    inProjectIds,
+    groupMemberIds,
+  );
 }
 
 /** Filters that need member creation rows to decide if a folder matches. */
@@ -232,6 +267,7 @@ export function folderMatchesFilters(
   inProjectIds: ReadonlySet<string> = emptyIdSet,
   projectFolderIds: ReadonlySet<string> = emptyIdSet,
   creationsById: ReadonlyMap<string, Creation> = emptyCreationMap,
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
 ): boolean {
   const active = activeFilterId(toggles);
   if (active === "all") return true;
@@ -254,7 +290,15 @@ export function folderMatchesFilters(
   for (const id of folder.memberIds) {
     const creation = creationsById.get(id);
     if (!creation) continue;
-    if (creationMatchesFilters(creation, toggles, selectedIds, inProjectIds)) {
+    if (
+      creationMatchesFilters(
+        creation,
+        toggles,
+        selectedIds,
+        inProjectIds,
+        groupMemberIds,
+      )
+    ) {
       return true;
     }
   }
@@ -271,6 +315,7 @@ export function folderCollageMemberIds(
   projectFolderIds: ReadonlySet<string> = emptyIdSet,
   creationsById: ReadonlyMap<string, Creation> = emptyCreationMap,
   limit = 4,
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
 ): string[] {
   const active = activeFilterId(toggles);
   if (active === "all") return folder.memberIds.slice(0, limit);
@@ -304,7 +349,15 @@ export function folderCollageMemberIds(
   for (const id of folder.memberIds) {
     const creation = creationsById.get(id);
     if (!creation) continue;
-    if (!creationMatchesFilters(creation, toggles, selectedIds, inProjectIds)) {
+    if (
+      !creationMatchesFilters(
+        creation,
+        toggles,
+        selectedIds,
+        inProjectIds,
+        groupMemberIds,
+      )
+    ) {
       continue;
     }
     matching.push(id);
@@ -371,10 +424,11 @@ export function countFilterMatches(
   };
   for (const c of creations) {
     const mt = String(c.mediaType ?? "").toLowerCase();
-    if (mt === "video") counts.video += 1;
-    else if (mt === "image") counts.image += 1;
-    else if (mt === "audio") counts.audio += 1;
-    if (isGroupCreation(c)) counts.groups += 1;
+    const group = isGroupCreation(c);
+    if (mt === "video" && !group) counts.video += 1;
+    else if (mt === "image" && !group) counts.image += 1;
+    else if (mt === "audio" && !group) counts.audio += 1;
+    if (group) counts.groups += 1;
     if (isLocalOnlyCreation(c)) counts.localOnly += 1;
     if (isPublishedCreation(c)) counts.published += 1;
     else counts.unpublished += 1;

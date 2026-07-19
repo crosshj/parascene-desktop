@@ -93,6 +93,36 @@ export function groupEmbeddedSourceCreations(c: {
   return out;
 }
 
+/**
+ * All creation ids that belong inside a group cover.
+ * These should not appear as separate Creations-board tiles.
+ */
+export function collectGroupMemberIds(
+  creations: ReadonlyArray<{
+    id: string;
+    remoteJson?: string | null;
+    filename?: string | null;
+  }>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const creation of creations) {
+    if (!isGroupCreation(creation)) continue;
+    for (const id of groupSourceCreationIds(creation)) {
+      if (id && id !== creation.id) out.add(id);
+    }
+  }
+  return out;
+}
+
+/** Hide group members from Library home (covers stay; open the group to browse). */
+export function omitGroupMemberCreations<T extends { id: string }>(
+  creations: readonly T[],
+  memberIds: ReadonlySet<string>,
+): T[] {
+  if (memberIds.size === 0) return [...creations];
+  return creations.filter((c) => !memberIds.has(c.id));
+}
+
 export function isPublishedCreation(c: Pick<Creation, "published">): boolean {
   return c.published === true;
 }
