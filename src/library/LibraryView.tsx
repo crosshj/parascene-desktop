@@ -23,8 +23,9 @@ import {
   type FolderSyncResult,
 } from "../sync/folderSync";
 import {
-  syncCreationsManifest,
   syncCreationsMetadata,
+  syncFullCreationsManifest,
+  syncNewestCreationsManifest,
 } from "../sync/manifestSync";
 import {
   applySyncItemEvent,
@@ -110,6 +111,30 @@ function hasLayoutAspect(c: Creation): boolean {
   return Boolean(c.aspectRatio) || (Boolean(c.width) && Boolean(c.height));
 }
 
+type CatalogSyncMode = "newest" | "full";
+
+function catalogSyncLabel(
+  mode: CatalogSyncMode,
+  active: boolean,
+  progress: DownloadProgress | null,
+): string {
+  const idle = mode === "newest" ? "Sync newest" : "Full sync";
+  if (!active) return idle;
+  if (progress?.phase === "catalog") {
+    return mode === "newest" ? "Syncing newest…" : "Updating catalog…";
+  }
+  if (progress && progress.total > 0) {
+    const phase =
+      progress.phase === "thumbs"
+        ? "Previews"
+        : progress.phase === "media"
+          ? "Media"
+          : "Downloading";
+    return `${phase} ${progress.done}/${progress.total}…`;
+  }
+  return mode === "newest" ? "Syncing newest…" : "Syncing…";
+}
+
 function SyncFromCloudButton({
   active,
   disabled,
@@ -144,6 +169,38 @@ function SyncFromCloudButton({
       disabled={disabled ?? active}
     >
       {label}
+    </button>
+  );
+}
+
+function CatalogSyncButton({
+  mode,
+  active,
+  disabled,
+  onSync,
+  progress,
+  primary,
+}: {
+  mode: CatalogSyncMode;
+  active: boolean;
+  disabled?: boolean;
+  onSync: () => void;
+  progress: DownloadProgress | null;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={primary ? "btn btn-primary" : "btn ghost"}
+      onClick={onSync}
+      disabled={disabled ?? active}
+      title={
+        mode === "newest"
+          ? "Fetch newest creations until local catalog catches up"
+          : "Refresh the full creations catalog (edits, removals, recovery)"
+      }
+    >
+      {catalogSyncLabel(mode, active, progress)}
     </button>
   );
 }
@@ -388,40 +445,68 @@ function useCatalog() {
     [refreshFolderSync],
   );
 
-  const runSync = useCallback(async () => {
-    setSyncing(true);
-    setError(null);
-    setFolderSyncResult(null);
-    setProgress({
-      done: 0,
-      total: 0,
-      currentId: null,
-      failed: 0,
-      phase: "catalog",
-    });
-    try {
-      const next = await syncCreationsManifest();
-      setStatus(next);
+  const [catalogSyncMode, setCatalogSyncMode] =
+    useState<CatalogSyncMode | null>(null);
+
+  const runCatalogSync = useCallback(
+    async (mode: CatalogSyncMode) => {
+      setSyncing(true);
+      setCatalogSyncMode(mode);
+      setError(null);
+      setFolderSyncResult(null);
       setProgress({
         done: 0,
         total: 0,
-        currentId: "Syncing folders…",
+        currentId: null,
         failed: 0,
         phase: "catalog",
       });
-      const folderResult = await runFolderSync();
-      await loadInitial();
-      await refreshFolderSync();
-      if (!folderResult.ok && folderResult.message && folderResult.conflicts.length === 0) {
-        setError(folderResult.message);
+      try {
+        const next =
+          mode === "newest"
+            ? await syncNewestCreationsManifest()
+            : await syncFullCreationsManifest();
+        setStatus(next);
+        setProgress({
+          done: 0,
+          total: 0,
+          currentId: "Syncing folders…",
+          failed: 0,
+          phase: "catalog",
+        });
+        const folderResult = await runFolderSync();
+        await loadInitial();
+        await refreshFolderSync();
+        if (
+          !folderResult.ok &&
+          folderResult.message &&
+          folderResult.conflicts.length === 0
+        ) {
+          setError(folderResult.message);
+        }
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSyncing(false);
+        setCatalogSyncMode(null);
+        // Keep last progress visible briefly; background ensure may still emit.
       }
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSyncing(false);
-      // Keep last progress visible briefly; background ensure may still emit.
-    }
-  }, [loadInitial, refreshFolderSync, runFolderSync]);
+    },
+    [loadInitial, refreshFolderSync, runFolderSync],
+  );
+
+  /** Empty-library onboarding: always full catalog path. */
+  const runSync = useCallback(async () => {
+    await runCatalogSync("full");
+  }, [runCatalogSync]);
+
+  const runNewestSync = useCallback(async () => {
+    await runCatalogSync("newest");
+  }, [runCatalogSync]);
+
+  const runFullSync = useCallback(async () => {
+    await runCatalogSync("full");
+  }, [runCatalogSync]);
 
   const runFolderOnlySync = useCallback(async () => {
     setFolderSyncing(true);
@@ -621,6 +706,7 @@ function useCatalog() {
     status,
     error,
     syncing,
+    catalogSyncMode,
     repairing,
     loadingMore,
     importing,
@@ -634,6 +720,8 @@ function useCatalog() {
     folderSyncing,
     resolvingFolders,
     runSync,
+    runNewestSync,
+    runFullSync,
     runFolderOnlySync,
     runResolveFolderConflicts,
     runCacheThumbs,
@@ -1600,6 +1688,7 @@ function SyncPanel({
   status,
   error,
   syncing,
+  catalogSyncMode,
   repairing,
   progress,
   activity,
@@ -1611,7 +1700,8 @@ function SyncPanel({
   onResolveFolderConflicts,
   folderSyncing,
   resolvingFolders,
-  onSync,
+  onNewestSync,
+  onFullSync,
   onFolderSync,
   onCacheThumbs,
   onCacheMedia,
@@ -1623,6 +1713,7 @@ function SyncPanel({
   status: SyncStatus | null;
   error: string | null;
   syncing: boolean;
+  catalogSyncMode: CatalogSyncMode | null;
   repairing: boolean;
   progress: DownloadProgress | null;
   activity: SyncActivityItem[];
@@ -1634,7 +1725,8 @@ function SyncPanel({
   onResolveFolderConflicts: () => void;
   folderSyncing: boolean;
   resolvingFolders: boolean;
-  onSync: () => void;
+  onNewestSync: () => void;
+  onFullSync: () => void;
   onFolderSync: () => void;
   onCacheThumbs: () => void;
   onCacheMedia: () => void;
@@ -1755,10 +1847,19 @@ function SyncPanel({
       {status ? (
         <div className="sync-body">
           <div className="sync-body-actions">
-            <SyncFromCloudButton
-              active={syncing}
+            <CatalogSyncButton
+              mode="newest"
+              primary
+              active={syncing && catalogSyncMode === "newest"}
               disabled={busy}
-              onSync={onSync}
+              onSync={onNewestSync}
+              progress={progress}
+            />
+            <CatalogSyncButton
+              mode="full"
+              active={syncing && catalogSyncMode === "full"}
+              disabled={busy}
+              onSync={onFullSync}
               progress={progress}
             />
             <button
@@ -2022,10 +2123,13 @@ export function LibraryView() {
     status,
     error,
     syncing,
+    catalogSyncMode,
     repairing,
     loadingMore,
     progress,
     runSync,
+    runNewestSync,
+    runFullSync,
     runFolderOnlySync,
     runResolveFolderConflicts,
     runCacheThumbs,
@@ -2054,6 +2158,7 @@ export function LibraryView() {
           status={status}
           error={error}
           syncing={syncing}
+          catalogSyncMode={catalogSyncMode}
           repairing={repairing}
           progress={progress}
           activity={activity}
@@ -2072,7 +2177,8 @@ export function LibraryView() {
           }}
           folderSyncing={folderSyncing}
           resolvingFolders={resolvingFolders}
-          onSync={runSync}
+          onNewestSync={runNewestSync}
+          onFullSync={runFullSync}
           onFolderSync={runFolderOnlySync}
           onCacheThumbs={runCacheThumbs}
           onCacheMedia={runCacheMedia}

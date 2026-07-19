@@ -67,6 +67,9 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
   ) {
     return fixtureSyncStatus;
   }
+  if (cmd === "library_existing_creation_ids") {
+    return [];
+  }
   if (
     cmd === "library_download_pending" ||
     cmd === "library_download_ids" ||
@@ -230,6 +233,7 @@ describe("auth shell", () => {
     expect(
       await screen.findByRole("button", { name: "Sync from cloud" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sync newest" })).not.toBeInTheDocument();
     expect(screen.getByText("No local creations yet.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Editor" })).not.toBeInTheDocument();
@@ -339,8 +343,14 @@ describe("auth shell", () => {
       screen.getByRole("button", { name: "Clear finished" }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Sync from cloud" }),
+      screen.getByRole("button", { name: "Sync newest" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Full sync" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Sync from cloud" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Previews cached" }),
     ).toBeDisabled();

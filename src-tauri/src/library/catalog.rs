@@ -1135,6 +1135,54 @@ pub fn library_get_creations(ids: Vec<String>) -> Result<Vec<Creation>, String> 
     get_creations_by_ids(&conn, &ids)
 }
 
+/// Which of the given creation ids already exist in the local catalog.
+#[tauri::command]
+pub fn library_existing_creation_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    existing_creation_ids(&conn, &ids)
+}
+
+fn existing_creation_ids(conn: &Connection, ids: &[String]) -> Result<Vec<String>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut unique: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        let trimmed = id.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        unique.push(trimmed.to_string());
+    }
+    if unique.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+    const CHUNK: usize = 400;
+    for chunk in unique.chunks(CHUNK) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT id FROM creations WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            found.insert(row.map_err(|e| e.to_string())?);
+        }
+    }
+
+    // Preserve caller order among matches.
+    Ok(unique.into_iter().filter(|id| found.contains(id)).collect())
+}
+
 #[tauri::command]
 pub fn library_list_group_member_ids() -> Result<Vec<String>, String> {
     let paths = default_paths()?;
@@ -1292,6 +1340,76 @@ mod tests {
         assert!(get_creation_by_id(&conn, "7").expect("get").is_none());
         assert!(!media.exists());
         assert!(!thumb.exists());
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn existing_creation_ids_returns_only_local_matches_in_order() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(
+            &conn,
+            &[
+                CreationUpsert {
+                    id: "10".into(),
+                    title: "A".into(),
+                    media_type: "image".into(),
+                    remote_url: None,
+                    thumbnail_url: None,
+                    fit_thumbnail_url: None,
+                    video_url: None,
+                    published: false,
+                    published_at: None,
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    download_state: "remote".into(),
+                    prompt: None,
+                    filename: None,
+                    description: None,
+                    color: None,
+                    status: None,
+                    width: None,
+                    height: None,
+                    aspect_ratio: None,
+                    nsfw: false,
+                    is_moderated_error: false,
+                    remote_json: "{}".into(),
+                },
+                CreationUpsert {
+                    id: "20".into(),
+                    title: "B".into(),
+                    media_type: "image".into(),
+                    remote_url: None,
+                    thumbnail_url: None,
+                    fit_thumbnail_url: None,
+                    video_url: None,
+                    published: false,
+                    published_at: None,
+                    created_at: "2026-01-02T00:00:00Z".into(),
+                    download_state: "remote".into(),
+                    prompt: None,
+                    filename: None,
+                    description: None,
+                    color: None,
+                    status: None,
+                    width: None,
+                    height: None,
+                    aspect_ratio: None,
+                    nsfw: false,
+                    is_moderated_error: false,
+                    remote_json: "{}".into(),
+                },
+            ],
+        )
+        .expect("apply");
+
+        let found = existing_creation_ids(
+            &conn,
+            &["20".into(), "missing".into(), "10".into(), "20".into(), " ".into()],
+        )
+        .expect("lookup");
+        assert_eq!(found, vec!["20".to_string(), "10".to_string()]);
+        assert!(existing_creation_ids(&conn, &[]).expect("empty").is_empty());
 
         let _ = fs::remove_dir_all(&paths.root);
     }

@@ -68,6 +68,12 @@ export async function getSyncStatus(): Promise<SyncStatus> {
   return invoke<SyncStatus>("library_sync_status");
 }
 
+/** Which of the given creation ids already exist in the local catalog. */
+export async function existingCreationIds(ids: string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  return invoke<string[]>("library_existing_creation_ids", { ids });
+}
+
 export async function applyManifest(
   creations: CreationUpsert[],
 ): Promise<SyncStatus> {

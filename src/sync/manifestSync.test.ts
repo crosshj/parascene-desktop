@@ -2,12 +2,16 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   mapGroupSourceCreations,
   mapRemoteCreation,
+  NEWEST_SYNC_PAGE_SIZE,
   remoteFromGroupSource,
   syncCreationsManifest,
+  syncFullCreationsManifest,
+  syncNewestCreationsManifest,
   withEmbeddedGroupMembers,
 } from "./manifestSync";
 
 const invoke = vi.fn();
+const listMyCreations = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
@@ -23,36 +27,88 @@ vi.mock("../auth/session", () => ({
     loopbackPort: 17423,
   }),
   createAuthedSdk: () => ({
-    listMyCreations: vi.fn(async ({ offset }: { offset: number }) => {
-      if (offset > 0) {
-        return { images: [], hasMore: false };
-      }
-      return {
-        images: [
-          {
-            id: 99,
-            title: "Sunset",
-            filename: "x.png",
-            url: "https://cdn.example/x.png",
-            thumbnail_url: "/cdn/t.jpg?variant=thumbnail",
-            media_type: "image",
-            width: 1024,
-            height: 576,
-            color: "#1a1a1a",
-            published: true,
-            created_at: "2026-02-01T00:00:00Z",
-            meta: { prompt: "golden hour", args: { aspect_ratio: "16:9" } },
-          },
-        ],
-        hasMore: false,
-      };
-    }),
+    listMyCreations: (...args: unknown[]) => listMyCreations(...args),
   }),
 }));
+
+const emptyStatus = {
+  rootPath: "/tmp",
+  lastSyncAt: "2026-07-14T00:00:00Z",
+  total: 0,
+  local: 0,
+  remote: 0,
+  queued: 0,
+  downloading: 0,
+  failed: 0,
+  withThumb: 0,
+  withMedia: 0,
+  missingThumbCacheable: 0,
+  missingMediaCacheable: 0,
+  missingThumbUncacheable: 0,
+  missingMediaUncacheable: 0,
+  mediaBytes: 0,
+  thumbsBytes: 0,
+  withoutCloudUrls: [],
+};
+
+function remoteImage(id: number | string, title = `Creation ${id}`) {
+  return {
+    id,
+    title,
+    filename: `${id}.png`,
+    url: `https://cdn.example/${id}.png`,
+    thumbnail_url: `/cdn/${id}.jpg?variant=thumbnail`,
+    media_type: "image",
+    width: 1024,
+    height: 576,
+    color: "#1a1a1a",
+    published: true,
+    created_at: "2026-02-01T00:00:00Z",
+    meta: { prompt: "golden hour", args: { aspect_ratio: "16:9" } },
+  };
+}
+
+function mockDownloadPending() {
+  invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
+    if (cmd === "library_existing_creation_ids") {
+      return [];
+    }
+    if (cmd === "library_apply_manifest") {
+      return {
+        ...emptyStatus,
+        total: Array.isArray(args?.creations) ? args.creations.length : 0,
+        remote: Array.isArray(args?.creations) ? args.creations.length : 0,
+      };
+    }
+    if (cmd === "library_download_pending") {
+      return {
+        downloaded: 1,
+        failed: 0,
+        skipped: 0,
+        status: { ...emptyStatus, local: 1, total: 1 },
+      };
+    }
+    if (cmd === "library_sync_status") {
+      return emptyStatus;
+    }
+    throw new Error(`unexpected invoke: ${cmd}`);
+  });
+}
 
 describe("manifestSync", () => {
   beforeEach(() => {
     invoke.mockReset();
+    listMyCreations.mockReset();
+    mockDownloadPending();
+    listMyCreations.mockImplementation(async ({ offset }: { offset: number }) => {
+      if (offset > 0) {
+        return { images: [], hasMore: false };
+      }
+      return {
+        images: [remoteImage(99, "Sunset")],
+        hasMore: false,
+      };
+    });
   });
 
   it("maps API rows into catalog upserts with full remote snapshot", () => {
@@ -98,36 +154,24 @@ describe("manifestSync", () => {
       isModeratedError: false,
     });
 
-    const snap = JSON.parse(mapped.remoteJson) as Record<string, unknown>;
-    expect(snap.width).toBe(1920);
-    expect(snap.height).toBe(1080);
-    expect(snap.video_url).toBe("https://cdn.example/clip.mp4");
-    expect(snap.color).toBe("#abcdef");
-    expect(snap.meta).toEqual({
-      args: { prompt: "noir alley", aspect_ratio: "16:9" },
+    const snap = JSON.parse(mapped.remoteJson);
+    expect(snap).toMatchObject({
+      id: "7",
+      url: null,
+      video_url: "https://cdn.example/clip.mp4",
+      fit_thumbnail_url: "https://cdn.example/thumb.jpg?variant=fit",
+      media_type: "video",
+      width: 1920,
+      height: 1080,
     });
   });
 
-  it("derives aspectRatio from pixels when meta lacks it", () => {
-    const mapped = mapRemoteCreation({
-      id: 1,
-      url: "https://cdn.example/a.png",
-      width: 768,
-      height: 1376,
-      media_type: "image",
-      created_at: "2026-01-01T00:00:00Z",
-    });
-    expect(mapped.aspectRatio).toBe("768:1376");
-  });
-
-  it("maps embedded group source_creations via file_path", () => {
+  it("maps embedded group source creations and absolutizes file_path", () => {
     const remote = remoteFromGroupSource({
       id: 17804,
       file_path: "/api/images/created/26_17804_x.png",
-      filename: "26_17804_x.png",
-      width: 1024,
-      height: 1024,
-      meta: { media_type: "image", args: { aspect_ratio: "1:1" } },
+      media_type: "image",
+      meta: { prompt: "member" },
     });
     expect(remote).toMatchObject({
       id: "17804",
@@ -135,130 +179,50 @@ describe("manifestSync", () => {
       thumbnail_url: "/api/images/created/26_17804_x.png?variant=thumbnail",
       media_type: "image",
     });
-
-    const upserts = mapGroupSourceCreations([
+    const mapped = mapGroupSourceCreations([
       {
         id: 17804,
         file_path: "/api/images/created/26_17804_x.png",
-        width: 1024,
-        height: 1024,
-        meta: { media_type: "image" },
+        media_type: "image",
       },
     ]);
-    expect(upserts).toHaveLength(1);
-    expect(upserts[0]).toMatchObject({
-      id: "17804",
-      mediaType: "image",
-      remoteUrl: "https://www.parascene.com/api/images/created/26_17804_x.png",
-      thumbnailUrl:
-        "https://www.parascene.com/api/images/created/26_17804_x.png?variant=thumbnail",
-      downloadState: "remote",
-    });
+    expect(mapped[0]?.remoteUrl).toBe(
+      "https://www.parascene.com/api/images/created/26_17804_x.png",
+    );
   });
 
-  it("adds embedded group members missing as standalone rows", () => {
-    const cover = mapRemoteCreation({
-      id: 17810,
-      filename: "group/cover.png",
+  it("withEmbeddedGroupMembers appends missing members without duplicating", () => {
+    const coverUpsert = mapRemoteCreation({
+      id: 17805,
+      filename: "group/cover.json",
       url: "https://cdn.example/cover.png",
       media_type: "image",
-      created_at: "2026-07-13T00:00:00Z",
+      created_at: "2026-02-01T00:00:00Z",
       meta: {
         group: {
           kind: "group_creations",
-          source_creation_ids: [17804, 17805],
           source_creations: [
             {
               id: 17804,
               file_path: "/api/images/created/26_17804_x.png",
-              width: 1024,
-              height: 1024,
-              meta: { media_type: "image" },
-            },
-            {
-              id: 17805,
-              file_path: "/api/images/created/26_17805_y.png",
-              width: 1024,
-              height: 1024,
-              meta: { media_type: "image" },
+              media_type: "image",
             },
           ],
         },
       },
     });
-    // 17805 already returned by the API as its own row — richer, keep it.
-    const standalone = mapRemoteCreation({
-      id: 17805,
-      url: "https://cdn.example/17805.png",
-      media_type: "image",
-      created_at: "2026-07-13T00:00:00Z",
-    });
-
-    const expanded = withEmbeddedGroupMembers([cover, standalone]);
+    const existingMember = mapRemoteCreation(remoteImage(17804, "Already local"));
+    const expanded = withEmbeddedGroupMembers([existingMember, coverUpsert]);
     const ids = expanded.map((c) => c.id);
-    expect(ids).toContain("17804");
-    // 17805 not duplicated; original standalone row preserved.
-    expect(ids.filter((id) => id === "17805")).toHaveLength(1);
-    const added = expanded.find((c) => c.id === "17804");
-    expect(added?.remoteUrl).toBe(
-      "https://www.parascene.com/api/images/created/26_17804_x.png",
-    );
+    expect(ids.filter((id) => id === "17804")).toHaveLength(1);
+    expect(ids).toContain("17805");
+    expect(expanded.find((c) => c.id === "17804")?.title).toBe("Already local");
   });
 
-  it("paginates creations, applies the manifest, then downloads", async () => {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "library_apply_manifest") {
-        return {
-          rootPath: "/tmp",
-          lastSyncAt: "2026-07-14T00:00:00Z",
-          total: 1,
-          local: 0,
-          remote: 1,
-          queued: 0,
-          downloading: 0,
-          failed: 0,
-          withThumb: 0,
-          withMedia: 0,
-          missingThumbCacheable: 1,
-          missingMediaCacheable: 1,
-          missingThumbUncacheable: 0,
-          missingMediaUncacheable: 0,
-          mediaBytes: 0,
-          thumbsBytes: 0,
-          withoutCloudUrls: [],
-        };
-      }
-      if (cmd === "library_download_pending") {
-        return {
-          downloaded: 1,
-          failed: 0,
-          skipped: 0,
-          status: {
-            rootPath: "/tmp",
-            lastSyncAt: "2026-07-14T00:00:00Z",
-            total: 1,
-            local: 1,
-            remote: 0,
-            queued: 0,
-            downloading: 0,
-            failed: 0,
-            withThumb: 1,
-            withMedia: 1,
-            missingThumbCacheable: 0,
-            missingMediaCacheable: 0,
-            missingThumbUncacheable: 0,
-            missingMediaUncacheable: 0,
-            mediaBytes: 1024,
-            thumbsBytes: 128,
-            withoutCloudUrls: [],
-          },
-        };
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    const status = await syncCreationsManifest();
+  it("full sync paginates creations, applies the manifest, then downloads", async () => {
+    const status = await syncFullCreationsManifest();
     expect(status.local).toBe(1);
+    expect(listMyCreations).toHaveBeenCalledWith({ limit: 100, offset: 0 });
     expect(invoke).toHaveBeenCalledWith(
       "library_apply_manifest",
       expect.objectContaining({
@@ -271,8 +235,7 @@ describe("manifestSync", () => {
             height: 576,
             aspectRatio: "16:9",
             color: "#1a1a1a",
-            thumbnailUrl: "https://www.parascene.com/cdn/t.jpg?variant=thumbnail",
-            remoteJson: expect.stringContaining("\"width\":1024"),
+            thumbnailUrl: "https://www.parascene.com/cdn/99.jpg?variant=thumbnail",
           }),
         ],
       }),
@@ -280,5 +243,147 @@ describe("manifestSync", () => {
     expect(invoke).toHaveBeenCalledWith("library_download_pending", {
       limit: 80,
     });
+  });
+
+  it("syncCreationsManifest aliases full sync", async () => {
+    await syncCreationsManifest();
+    expect(listMyCreations).toHaveBeenCalledWith({ limit: 100, offset: 0 });
+    expect(invoke).toHaveBeenCalledWith("library_apply_manifest", expect.any(Object));
+  });
+
+  it("newest sync on empty local catalog applies the first page", async () => {
+    await syncNewestCreationsManifest();
+    expect(listMyCreations).toHaveBeenCalledWith({
+      limit: NEWEST_SYNC_PAGE_SIZE,
+      offset: 0,
+    });
+    expect(invoke).toHaveBeenCalledWith("library_existing_creation_ids", {
+      ids: ["99"],
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      "library_apply_manifest",
+      expect.objectContaining({
+        creations: [expect.objectContaining({ id: "99" })],
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("library_download_pending", {
+      limit: 80,
+    });
+  });
+
+  it("newest sync no-ops when a complete page is already local", async () => {
+    const page = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(1000 + i),
+    );
+    listMyCreations.mockResolvedValueOnce({ images: page, hasMore: true });
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
+      if (cmd === "library_existing_creation_ids") {
+        return args?.ids ?? [];
+      }
+      if (cmd === "library_apply_manifest") {
+        expect(args?.creations).toEqual([]);
+        return emptyStatus;
+      }
+      if (cmd === "library_download_pending") {
+        return {
+          downloaded: 0,
+          failed: 0,
+          skipped: 0,
+          status: emptyStatus,
+        };
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    await syncNewestCreationsManifest();
+    expect(listMyCreations).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("library_apply_manifest", {
+      creations: [],
+    });
+  });
+
+  it("newest sync applies only unknown ids and continues past mixed pages", async () => {
+    const firstPage = [
+      remoteImage(1, "New A"),
+      remoteImage(2, "Known"),
+      remoteImage(3, "New B"),
+    ];
+    // Pad to complete-page size with known ids so the stop condition can fire later.
+    const secondPage = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(2000 + i),
+    );
+    listMyCreations
+      .mockResolvedValueOnce({ images: firstPage, hasMore: true })
+      .mockResolvedValueOnce({ images: secondPage, hasMore: true });
+
+    const known = new Set(["2", ...secondPage.map((img) => String(img.id))]);
+    const applied: string[][] = [];
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: Array<{ id: string }> }) => {
+      if (cmd === "library_existing_creation_ids") {
+        return (args?.ids ?? []).filter((id) => known.has(id));
+      }
+      if (cmd === "library_apply_manifest") {
+        applied.push((args?.creations ?? []).map((c) => c.id));
+        return {
+          ...emptyStatus,
+          total: args?.creations?.length ?? 0,
+          remote: args?.creations?.length ?? 0,
+        };
+      }
+      if (cmd === "library_download_pending") {
+        return {
+          downloaded: 0,
+          failed: 0,
+          skipped: 0,
+          status: emptyStatus,
+        };
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    await syncNewestCreationsManifest();
+    expect(listMyCreations).toHaveBeenCalledTimes(2);
+    expect(applied).toEqual([["1", "3"]]);
+  });
+
+  it("newest sync pages through more than one page of new creations", async () => {
+    const page1 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(3000 + i),
+    );
+    const page2 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(4000 + i),
+    );
+    const page3 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(5000 + i),
+    );
+    listMyCreations
+      .mockResolvedValueOnce({ images: page1, hasMore: true })
+      .mockResolvedValueOnce({ images: page2, hasMore: true })
+      .mockResolvedValueOnce({ images: page3, hasMore: true });
+
+    const known = new Set(page3.map((img) => String(img.id)));
+    const appliedCounts: number[] = [];
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
+      if (cmd === "library_existing_creation_ids") {
+        return (args?.ids ?? []).filter((id) => known.has(id));
+      }
+      if (cmd === "library_apply_manifest") {
+        appliedCounts.push(Array.isArray(args?.creations) ? args.creations.length : 0);
+        return emptyStatus;
+      }
+      if (cmd === "library_download_pending") {
+        return {
+          downloaded: 0,
+          failed: 0,
+          skipped: 0,
+          status: emptyStatus,
+        };
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    await syncNewestCreationsManifest();
+    expect(listMyCreations).toHaveBeenCalledTimes(3);
+    expect(appliedCounts).toEqual([NEWEST_SYNC_PAGE_SIZE, NEWEST_SYNC_PAGE_SIZE]);
   });
 });

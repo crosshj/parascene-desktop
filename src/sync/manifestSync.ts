@@ -3,6 +3,8 @@ import { aspectRatioFromMeta } from "../library/aspectRatio";
 import {
   applyManifest,
   downloadPending,
+  existingCreationIds,
+  getSyncStatus,
 } from "../library/catalogClient";
 import {
   groupEmbeddedSourceCreations,
@@ -10,6 +12,9 @@ import {
 } from "../library/creationFlags";
 import { CREATIONS_PAGE_SIZE, type CreationUpsert, type SyncStatus } from "../library/types";
 import { absolutizeAssetUrl, type RemoteCreateImage } from "../sdk/parascene";
+
+/** Page size for newest-first catalog sync (`created_at DESC`). */
+export const NEWEST_SYNC_PAGE_SIZE = 200;
 
 function promptFromMeta(meta: RemoteCreateImage["meta"]): string | null {
   if (!meta || typeof meta !== "object") return null;
@@ -222,6 +227,16 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
   };
 }
 
+function rethrowAuthError(e: unknown): never {
+  const message = e instanceof Error ? e.message : String(e);
+  if (/unauthorized/i.test(message)) {
+    throw new Error(
+      "Parascene rejected the session (Unauthorized). Try logging out and back in, then Sync again.",
+    );
+  }
+  throw e;
+}
+
 async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
   await ensureAccessToken();
   const sdk = createAuthedSdk();
@@ -237,16 +252,15 @@ async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
       offset += page.images.length;
     }
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    if (/unauthorized/i.test(message)) {
-      throw new Error(
-        "Parascene rejected the session (Unauthorized). Try logging out and back in, then Sync again.",
-      );
-    }
-    throw e;
+    rethrowAuthError(e);
   }
 
   return all.map(mapRemoteCreation);
+}
+
+async function warmAheadPreviews(status?: SyncStatus): Promise<SyncStatus> {
+  const summary = await downloadPending(CREATIONS_PAGE_SIZE);
+  return summary.status ?? status ?? (await getSyncStatus());
 }
 
 /** Metadata only (full image records) — no media downloads. */
@@ -256,12 +270,70 @@ export async function syncCreationsMetadata(): Promise<SyncStatus> {
 }
 
 /**
- * Pull full creations metadata into SQLite, then kick backend thumb warm-ahead
- * (several pages). Media trails thumbs and must not block the board.
+ * Newest-first catalog sync: page from offset 0 until a complete page of
+ * creations already exists locally. Applies only genuinely new rows.
+ * Does not refresh older metadata edits or remote removals — use full sync.
  */
-export async function syncCreationsManifest(): Promise<SyncStatus> {
+export async function syncNewestCreationsManifest(): Promise<SyncStatus> {
+  await ensureAccessToken();
+  const sdk = createAuthedSdk();
+  let offset = 0;
+  let lastStatus: SyncStatus | null = null;
+  let appliedAny = false;
+
+  try {
+    for (;;) {
+      const page = await sdk.listMyCreations({
+        limit: NEWEST_SYNC_PAGE_SIZE,
+        offset,
+      });
+      if (page.images.length === 0) break;
+
+      const upserts = page.images.map(mapRemoteCreation);
+      const ids = upserts.map((c) => c.id);
+      const existing = new Set(await existingCreationIds(ids));
+      const newRows = upserts.filter((c) => !existing.has(c.id));
+
+      if (newRows.length > 0) {
+        lastStatus = await applyManifest(newRows);
+        appliedAny = true;
+      }
+
+      const completePage = page.images.length >= NEWEST_SYNC_PAGE_SIZE;
+      const allKnown = upserts.every((c) => existing.has(c.id));
+      if (allKnown && completePage) break;
+      if (!page.hasMore || page.images.length === 0) break;
+
+      offset += page.images.length;
+    }
+  } catch (e: unknown) {
+    rethrowAuthError(e);
+  }
+
+  if (!appliedAny && !lastStatus) {
+    // Touch sync timestamp so "last synced" updates on a no-op newest pass.
+    lastStatus = await applyManifest([]);
+  }
+
+  return warmAheadPreviews(lastStatus ?? undefined);
+}
+
+/**
+ * Exhaustive catalog sync: fetch every creation page and upsert the full
+ * manifest. Use for edits, removals, and recovery after newest-only sync.
+ */
+export async function syncFullCreationsManifest(): Promise<SyncStatus> {
   const creations = await fetchAllRemoteCreations();
   await applyManifest(creations);
-  const summary = await downloadPending(CREATIONS_PAGE_SIZE);
-  return summary.status;
+  return warmAheadPreviews();
+}
+
+/**
+ * Pull full creations metadata into SQLite, then kick backend thumb warm-ahead
+ * (several pages). Media trails thumbs and must not block the board.
+ *
+ * Alias for {@link syncFullCreationsManifest} (recovery / onboarding path).
+ */
+export async function syncCreationsManifest(): Promise<SyncStatus> {
+  return syncFullCreationsManifest();
 }
