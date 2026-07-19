@@ -4,7 +4,8 @@
 //! Frontend may then push the JPEG to Parascene as `?variant=fit`.
 
 use super::catalog::{
-    default_paths, get_creation_by_id, ready_connection, set_local_thumb_path, Creation,
+    default_paths, get_creation_by_id, ready_connection, set_creation_geometry,
+    set_local_thumb_path, Creation,
 };
 use super::ffmpeg::resolve_ffmpeg;
 use super::paths::ParascenePaths;
@@ -74,6 +75,42 @@ fn extract_video_frame(ffmpeg: &Path, video: &Path, dest: &Path) -> Result<(), S
     }
 }
 
+/// Pull embedded album art (ID3 APIC / mjpeg cover stream) from an audio file.
+fn extract_embedded_cover(ffmpeg: &Path, audio: &Path, dest: &Path) -> Result<(), String> {
+    let output = Command::new(ffmpeg)
+        .args([
+            "-y",
+            "-i",
+            &audio.display().to_string(),
+            "-an",
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            &dest.display().to_string(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
+    if output.status.success() && dest.is_file() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&output.stderr);
+    if err.contains("Stream map '0:v:0'")
+        || err.contains("matches no streams")
+        || err.contains("Output file does not contain any stream")
+    {
+        return Err("No embedded artwork in audio file".into());
+    }
+    Err(format!(
+        "ffmpeg failed extracting embedded cover (exit {})",
+        output.status
+    ))
+}
+
 fn resize_to_long_edge(img: DynamicImage, long_edge: u32) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
@@ -122,9 +159,25 @@ fn fill_from_video_file(src: &Path, dest: &Path, temp_frame: &Path) -> Result<()
     result
 }
 
+fn fill_from_audio_file(src: &Path, dest: &Path, temp_cover: &Path) -> Result<(), String> {
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required to fill thumbnails for audio. Install with: brew install ffmpeg"
+            .to_string()
+    })?;
+    extract_embedded_cover(&ffmpeg, src, temp_cover)?;
+    let result = fill_from_image_file(temp_cover, dest);
+    let _ = std::fs::remove_file(temp_cover);
+    result
+}
+
 fn is_video_creation(creation: &Creation, local_path: &Path) -> bool {
-    if creation.media_type.eq_ignore_ascii_case("video") {
+    let mt = creation.media_type.trim().to_ascii_lowercase();
+    if mt == "video" {
         return true;
+    }
+    // Catalog type wins — audio often lives in .mp4/.m4a containers.
+    if mt == "audio" || mt == "image" {
+        return false;
     }
     matches!(
         local_path
@@ -133,6 +186,24 @@ fn is_video_creation(creation: &Creation, local_path: &Path) -> bool {
             .map(|e| e.to_ascii_lowercase())
             .as_deref(),
         Some("mp4" | "mov" | "webm" | "mkv" | "m4v")
+    )
+}
+
+fn is_audio_creation(creation: &Creation, local_path: &Path) -> bool {
+    let mt = creation.media_type.trim().to_ascii_lowercase();
+    if mt == "audio" {
+        return true;
+    }
+    if mt == "video" || mt == "image" {
+        return false;
+    }
+    matches!(
+        local_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "aiff" | "aif")
     )
 }
 
@@ -149,9 +220,61 @@ pub(crate) fn fill_local_thumb(
     if is_video_creation(creation, &src) {
         let temp = paths.cache.join(format!("{stem}.frame.jpg"));
         fill_from_video_file(&src, &dest, &temp)?;
+    } else if is_audio_creation(creation, &src) {
+        let temp = paths.cache.join(format!("{stem}.cover.jpg"));
+        fill_from_audio_file(&src, &dest, &temp)?;
     } else {
         fill_from_image_file(&src, &dest)?;
     }
+    Ok(dest)
+}
+
+/// Library creative presets — pick the closest ratio to the thumb pixels.
+pub(crate) fn nearest_standard_aspect(width: u32, height: u32) -> &'static str {
+    if width == 0 || height == 0 {
+        return "1:1";
+    }
+    let r = width as f64 / height as f64;
+    const PRESETS: &[(&str, f64)] = &[
+        ("1:1", 1.0),
+        ("4:5", 4.0 / 5.0),
+        ("9:16", 9.0 / 16.0),
+        ("16:9", 16.0 / 9.0),
+    ];
+    PRESETS
+        .iter()
+        .min_by(|a, b| {
+            (r - a.1)
+                .abs()
+                .partial_cmp(&(r - b.1).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(label, _)| *label)
+        .unwrap_or("1:1")
+}
+
+/// After writing a board thumb, store width/height and nearest standard aspect.
+pub(crate) fn apply_geometry_from_thumb(
+    conn: &rusqlite::Connection,
+    id: &str,
+    thumb: &Path,
+) -> Result<(), String> {
+    let (w, h) = image::image_dimensions(thumb)
+        .map_err(|e| format!("Could not read thumb dimensions: {e}"))?;
+    let aspect = nearest_standard_aspect(w, h);
+    set_creation_geometry(conn, id, w as i64, h as i64, aspect)
+}
+
+/// Fill board thumb, persist path + geometry from the JPEG.
+pub(crate) fn fill_and_record_local_thumb(
+    paths: &ParascenePaths,
+    conn: &rusqlite::Connection,
+    creation: &Creation,
+) -> Result<PathBuf, String> {
+    let dest = fill_local_thumb(paths, creation)?;
+    let dest_str = dest.display().to_string();
+    set_local_thumb_path(conn, &creation.id, &dest_str)?;
+    apply_geometry_from_thumb(conn, &creation.id, &dest)?;
     Ok(dest)
 }
 
@@ -175,11 +298,9 @@ pub fn library_fill_thumb(app: AppHandle, id: String) -> Result<Creation, String
         let conn = ready_connection(&paths)?;
         get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Creation {id} not found"))?
     };
-    let dest = fill_local_thumb(&paths, &creation)?;
-    let dest_str = dest.display().to_string();
     {
         let conn = ready_connection(&paths)?;
-        set_local_thumb_path(&conn, &id, &dest_str)?;
+        fill_and_record_local_thumb(&paths, &conn, &creation)?;
     }
     emit_creation_updated(&app, &id);
     let conn = ready_connection(&paths)?;
@@ -279,6 +400,105 @@ mod tests {
             err.contains("FFmpeg") && err.contains("brew install ffmpeg"),
             "unexpected err: {err}"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn dummy_creation(media_type: &str) -> Creation {
+        Creation {
+            id: "t1".into(),
+            title: "t".into(),
+            media_type: media_type.into(),
+            remote_url: None,
+            thumbnail_url: None,
+            fit_thumbnail_url: None,
+            video_url: None,
+            local_path: None,
+            local_thumb_path: None,
+            published: false,
+            published_at: None,
+            created_at: String::new(),
+            download_state: "local".into(),
+            checksum: None,
+            prompt: None,
+            expires_at: None,
+            updated_at: String::new(),
+            filename: None,
+            description: None,
+            color: None,
+            status: None,
+            width: None,
+            height: None,
+            aspect_ratio: None,
+            nsfw: false,
+            is_moderated_error: false,
+            remote_json: None,
+        }
+    }
+
+    #[test]
+    fn nearest_standard_aspect_picks_closest_preset() {
+        assert_eq!(nearest_standard_aspect(720, 720), "1:1");
+        assert_eq!(nearest_standard_aspect(720, 405), "16:9");
+        assert_eq!(nearest_standard_aspect(405, 720), "9:16");
+        assert_eq!(nearest_standard_aspect(576, 720), "4:5");
+        // Slightly off square still maps to 1:1
+        assert_eq!(nearest_standard_aspect(700, 720), "1:1");
+    }
+
+    #[test]
+    fn audio_creation_detected_by_type_and_extension() {
+        let by_type = dummy_creation("audio");
+        assert!(is_audio_creation(&by_type, Path::new("clip.mp4")));
+        assert!(!is_video_creation(&by_type, Path::new("clip.mp4")));
+
+        let unknown = dummy_creation("");
+        assert!(is_audio_creation(&unknown, Path::new("song.mp3")));
+        assert!(!is_video_creation(&unknown, Path::new("song.mp3")));
+    }
+
+    #[test]
+    fn audio_without_cover_errors_clearly_when_ffmpeg_present() {
+        let Some(ffmpeg) = resolve_ffmpeg() else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "parascene-fill-audio-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // Minimal silent WAV — no video/cover stream.
+        let src = root.join("silent.wav");
+        let status = Command::new(&ffmpeg)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=mono",
+                "-t",
+                "0.1",
+                &src.display().to_string(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if !status.map(|s| s.success()).unwrap_or(false) || !src.is_file() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let dest = root.join("out.fit.jpg");
+        let temp = root.join("cover.jpg");
+        let err = fill_from_audio_file(&src, &dest, &temp).unwrap_err();
+        assert!(
+            err.contains("No embedded artwork") || err.contains("ffmpeg failed"),
+            "unexpected err: {err}"
+        );
+        assert!(!dest.is_file());
         let _ = fs::remove_dir_all(&root);
     }
 }

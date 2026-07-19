@@ -1,10 +1,9 @@
 //! Import media files from the filesystem into the local catalog (local-only rows).
 
 use super::catalog::{
-    default_paths, get_creation_by_id, ready_connection, set_local_thumb_path, sync_status_for,
-    Creation, SyncStatus,
+    default_paths, get_creation_by_id, ready_connection, sync_status_for, Creation, SyncStatus,
 };
-use super::thumb_fill::fill_local_thumb;
+use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use rusqlite::params;
 use serde::Serialize;
@@ -188,15 +187,14 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
             )?;
         }
 
-        // Best-effort native thumb for images (and video when fill supports it).
+        // Best-effort native thumb: image decode, video first frame, or audio cover art.
         let creation = {
             let conn = ready_connection(&paths)?;
             get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Missing {id} after insert"))?
         };
-        if let Ok(thumb) = fill_local_thumb(&paths, &creation) {
-            let thumb_str = thumb.display().to_string();
+        {
             let conn = ready_connection(&paths)?;
-            let _ = set_local_thumb_path(&conn, &id, &thumb_str);
+            let _ = fill_and_record_local_thumb(&paths, &conn, &creation);
         }
 
         let conn = ready_connection(&paths)?;

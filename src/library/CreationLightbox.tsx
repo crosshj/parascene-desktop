@@ -13,6 +13,7 @@ import {
   applyManifest,
   deleteLocal,
   ensureLocal,
+  fillThumb,
   fillThumbAndPushToCloud,
   getCreation,
   getCreations,
@@ -22,6 +23,7 @@ import {
   groupSourceCreationIds,
   isGroupCreation,
 } from "./creationFlags";
+import { isLocalOnlyCreation } from "./creationFilters";
 import {
   canFetchLocal,
   creationDetailUrl,
@@ -66,7 +68,11 @@ export function CreationLightbox({
     loadedGroup?.ownerId === creation.id ? loadedGroup.members : [];
   const [groupIndex, setGroupIndex] = useState(0);
   const isGroupCarousel = groupMembers.length > 1;
-  const displayedCreation = groupMembers[groupIndex] ?? creation;
+  const [liveCreation, setLiveCreation] = useState(creation);
+  useEffect(() => {
+    setLiveCreation(creation);
+  }, [creation]);
+  const displayedCreation = groupMembers[groupIndex] ?? liveCreation;
   const detail = creationDetailUrl(displayedCreation);
   const thumb = creationPreviewUrl(displayedCreation);
   const aspectCss = creationAspectCss(displayedCreation);
@@ -161,10 +167,12 @@ export function CreationLightbox({
   }, [creation, groupIds]);
 
   useEffect(() => {
-    if (groupIds.length === 0) return;
     const memberIds = new Set(groupIds);
     let unlisten: (() => void) | undefined;
     void listen<Creation>("library-creation-updated", (event) => {
+      if (event.payload.id === creation.id) {
+        setLiveCreation(event.payload);
+      }
       if (!memberIds.has(event.payload.id)) return;
       setLoadedGroup((current) => {
         if (!current || current.ownerId !== creation.id) return current;
@@ -193,17 +201,18 @@ export function CreationLightbox({
   async function onFillThumb() {
     if (busy) return;
     const ok = await confirm({
-      title: "Fill thumbnail?",
-      message:
-        "Rebuilds the board preview from full local media at its natural aspect, then uploads that fit thumbnail to Parascene (square web thumbs stay unchanged).",
-      confirmLabel: "Fill thumbnail",
+      title: "Re-gen thumbnail?",
+      message: isLocalOnlyCreation(liveCreation)
+        ? "Rebuilds the board preview from full local media (embedded cover art for audio) and updates the aspect ratio to the closest standard."
+        : "Rebuilds the board preview from full local media at its natural aspect, then uploads that fit thumbnail to Parascene (square web thumbs stay unchanged).",
+      confirmLabel: "Re-gen thumb",
     });
     if (!ok) return;
 
     setBusyKind("fill");
     setActionError(null);
     try {
-      let row = creation;
+      let row = liveCreation;
       if (!row.localPath) {
         await ensureLocal([row.id], { fullMedia: true, urgent: true });
         for (let i = 0; i < 40; i += 1) {
@@ -217,7 +226,10 @@ export function CreationLightbox({
           "Local media is not ready yet. Wait for the download, then try again.",
         );
       }
-      await fillThumbAndPushToCloud(row.id);
+      const updated = isLocalOnlyCreation(row)
+        ? await fillThumb(row.id)
+        : await fillThumbAndPushToCloud(row.id);
+      setLiveCreation(updated);
     } catch (e: unknown) {
       setActionError(formatInvokeError(e));
     } finally {
@@ -273,18 +285,16 @@ export function CreationLightbox({
               View on Parascene
             </button>
           ) : null}
-          {!isAudio ? (
-            <button
-              type="button"
-              className="btn ghost"
-              disabled={busy}
-              onClick={() => {
-                void onFillThumb();
-              }}
-            >
-              {busyKind === "fill" ? "Filling…" : "Fill thumbnail"}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={busy}
+            onClick={() => {
+              void onFillThumb();
+            }}
+          >
+            {busyKind === "fill" ? "Re-genning…" : "Re-gen thumb"}
+          </button>
           <button
             type="button"
             className="btn ghost"
@@ -309,10 +319,11 @@ export function CreationLightbox({
           className={[
             "creation-lightbox-stage",
             isAudio ? "is-audio" : "",
+            isAudio && thumb ? "has-cover" : "",
           ]
             .filter(Boolean)
             .join(" ")}
-          style={isAudio ? undefined : { aspectRatio: aspectCss }}
+          style={isAudio && !thumb ? undefined : { aspectRatio: aspectCss }}
         >
           {detail ? (
             isVideo ? (
@@ -326,7 +337,15 @@ export function CreationLightbox({
               />
             ) : isAudio ? (
               <div className="creation-lightbox-audio">
-                <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
+                {thumb ? (
+                  <img
+                    className="creation-lightbox-media creation-lightbox-audio-cover"
+                    src={thumb}
+                    alt=""
+                  />
+                ) : (
+                  <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
+                )}
                 <audio
                   className="creation-lightbox-audio-el"
                   src={detail}

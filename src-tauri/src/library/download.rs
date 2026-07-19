@@ -3,6 +3,7 @@ use super::catalog::{
     get_creations_by_ids, list_creations, list_creations_page, mark_downloaded, ready_connection,
     set_download_state, set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
+use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -526,6 +527,27 @@ pub(crate) fn needs_thumb(c: &Creation) -> bool {
     }
 }
 
+/// After full media lands, pull embedded album art when no board thumb exists yet.
+fn try_fill_audio_cover_thumb(
+    paths: &super::paths::ParascenePaths,
+    creation_id: &str,
+    already_has_thumb: bool,
+) {
+    if already_has_thumb {
+        return;
+    }
+    let Ok(conn) = ready_connection(paths) else {
+        return;
+    };
+    let Ok(Some(creation)) = get_creation_by_id(&conn, creation_id) else {
+        return;
+    };
+    if !creation.media_type.eq_ignore_ascii_case("audio") {
+        return;
+    }
+    let _ = fill_and_record_local_thumb(paths, &conn, &creation);
+}
+
 /// Creations whose board slot is non-square but the local preview is still a square CDN thumb.
 pub(crate) fn list_ids_with_mismatched_square_thumbs(
     conn: &rusqlite::Connection,
@@ -991,6 +1013,7 @@ async fn download_batch(
                         thumb.as_deref(),
                     )?;
                 }
+                try_fill_audio_cover_thumb(paths, &creation.id, thumb.is_some());
                 emit_creation_updated(app, &creation.id);
                 emit_sync_item(app, &creation, "media", "done");
                 downloaded += 1;
@@ -1094,6 +1117,7 @@ async fn download_media_only(
                     thumb.as_deref(),
                 )?;
             }
+            try_fill_audio_cover_thumb(paths, &creation.id, thumb.is_some());
             emit_creation_updated(app, &creation.id);
             emit_sync_item(app, &creation, "media", "done");
             emit_progress(app, 1, 1, Some(creation.id.clone()), 0, "media");
@@ -1224,6 +1248,7 @@ async fn download_media_batch(
                         thumb.as_deref(),
                     )?;
                 }
+                try_fill_audio_cover_thumb(paths, &creation.id, thumb.is_some());
                 emit_creation_updated(app, &creation.id);
                 emit_sync_item(app, &creation, "media", "done");
                 downloaded += 1;

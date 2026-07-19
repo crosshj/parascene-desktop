@@ -70,6 +70,30 @@ function VideoPlayBadge() {
   );
 }
 
+/** Music note — marks audio on the board (matches other corner badge stroke style). */
+function AudioBadge() {
+  return (
+    <span
+      className="creation-badge creation-audio-badge"
+      title="Audio"
+      aria-hidden
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M9 18V5l12-2v13" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="18" cy="16" r="3" />
+      </svg>
+    </span>
+  );
+}
+
 function PublishedBadge() {
   return (
     <span
@@ -158,9 +182,9 @@ function InProjectBadge() {
 }
 
 /**
- * Board card: local thumbnail + catalog aspect slot. Share / group / play sit
- * top-left as matching badges. NSFW stays centered with blur; lightbox
- * reveals clear media.
+ * Board card: local thumbnail + catalog aspect slot. Published / group / play /
+ * audio / in-project sit top-left as matching badges. NSFW stays centered with
+ * blur; lightbox reveals clear media.
  */
 export const CreationCard = memo(function CreationCard({
   creation,
@@ -199,7 +223,9 @@ export const CreationCard = memo(function CreationCard({
   const published = isPublishedCreation(creation);
   const isGroup = isGroupCreation(creation);
   const showPlay = isVideo && Boolean(paintSrc);
-  const showCornerBadges = published || isGroup || showPlay || inProject;
+  const showAudioBadge = isAudio;
+  const showCornerBadges =
+    published || isGroup || showPlay || showAudioBadge || inProject;
   const cardTitle = creationCardTitle(creation);
 
   // Don't mount <img> until decoded — avoids grey flash on virtual remount.
@@ -257,7 +283,7 @@ export const CreationCard = memo(function CreationCard({
         aria-label={
           unavailable
             ? `${creation.title} (unavailable)`
-            : `${selected ? "Selected. " : ""}${dimmed ? "Marked pending until filter changes. " : ""}${inProject ? "In current project. " : ""}Open ${creation.title}${isNsfw ? ", NSFW" : ""}${published ? ", published" : ""}${isGroup ? ", group" : ""}${showPlay ? ", video" : ""}${showAudio ? ", audio" : ""}. Shift-click to ${selected ? "deselect" : "select"}.`
+            : `${selected ? "Selected. " : ""}${dimmed ? "Marked pending until filter changes. " : ""}${inProject ? "In current project. " : ""}Open ${creation.title}${isNsfw ? ", NSFW" : ""}${published ? ", published" : ""}${isGroup ? ", group" : ""}${showPlay ? ", video" : ""}${isAudio ? ", audio" : ""}. Shift-click to ${selected ? "deselect" : "select"}.`
         }
       >
         <span
@@ -294,6 +320,7 @@ export const CreationCard = memo(function CreationCard({
               {published ? <PublishedBadge /> : null}
               {isGroup ? <GroupBadge /> : null}
               {showPlay ? <VideoPlayBadge /> : null}
+              {showAudioBadge ? <AudioBadge /> : null}
             </span>
           ) : null}
           <span className="creation-meta">

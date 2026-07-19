@@ -1,11 +1,11 @@
 use super::catalog::{
-    default_paths, get_creation_by_id, ready_connection, set_local_thumb_path, Creation,
+    default_paths, get_creation_by_id, ready_connection, Creation,
 };
 use super::ffmpeg::resolve_ffmpeg;
 use super::import_local::insert_local_creation;
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
-use super::thumb_fill::fill_local_thumb;
+use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -287,10 +287,9 @@ fn run_merge(app: &AppHandle, clips: Vec<MergeTimelineClipInput>) -> Result<Crea
         let conn = ready_connection(&paths)?;
         get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Missing {id} after insert"))?
     };
-    if let Ok(thumb) = fill_local_thumb(&paths, &creation) {
-        let thumb_str = thumb.display().to_string();
+    {
         let conn = ready_connection(&paths)?;
-        let _ = set_local_thumb_path(&conn, &id, &thumb_str);
+        let _ = fill_and_record_local_thumb(&paths, &conn, &creation);
     }
     let conn = ready_connection(&paths)?;
     creation =

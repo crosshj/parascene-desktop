@@ -1108,6 +1108,7 @@ textarea {
 .creation-published-badge,
 .creation-group-badge,
 .creation-play-badge,
+.creation-audio-badge,
 .creation-in-project-badge {
   background: rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(6px);
@@ -1294,6 +1295,10 @@ textarea {
   aspect-ratio: 16 / 10;
 }
 
+.creation-lightbox-stage.is-audio.has-cover {
+  min-height: 0;
+}
+
 .creation-lightbox-media {
   display: block;
   width: 100%;
@@ -1371,9 +1376,34 @@ textarea {
     #121218;
 }
 
+.creation-lightbox-stage.has-cover .creation-lightbox-audio {
+  padding: 0;
+  gap: 0;
+  background: #0a0a0b;
+  justify-content: flex-end;
+}
+
+.creation-lightbox-audio-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
 .creation-lightbox-audio-el {
   width: min(420px, 100%);
   height: 2.5rem;
+}
+
+.creation-lightbox-stage.has-cover .creation-lightbox-audio-el {
+  position: relative;
+  z-index: 1;
+  width: min(520px, calc(100% - 2rem));
+  margin: 0 1rem 1rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
 }
 
 .creation-lightbox-placeholder,

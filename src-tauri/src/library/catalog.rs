@@ -997,6 +997,30 @@ pub(crate) fn set_local_thumb_path(
     Ok(())
 }
 
+/// Persist board geometry from a generated thumb (width/height + creative aspect).
+pub(crate) fn set_creation_geometry(
+    conn: &Connection,
+    id: &str,
+    width: i64,
+    height: i64,
+    aspect_ratio: &str,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        r#"
+        UPDATE creations
+        SET width = ?1,
+            height = ?2,
+            aspect_ratio = ?3,
+            updated_at = ?4
+        WHERE id = ?5
+        "#,
+        params![width, height, aspect_ratio, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub(crate) fn mark_downloaded(
     conn: &Connection,
     id: &str,
