@@ -174,15 +174,8 @@ vi.mock("@tauri-apps/api/core", () => ({
     invoke(...(args as [string, { key?: string; value?: string }?])),
 }));
 
-let oauthHandler: ((event: { payload: unknown }) => void) | null = null;
-
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_event: string, handler: (e: { payload: unknown }) => void) => {
-    oauthHandler = handler;
-    return () => {
-      oauthHandler = null;
-    };
-  }),
+  listen: vi.fn(async () => () => {}),
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -205,7 +198,6 @@ describe("auth shell", () => {
     vi.clearAllMocks();
     store.clear();
     localStorage.clear();
-    oauthHandler = null;
     oauthCallback = null;
     fixtureCreations = [];
     fixtureSyncStatus = {
