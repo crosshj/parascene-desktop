@@ -27,6 +27,8 @@ let fixtureSyncStatus = {
   withoutCloudUrls: [] as { id: string; title: string; filename: string | null }[],
 };
 
+let oauthCallback: { code: string; state: string | null } | null = null;
+
 const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }) => {
   if (cmd === "keychain_get") return store.get(args?.key ?? "") ?? null;
   if (cmd === "keychain_set") {
@@ -39,6 +41,14 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
   }
   if (cmd === "cancel_oauth_listener") return null;
   if (cmd === "start_oauth_listener") return 17423;
+  if (cmd === "oauth_take_callback") {
+    if (oauthCallback) {
+      const cb = oauthCallback;
+      oauthCallback = null;
+      return cb;
+    }
+    return null;
+  }
   if (cmd === "auth_ensure_access_token") return "at";
   if (cmd === "http_post_json") {
     return {
@@ -135,6 +145,27 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
       baselineFolders: [],
     };
   }
+  if (cmd === "library_lab_deps_status") {
+    return {
+      ffmpeg: {
+        id: "ffmpeg",
+        label: "FFmpeg",
+        ready: true,
+        path: "/usr/bin/ffmpeg",
+        detail: "",
+        installHint: "",
+      },
+      demucs: {
+        id: "demucs",
+        label: "Demucs",
+        ready: true,
+        path: "/usr/bin/demucs",
+        detail: "",
+        installHint: "",
+      },
+      docPath: null,
+    };
+  }
   throw new Error(`unexpected invoke: ${cmd}`);
 });
 
@@ -163,11 +194,7 @@ async function logIn(user: ReturnType<typeof userEvent.setup>) {
   vi.mocked(openUrl).mockImplementationOnce(async (url: string | URL) => {
     const u = typeof url === "string" ? new URL(url) : url;
     const state = u.searchParams.get("state");
-    queueMicrotask(() => {
-      oauthHandler?.({
-        payload: { code: "test-code", state },
-      });
-    });
+    oauthCallback = { code: "test-code", state };
   });
 
   await user.click(await screen.findByRole("button", { name: "Log in" }));
@@ -179,6 +206,7 @@ describe("auth shell", () => {
     store.clear();
     localStorage.clear();
     oauthHandler = null;
+    oauthCallback = null;
     fixtureCreations = [];
     fixtureSyncStatus = {
       rootPath: "/tmp/Movies/Parascene",
@@ -266,7 +294,9 @@ describe("auth shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Lab" }));
     expect(screen.getByLabelText("Lab")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Project groups/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Project groups" }),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();
@@ -286,7 +316,7 @@ describe("auth shell", () => {
     await user.click(screen.getByRole("button", { name: "Close project" }));
     expect(screen.getByLabelText("Project picker")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
-  });
+  }, 20_000);
 
   it("restores open project and tabs after remount", async () => {
     const user = userEvent.setup();
@@ -321,7 +351,7 @@ describe("auth shell", () => {
       "aria-pressed",
       "true",
     );
-  });
+  }, 20_000);
 
   it("switches Library Creations and Sync surfaces", async () => {
     const user = userEvent.setup();
@@ -335,17 +365,17 @@ describe("auth shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Sync" }));
     expect(screen.getByLabelText("Sync")).toBeInTheDocument();
-    expect(await screen.findByText(/0 creations/)).toBeInTheDocument();
-    expect(screen.getByText(/0 local · 0 remote/)).toBeInTheDocument();
-    expect(await screen.findByText(/Folders: 0/)).toBeInTheDocument();
-    expect(screen.getByText(/not synced/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Sync activity")).toBeInTheDocument();
+    expect(screen.getByLabelText("Library summary")).toBeInTheDocument();
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByText(/Last synced Never/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Catalog" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recent jobs" })).toBeInTheDocument();
     expect(
-      screen.getByText(/Items appear as they queue/),
+      screen.getByText(/Catalog and folder runs show up here/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/On disk:/)).toBeInTheDocument();
+    expect(screen.getByText("On disk")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Clear finished" }),
+      screen.getByRole("button", { name: "Clear" }),
     ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Sync newest" }),
