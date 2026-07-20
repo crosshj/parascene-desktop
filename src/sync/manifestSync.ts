@@ -1,7 +1,10 @@
+import { mapCatalogSyncError } from "../auth/errors";
 import { createAuthedSdk, ensureAccessToken, getEnvConfig } from "../auth/session";
 import { aspectRatioFromMeta } from "../library/aspectRatio";
 import {
   applyManifest,
+  cloudIdsSince,
+  deleteLocal,
   downloadPending,
   existingCreationIds,
   getSyncStatus,
@@ -11,10 +14,38 @@ import {
   isGroupCreation,
 } from "../library/creationFlags";
 import { CREATIONS_PAGE_SIZE, type CreationUpsert, type SyncStatus } from "../library/types";
-import { absolutizeAssetUrl, type RemoteCreateImage } from "../sdk/parascene";
+import {
+  absolutizeAssetUrl,
+  deriveFitThumbnailUrl,
+  type RemoteCreateImage,
+} from "../sdk/parascene";
 
-/** Page size for newest-first catalog sync (`created_at DESC`). */
-export const NEWEST_SYNC_PAGE_SIZE = 200;
+/** Page size for newest-first catalog sync (`created_at DESC`). Match website-ish pages. */
+export const NEWEST_SYNC_PAGE_SIZE = 50;
+/** Hard cap — "newest" must not walk the whole catalog (use Full sync for that). */
+export const NEWEST_SYNC_MAX_PAGES = 2;
+/** Only prune local rows that fall inside this recent window (and the fetched newest pages). */
+export const NEWEST_PRUNE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+export type NewestSyncResult = {
+  status: SyncStatus;
+  /** Newly applied remote ids. */
+  added: number;
+  /** Local rows removed after confirming they are gone on Parascene. */
+  pruned: number;
+};
+
+export type NewestSyncProgress = {
+  phase: "auth" | "fetch" | "apply" | "prune" | "done";
+  /** Human-readable step for the status banner. */
+  message: string;
+  /** Creations inspected from Parascene so far. */
+  checked: number;
+  /** Soft target for the newest window (usually 100). */
+  target: number;
+  added: number;
+  pruned: number;
+};
 
 function promptFromMeta(meta: RemoteCreateImage["meta"]): string | null {
   if (!meta || typeof meta !== "object") return null;
@@ -71,13 +102,25 @@ export function remoteFromGroupSource(
   const thumbnailUrl =
     optionalString(source.thumbnail_url) ??
     (filePath ? `${filePath}?variant=thumbnail` : null);
+  const fitThumbnailUrl =
+    optionalString(source.fit_thumbnail_url) ??
+    deriveFitThumbnailUrl(thumbnailUrl, url);
+  // Embedded i2v members often only carry the poster `file_path`, not video_url.
+  let videoUrl = optionalString(source.video_url);
+  if (!videoUrl && mediaType === "video" && filePath) {
+    const poster = filePath.match(/\/api\/images\/created\/(.+)\.png$/i);
+    if (poster) {
+      videoUrl = `/api/videos/created/video/${poster[1]}.mp4`;
+    }
+  }
 
   return {
     ...source,
     id,
     url,
     thumbnail_url: thumbnailUrl,
-    video_url: optionalString(source.video_url),
+    fit_thumbnail_url: fitThumbnailUrl,
+    video_url: videoUrl,
     media_type: mediaType,
     filename: optionalString(source.filename),
     title: optionalString(source.title),
@@ -163,7 +206,9 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
   const thumbnailUrl =
     absolutizeAssetUrl(img.thumbnail_url || undefined, origin) ?? null;
   const fitThumbnailUrl =
-    absolutizeAssetUrl(img.fit_thumbnail_url || undefined, origin) ?? null;
+    absolutizeAssetUrl(img.fit_thumbnail_url || undefined, origin) ??
+    deriveFitThumbnailUrl(thumbnailUrl, url) ??
+    null;
   const videoUrl =
     absolutizeAssetUrl(img.video_url || undefined, origin) ?? null;
   const remoteUrl =
@@ -227,14 +272,8 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
   };
 }
 
-function rethrowAuthError(e: unknown): never {
-  const message = e instanceof Error ? e.message : String(e);
-  if (/unauthorized/i.test(message)) {
-    throw new Error(
-      "Parascene rejected the session (Unauthorized). Try logging out and back in, then Sync again.",
-    );
-  }
-  throw e;
+function rethrowCatalogError(e: unknown): never {
+  throw mapCatalogSyncError(e);
 }
 
 async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
@@ -252,7 +291,7 @@ async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
       offset += page.images.length;
     }
   } catch (e: unknown) {
-    rethrowAuthError(e);
+    rethrowCatalogError(e);
   }
 
   return all.map(mapRemoteCreation);
@@ -263,6 +302,13 @@ async function warmAheadPreviews(status?: SyncStatus): Promise<SyncStatus> {
   return summary.status ?? status ?? (await getSyncStatus());
 }
 
+/** Kick thumb warm-ahead without blocking the Sync button / UI. */
+function kickWarmAheadPreviews(): void {
+  void warmAheadPreviews().catch(() => {
+    /* background */
+  });
+}
+
 /** Metadata only (full image records) — no media downloads. */
 export async function syncCreationsMetadata(): Promise<SyncStatus> {
   const creations = await fetchAllRemoteCreations();
@@ -270,52 +316,203 @@ export async function syncCreationsMetadata(): Promise<SyncStatus> {
 }
 
 /**
- * Newest-first catalog sync: page from offset 0 until a complete page of
- * creations already exists locally. Applies only genuinely new rows.
- * Does not refresh older metadata edits or remote removals — use full sync.
+ * Newest-first catalog sync: fetch a small newest window (default 2×50),
+ * apply only unknown ids, stop early once a page is already fully local.
+ * Also drops local rows that should have appeared in that recent window but
+ * are gone on Parascene (verified with getCreation) — capped to the last
+ * {@link NEWEST_PRUNE_MAX_AGE_MS}. Older removals still need Full sync.
  */
-export async function syncNewestCreationsManifest(): Promise<SyncStatus> {
-  await ensureAccessToken();
+export async function syncNewestCreationsManifest(opts?: {
+  onProgress?: (progress: NewestSyncProgress) => void;
+}): Promise<NewestSyncResult> {
+  const target = NEWEST_SYNC_PAGE_SIZE * NEWEST_SYNC_MAX_PAGES;
+  let added = 0;
+  let pruned = 0;
+  const report = (
+    phase: NewestSyncProgress["phase"],
+    message: string,
+    checked: number,
+  ) => {
+    opts?.onProgress?.({
+      phase,
+      message,
+      checked,
+      target,
+      added,
+      pruned,
+    });
+  };
+
+  report("auth", "Checking session…", 0);
+  try {
+    await ensureAccessToken();
+  } catch (e: unknown) {
+    rethrowCatalogError(e);
+  }
+
+  report("fetch", "Fetching newest…", 0);
   const sdk = createAuthedSdk();
   let offset = 0;
   let lastStatus: SyncStatus | null = null;
-  let appliedAny = false;
+  let pages = 0;
+  const remoteRows: CreationUpsert[] = [];
 
   try {
     for (;;) {
+      if (pages >= NEWEST_SYNC_MAX_PAGES) break;
+
+      const pageNum = pages + 1;
+      report(
+        "fetch",
+        `Fetching page ${pageNum} of ${NEWEST_SYNC_MAX_PAGES}…`,
+        remoteRows.length,
+      );
       const page = await sdk.listMyCreations({
         limit: NEWEST_SYNC_PAGE_SIZE,
         offset,
       });
+      pages += 1;
       if (page.images.length === 0) break;
 
       const upserts = page.images.map(mapRemoteCreation);
+      remoteRows.push(...upserts);
+      const checked = remoteRows.length;
+      report(
+        "fetch",
+        `Checked ${checked} of ~${target} newest…`,
+        checked,
+      );
+
       const ids = upserts.map((c) => c.id);
       const existing = new Set(await existingCreationIds(ids));
       const newRows = upserts.filter((c) => !existing.has(c.id));
 
       if (newRows.length > 0) {
+        report(
+          "apply",
+          `Saving ${newRows.length} new creation(s) (${checked} of ~${target})…`,
+          checked,
+        );
         lastStatus = await applyManifest(newRows);
-        appliedAny = true;
+        added += newRows.length;
+        report(
+          "apply",
+          `Added ${added} so far · checked ${checked} of ~${target}`,
+          checked,
+        );
       }
 
-      const completePage = page.images.length >= NEWEST_SYNC_PAGE_SIZE;
+      // Caught up: every id on this page is already local.
       const allKnown = upserts.every((c) => existing.has(c.id));
-      if (allKnown && completePage) break;
+      if (allKnown) {
+        report(
+          "fetch",
+          `Caught up · checked ${checked} of ~${target}`,
+          checked,
+        );
+        break;
+      }
       if (!page.hasMore || page.images.length === 0) break;
 
       offset += page.images.length;
     }
   } catch (e: unknown) {
-    rethrowAuthError(e);
+    rethrowCatalogError(e);
   }
 
-  if (!appliedAny && !lastStatus) {
+  if (remoteRows.length > 0) {
+    report(
+      "prune",
+      `Checking recent deletions (${remoteRows.length} of ~${target})…`,
+      remoteRows.length,
+    );
+    pruned = await pruneRecentRemoteDeletions(sdk, remoteRows, (done, total) => {
+      report(
+        "prune",
+        total > 0
+          ? `Removing deleted locally ${done} of ${total}…`
+          : "No recent deletions to clear",
+        remoteRows.length,
+      );
+    });
+  }
+
+  if (!lastStatus) {
     // Touch sync timestamp so "last synced" updates on a no-op newest pass.
     lastStatus = await applyManifest([]);
+  } else if (pruned > 0) {
+    lastStatus = await getSyncStatus();
   }
 
-  return warmAheadPreviews(lastStatus ?? undefined);
+  report(
+    "done",
+    added > 0 || pruned > 0
+      ? `Done · added ${added}, removed ${pruned}`
+      : `Done · nothing new in newest ~${target}`,
+    remoteRows.length || target,
+  );
+  kickWarmAheadPreviews();
+  return { status: lastStatus, added, pruned };
+}
+
+/**
+ * Remove local cloud rows that belong in the fetched newest window but are
+ * missing remotely (deleted on Parascene recently).
+ */
+async function pruneRecentRemoteDeletions(
+  sdk: ReturnType<typeof createAuthedSdk>,
+  remoteRows: CreationUpsert[],
+  onTick?: (done: number, total: number) => void,
+): Promise<number> {
+  const remoteIds = new Set(remoteRows.map((r) => r.id));
+  let oldestInWindow = remoteRows[0]?.createdAt ?? null;
+  for (const row of remoteRows) {
+    if (!oldestInWindow || row.createdAt < oldestInWindow) {
+      oldestInWindow = row.createdAt;
+    }
+  }
+  if (!oldestInWindow) return 0;
+
+  const sinceIso = recentPruneSinceIso(oldestInWindow);
+  const locals = await cloudIdsSince(sinceIso);
+  const candidates = locals
+    .map((row) => row.id)
+    .filter((id) => !remoteIds.has(id));
+  if (candidates.length === 0) {
+    onTick?.(0, 0);
+    return 0;
+  }
+
+  let pruned = 0;
+  let checked = 0;
+  for (const id of candidates) {
+    checked += 1;
+    onTick?.(checked, candidates.length);
+    try {
+      await sdk.getCreation(id);
+      // Still on Parascene (outside the pages we fetched, or race) — keep.
+    } catch {
+      try {
+        await deleteLocal(id);
+        pruned += 1;
+      } catch {
+        /* keep going */
+      }
+    }
+  }
+  return pruned;
+}
+
+/** Prefer the newest-page floor, but never look further back than a few hours. */
+export function recentPruneSinceIso(
+  oldestFetchedCreatedAt: string,
+  nowMs = Date.now(),
+): string {
+  const floorMs = Date.parse(oldestFetchedCreatedAt);
+  const recentFloor = new Date(nowMs - NEWEST_PRUNE_MAX_AGE_MS).toISOString();
+  if (!Number.isFinite(floorMs)) return recentFloor;
+  const fetchedFloor = new Date(floorMs).toISOString();
+  return fetchedFloor > recentFloor ? fetchedFloor : recentFloor;
 }
 
 /**
@@ -324,8 +521,9 @@ export async function syncNewestCreationsManifest(): Promise<SyncStatus> {
  */
 export async function syncFullCreationsManifest(): Promise<SyncStatus> {
   const creations = await fetchAllRemoteCreations();
-  await applyManifest(creations);
-  return warmAheadPreviews();
+  const status = await applyManifest(creations);
+  kickWarmAheadPreviews();
+  return status;
 }
 
 /**

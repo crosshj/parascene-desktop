@@ -13,7 +13,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { useAuth } from "../auth/AuthProvider";
+import { isSessionReauthError } from "../auth/errors";
 import { useShell } from "../app/ShellProvider";
+import type { LibrarySurface } from "../app/shellSession";
 import { CreationsFilterEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
@@ -26,12 +29,13 @@ import {
   syncCreationsMetadata,
   syncFullCreationsManifest,
   syncNewestCreationsManifest,
+  NEWEST_SYNC_MAX_PAGES,
+  NEWEST_SYNC_PAGE_SIZE,
 } from "../sync/manifestSync";
 import {
   applySyncItemEvent,
   clearFinishedSyncActivity,
-  countFinishedSyncActivity,
-  MAX_FINISHED_SYNC_ACTIVITY,
+  partitionSyncActivity,
   syncItemKindLabel,
   syncItemStateLabel,
   type SyncActivityItem,
@@ -39,8 +43,6 @@ import {
 } from "../sync/syncActivity";
 import {
   formatLastSync,
-  phaseLabel,
-  syncCountsSummary,
   syncDiskSummary,
   unsyncableMediaCount,
   unsyncableThumbCount,
@@ -196,7 +198,7 @@ function CatalogSyncButton({
       disabled={disabled ?? active}
       title={
         mode === "newest"
-          ? "Fetch newest creations until local catalog catches up"
+          ? "Fetch the newest creations (up to ~100) and clear recent remote deletions from local. Use Full sync to rebuild the whole catalog."
           : "Refresh the full creations catalog (edits, removals, recovery)"
       }
     >
@@ -205,7 +207,7 @@ function CatalogSyncButton({
   );
 }
 
-function useCatalog() {
+function useCatalog(librarySurface: LibrarySurface) {
   const [creations, setCreations] = useState<Creation[] | null>(null);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -229,6 +231,14 @@ function useCatalog() {
   const creationsRef = useRef<Creation[]>([]);
   const aspectBackfillStarted = useRef(false);
   const loadingMoreRef = useRef(false);
+  const surfaceRef = useRef(librarySurface);
+  // Keep a latest-value ref for async callbacks (read after commit, not during render).
+  useEffect(() => {
+    surfaceRef.current = librarySurface;
+  }, [librarySurface]);
+  const statusRefreshInFlight = useRef(false);
+  const lastCatalogModeRef = useRef<CatalogSyncMode>("newest");
+  const lastProgressUiAt = useRef(0);
 
   const refreshFolderSync = useCallback(async () => {
     try {
@@ -311,7 +321,9 @@ function useCatalog() {
   }, [loadInitial]);
 
   // One-shot metadata refresh if the local catalog predates aspect fields.
+  // Skip while Sync is focused — board layout isn't visible there.
   useEffect(() => {
+    if (librarySurface === "sync") return;
     if (!creations?.length || aspectBackfillStarted.current) return;
     const missing = creations.filter((c) => !hasLayoutAspect(c)).length;
     if (missing < creations.length * 0.5) return;
@@ -327,7 +339,7 @@ function useCatalog() {
     return () => {
       cancelled = true;
     };
-  }, [creations, loadInitial]);
+  }, [creations, librarySurface, loadInitial]);
 
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
@@ -341,20 +353,33 @@ function useCatalog() {
       const now = Date.now();
       if (now - lastStatusRefresh < 800) return;
       lastStatusRefresh = now;
+      if (statusRefreshInFlight.current) return;
+      statusRefreshInFlight.current = true;
       void getSyncStatus()
         .then(setStatus)
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          statusRefreshInFlight.current = false;
+        });
     };
 
     void listen<DownloadProgress>("library-download-progress", (event) => {
       setProgress(event.payload);
-      refreshStatus();
+      // Sync tab doesn't need per-tick SQLite status; settle once downloads quiet.
+      if (surfaceRef.current !== "sync") {
+        refreshStatus();
+      }
       window.clearTimeout(statusRefreshTimer);
       // Settle counts shortly after the last progress tick.
       statusRefreshTimer = window.setTimeout(() => {
+        if (statusRefreshInFlight.current) return;
+        statusRefreshInFlight.current = true;
         void getSyncStatus()
           .then(setStatus)
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => {
+            statusRefreshInFlight.current = false;
+          });
       }, 600);
     }).then((off) => {
       unlistenProgress = off;
@@ -384,7 +409,10 @@ function useCatalog() {
       });
       if (!changed) return;
       creationsRef.current = merged;
-      setCreations(merged);
+      // Sync surface doesn't mount the board — skip React list rewrites there.
+      if (surfaceRef.current !== "sync") {
+        setCreations(merged);
+      }
       refreshStatus();
     };
     void listen<Creation>("library-creation-updated", (event) => {
@@ -447,52 +475,171 @@ function useCatalog() {
 
   const [catalogSyncMode, setCatalogSyncMode] =
     useState<CatalogSyncMode | null>(null);
+  const [syncHeadline, setSyncHeadline] = useState<string | null>(null);
+
+  const pushActivity = useCallback((event: SyncItemEvent) => {
+    setActivity((prev) => applySyncItemEvent(prev, event));
+  }, []);
 
   const runCatalogSync = useCallback(
     async (mode: CatalogSyncMode) => {
+      const jobId = `${mode}-${Date.now()}`;
+      const title = mode === "newest" ? "Sync newest" : "Full sync";
+      const newestTarget = NEWEST_SYNC_PAGE_SIZE * NEWEST_SYNC_MAX_PAGES;
+      lastCatalogModeRef.current = mode;
+      lastProgressUiAt.current = 0;
       setSyncing(true);
       setCatalogSyncMode(mode);
       setError(null);
       setFolderSyncResult(null);
+      // Paint immediately — don't wait for the first network round-trip.
+      setSyncHeadline(
+        mode === "newest" ? "Starting Sync newest…" : "Starting Full sync…",
+      );
       setProgress({
         done: 0,
-        total: 0,
-        currentId: null,
+        total: mode === "newest" ? newestTarget : 0,
+        currentId:
+          mode === "newest" ? "Starting Sync newest…" : "Starting Full sync…",
         failed: 0,
         phase: "catalog",
       });
+      pushActivity({
+        id: jobId,
+        kind: "catalog",
+        state: "active",
+        title,
+        detail: mode === "newest" ? "Starting…" : "Starting full catalog…",
+      });
+      // Let React commit the Working state before auth/network work.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
       try {
-        const next =
+        const beforeTotal = status?.total ?? 0;
+        const newest =
           mode === "newest"
-            ? await syncNewestCreationsManifest()
-            : await syncFullCreationsManifest();
+            ? await syncNewestCreationsManifest({
+                onProgress: (p) => {
+                  const now = Date.now();
+                  const isTerminal = p.phase === "done";
+                  if (!isTerminal && now - lastProgressUiAt.current < 200) {
+                    return;
+                  }
+                  lastProgressUiAt.current = now;
+                  setSyncHeadline(p.message);
+                  setProgress({
+                    done: p.checked,
+                    total: p.target,
+                    currentId: p.message,
+                    failed: 0,
+                    phase: "catalog",
+                  });
+                  pushActivity({
+                    id: jobId,
+                    kind: "catalog",
+                    state: "active",
+                    title,
+                    detail: p.message,
+                  });
+                },
+              })
+            : null;
+        const next = newest
+          ? newest.status
+          : await syncFullCreationsManifest();
         setStatus(next);
-        setProgress({
-          done: 0,
-          total: 0,
-          currentId: "Syncing folders…",
-          failed: 0,
-          phase: "catalog",
+
+        const added =
+          newest?.added ?? Math.max(0, next.total - beforeTotal);
+        const pruned = newest?.pruned ?? 0;
+        const detail =
+          mode === "newest"
+            ? [
+                added > 0
+                  ? `Added ${added.toLocaleString()} creation(s)`
+                  : "No new creations",
+                pruned > 0
+                  ? `removed ${pruned.toLocaleString()} deleted locally`
+                  : null,
+                "Previews may warm in the background.",
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            : `Catalog refreshed (${next.total.toLocaleString()} creations).`;
+        pushActivity({
+          id: jobId,
+          kind: "catalog",
+          state: "done",
+          title,
+          detail,
         });
-        const folderResult = await runFolderSync();
-        await loadInitial();
-        await refreshFolderSync();
-        if (
-          !folderResult.ok &&
-          folderResult.message &&
-          folderResult.conflicts.length === 0
-        ) {
-          setError(folderResult.message);
-        }
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
+
+        // Unlock Sync newest / Full immediately — folders are a separate step.
+        // Refresh the Creations board in the background (don't block Sync).
         setSyncing(false);
         setCatalogSyncMode(null);
-        // Keep last progress visible briefly; background ensure may still emit.
+        setProgress(null);
+        void loadInitial().catch(() => {});
+        setSyncHeadline("Updating folders…");
+
+        const folderJobId = `folders-${Date.now()}`;
+        setFolderSyncing(true);
+        pushActivity({
+          id: folderJobId,
+          kind: "folders",
+          state: "active",
+          title: "Sync folders",
+          detail: "Pulling cloud folders…",
+        });
+        try {
+          const folderResult = await runFolderSync();
+          await refreshFolderSync();
+          pushActivity({
+            id: folderJobId,
+            kind: "folders",
+            state: folderResult.ok ? "done" : "failed",
+            title: "Sync folders",
+            detail: folderResult.ok
+              ? folderResult.unavailable
+                ? "Cloud folders unavailable"
+                : "Folders up to date"
+              : folderResult.message || "Folder sync failed",
+          });
+          if (
+            !folderResult.ok &&
+            folderResult.message &&
+            folderResult.conflicts.length === 0
+          ) {
+            setError(folderResult.message);
+          }
+        } finally {
+          setFolderSyncing(false);
+        }
+        setSyncHeadline(null);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        setError(message);
+        pushActivity({
+          id: jobId,
+          kind: "catalog",
+          state: "failed",
+          title,
+          detail: message,
+        });
+        setSyncing(false);
+        setCatalogSyncMode(null);
+        setProgress(null);
+        setSyncHeadline(null);
       }
     },
-    [loadInitial, refreshFolderSync, runFolderSync],
+    [
+      loadInitial,
+      pushActivity,
+      refreshFolderSync,
+      runFolderSync,
+      status?.total,
+    ],
   );
 
   /** Empty-library onboarding: always full catalog path. */
@@ -508,12 +655,37 @@ function useCatalog() {
     await runCatalogSync("full");
   }, [runCatalogSync]);
 
+  /** After browser reconnect — retry the catalog mode that last failed/ran. */
+  const retryLastCatalogSync = useCallback(async () => {
+    await runCatalogSync(lastCatalogModeRef.current);
+  }, [runCatalogSync]);
+
   const runFolderOnlySync = useCallback(async () => {
+    const folderJobId = `folders-${Date.now()}`;
     setFolderSyncing(true);
     setError(null);
     setFolderSyncResult(null);
+    setSyncHeadline("Updating folders…");
+    pushActivity({
+      id: folderJobId,
+      kind: "folders",
+      state: "active",
+      title: "Sync folders",
+      detail: "Pulling cloud folders…",
+    });
     try {
       const folderResult = await runFolderSync();
+      pushActivity({
+        id: folderJobId,
+        kind: "folders",
+        state: folderResult.ok ? "done" : "failed",
+        title: "Sync folders",
+        detail: folderResult.ok
+          ? folderResult.unavailable
+            ? "Cloud folders unavailable"
+            : "Folders up to date"
+          : folderResult.message || "Folder sync failed",
+      });
       if (
         !folderResult.ok &&
         folderResult.message &&
@@ -522,11 +694,20 @@ function useCatalog() {
         setError(folderResult.message);
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      pushActivity({
+        id: folderJobId,
+        kind: "folders",
+        state: "failed",
+        title: "Sync folders",
+        detail: message,
+      });
     } finally {
       setFolderSyncing(false);
+      setSyncHeadline(null);
     }
-  }, [runFolderSync]);
+  }, [pushActivity, runFolderSync]);
 
   const runResolveFolderConflicts = useCallback(async () => {
     if (folderConflicts.length === 0) return;
@@ -674,9 +855,14 @@ function useCatalog() {
   }, [loadInitial]);
 
   const refreshStatus = useCallback(() => {
+    if (statusRefreshInFlight.current) return;
+    statusRefreshInFlight.current = true;
     void getSyncStatus()
       .then(setStatus)
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        statusRefreshInFlight.current = false;
+      });
   }, []);
 
   const clearFinishedActivity = useCallback(() => {
@@ -712,6 +898,7 @@ function useCatalog() {
     importing,
     progress,
     activity,
+    syncHeadline,
     folderSync,
     folderSyncResult,
     folderConflicts,
@@ -722,6 +909,7 @@ function useCatalog() {
     runSync,
     runNewestSync,
     runFullSync,
+    retryLastCatalogSync,
     runFolderOnlySync,
     runResolveFolderConflicts,
     runCacheThumbs,
@@ -729,6 +917,7 @@ function useCatalog() {
     runCloudRepair,
     runImportFromDisk,
     clearFinishedActivity,
+    clearError: () => setError(null),
     loadMore,
     refreshStatus,
     refreshFolderSync,
@@ -1692,6 +1881,7 @@ function SyncPanel({
   repairing,
   progress,
   activity,
+  syncHeadline,
   folderSync,
   folderSyncResult,
   folderConflicts,
@@ -1702,11 +1892,13 @@ function SyncPanel({
   resolvingFolders,
   onNewestSync,
   onFullSync,
+  onRetryAfterReauth,
   onFolderSync,
   onCacheThumbs,
   onCacheMedia,
   onCloudRepair,
   onClearFinished,
+  onClearError,
   onRefreshStatus,
   onRefreshFolderSync,
 }: {
@@ -1717,6 +1909,7 @@ function SyncPanel({
   repairing: boolean;
   progress: DownloadProgress | null;
   activity: SyncActivityItem[];
+  syncHeadline: string | null;
   folderSync: FolderSyncState | null;
   folderSyncResult: FolderSyncResult | null;
   folderConflicts: FolderConflict[];
@@ -1727,26 +1920,44 @@ function SyncPanel({
   resolvingFolders: boolean;
   onNewestSync: () => void;
   onFullSync: () => void;
+  onRetryAfterReauth: () => void;
   onFolderSync: () => void;
   onCacheThumbs: () => void;
   onCacheMedia: () => void;
   onCloudRepair: () => void;
   onClearFinished: () => void;
+  onClearError: () => void;
   onRefreshStatus: () => void;
   onRefreshFolderSync: () => void;
 }) {
+  const { reauth } = useAuth();
   const [active, setActive] = useState<Creation | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const needsReauth = Boolean(error && isSessionReauthError(error));
+  const folderPollTick = useRef(0);
 
   useEffect(() => {
     onRefreshStatus();
     onRefreshFolderSync();
+    // Idle Sync tab: slow poll. Active work: moderate — status is SQLite + cached disk size.
+    const ms = syncing || folderSyncing || repairing ? 5_000 : 30_000;
     const id = window.setInterval(() => {
       onRefreshStatus();
-      onRefreshFolderSync();
-    }, 2000);
+      // Folders change rarely — refresh every other tick while idle.
+      folderPollTick.current += 1;
+      if (syncing || folderSyncing || repairing || folderPollTick.current % 2 === 0) {
+        onRefreshFolderSync();
+      }
+    }, ms);
     return () => window.clearInterval(id);
-  }, [onRefreshFolderSync, onRefreshStatus]);
+  }, [
+    folderSyncing,
+    onRefreshFolderSync,
+    onRefreshStatus,
+    repairing,
+    syncing,
+  ]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -1786,168 +1997,274 @@ function SyncPanel({
     progress!.phase === "media" &&
     progress!.total > 0 &&
     progress!.done < progress!.total;
-  const finishedCount = countFinishedSyncActivity(activity);
-  const inFlight = activity.filter(
+  const { jobs: jobItems, downloads: downloadItems } =
+    partitionSyncActivity(activity);
+  const liveDownloads = downloadItems.filter(
     (item) => item.state === "queued" || item.state === "active",
-  ).length;
-  // Block starting a second job; only the active button shows an in-progress label.
-  const rawBusy =
-    syncing ||
-    repairing ||
-    folderSyncing ||
-    resolvingFolders ||
-    cachingThumbs ||
-    cachingMedia ||
-    inFlight > 0 ||
-    (status?.downloading ?? 0) > 0;
+  );
+  const failedDownloads = downloadItems.filter(
+    (item) => item.state === "failed",
+  );
   const folderPending = folderSync?.pendingOps.length ?? 0;
   const folderRevision =
-    folderSync?.revision == null ? "not synced" : `rev ${folderSync.revision}`;
+    folderSync?.revision == null ? "—" : `rev ${folderSync.revision}`;
   const folderCount = folderSync?.folders.length ?? 0;
   const allConflictsResolved =
     folderConflicts.length > 0 &&
     folderConflicts.every((conflict) => folderResolutions[conflict.id]);
-  const [stickyBusy, setStickyBusy] = useState(false);
-  if (rawBusy && !stickyBusy) {
-    setStickyBusy(true);
-  }
-  useEffect(() => {
-    if (rawBusy) return;
-    const t = window.setTimeout(() => setStickyBusy(false), 500);
-    return () => window.clearTimeout(t);
-  }, [rawBusy]);
-  const busy = stickyBusy || rawBusy;
-  const progressNote =
-    (repairing || syncing) &&
-    typeof progress?.currentId === "string" &&
-    progress.currentId.length > 0 &&
-    !/^\d+$/.test(progress.currentId)
-      ? progress.currentId
-      : null;
-  const batchLabel = progressNote
-    ? progressNote
-    : syncing && progress?.phase === "catalog"
-      ? "Updating catalog…"
-      : repairing
-        ? "Repairing library…"
-        : progress && progress.total > 0
-          ? `${phaseLabel(progress.phase)} ${progress.done}/${progress.total}`
-          : null;
-  const finishedCapped = finishedCount >= MAX_FINISHED_SYNC_ACTIVITY;
-  const finishedLabel = finishedCapped
-    ? `${finishedCount} finished (capped)`
-    : `${finishedCount} finished`;
+
+  const catalogLocked = syncing || repairing;
+  const foldersLocked = folderSyncing || resolvingFolders || syncing;
+  const cacheLocked =
+    catalogLocked ||
+    foldersLocked ||
+    cachingThumbs ||
+    cachingMedia ||
+    (status?.downloading ?? 0) > 0;
+
+  const liveHeadline =
+    syncHeadline ||
+    (repairing
+      ? typeof progress?.currentId === "string" && progress.currentId
+        ? progress.currentId
+        : "Repairing library…"
+      : cachingThumbs
+        ? `Caching previews ${progress!.done}/${progress!.total}`
+        : cachingMedia
+          ? `Caching media ${progress!.done}/${progress!.total}`
+          : liveDownloads.length > 0
+            ? `Warming ${liveDownloads.length.toLocaleString()} file(s)…`
+            : null);
+
+  const diskLabel = status ? syncDiskSummary(status) : "";
+  const diskParts = diskLabel.split(" · ");
 
   return (
     <section className="stub-panel sync-panel" aria-label="Sync">
-      {error ? <p className="library-error">{error}</p> : null}
+      {error ? (
+        <div className="library-error-block" role="alert">
+          <p className="library-error">{error}</p>
+          {needsReauth ? (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={reconnecting || syncing}
+              onClick={() => {
+                void (async () => {
+                  setReconnecting(true);
+                  try {
+                    const ok = await reauth();
+                    if (!ok) return;
+                    onClearError();
+                    // Reconnect used to only clear the banner — always retry Sync.
+                    onRetryAfterReauth();
+                  } finally {
+                    setReconnecting(false);
+                  }
+                })();
+              }}
+            >
+              {reconnecting ? "Reconnecting…" : "Reconnect & retry"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={syncing || folderSyncing || repairing}
+              onClick={() => {
+                onClearError();
+                onRetryAfterReauth();
+              }}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      ) : null}
       {status === null && !error ? (
         <p className="muted">Loading sync status…</p>
       ) : null}
       {status ? (
         <div className="sync-body">
-          <div className="sync-body-actions">
-            <CatalogSyncButton
-              mode="newest"
-              primary
-              active={syncing && catalogSyncMode === "newest"}
-              disabled={busy}
-              onSync={onNewestSync}
-              progress={progress}
-            />
-            <CatalogSyncButton
-              mode="full"
-              active={syncing && catalogSyncMode === "full"}
-              disabled={busy}
-              onSync={onFullSync}
-              progress={progress}
-            />
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onFolderSync}
-              disabled={busy}
-              title="Pull cloud folders and upload pending folder changes without syncing creations or media"
+          <header className="sync-hero">
+            <div
+              className={`sync-now${liveHeadline ? " is-live" : ""}`}
+              role="status"
+              aria-live="polite"
             >
-              {folderSyncing
-                ? "Syncing folders…"
-                : folderPending > 0
-                  ? `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`
-                  : "Sync folders"}
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onCacheThumbs}
-              disabled={busy || missingThumbs === 0}
-            >
-              {cachingThumbs
-                ? `Caching previews ${progress!.done}/${progress!.total}…`
-                : missingThumbs === 0
-                  ? unsyncableThumbs > 0
-                    ? "No cacheable previews"
-                    : "Previews cached"
-                  : `Cache ${missingThumbs.toLocaleString()} previews`}
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onCacheMedia}
-              disabled={busy || missingMedia === 0}
-            >
-              {cachingMedia
-                ? `Caching media ${progress!.done}/${progress!.total}…`
-                : missingMedia === 0
-                  ? unsyncableMedia > 0
-                    ? "No cacheable media"
-                    : "Media cached"
-                  : `Cache ${missingMedia.toLocaleString()} media`}
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onCloudRepair}
-              disabled={busy}
-              title="Prefer local media to rebuild mismatched thumbs and upload fit; only call Parascene for leftovers without local files"
-            >
-              {progressNote && repairing
-                ? progressNote
-                : repairing
-                  ? "Repairing library…"
-                  : "Repair group aspects + fit thumbs"}
-            </button>
+              {liveHeadline ? (
+                <>
+                  <span className="sync-status-pulse" aria-hidden />
+                  <div className="sync-now-copy">
+                    <p className="sync-now-label">Working</p>
+                    <p className="sync-now-title">{liveHeadline}</p>
+                    {syncing &&
+                    progress?.phase === "catalog" &&
+                    progress.total > 0 ? (
+                      <>
+                        <p className="sync-now-count muted">
+                          {Math.min(progress.done, progress.total).toLocaleString()}{" "}
+                          / {progress.total.toLocaleString()} newest
+                        </p>
+                        <div className="sync-progress-track" aria-hidden>
+                          <div
+                            className="sync-progress-fill"
+                            style={{
+                              width: `${Math.min(
+                                100,
+                                Math.round(
+                                  (100 * progress.done) /
+                                    Math.max(1, progress.total),
+                                ),
+                              )}%`,
+                            }}
+                          />
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <p className="sync-now-label">Ready</p>
+                  <p className="sync-now-title">
+                    Last synced {formatLastSync(status.lastSyncAt)}
+                  </p>
+                </div>
+              )}
+            </div>
+          </header>
+
+          <div className="sync-sections">
+            <section className="sync-section" aria-label="Catalog">
+              <h3 className="sync-section-title">Catalog</h3>
+              <p className="muted sync-section-help">
+                Newest pulls ~100 latest creations and clears local copies of
+                recent Parascene deletions. Full rebuilds the whole library.
+              </p>
+              <div className="sync-section-actions">
+                <CatalogSyncButton
+                  mode="newest"
+                  primary
+                  active={syncing && catalogSyncMode === "newest"}
+                  disabled={catalogLocked}
+                  onSync={onNewestSync}
+                  progress={progress}
+                />
+                <CatalogSyncButton
+                  mode="full"
+                  active={syncing && catalogSyncMode === "full"}
+                  disabled={catalogLocked}
+                  onSync={onFullSync}
+                  progress={progress}
+                />
+              </div>
+            </section>
+
+            <section className="sync-section" aria-label="Library files">
+              <h3 className="sync-section-title">Library</h3>
+              <p className="muted sync-section-help">
+                Folders and on-disk caches. Previews/media only download what is
+                still missing.
+              </p>
+              <div className="sync-section-actions">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onFolderSync}
+                  disabled={foldersLocked}
+                  title="Pull cloud folders and upload pending folder changes"
+                >
+                  {folderSyncing
+                    ? "Syncing folders…"
+                    : folderPending > 0
+                      ? `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`
+                      : "Sync folders"}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onCacheThumbs}
+                  disabled={cacheLocked || missingThumbs === 0}
+                >
+                  {cachingThumbs
+                    ? `Previews ${progress!.done}/${progress!.total}`
+                    : missingThumbs === 0
+                      ? unsyncableThumbs > 0
+                        ? "No cacheable previews"
+                        : "Previews cached"
+                      : `Cache ${missingThumbs.toLocaleString()} previews`}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onCacheMedia}
+                  disabled={cacheLocked || missingMedia === 0}
+                >
+                  {cachingMedia
+                    ? `Media ${progress!.done}/${progress!.total}`
+                    : missingMedia === 0
+                      ? unsyncableMedia > 0
+                        ? "No cacheable media"
+                        : "Media cached"
+                      : `Cache ${missingMedia.toLocaleString()} media`}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onCloudRepair}
+                  disabled={catalogLocked || foldersLocked}
+                  title="Rebuild mismatched thumbs and upload fit; Parascene only for leftovers"
+                >
+                  {repairing
+                    ? typeof progress?.currentId === "string" &&
+                      progress.currentId
+                      ? progress.currentId
+                      : "Repairing…"
+                    : "Repair thumbs"}
+                </button>
+              </div>
+            </section>
           </div>
 
-          <p className="muted sync-summary-line">
-            {status.total.toLocaleString()} creations
-            {" · "}
-            {status.withThumb.toLocaleString()} previews
-            {" · "}
-            {status.withMedia.toLocaleString()} media
-            {" · "}
-            last sync {formatLastSync(status.lastSyncAt).toLowerCase()}
-            {batchLabel ? ` · ${batchLabel}` : ""}
-          </p>
-          <p className="muted sync-summary-line">
-            Folders: {folderCount.toLocaleString()}
-            {" · "}
-            {folderRevision}
-            {" · "}
-            {folderPending === 0
-              ? "no pending changes"
-              : `${folderPending.toLocaleString()} pending change${folderPending === 1 ? "" : "s"}`}
-            {folderSyncResult?.unavailable
-              ? " · cloud folders unavailable"
-              : ""}
-          </p>
-          <p className="muted sync-summary-line">
-            On disk: {syncDiskSummary(status)}
-          </p>
-          <p className="muted sync-summary-line sync-summary-meta">
-            {syncCountsSummary(status)}
-            {" · "}
-            {status.rootPath}
-          </p>
+          <dl className="sync-metrics" aria-label="Library summary">
+            <div>
+              <dt>Creations</dt>
+              <dd>{status.total.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Previews</dt>
+              <dd>{status.withThumb.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Media</dt>
+              <dd>{status.withMedia.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Folders</dt>
+              <dd>
+                {folderCount.toLocaleString()}
+                <span className="muted"> · {folderRevision}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>On disk</dt>
+              <dd>{diskParts[0] ?? diskLabel}</dd>
+            </div>
+            <div className="sync-metrics-path">
+              <dt>Library path</dt>
+              <dd title={status.rootPath}>{status.rootPath}</dd>
+            </div>
+          </dl>
+          {folderPending > 0 ? (
+            <p className="muted sync-folder-pending">
+              {folderPending.toLocaleString()} pending folder change
+              {folderPending === 1 ? "" : "s"}
+              {folderSyncResult?.unavailable
+                ? " · cloud folders unavailable"
+                : ""}
+            </p>
+          ) : null}
 
           {folderConflicts.length > 0 ? (
             <div
@@ -1994,7 +2311,9 @@ function SyncPanel({
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={!allConflictsResolved || busy}
+                disabled={
+                  !allConflictsResolved || foldersLocked || catalogLocked
+                }
                 onClick={onResolveFolderConflicts}
               >
                 {resolvingFolders
@@ -2003,8 +2322,12 @@ function SyncPanel({
               </button>
             </div>
           ) : null}
+
           {status.withoutCloudUrls.length > 0 ? (
-            <div className="sync-uncacheable" aria-label="Creations without cloud URLs">
+            <div
+              className="sync-uncacheable"
+              aria-label="Creations without cloud URLs"
+            >
               <p className="muted sync-summary-line">
                 {status.withoutCloudUrls.length.toLocaleString()} without cloud
                 URLs (can&apos;t cache)
@@ -2052,63 +2375,118 @@ function SyncPanel({
             />
           ) : null}
 
-          <div className="sync-queue" aria-label="Sync activity">
-            <div className="sync-queue-head">
-              <strong>
-                Activity
-                {activity.length > 0
-                  ? ` · ${inFlight} active · ${finishedLabel}`
-                  : ""}
-              </strong>
+          {(cachingThumbs || cachingMedia || liveDownloads.length > 0) && (
+            <section className="sync-live" aria-label="Downloads in progress">
+              <div className="sync-live-head">
+                <h3 className="sync-section-title">In progress</h3>
+                {(cachingThumbs || cachingMedia) && progress ? (
+                  <span className="muted">
+                    {progress.done}/{progress.total}
+                  </span>
+                ) : null}
+              </div>
+              {(cachingThumbs || cachingMedia) && progress && progress.total > 0 ? (
+                <div
+                  className="sync-progress-track"
+                  aria-hidden
+                >
+                  <div
+                    className="sync-progress-fill"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round((100 * progress.done) / progress.total),
+                      )}%`,
+                    }}
+                  />
+                </div>
+              ) : null}
+              {liveDownloads.length > 0 ? (
+                <ul className="sync-live-list">
+                  {liveDownloads.map((item) => (
+                    <li key={item.key}>
+                      <span className="sync-live-title" title={item.title}>
+                        {item.title}
+                      </span>
+                      <span className="muted">
+                        {syncItemKindLabel(item.kind)}
+                      </span>
+                      <span className="sync-queue-state state-active">
+                        {syncItemStateLabel(item.state, item.kind)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          )}
+
+          {failedDownloads.length > 0 ? (
+            <section className="sync-live is-failed" aria-label="Failed downloads">
+              <h3 className="sync-section-title">Failed downloads</h3>
+              <ul className="sync-live-list">
+                {failedDownloads.map((item) => (
+                  <li key={item.key}>
+                    <span className="sync-live-title" title={item.title}>
+                      {item.title}
+                    </span>
+                    <span
+                      className="sync-queue-state state-failed"
+                      title={item.detail ?? undefined}
+                    >
+                      {item.detail || "Failed"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          <section className="sync-recent" aria-label="Recent jobs">
+            <div className="sync-recent-head">
+              <h3 className="sync-section-title">Recent jobs</h3>
               <button
                 type="button"
                 className="btn ghost"
                 onClick={onClearFinished}
-                disabled={finishedCount === 0}
+                disabled={
+                  jobItems.filter((j) => j.state !== "queued" && j.state !== "active")
+                    .length === 0
+                }
               >
-                Clear finished
+                Clear
               </button>
             </div>
-            {finishedCapped ? (
-              <p className="muted sync-queue-cap-note">
-                Showing the latest {MAX_FINISHED_SYNC_ACTIVITY} finished items;
-                older ones are dropped from this list.
-              </p>
-            ) : null}
-            {activity.length === 0 ? (
-              <p className="muted sync-queue-empty">
-                Items appear as they queue (top → bottom). Status updates in
-                place. Finished list keeps the latest{" "}
-                {MAX_FINISHED_SYNC_ACTIVITY}.
+            {jobItems.length === 0 ? (
+              <p className="muted sync-recent-empty">
+                Catalog and folder runs show up here. Individual preview downloads
+                stay in “In progress” only while they run.
               </p>
             ) : (
-              <ul className="sync-queue-list">
-                {activity.map((item) => (
+              <ul className="sync-recent-list">
+                {[...jobItems].reverse().map((item) => (
                   <li
                     key={item.key}
-                    className={`sync-queue-item is-${item.state}`}
+                    className={`sync-recent-item is-${item.state}`}
                   >
-                    <span className="sync-queue-title" title={item.title}>
-                      {item.title}
-                    </span>
-                    <span className="sync-queue-kind muted">
-                      {syncItemKindLabel(item.kind)}
-                    </span>
+                    <div className="sync-recent-main">
+                      <span className="sync-recent-title">{item.title}</span>
+                      {item.detail ? (
+                        <span className="muted sync-recent-detail">
+                          {item.detail}
+                        </span>
+                      ) : null}
+                    </div>
                     <span
                       className={`sync-queue-state state-${item.state}`}
-                      title={item.detail ?? undefined}
                     >
                       {syncItemStateLabel(item.state, item.kind)}
-                      {item.detail &&
-                      (item.state === "failed" || item.state === "skipped")
-                        ? ` · ${item.detail}`
-                        : ""}
                     </span>
                   </li>
                 ))}
               </ul>
             )}
-          </div>
+          </section>
         </div>
       ) : null}
     </section>
@@ -2130,6 +2508,7 @@ export function LibraryView() {
     runSync,
     runNewestSync,
     runFullSync,
+    retryLastCatalogSync,
     runFolderOnlySync,
     runResolveFolderConflicts,
     runCacheThumbs,
@@ -2137,7 +2516,9 @@ export function LibraryView() {
     runCloudRepair,
     runImportFromDisk,
     clearFinishedActivity,
+    clearError,
     activity,
+    syncHeadline,
     folderSync,
     folderSyncResult,
     folderConflicts,
@@ -2149,7 +2530,7 @@ export function LibraryView() {
     refreshStatus,
     refreshFolderSync,
     importing,
-  } = useCatalog();
+  } = useCatalog(librarySurface);
 
   return (
     <div className="library-view">
@@ -2162,6 +2543,7 @@ export function LibraryView() {
           repairing={repairing}
           progress={progress}
           activity={activity}
+          syncHeadline={syncHeadline}
           folderSync={folderSync}
           folderSyncResult={folderSyncResult}
           folderConflicts={folderConflicts}
@@ -2179,11 +2561,15 @@ export function LibraryView() {
           resolvingFolders={resolvingFolders}
           onNewestSync={runNewestSync}
           onFullSync={runFullSync}
+          onRetryAfterReauth={() => {
+            void retryLastCatalogSync();
+          }}
           onFolderSync={runFolderOnlySync}
           onCacheThumbs={runCacheThumbs}
           onCacheMedia={runCacheMedia}
           onCloudRepair={runCloudRepair}
           onClearFinished={clearFinishedActivity}
+          onClearError={clearError}
           onRefreshStatus={refreshStatus}
           onRefreshFolderSync={() => {
             void refreshFolderSync();

@@ -1,7 +1,8 @@
 use super::catalog::{
     clear_local_thumb_paths, default_paths, delete_creation_local, get_creation_by_id,
-    get_creations_by_ids, list_creations, list_creations_page, mark_downloaded, ready_connection,
-    set_download_state, set_local_thumb_path, sync_status_for, Creation, SyncStatus,
+    get_creations_by_ids, invalidate_disk_size_cache, list_creations, list_creations_page,
+    mark_downloaded, ready_connection, set_download_state, set_local_thumb_path, sync_status_for,
+    Creation, SyncStatus,
 };
 use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
@@ -301,6 +302,20 @@ fn safe_id(id: &str) -> String {
         .collect()
 }
 
+/// Short hash of a remote URL so re-downloads after a cover change land at a
+/// new path (WebView asset caches often key on path alone).
+fn url_content_token(url: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
+fn download_stem(id: &str, url: &str) -> String {
+    format!("{}_{}", safe_id(id), url_content_token(url))
+}
+
 #[derive(Debug)]
 enum DownloadAttemptErr {
     /// Retryable with optional server-suggested wait.
@@ -508,13 +523,18 @@ pub(crate) fn needs_download(c: &Creation) -> bool {
 }
 
 pub(crate) fn needs_thumb(c: &Creation) -> bool {
+    // Local media can produce a real native-aspect thumb (esp. 9:16 videos that
+    // only have a square CDN poster and no fit_thumbnail_url).
+    if should_prefer_local_fit_fill(c) {
+        return true;
+    }
     if preview_url_for(c).is_none() {
         return false;
     }
     match c.local_thumb_path.as_ref() {
         Some(p) if Path::new(p).is_file() => {
             // Square CDN thumbs stuck on non-square slots (fit URL often 200s with square
-            // fallback). Images can heal from full remote_url; videos need a real fit object.
+            // fallback). Images can heal from full remote_url when media isn't local yet.
             creation_expects_non_square(c)
                 && image_file_is_square_cdn_thumb(Path::new(p))
                 && c.media_type == "image"
@@ -527,25 +547,59 @@ pub(crate) fn needs_thumb(c: &Creation) -> bool {
     }
 }
 
-/// After full media lands, pull embedded album art when no board thumb exists yet.
-fn try_fill_audio_cover_thumb(
+/// True when board preview should be rebuilt from local media (native aspect)
+/// instead of (or after) a square CDN poster.
+fn should_prefer_local_fit_fill(c: &Creation) -> bool {
+    if !local_file_ok(c.local_path.as_deref()) {
+        return false;
+    }
+    let thumb_path = c.local_thumb_path.as_deref().filter(|p| !p.is_empty());
+    let has_thumb = thumb_path.map(|p| Path::new(p).is_file()).unwrap_or(false);
+    let is_fit = thumb_path.map(thumb_is_fit_jpg).unwrap_or(false);
+    let expects_ns = creation_expects_non_square(c);
+    let square_wrong = expects_ns
+        && has_thumb
+        && thumb_path
+            .map(|p| image_file_is_square_cdn_thumb(Path::new(p)))
+            .unwrap_or(false);
+    let mt = c.media_type.to_ascii_lowercase();
+    if mt == "video" {
+        // Videos rarely get a real cloud fit; regenerate once the mp4 is local.
+        return !has_thumb || square_wrong || (expects_ns && !is_fit);
+    }
+    if mt == "image" {
+        return square_wrong;
+    }
+    if mt == "audio" {
+        return !has_thumb;
+    }
+    false
+}
+
+/// After full media lands, build a native-aspect board thumb when needed.
+/// Covers audio covers, video first-frames, and stuck square image posters.
+fn try_fill_native_thumb_after_media(
     paths: &super::paths::ParascenePaths,
     creation_id: &str,
-    already_has_thumb: bool,
 ) {
-    if already_has_thumb {
-        return;
-    }
     let Ok(conn) = ready_connection(paths) else {
         return;
     };
     let Ok(Some(creation)) = get_creation_by_id(&conn, creation_id) else {
         return;
     };
-    if !creation.media_type.eq_ignore_ascii_case("audio") {
+    if !should_prefer_local_fit_fill(&creation) {
         return;
     }
-    let _ = fill_and_record_local_thumb(paths, &conn, &creation);
+    match fill_and_record_local_thumb(paths, &conn, &creation) {
+        Ok(dest) => eprintln!(
+            "[library] native thumb filled {creation_id} → {}",
+            dest.display()
+        ),
+        Err(err) => {
+            eprintln!("[library] native thumb fill fail {creation_id}: {err}")
+        }
+    }
 }
 
 /// Creations whose board slot is non-square but the local preview is still a square CDN thumb.
@@ -700,7 +754,7 @@ fn image_file_is_square_cdn_thumb(path: &Path) -> bool {
     max <= 280 && (max as f64 / min as f64) < 1.08
 }
 
-fn emit_creation_updated(app: &AppHandle, id: &str) {
+pub(crate) fn emit_creation_updated(app: &AppHandle, id: &str) {
     let Ok(paths) = default_paths() else {
         return;
     };
@@ -837,26 +891,55 @@ async fn download_thumbs_only(
     eprintln!("[library] thumb batch start: {total} (concurrency {THUMB_CONCURRENCY})");
 
     let thumbs_dir = paths.thumbs.clone();
+    let paths_for_tasks = paths.clone();
     let app_for_tasks = app.clone();
     let mut stream = stream::iter(pending)
         .map(|creation| {
             let thumbs_dir = thumbs_dir.clone();
+            let paths = paths_for_tasks.clone();
             let app = app_for_tasks.clone();
             async move {
                 emit_sync_item(&app, &creation, "thumb", "active");
                 let id = creation.id.clone();
                 let title = creation.title.clone();
+
+                // Prefer ffmpeg/local media over square CDN posters when we can.
+                if should_prefer_local_fit_fill(&creation) {
+                    let filled = tokio::task::spawn_blocking({
+                        let paths = paths.clone();
+                        let creation = creation.clone();
+                        move || {
+                            let conn = ready_connection(&paths)?;
+                            fill_and_record_local_thumb(&paths, &conn, &creation)
+                                .map(|p| p.display().to_string())
+                        }
+                    })
+                    .await;
+                    match filled {
+                        Ok(Ok(path_str)) => {
+                            eprintln!("[library] thumb local-fill {id}");
+                            return (id, title, Ok(path_str));
+                        }
+                        Ok(Err(err)) => {
+                            eprintln!("[library] thumb local-fill fail {id}: {err}");
+                        }
+                        Err(err) => {
+                            eprintln!("[library] thumb local-fill join fail {id}: {err}");
+                        }
+                    }
+                }
+
                 let urls = preview_urls_for(&creation);
                 if urls.is_empty() {
                     eprintln!("[library] thumb skip {id}: no preview url");
                     return (id, title, Err("no preview url".into()));
                 }
-                let stem = safe_id(&id);
                 let expect_ns = creation_expects_non_square(&creation);
                 let mut last_err = String::from("no preview url");
                 let n = urls.len();
                 for (i, url) in urls.into_iter().enumerate() {
                     let last = i + 1 == n;
+                    let stem = download_stem(&id, &url);
                     match download_url_with_ext(&url, "image", &thumbs_dir, &stem).await {
                         Ok(path) => {
                             // Server fits often 200 with square thumb fallback — skip those for
@@ -993,7 +1076,7 @@ async fn download_batch(
             let _ = set_download_state(&conn, &creation.id, "downloading");
         }
 
-        let stem = safe_id(&creation.id);
+        let stem = download_stem(&creation.id, remote);
         match download_media_file(remote, &creation.media_type, &paths.media, &stem).await {
             Ok(media_path) => {
                 fail_streak = 0;
@@ -1013,7 +1096,7 @@ async fn download_batch(
                         thumb.as_deref(),
                     )?;
                 }
-                try_fill_audio_cover_thumb(paths, &creation.id, thumb.is_some());
+                try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
                 emit_sync_item(app, &creation, "media", "done");
                 downloaded += 1;
@@ -1062,6 +1145,9 @@ async fn download_batch(
 
     emit_progress(app, total, total, None, failed, "media");
 
+    if downloaded > 0 {
+        invalidate_disk_size_cache();
+    }
     Ok(DownloadSummary {
         downloaded,
         failed,
@@ -1094,7 +1180,7 @@ async fn download_media_only(
         let _ = set_download_state(&conn, &creation.id, "downloading");
     }
 
-    let stem = safe_id(&creation.id);
+    let stem = download_stem(&creation.id, remote);
     match download_media_file(remote, &creation.media_type, &paths.media, &stem).await {
         Ok(media_path) => {
             let thumb = if creation.media_type == "image"
@@ -1117,7 +1203,7 @@ async fn download_media_only(
                     thumb.as_deref(),
                 )?;
             }
-            try_fill_audio_cover_thumb(paths, &creation.id, thumb.is_some());
+            try_fill_native_thumb_after_media(paths, &creation.id);
             emit_creation_updated(app, &creation.id);
             emit_sync_item(app, &creation, "media", "done");
             emit_progress(app, 1, 1, Some(creation.id.clone()), 0, "media");
@@ -1224,7 +1310,7 @@ async fn download_media_batch(
             let _ = set_download_state(&conn, &creation.id, "downloading");
         }
 
-        let stem = safe_id(&creation.id);
+        let stem = download_stem(&creation.id, remote);
         match download_media_file(remote, &creation.media_type, &paths.media, &stem).await {
             Ok(media_path) => {
                 fail_streak = 0;
@@ -1248,7 +1334,7 @@ async fn download_media_batch(
                         thumb.as_deref(),
                     )?;
                 }
-                try_fill_audio_cover_thumb(paths, &creation.id, thumb.is_some());
+                try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
                 emit_sync_item(app, &creation, "media", "done");
                 downloaded += 1;
@@ -1299,6 +1385,9 @@ async fn download_media_batch(
     }
     emit_progress(app, total, total, None, failed, "media");
 
+    if downloaded > 0 {
+        invalidate_disk_size_cache();
+    }
     Ok(DownloadSummary {
         downloaded,
         failed,
@@ -1411,7 +1500,7 @@ fn start_ensure_worker(app: AppHandle) {
     }
 }
 
-fn enqueue_thumbs(app: AppHandle, ids: Vec<String>, priority: bool) {
+pub(crate) fn enqueue_thumbs(app: AppHandle, ids: Vec<String>, priority: bool) {
     if ids.is_empty() {
         return;
     }
@@ -1423,7 +1512,7 @@ fn enqueue_thumbs(app: AppHandle, ids: Vec<String>, priority: bool) {
     start_ensure_worker(app);
 }
 
-fn enqueue_media(app: AppHandle, ids: Vec<String>, priority: bool) {
+pub(crate) fn enqueue_media(app: AppHandle, ids: Vec<String>, priority: bool) {
     if ids.is_empty() {
         return;
     }

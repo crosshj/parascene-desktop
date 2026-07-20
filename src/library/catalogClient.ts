@@ -74,6 +74,14 @@ export async function existingCreationIds(ids: string[]): Promise<string[]> {
   return invoke<string[]>("library_existing_creation_ids", { ids });
 }
 
+/** Cloud (non-local) creation ids with createdAt >= sinceIso. */
+export async function cloudIdsSince(
+  sinceIso: string,
+): Promise<Array<{ id: string; createdAt: string }>> {
+  if (!sinceIso.trim()) return [];
+  return invoke("library_cloud_ids_since", { sinceIso });
+}
+
 export async function applyManifest(
   creations: CreationUpsert[],
 ): Promise<SyncStatus> {

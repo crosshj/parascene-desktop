@@ -1,0 +1,124 @@
+import type { LabModuleId } from "./labTypes";
+
+export type LabGateAction = "groups" | "settings";
+
+export type LabGate = {
+  reason: string;
+  /** Short nav blurb when blocked */
+  navBlurb: string;
+  action?: LabGateAction;
+};
+
+export type LabGateContext = {
+  groupsReady: boolean;
+  assetCount: number;
+  audioCount: number;
+  imageCount: number;
+  videoCount: number;
+  openAiReady: boolean;
+  /** FFmpeg on PATH / Homebrew — slice, extend, thumbs, etc. */
+  ffmpegReady: boolean;
+  /** Demucs CLI — vocals isolate + a2v stems. */
+  demucsReady: boolean;
+  /** Vocals slice prepared in Vocals / slice (required for a2v). */
+  vocalsSliceReady: boolean;
+};
+
+/** Prerequisites for each Lab tool — null means the module can run. */
+export function labModuleGate(
+  id: LabModuleId,
+  ctx: LabGateContext,
+): LabGate | null {
+  const needsGroups = id === "create" || id === "mutate" || id === "a2v";
+  if (needsGroups && !ctx.groupsReady) {
+    return {
+      navBlurb: "Requires Project groups first",
+      reason:
+        "This step files into the project Images / Videos groups. Run Project groups first (or again after Delete / clean up).",
+      action: "groups",
+    };
+  }
+
+  if (id === "seeds" && ctx.assetCount === 0) {
+    return {
+      navBlurb: "Add project assets first",
+      reason:
+        "Add creations to this project from Library, then inspect seed URLs here.",
+    };
+  }
+
+  if (id === "isolate" && ctx.audioCount === 0) {
+    return {
+      navBlurb: "Requires project audio",
+      reason:
+        "Add audio to this project and sync/download it locally before isolating or slicing.",
+    };
+  }
+
+  if (
+    (id === "isolate" || id === "a2v" || id === "extend") &&
+    !ctx.ffmpegReady
+  ) {
+    return {
+      navBlurb: "Requires FFmpeg",
+      reason:
+        "FFmpeg is not available. Install it (brew install ffmpeg), then re-check under Settings → Local tools. See LOCAL_TOOLS.md.",
+      action: "settings",
+    };
+  }
+
+  // a2v always prepares a vocals stem — require Demucs. Isolate can still
+  // time-slice the full mix when Demucs is missing (vocals checkbox off).
+  if (id === "a2v" && !ctx.demucsReady) {
+    return {
+      navBlurb: "Requires Demucs",
+      reason:
+        "Demucs is not installed (or not on PATH). Install it from Settings → Local tools, or see LOCAL_TOOLS.md. a2v needs a vocals stem.",
+      action: "settings",
+    };
+  }
+
+  if (id === "a2v") {
+    if (ctx.imageCount === 0) {
+      return {
+        navBlurb: "Requires a project image",
+        reason:
+          "Add an image to this project (with a cloud URL) to use as the a2v still.",
+      };
+    }
+    if (!ctx.vocalsSliceReady) {
+      return {
+        navBlurb: "Requires vocals slice",
+        reason:
+          "Run Vocals / slice first: separate full vocals, pick a range on the vocals waveform, and slice it. a2v uses that clip.",
+      };
+    }
+  }
+
+  if (id === "extend" && ctx.videoCount === 0) {
+    return {
+      navBlurb: "Requires a project video",
+      reason:
+        "Add a video to this project and sync/download it locally before clip extend.",
+    };
+  }
+
+  if (id === "mutate" && ctx.imageCount === 0) {
+    return {
+      navBlurb: "Requires a project image",
+      reason:
+        "Add an image to this project (with a cloud URL) before image mutate.",
+    };
+  }
+
+  if ((id === "openai" || id === "propose") && !ctx.openAiReady) {
+    return {
+      navBlurb: "Requires OpenAI API key",
+      reason:
+        "An OpenAI API key is required. Set it in Settings from the account menu (upper right).",
+      action: "settings",
+    };
+  }
+
+  return null;
+}

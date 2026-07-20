@@ -70,6 +70,9 @@ export function CreationLightbox({
   const isGroupCarousel = groupMembers.length > 1;
   const [liveCreation, setLiveCreation] = useState(creation);
   useEffect(() => {
+    // Intentional: mirror the latest `creation` prop into local state so live
+    // catalog updates re-render the lightbox.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLiveCreation(creation);
   }, [creation]);
   const displayedCreation = groupMembers[groupIndex] ?? liveCreation;

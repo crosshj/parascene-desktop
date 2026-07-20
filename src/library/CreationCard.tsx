@@ -1,4 +1,10 @@
-import { memo, useEffect, useLayoutEffect, useState } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { ensureLocal } from "./catalogClient";
 import {
   creationCardTitle,
@@ -194,6 +200,7 @@ export const CreationCard = memo(function CreationCard({
   inProject = false,
   onOpen,
   onToggleSelect,
+  onContextMenu,
 }: {
   creation: Creation;
   aspectCss: string;
@@ -202,8 +209,15 @@ export const CreationCard = memo(function CreationCard({
   dimmed?: boolean;
   /** Open project includes this creation. */
   inProject?: boolean;
-  onOpen: (creation: Creation) => void;
+  onOpen: (
+    creation: Creation,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => void;
   onToggleSelect?: (creation: Creation) => void;
+  onContextMenu?: (
+    creation: Creation,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => void;
 }) {
   const preview = creationPreviewUrl(creation);
   const unavailable = isParasceneUnavailable(creation);
@@ -278,8 +292,16 @@ export const CreationCard = memo(function CreationCard({
             onToggleSelect(creation);
             return;
           }
-          onOpen(creation);
+          onOpen(creation, event);
         }}
+        onContextMenu={
+          onContextMenu
+            ? (event) => {
+                event.preventDefault();
+                onContextMenu(creation, event);
+              }
+            : undefined
+        }
         aria-label={
           unavailable
             ? `${creation.title} (unavailable)`
@@ -292,6 +314,7 @@ export const CreationCard = memo(function CreationCard({
         >
           {showImage ? (
             <img
+              key={paintSrc!}
               className="creation-thumb"
               src={paintSrc!}
               alt=""

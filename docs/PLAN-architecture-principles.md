@@ -1,5 +1,7 @@
 # Plan — Architecture principles (desktop vs cloud)
 
+**Also see:** [PLAN-backend-ownership.md](./PLAN-backend-ownership.md) — Rust vs React boundary, what still lives in the FE that should move behind the jobs/workers model.
+
 ## Soften load on Parascene web / DB
 
 **Settled:** Parascene Desktop is designed to **ease the load on the Parascene web app**, especially the **database**. Prefer work that stays on the user’s machine (catalog, file storage, sync queue, FFmpeg thumbs/preview, project state) over patterns that continually hit Parascene for reads/writes the desktop can own locally.

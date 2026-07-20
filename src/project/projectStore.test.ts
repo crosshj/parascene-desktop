@@ -92,6 +92,36 @@ describe("projectStore", () => {
     expect(next.selectedAssetId).toBeNull();
   });
 
+  it("removes timeline clips that reference deleted assets", () => {
+    let a = createStoredProject("Demo", ["img1", "vid1"]);
+    a = {
+      ...a,
+      timeline: [
+        {
+          id: "clip-a",
+          label: "A",
+          startSec: 0,
+          endSec: 2,
+          assetId: "img1",
+          kind: "image",
+        },
+        {
+          id: "clip-b",
+          label: "B",
+          startSec: 2,
+          endSec: 4,
+          assetId: "vid1",
+          kind: "video",
+        },
+      ],
+      mainAudioCreationId: "vid1",
+    };
+    const next = removeCreationIds(a, ["img1", "vid1"]);
+    expect(next.creationIds).toEqual([]);
+    expect(next.timeline).toEqual([]);
+    expect(next.mainAudioCreationId).toBeNull();
+  });
+
   it("renames a project", () => {
     const a = createStoredProject("Demo", ["c1"]);
     const renamed = renameStoredProject(a, "  Final cut  ");

@@ -5,10 +5,13 @@ mod media_stream;
 mod oauth_listener;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
-use http_client::{http_get_bearer, http_post_bearer, http_post_json};
+use http_client::{
+    http_delete_bearer, http_get_bearer, http_post_bearer, http_post_bytes_bearer, http_post_json,
+};
 use library::{
     library_add_to_folder, library_apply_manifest, library_cache_missing_media,
-    library_cache_missing_thumbs, library_create_folder, library_delete_folder,
+    library_cache_missing_thumbs, library_cloud_ids_since, library_create_folder,
+    library_delete_folder,
     library_delete_local, library_detect_beats, library_download_ids, library_download_pending,
     library_download_thumbs, library_ensure_clip_thumb, library_ensure_local, library_ensure_ready,
     library_ensure_reversed, library_ensure_slideshow, library_fill_thumb, library_filter_counts,
@@ -19,12 +22,19 @@ use library::{
     library_local_fit_plan,
     library_merge_timeline_clips, library_folder_sync_state, library_folders_ack_ops,
     library_folders_apply_snapshot, library_folders_set_pending_ops,
+    library_extend_clip, library_slice_audio, library_separate_vocals,
+    library_cached_full_vocals,
+    library_audio_waveform_peaks,
+    library_read_file_base64,
+    library_install_demucs, library_lab_deps_status, library_open_local_tools_doc,
     library_read_local_thumb_base64, library_rebuild_reversed, library_remove_from_folder,
-    library_rename_folder, library_sync_status, publisher_delete_render, publisher_export_render,
+    library_rename_folder, library_sync_status, jobs_cancel, jobs_enqueue, jobs_get, jobs_list,
+    publisher_delete_render, publisher_export_render,
     publisher_list_renders, publisher_render_timeline,
 };
-use oauth_listener::{cancel_oauth_listener, start_oauth_listener};
+use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
 use tauri::Manager;
+use tauri::webview::PageLoadEvent;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -44,6 +54,15 @@ pub fn run() {
                         .unwrap_or_else(|_| http::Response::new(Vec::new()));
                     responder.respond(response);
                 }
+            }
+        })
+        // Keep the window hidden until the dark HTML/CSS has painted so maximize
+        // and WKWebView compositing never flash the default white surface.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {
+                let window = webview.window();
+                let _ = window.show();
+                let _ = window.set_focus();
             }
         })
         .setup(|app| {
@@ -68,13 +87,17 @@ pub fn run() {
             auth_ensure_access_token,
             start_oauth_listener,
             cancel_oauth_listener,
+            oauth_take_callback,
             http_post_json,
             http_post_bearer,
+            http_post_bytes_bearer,
             http_get_bearer,
+            http_delete_bearer,
             library_ensure_ready,
             library_get_creation,
             library_get_creations,
             library_existing_creation_ids,
+            library_cloud_ids_since,
             library_list_creations,
             library_list_creations_page,
             library_filter_counts,
@@ -101,6 +124,15 @@ pub fn run() {
             library_detect_beats,
             library_ensure_slideshow,
             library_merge_timeline_clips,
+            library_slice_audio,
+            library_separate_vocals,
+            library_cached_full_vocals,
+            library_audio_waveform_peaks,
+            library_read_file_base64,
+            library_extend_clip,
+            library_lab_deps_status,
+            library_install_demucs,
+            library_open_local_tools_doc,
             library_list_folders,
             library_list_filed_creation_ids,
             library_get_folder,
@@ -113,6 +145,10 @@ pub fn run() {
             library_folders_apply_snapshot,
             library_folders_ack_ops,
             library_folders_set_pending_ops,
+            jobs_enqueue,
+            jobs_get,
+            jobs_list,
+            jobs_cancel,
             publisher_list_renders,
             publisher_render_timeline,
             publisher_delete_render,

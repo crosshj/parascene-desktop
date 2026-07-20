@@ -1,6 +1,6 @@
 //! Fill local board thumbs from full local media at native aspect.
 //!
-//! Overwrites `local_thumb_path` with `Library/thumbs/{id}.fit.jpg`.
+//! Overwrites `local_thumb_path` with `Library/thumbs/{id}_{token}.fit.jpg`.
 //! Frontend may then push the JPEG to Parascene as `?variant=fit`.
 
 use super::catalog::{
@@ -11,6 +11,8 @@ use super::ffmpeg::resolve_ffmpeg;
 use super::paths::ParascenePaths;
 use image::imageops::FilterType;
 use image::DynamicImage;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
@@ -27,6 +29,23 @@ fn safe_id(id: &str) -> String {
             }
         })
         .collect()
+}
+
+fn content_token(s: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
+fn fit_thumb_stem(creation: &Creation) -> String {
+    let token = creation
+        .remote_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .or(creation.local_path.as_deref())
+        .map(content_token)
+        .unwrap_or_else(|| "local".into());
+    format!("{}_{}", safe_id(&creation.id), token)
 }
 
 fn path_under_root(root: &Path, stored: &str) -> Result<PathBuf, String> {
@@ -215,7 +234,7 @@ pub(crate) fn fill_local_thumb(
         return Err("No local media on disk yet — wait for download, then try again.".into());
     };
     let src = path_under_root(&paths.root, local)?;
-    let stem = safe_id(&creation.id);
+    let stem = fit_thumb_stem(creation);
     let dest = paths.thumbs.join(format!("{stem}.fit.jpg"));
     if is_video_creation(creation, &src) {
         let temp = paths.cache.join(format!("{stem}.frame.jpg"));

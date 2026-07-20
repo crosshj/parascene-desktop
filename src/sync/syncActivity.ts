@@ -1,4 +1,4 @@
-export type SyncItemKind = "thumb" | "media" | "repair";
+export type SyncItemKind = "thumb" | "media" | "repair" | "catalog" | "folders";
 export type SyncItemState =
   | "queued"
   | "active"
@@ -24,8 +24,15 @@ export type SyncActivityItem = {
   updatedAt: number;
 };
 
-/** Keep at most this many finished rows; in-flight rows are never trimmed. */
-export const MAX_FINISHED_SYNC_ACTIVITY = 250;
+/** High-level jobs kept in Recent (newest last). */
+export const MAX_JOB_HISTORY = 12;
+/** In-flight preview/media rows shown while downloading. */
+export const MAX_LIVE_DOWNLOADS = 12;
+/** Recent download failures kept for diagnosis. */
+export const MAX_FAILED_DOWNLOADS = 8;
+
+/** @deprecated Use MAX_JOB_HISTORY — finished thumb spam is no longer retained. */
+export const MAX_FINISHED_SYNC_ACTIVITY = MAX_JOB_HISTORY;
 
 export function syncActivityKey(kind: string, id: string): string {
   return `${kind}:${id}`;
@@ -34,6 +41,8 @@ export function syncActivityKey(kind: string, id: string): string {
 export function normalizeSyncKind(kind: string): SyncItemKind {
   if (kind === "media") return "media";
   if (kind === "repair") return "repair";
+  if (kind === "catalog") return "catalog";
+  if (kind === "folders") return "folders";
   return "thumb";
 }
 
@@ -49,32 +58,69 @@ export function normalizeSyncState(state: string): SyncItemState {
   return "queued";
 }
 
+export function isSyncJobKind(kind: SyncItemKind): boolean {
+  return kind === "catalog" || kind === "folders" || kind === "repair";
+}
+
+export function isSyncDownloadKind(kind: SyncItemKind): boolean {
+  return kind === "thumb" || kind === "media";
+}
+
 function isFinished(state: SyncItemState): boolean {
   return state === "done" || state === "failed" || state === "skipped";
 }
 
-/** Drop oldest finished rows first; never drop queued/active. */
-export function trimSyncActivity(items: SyncActivityItem[]): SyncActivityItem[] {
-  let finished = 0;
-  for (const item of items) {
-    if (isFinished(item.state)) finished += 1;
-  }
-  if (finished <= MAX_FINISHED_SYNC_ACTIVITY) return items;
+function isLive(state: SyncItemState): boolean {
+  return state === "queued" || state === "active";
+}
 
-  let drop = finished - MAX_FINISHED_SYNC_ACTIVITY;
-  return items.filter((item) => {
-    if (!isFinished(item.state)) return true;
-    if (drop > 0) {
-      drop -= 1;
-      return false;
-    }
-    return true;
-  });
+export function partitionSyncActivity(items: SyncActivityItem[]): {
+  jobs: SyncActivityItem[];
+  downloads: SyncActivityItem[];
+} {
+  const jobs: SyncActivityItem[] = [];
+  const downloads: SyncActivityItem[] = [];
+  for (const item of items) {
+    if (isSyncJobKind(item.kind)) jobs.push(item);
+    else downloads.push(item);
+  }
+  return { jobs, downloads };
 }
 
 /**
- * Append new items at the bottom; update existing rows in place (no re-ordering).
- * Top → bottom is queue order: older first, newer last.
+ * Keep recent high-level jobs; only live (and a few failed) downloads.
+ * Successful preview/media rows disappear — no 250-item dump.
+ */
+export function trimSyncActivity(items: SyncActivityItem[]): SyncActivityItem[] {
+  const { jobs, downloads } = partitionSyncActivity(items);
+
+  const liveJobs = jobs.filter((j) => isLive(j.state));
+  const finishedJobs = jobs.filter((j) => isFinished(j.state));
+  const keptFinishedJobs =
+    finishedJobs.length <= MAX_JOB_HISTORY
+      ? finishedJobs
+      : finishedJobs.slice(finishedJobs.length - MAX_JOB_HISTORY);
+
+  const liveDownloads = downloads.filter((d) => isLive(d.state));
+  const failedDownloads = downloads.filter((d) => d.state === "failed");
+  // Successful done/skipped downloads are dropped.
+  const keptLive =
+    liveDownloads.length <= MAX_LIVE_DOWNLOADS
+      ? liveDownloads
+      : [
+          ...liveDownloads.filter((d) => d.state === "active"),
+          ...liveDownloads.filter((d) => d.state === "queued"),
+        ].slice(0, MAX_LIVE_DOWNLOADS);
+  const keptFailed =
+    failedDownloads.length <= MAX_FAILED_DOWNLOADS
+      ? failedDownloads
+      : failedDownloads.slice(failedDownloads.length - MAX_FAILED_DOWNLOADS);
+
+  return [...liveJobs, ...keptFinishedJobs, ...keptLive, ...keptFailed];
+}
+
+/**
+ * Append / update rows. Download successes are removed; jobs stay in a short history.
  */
 export function applySyncItemEvent(
   items: SyncActivityItem[],
@@ -88,6 +134,15 @@ export function applySyncItemEvent(
     typeof event.detail === "string" && event.detail.trim()
       ? event.detail.trim()
       : null;
+
+  // Preview/media finished successfully → drop the row (batch progress covers it).
+  if (
+    isSyncDownloadKind(kind) &&
+    (state === "done" || state === "skipped")
+  ) {
+    return trimSyncActivity(items.filter((item) => item.key !== key));
+  }
+
   const next: SyncActivityItem = {
     key,
     id: event.id,
@@ -102,7 +157,6 @@ export function applySyncItemEvent(
     const out = items.slice();
     out[idx] = {
       ...next,
-      // Keep prior detail if the new event didn't include one.
       detail: next.detail ?? items[idx].detail,
     };
     return trimSyncActivity(out);
@@ -126,6 +180,8 @@ export function syncItemStateLabel(
 ): string {
   if (state === "active") {
     if (kind === "repair") return "Repairing";
+    if (kind === "catalog") return "Syncing";
+    if (kind === "folders") return "Syncing";
     return "Downloading";
   }
   if (state === "done") return "Done";
@@ -137,5 +193,7 @@ export function syncItemStateLabel(
 export function syncItemKindLabel(kind: SyncItemKind): string {
   if (kind === "media") return "Media";
   if (kind === "repair") return "Repair";
+  if (kind === "catalog") return "Catalog";
+  if (kind === "folders") return "Folders";
   return "Preview";
 }

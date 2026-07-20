@@ -6,7 +6,8 @@ const decoded = new Set<string>();
 const waiters = new Map<string, Array<() => void>>();
 
 function warmKey(creation: Creation): string {
-  return `${creation.id}:${creation.localThumbPath ?? ""}:${creation.localPath ?? ""}`;
+  // Include updatedAt so rewritten files at the same path re-decode.
+  return `${creation.id}:${creation.localThumbPath ?? ""}:${creation.localPath ?? ""}:${creation.updatedAt ?? ""}`;
 }
 
 function notifyReady(src: string): void {

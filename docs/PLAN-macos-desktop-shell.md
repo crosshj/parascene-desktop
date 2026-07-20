@@ -6,7 +6,7 @@ Next product work is **Library + sync**, not more shell chrome: [PLAN-library-sy
 
 ## Still remaining (shell)
 
-- **Launch white flash (known bug):** App still shows an annoying **flash of white** on open, before/during maximize into the dark UI. `tauri.conf.json` already sets window `backgroundColor` to `#121214` (`[18, 18, 20, 255]`) and `maximized: true`, but that is not enough. Investigate webview / HTML / body paint order, hiding the window until ready, or other Tauri/macOS tricks until the flash is gone.
+- ~~**Launch white flash:**~~ Fixed — window starts `visible: false`, shows after first page load, and macOS WKWebView uses dark `backgroundColor` via `macOSPrivateApi` / wry `drawsBackground`.
 - **FFmpeg readiness (before media pipelines):** Detect whether FFmpeg is installed and usable; if not, assist the user (install guidance + re-check). See [PLAN-ffmpeg.md](./PLAN-ffmpeg.md). Not full editing/render yet — but do not assume FFmpeg is present.
 - **Updates (near-term):** In an **About this app** modal — check for a newer GitHub Release and, if so, show “New version available” with a link to the release page. Manual DMG install until signed auto-update exists.
 - **Auto-updates (later):** GitHub Releases + Tauri updater plugin (download/apply in-app). Needs Apple codesign + notarization. Ship DMGs via `desktop-v*` tags in the meantime.

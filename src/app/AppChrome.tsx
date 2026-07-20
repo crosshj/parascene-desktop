@@ -7,6 +7,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthProvider";
+import { OPEN_SETTINGS_EVENT } from "../settings/events";
+import { SettingsModal } from "../settings/SettingsModal";
 import {
   useShell,
   type LibrarySurface,
@@ -28,6 +30,7 @@ const MODES: { id: LayoutMode; label: string }[] = [
   { id: "director", label: "Director" },
   { id: "editor", label: "Editor" },
   { id: "hook", label: "Publisher" },
+  { id: "lab", label: "Lab" },
 ];
 
 function displayName(
@@ -61,6 +64,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
   const name = session ? displayName(session) : null;
   const profileUrl = session ? profilePageUrl(session) : null;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const accountRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
@@ -120,6 +124,17 @@ export function AppChrome({ children }: { children: ReactNode }) {
     setMenuOpen(false);
     void openUrl(profileUrl);
   };
+
+  const openSettings = () => {
+    setMenuOpen(false);
+    setSettingsOpen(true);
+  };
+
+  useEffect(() => {
+    const onOpen = () => setSettingsOpen(true);
+    window.addEventListener(OPEN_SETTINGS_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, onOpen);
+  }, []);
 
   const doLogout = () => {
     setMenuOpen(false);
@@ -229,6 +244,14 @@ export function AppChrome({ children }: { children: ReactNode }) {
                       style={{ top: menuPos.top, right: menuPos.right }}
                       onPointerDown={(event) => event.stopPropagation()}
                     >
+                      <button
+                        type="button"
+                        className="auth-account-menu-item"
+                        role="menuitem"
+                        onClick={openSettings}
+                      >
+                        Settings
+                      </button>
                       {profileUrl ? (
                         <button
                           type="button"
@@ -256,6 +279,10 @@ export function AppChrome({ children }: { children: ReactNode }) {
         </div>
       </header>
       <main className="app-main">{children}</main>
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

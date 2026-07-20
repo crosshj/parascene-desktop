@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "",
@@ -18,6 +19,7 @@
         "minWidth": 1100,
         "minHeight": 720,
         "maximized": true,
+        "visible": false,
         "backgroundColor": [18, 18, 20, 255],
         "hiddenTitle": true
       }

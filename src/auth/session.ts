@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   createOAuthState,
   createParasceneSdk,
   createPkcePair,
+  isAccessTokenExpiredOrNear,
   type ParasceneSdk,
   type ParasceneUserInfo,
   type TokenSet,
@@ -16,7 +16,11 @@ import {
   PARASCENE_OAUTH_LOOPBACK_PORT,
   PARASCENE_OAUTH_REDIRECT_URI,
 } from "../sdk/config";
-import { AuthFlowError, formatUnknownError } from "./errors";
+import {
+  AuthFlowError,
+  formatUnknownError,
+  mapEnsureAccessTokenError,
+} from "./errors";
 
 export type AuthStatus =
   | "signed_out"
@@ -30,6 +34,45 @@ export type AuthSession = {
 };
 
 const KEYCHAIN_SESSION = "parascene_session";
+const ENSURE_TOKEN_TIMEOUT_MS = 8_000;
+
+/** Hot path for Sync/SDK — never block on Keychain/SQLite for a fresh JWT. */
+let memorySession: AuthSession | null = null;
+
+/** Keep FE memory in sync with AuthProvider / persist / reauth. */
+export function setMemorySession(session: AuthSession | null): void {
+  memorySession = session;
+}
+
+export function getMemorySession(): AuthSession | null {
+  return memorySession;
+}
+
+function tokensStillFresh(tokens: TokenSet, skewMs = 60_000): boolean {
+  return (
+    Boolean(tokens.accessToken) &&
+    tokens.expiresAtMs > Date.now() + skewMs &&
+    !isAccessTokenExpiredOrNear(tokens.accessToken, skewMs)
+  );
+}
+
+async function withTimeout<T>(
+  ms: number,
+  work: () => Promise<T>,
+  timeoutMessage: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** Older multi-item keys — deleted on read/migrate so Keychain stops prompting for them. */
 const LEGACY_KEYCHAIN_KEYS = [
@@ -69,15 +112,66 @@ function createSdk(getTokens: () => Promise<TokenSet | null>): ParasceneSdk {
     redirectUri,
     getAccessToken: async () => (await getTokens())?.accessToken ?? null,
     onRefreshNeeded: async () => {
-      await invoke<string>("auth_ensure_access_token", { force: true });
-      return loadStoredTokens();
+      try {
+        await withTimeout(
+          ENSURE_TOKEN_TIMEOUT_MS,
+          () => invoke<string>("auth_ensure_access_token", { force: true }),
+          "Couldn't refresh your Parascene session in time. Try Reconnect.",
+        );
+      } catch (e: unknown) {
+        throw mapEnsureAccessTokenError(e);
+      }
+      // Prefer store after Rust write; fall back to memory.
+      const fromStore = await restoreSession();
+      if (fromStore) {
+        memorySession = fromStore;
+        return fromStore.tokens;
+      }
+      return memorySession?.tokens ?? null;
     },
   });
 }
 
-/** Fresh access token — single-flight Rust refresh (Parascene rotates prt_ each time). */
+/** Fresh access token — memory first; Rust refresh only when near expiry. */
 export async function ensureAccessToken(): Promise<string> {
-  return invoke<string>("auth_ensure_access_token", { force: false });
+  const mem = memorySession?.tokens;
+  if (mem && tokensStillFresh(mem)) {
+    return mem.accessToken;
+  }
+
+  try {
+    return await withTimeout(
+      ENSURE_TOKEN_TIMEOUT_MS,
+      async () => {
+        try {
+          const tokens = await loadStoredTokens();
+          if (tokens && tokensStillFresh(tokens)) {
+            return tokens.accessToken;
+          }
+        } catch {
+          /* fall through to Rust */
+        }
+        const token = await invoke<string>("auth_ensure_access_token", {
+          force: false,
+        });
+        if (memorySession) {
+          memorySession = {
+            ...memorySession,
+            tokens: {
+              ...memorySession.tokens,
+              accessToken: token,
+              // expiresAt unknown here; mark skew window so we don't skip Rust forever
+              expiresAtMs: Date.now() + 14 * 60_000,
+            },
+          };
+        }
+        return token;
+      },
+      "Couldn't refresh your Parascene session in time. Try Reconnect.",
+    );
+  } catch (e: unknown) {
+    throw mapEnsureAccessTokenError(e);
+  }
 }
 
 /** SDK that reads tokens from secure storage and refreshes via Rust when stale. */
@@ -142,21 +236,24 @@ function decodeSession(raw: string): AuthSession | null {
 
 /** One secure-storage item for the whole session (Keychain in release, SQLite in debug). */
 export async function persistSession(session: AuthSession): Promise<void> {
+  memorySession = session;
   await keychainSet(KEYCHAIN_SESSION, encodeSession(session));
   await deleteLegacyKeychainItems();
 }
 
 export async function persistTokens(tokens: TokenSet): Promise<void> {
-  const existing = await restoreSession();
+  const existing = memorySession ?? (await restoreSession());
   if (!existing) return;
   await persistSession({ ...existing, tokens });
 }
 
 export async function loadStoredTokens(): Promise<TokenSet | null> {
+  if (memorySession?.tokens) return memorySession.tokens;
   return (await restoreSession())?.tokens ?? null;
 }
 
 export async function clearSecureSession(): Promise<void> {
+  memorySession = null;
   await Promise.all([
     keychainDelete(KEYCHAIN_SESSION),
     ...LEGACY_KEYCHAIN_KEYS.map((k) => keychainDelete(k)),
@@ -167,7 +264,10 @@ export async function restoreSession(): Promise<AuthSession | null> {
   const raw = await keychainGet(KEYCHAIN_SESSION);
   if (raw) {
     const session = decodeSession(raw);
-    if (session) return session;
+    if (session) {
+      memorySession = session;
+      return session;
+    }
   }
 
   // One-time migrate from the old 4-item layout (then delete legacy keys).
@@ -204,36 +304,41 @@ type OAuthCallbackPayload = {
   error?: string | null;
 };
 
-function waitForOAuthCallback(timeoutMs = 180_000): Promise<OAuthCallbackPayload> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let unlisten: (() => void) | undefined;
-
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      unlisten?.();
-      fn();
-    };
-
-    const timer = setTimeout(() => {
-      finish(() => reject(new Error("oauth_timeout")));
-      void invoke("cancel_oauth_listener");
-    }, timeoutMs);
-
-    void listen<OAuthCallbackPayload>("oauth-callback", (event) => {
-      finish(() => resolve(event.payload));
-    }).then((off) => {
-      unlisten = off;
-    });
-  });
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Poll Rust for the loopback callback. Do not use Tauri events for this —
+ * emit races left the browser "signed in" while the app hung forever.
+ */
+async function waitForOAuthCallback(
+  timeoutMs = 180_000,
+): Promise<OAuthCallbackPayload> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const payload = await invoke<OAuthCallbackPayload | null>(
+      "oauth_take_callback",
+    );
+    if (payload) return payload;
+    await sleep(150);
+  }
+  void invoke("cancel_oauth_listener");
+  throw new Error("oauth_timeout");
+}
+
+export type LoginProgressPhase =
+  | "browser"
+  | "exchanging"
+  | "profile"
+  | "saving";
 
 /**
  * Real Parascene OAuth — browser consent, loopback return, public-client PKCE exchange.
  */
-export async function loginWithParascene(): Promise<AuthSession> {
+export async function loginWithParascene(opts?: {
+  onProgress?: (phase: LoginProgressPhase) => void;
+}): Promise<AuthSession> {
   const cfg = getEnvConfig();
   const sdk = createSdk(loadStoredTokens);
   const state = createOAuthState();
@@ -250,6 +355,7 @@ export async function loginWithParascene(): Promise<AuthSession> {
     try {
       return await fn();
     } catch (err) {
+      if (err instanceof AuthFlowError) throw err;
       const detail = [
         `Step: ${name}`,
         breadcrumb,
@@ -268,36 +374,68 @@ export async function loginWithParascene(): Promise<AuthSession> {
     invoke<number>("start_oauth_listener", { port: cfg.loopbackPort }),
   );
 
-  const callbackPromise = waitForOAuthCallback();
-
   const authorizeUrl = sdk.buildAuthorizeUrl({
     state,
     codeChallenge: challenge,
   });
 
+  opts?.onProgress?.("browser");
   await step("Open Parascene authorize in browser", () => openUrl(authorizeUrl));
 
   const callback = await step("Wait for browser callback", async () => {
-    const cb = await callbackPromise;
+    let cb: OAuthCallbackPayload;
+    try {
+      cb = await waitForOAuthCallback();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === "oauth_timeout") {
+        throw new AuthFlowError({
+          summary: "Browser login timed out",
+          detail:
+            "No authorization callback arrived within 3 minutes. Cancel, click Reconnect, and complete consent in the browser again.",
+          step: "Wait for browser callback",
+        });
+      }
+      throw err;
+    }
     if (cb.error) {
       throw new Error(
         cb.error === "cancelled" ? "Login cancelled" : String(cb.error),
       );
     }
-    if (!cb.code) throw new Error("missing_code — Parascene did not return an authorization code");
-    if (cb.state !== state) throw new Error("state_mismatch — CSRF check failed");
+    if (!cb.code)
+      throw new Error(
+        "missing_code — Parascene did not return an authorization code",
+      );
+    if (cb.state !== state)
+      throw new Error("state_mismatch — CSRF check failed");
     return cb;
   });
 
+  opts?.onProgress?.("exchanging");
   const tokens = await step("Exchange code with Parascene (PKCE)", () =>
-    sdk.exchangeAuthorizationCode({
-      code: callback.code!,
-      codeVerifier: verifier,
-    }),
+    withTimeout(
+      20_000,
+      () =>
+        sdk.exchangeAuthorizationCode({
+          code: callback.code!,
+          codeVerifier: verifier,
+        }),
+      "Token exchange timed out — check your network and try again",
+    ),
   );
 
+  opts?.onProgress?.("profile");
   const authedSdk = createSdk(async () => tokens);
-  const user = await step("Fetch /oauth/userinfo", () => authedSdk.getUserInfo());
+  const user = await step("Fetch /oauth/userinfo", () =>
+    withTimeout(
+      15_000,
+      () => authedSdk.getUserInfo(),
+      "Fetching profile timed out — check your network and try again",
+    ),
+  );
+
+  opts?.onProgress?.("saving");
   await step("Store session", () => persistSession({ tokens, user }));
   return { tokens, user };
 }

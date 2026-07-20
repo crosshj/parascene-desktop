@@ -6,7 +6,8 @@ export function WipOverlay() {
   if (
     (primaryTab === "library" &&
       (librarySurface === "creations" || librarySurface === "sync")) ||
-    (primaryTab === "project" && (mode === "editor" || mode === "hook"))
+    (primaryTab === "project" &&
+      (mode === "editor" || mode === "hook" || mode === "lab"))
   ) {
     return null;
   }

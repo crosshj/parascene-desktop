@@ -24,7 +24,7 @@ const OAUTH_CLIENT_ID: &str = "c7826d84-92b2-42b5-92db-473662b51a77";
 const OAUTH_BASE_URL: &str = "https://www.parascene.com";
 const ACCESS_TOKEN_SKEW_MS: u64 = 60_000;
 const SESSION_EXPIRED_MSG: &str =
-    "Session expired — log out and log in again (refresh token invalidated)";
+    "Session expired — reconnect to Parascene (refresh token invalidated)";
 
 /// After `invalid_grant` with no recovery, skip further refresh HTTP until a new
 /// session is written. Prevents download workers from serializing dozens of
@@ -96,31 +96,72 @@ pub async fn force_refresh_access_token() -> Result<String, String> {
 }
 
 async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
-    // Serialize all refreshers (FE invoke + download worker) so rotation can't race.
-    let _guard = refresh_lock().lock().await;
+    if refresh_invalidated().load(Ordering::SeqCst) {
+        return Err(SESSION_EXPIRED_MSG.into());
+    }
+
+    // Read outside the refresh lock so Sync/downloads don't serialize behind HTTP.
+    let session = tokio::task::spawn_blocking(read_session_json)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Not signed in".to_string())?;
+    let access = access_from_session(&session).ok_or_else(|| "Not signed in".to_string())?;
+    if !force && access_still_fresh(&session) {
+        return Ok(access);
+    }
+
+    // Only serialize the rotating refresh itself.
+    let _guard = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        refresh_lock().lock(),
+    )
+    .await
+    .map_err(|_| {
+        "Session check timed out — another refresh is still running. Try again in a moment."
+            .to_string()
+    })?;
 
     if refresh_invalidated().load(Ordering::SeqCst) {
         return Err(SESSION_EXPIRED_MSG.into());
     }
 
-    let mut session = read_session_json().ok_or_else(|| "Not signed in".to_string())?;
+    // Re-read after acquiring the lock — another worker may have refreshed.
+    let session = tokio::task::spawn_blocking(read_session_json)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Not signed in".to_string())?;
     let access = access_from_session(&session).ok_or_else(|| "Not signed in".to_string())?;
     if !force && access_still_fresh(&session) {
         return Ok(access);
     }
 
     let refresh = refresh_from_session(&session)
-        .ok_or_else(|| "Session expired — log in again".to_string())?;
+        .ok_or_else(|| "Session expired — reconnect to Parascene".to_string())?;
 
     match refresh_access_token_http(&refresh).await {
         Ok(next) => {
-            persist_refreshed(&mut session, &next)?;
+            let session_for_write = session.clone();
+            let next_clone = RefreshedTokens {
+                access_token: next.access_token.clone(),
+                refresh_token: next.refresh_token.clone(),
+                expires_at_ms: next.expires_at_ms,
+                expires_in_secs: next.expires_in_secs,
+            };
+            tokio::task::spawn_blocking(move || {
+                let mut session = session_for_write;
+                persist_refreshed(&mut session, &next_clone)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
             Ok(next.access_token)
         }
         Err(err) => {
             // Another party may have already rotated+persisted while we held a stale copy.
             if err.contains("invalid_grant") {
-                if let Some(latest) = read_session_json() {
+                if let Some(latest) = tokio::task::spawn_blocking(read_session_json)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
                     if access_still_fresh(&latest) {
                         if let Some(token) = access_from_session(&latest) {
                             eprintln!(
@@ -135,8 +176,18 @@ async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
                                 "[auth] refresh token rotated elsewhere — retrying once with store value"
                             );
                             let next = refresh_access_token_http(&newer_refresh).await?;
-                            let mut latest = latest;
-                            persist_refreshed(&mut latest, &next)?;
+                            let next_clone = RefreshedTokens {
+                                access_token: next.access_token.clone(),
+                                refresh_token: next.refresh_token.clone(),
+                                expires_at_ms: next.expires_at_ms,
+                                expires_in_secs: next.expires_in_secs,
+                            };
+                            tokio::task::spawn_blocking(move || {
+                                let mut latest = latest;
+                                persist_refreshed(&mut latest, &next_clone)
+                            })
+                            .await
+                            .map_err(|e| e.to_string())??;
                             return Ok(next.access_token);
                         }
                     }
@@ -166,6 +217,7 @@ fn persist_refreshed(session: &mut Value, next: &RefreshedTokens) -> Result<(), 
     Ok(())
 }
 
+#[derive(Clone)]
 struct RefreshedTokens {
     access_token: String,
     refresh_token: Option<String>,
@@ -180,7 +232,8 @@ async fn refresh_access_token_http(refresh_token: &str) -> Result<RefreshedToken
         "refresh_token": refresh_token,
     });
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
         .user_agent("ParasceneDesktop/0.1")
         .build()
         .map_err(|e| e.to_string())?;
@@ -190,7 +243,14 @@ async fn refresh_access_token_http(refresh_token: &str) -> Result<RefreshedToken
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Token refresh failed: {e}"))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("timed out") || msg.contains("timeout") {
+                "Token refresh timed out — check your network and try again".to_string()
+            } else {
+                format!("Token refresh failed: {msg}")
+            }
+        })?;
     let status = res.status();
     let text = res.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
@@ -226,7 +286,18 @@ async fn refresh_access_token_http(refresh_token: &str) -> Result<RefreshedToken
 /// Single entry point for FE + Rust download workers.
 #[tauri::command]
 pub async fn auth_ensure_access_token(force: Option<bool>) -> Result<String, String> {
-    ensure_access_token_inner(force.unwrap_or(false)).await
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        ensure_access_token_inner(force.unwrap_or(false)),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(
+            "Session check timed out — check your network, or reconnect if this keeps happening."
+                .into(),
+        ),
+    }
 }
 
 #[tauri::command]

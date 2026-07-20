@@ -9,6 +9,20 @@ function fileSrc(path: string): string | null {
   }
 }
 
+/**
+ * Bust WebView / in-process image caches when the same disk path is rewritten
+ * (e.g. group cover re-download after filing a new member).
+ */
+export function withPreviewCacheBust(
+  src: string,
+  version: string | null | undefined,
+): string {
+  const v = version?.trim();
+  if (!v) return src;
+  const sep = src.includes("?") ? "&" : "?";
+  return `${src}${sep}v=${encodeURIComponent(v)}`;
+}
+
 /** True when the backend can fetch cloud bytes for this creation. */
 export function canFetchLocal(c: Creation): boolean {
   return Boolean(c.remoteUrl || c.fitThumbnailUrl || c.thumbnailUrl);
@@ -57,11 +71,11 @@ export function isParasceneUnavailable(c: Creation): boolean {
 export function creationPreviewUrl(c: Creation): string | null {
   if (c.localThumbPath) {
     const src = fileSrc(c.localThumbPath);
-    if (src) return src;
+    if (src) return withPreviewCacheBust(src, c.updatedAt);
   }
   if (c.mediaType === "image" && c.localPath) {
     const src = fileSrc(c.localPath);
-    if (src) return src;
+    if (src) return withPreviewCacheBust(src, c.updatedAt);
   }
   return null;
 }
@@ -70,7 +84,7 @@ export function creationPreviewUrl(c: Creation): string | null {
 export function creationDetailUrl(c: Creation): string | null {
   if (c.localPath) {
     const src = fileSrc(c.localPath);
-    if (src) return src;
+    if (src) return withPreviewCacheBust(src, c.updatedAt);
   }
   return null;
 }

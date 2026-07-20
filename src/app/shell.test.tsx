@@ -262,6 +262,11 @@ describe("auth shell", () => {
     expect(screen.getByRole("button", { name: "Director" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Editor" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publisher" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Lab" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Lab" }));
+    expect(screen.getByLabelText("Lab")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Project groups/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();

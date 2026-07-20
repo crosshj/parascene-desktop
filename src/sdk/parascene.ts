@@ -255,8 +255,48 @@ async function postJson(url: string, payload: unknown): Promise<HttpJsonResult> 
   });
 }
 
+function isTransientTransportError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /couldn't reach|request failed|error sending request|timed out|timeout|failed to connect|network|dns|connection/i.test(
+    msg,
+  );
+}
+
 async function getBearer(url: string, bearer: string): Promise<HttpJsonResult> {
   return invoke<HttpJsonResult>("http_get_bearer", { url, bearer });
+}
+
+async function deleteBearer(
+  url: string,
+  bearer: string,
+): Promise<HttpJsonResult> {
+  return invoke<HttpJsonResult>("http_delete_bearer", { url, bearer });
+}
+
+async function deleteBearerResilient(
+  url: string,
+  bearer: string,
+): Promise<HttpJsonResult> {
+  try {
+    return await deleteBearer(url, bearer);
+  } catch (err) {
+    if (!isTransientTransportError(err)) throw err;
+    await sleep(350);
+    return deleteBearer(url, bearer);
+  }
+}
+
+async function getBearerResilient(
+  url: string,
+  bearer: string,
+): Promise<HttpJsonResult> {
+  try {
+    return await getBearer(url, bearer);
+  } catch (err) {
+    if (!isTransientTransportError(err)) throw err;
+    await sleep(350);
+    return getBearer(url, bearer);
+  }
 }
 
 async function postBearer(
@@ -269,6 +309,20 @@ async function postBearer(
     body: JSON.stringify(payload),
     bearer,
   });
+}
+
+async function postBearerOnceResilient(
+  url: string,
+  payload: unknown,
+  bearer: string,
+): Promise<HttpJsonResult> {
+  try {
+    return await postBearer(url, payload, bearer);
+  } catch (err) {
+    if (!isTransientTransportError(err)) throw err;
+    await sleep(350);
+    return postBearer(url, payload, bearer);
+  }
 }
 
 function isUnauthorized(res: HttpJsonResult): boolean {
@@ -688,11 +742,11 @@ export class ParasceneSdk {
 
   private async getBearerAuthed(url: string): Promise<HttpJsonResult> {
     const token = await this.requireAccessToken();
-    let res = await getBearer(url, token);
+    let res = await getBearerResilient(url, token);
     if (isUnauthorized(res)) {
       const fresh = await this.forceRefreshAccessToken();
       if (fresh && fresh !== token) {
-        res = await getBearer(url, fresh);
+        res = await getBearerResilient(url, fresh);
       }
     }
     return res;
@@ -703,14 +757,325 @@ export class ParasceneSdk {
     payload: unknown,
   ): Promise<HttpJsonResult> {
     const token = await this.requireAccessToken();
-    let res = await postBearer(url, payload, token);
+    let res = await postBearerOnceResilient(url, payload, token);
     if (isUnauthorized(res)) {
       const fresh = await this.forceRefreshAccessToken();
       if (fresh && fresh !== token) {
-        res = await postBearer(url, payload, fresh);
+        res = await postBearerOnceResilient(url, payload, fresh);
       }
     }
     return res;
+  }
+
+  private async deleteBearerAuthed(url: string): Promise<HttpJsonResult> {
+    const token = await this.requireAccessToken();
+    let res = await deleteBearerResilient(url, token);
+    if (isUnauthorized(res)) {
+      const fresh = await this.forceRefreshAccessToken();
+      if (fresh && fresh !== token) {
+        res = await deleteBearerResilient(url, fresh);
+      }
+    }
+    return res;
+  }
+
+  /**
+   * Start a creation job.
+   * `POST /api/create`
+   */
+  async create(opts: {
+    serverId: number;
+    method: string;
+    args: Record<string, unknown>;
+    creationToken: string;
+    mutateOfId?: number;
+    groupId?: number;
+  }): Promise<{
+    id: number | string;
+    status: string;
+    credits_remaining?: number;
+    meta?: Record<string, unknown> | null;
+  }> {
+    const body: Record<string, unknown> = {
+      server_id: opts.serverId,
+      method: opts.method,
+      args: opts.args,
+      creation_token: opts.creationToken,
+    };
+    if (typeof opts.mutateOfId === "number") body.mutate_of_id = opts.mutateOfId;
+    if (typeof opts.groupId === "number") body.group_id = opts.groupId;
+    const res = await this.postBearerAuthed(
+      `${this.apiBaseUrl}/api/create`,
+      body,
+    );
+    if (res.status === 402) {
+      let message = "Insufficient credits";
+      try {
+        const err = JSON.parse(res.body) as {
+          error?: string;
+          message?: string;
+          required?: number;
+          current?: number;
+        };
+        message =
+          err.message ||
+          err.error ||
+          (typeof err.required === "number"
+            ? `Insufficient credits (need ${err.required}, have ${err.current ?? "?"})`
+            : message);
+      } catch {
+        /* keep */
+      }
+      throw new Error(message);
+    }
+    if (res.status >= 400) {
+      throw new Error(parseApiError(res, `create failed (${res.status})`));
+    }
+    return JSON.parse(res.body) as {
+      id: number | string;
+      status: string;
+      credits_remaining?: number;
+      meta?: Record<string, unknown> | null;
+    };
+  }
+
+  /** `GET /api/create/images/:id` */
+  async getCreation(id: string | number): Promise<RemoteCreateImage> {
+    const res = await this.getBearerAuthed(
+      `${this.apiBaseUrl}/api/create/images/${encodeURIComponent(String(id))}`,
+    );
+    if (res.status >= 400) {
+      throw new Error(parseApiError(res, `get creation failed (${res.status})`));
+    }
+    return JSON.parse(res.body) as RemoteCreateImage;
+  }
+
+  /** `DELETE /api/create/images/:id` — missing ids count as already gone. */
+  async deleteCreation(id: string | number): Promise<void> {
+    const res = await this.deleteBearerAuthed(
+      `${this.apiBaseUrl}/api/create/images/${encodeURIComponent(String(id))}`,
+    );
+    if (res.status === 404 || res.status === 410) return;
+    if (res.status >= 400) {
+      throw new Error(
+        parseApiError(res, `delete creation failed (${res.status})`),
+      );
+    }
+  }
+
+  /**
+   * Poll list/detail until status leaves creating/pending.
+   */
+  async waitForCreation(
+    id: string | number,
+    opts?: {
+      intervalMs?: number;
+      timeoutMs?: number;
+      onTick?: (row: RemoteCreateImage) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<RemoteCreateImage> {
+    const intervalMs = opts?.intervalMs ?? 2000;
+    const timeoutMs = opts?.timeoutMs ?? 15 * 60_000;
+    const started = Date.now();
+    for (;;) {
+      if (opts?.signal?.aborted) {
+        throw new Error("Cancelled");
+      }
+      const row = await this.getCreation(id);
+      opts?.onTick?.(row);
+      const status = String(row.status || "").toLowerCase();
+      if (status !== "creating" && status !== "pending") {
+        return row;
+      }
+      if (Date.now() - started > timeoutMs) {
+        throw new Error(`Timed out waiting for creation ${id}`);
+      }
+      await sleep(intervalMs);
+    }
+  }
+
+  /** `GET /api/credits` */
+  async getCredits(): Promise<{
+    balance: number;
+    canClaim: boolean;
+    lastClaimDate: string | null;
+  }> {
+    const res = await this.getBearerAuthed(`${this.apiBaseUrl}/api/credits`);
+    if (res.status >= 400) {
+      throw new Error(parseApiError(res, `credits failed (${res.status})`));
+    }
+    const data = JSON.parse(res.body) as {
+      balance?: number;
+      canClaim?: boolean;
+      lastClaimDate?: string | null;
+    };
+    return {
+      balance: typeof data.balance === "number" ? data.balance : 0,
+      canClaim: data.canClaim === true,
+      lastClaimDate:
+        typeof data.lastClaimDate === "string" ? data.lastClaimDate : null,
+    };
+  }
+
+  /**
+   * Group creations (or add into an existing group).
+   * `POST /api/create/images/group`
+   */
+  async groupCreations(opts: {
+    ids: Array<number | string>;
+    partyName?: string;
+    /**
+     * Optional meta stamped onto the group (e.g. desktop project cabinets).
+     * Sent as `meta` on the group body — if the API ignores it, UI still keys
+     * off local `imagesGroupId` / `videosGroupId`.
+     */
+    meta?: Record<string, unknown>;
+  }): Promise<RemoteCreateImage> {
+    const body: Record<string, unknown> = {
+      ids: opts.ids.map((id) => Number(id)).filter((n) => Number.isFinite(n)),
+    };
+    if (opts.partyName?.trim()) body.party_name = opts.partyName.trim();
+    if (opts.meta && typeof opts.meta === "object") body.meta = opts.meta;
+    const res = await this.postBearerAuthed(
+      `${this.apiBaseUrl}/api/create/images/group`,
+      body,
+    );
+    if (res.status >= 400) {
+      throw new Error(parseApiError(res, `group failed (${res.status})`));
+    }
+    const data = JSON.parse(res.body) as {
+      creation?: RemoteCreateImage;
+      grouped_creation?: RemoteCreateImage;
+      id?: number | string;
+    };
+    if (data.grouped_creation) return data.grouped_creation;
+    if (data.creation) return data.creation;
+    if (data.id != null) return this.getCreation(data.id);
+    return data as unknown as RemoteCreateImage;
+  }
+
+  /**
+   * Upload bytes to generic image storage.
+   * `POST /api/images/generic` (raw body).
+   */
+  async uploadGenericImage(opts: {
+    bytesBase64: string;
+    contentType?: string;
+    filename?: string;
+  }): Promise<{ url: string; key?: string }> {
+    const token = await this.requireAccessToken();
+    const res = await invoke<{
+      status: number;
+      body: string;
+    }>("http_post_bytes_bearer", {
+      url: `${this.apiBaseUrl}/api/images/generic`,
+      bodyBase64: opts.bytesBase64,
+      bearer: token,
+      contentType: opts.contentType ?? "image/png",
+      extraHeaders: {
+        "X-upload-kind": "generic",
+        "X-upload-name": opts.filename ?? "lab-seed.png",
+      },
+    });
+    if (res.status >= 400) {
+      throw new Error(parseApiError(res, `upload failed (${res.status})`));
+    }
+    const data = JSON.parse(res.body) as { url?: string; key?: string };
+    if (!data.url) throw new Error("Upload succeeded but no url returned");
+    const url = absolutizeAssetUrl(data.url, this.baseUrl) ?? data.url;
+    return { url, key: data.key };
+  }
+
+  /**
+   * Upload raw audio bytes as a reusable library audio clip.
+   * `POST /api/audio-clips/record` (raw body). Returns the clip id and a
+   * provider-fetchable public URL; pass `audio_clip_id` in create args and the
+   * server resolves the share URL into `input_audio_urls`.
+   */
+  async recordAudioClip(opts: {
+    bytesBase64: string;
+    contentType?: string;
+    title?: string;
+    durationSec?: number;
+    sourceType?: string;
+  }): Promise<{
+    id: string;
+    audioUrl: string | null;
+    title: string;
+    durationSec: number | null;
+  }> {
+    const token = await this.requireAccessToken();
+    const extraHeaders: Record<string, string> = {};
+    if (opts.title?.trim()) extraHeaders["X-audio-clip-title"] = opts.title.trim();
+    if (
+      typeof opts.durationSec === "number" &&
+      Number.isFinite(opts.durationSec) &&
+      opts.durationSec > 0
+    ) {
+      extraHeaders["X-audio-clip-duration-sec"] = String(opts.durationSec);
+    }
+    if (opts.sourceType?.trim()) {
+      extraHeaders["X-audio-clip-source-type"] = opts.sourceType.trim();
+    }
+    const res = await invoke<{
+      status: number;
+      body: string;
+    }>("http_post_bytes_bearer", {
+      url: `${this.apiBaseUrl}/api/audio-clips/record`,
+      bodyBase64: opts.bytesBase64,
+      bearer: token,
+      contentType: opts.contentType ?? "audio/wav",
+      extraHeaders,
+    });
+    if (res.status >= 400) {
+      throw new Error(
+        parseApiError(res, `audio clip upload failed (${res.status})`),
+      );
+    }
+    const data = JSON.parse(res.body) as {
+      item?: {
+        id?: number | string;
+        audio_url?: string;
+        title?: string;
+        duration_sec?: number | null;
+      };
+    };
+    const item = data.item;
+    if (!item || item.id == null) {
+      throw new Error("Audio clip upload returned no id");
+    }
+    const audioUrl = item.audio_url
+      ? absolutizeAssetUrl(item.audio_url, this.baseUrl) ?? item.audio_url
+      : null;
+    return {
+      id: String(item.id),
+      audioUrl,
+      title: item.title ?? "",
+      durationSec: item.duration_sec ?? null,
+    };
+  }
+
+  /** `DELETE /api/audio-clips/:id` — missing ids count as already gone. */
+  async deleteAudioClip(id: string | number): Promise<void> {
+    const res = await this.deleteBearerAuthed(
+      `${this.apiBaseUrl}/api/audio-clips/${encodeURIComponent(String(id))}`,
+    );
+    if (res.status === 404 || res.status === 410) return;
+    if (res.status >= 400) {
+      throw new Error(
+        parseApiError(res, `delete audio clip failed (${res.status})`),
+      );
+    }
+  }
+}
+
+function parseApiError(res: HttpJsonResult, fallback: string): string {
+  try {
+    const err = JSON.parse(res.body) as { error?: string; message?: string };
+    return err.message || err.error || fallback;
+  } catch {
+    return fallback;
   }
 }
 
@@ -746,4 +1111,37 @@ export function absolutizeAssetUrl(
   const base = normalizeBase(origin);
   if (v.startsWith("/")) return base + v;
   return v;
+}
+
+/**
+ * Native-aspect (`?variant=fit`) thumb URL when the API omits `fit_thumbnail_url`.
+ * Create/detail/feed often only send square `thumbnail_url`, but the fit object
+ * still exists on the same image path — swap or append `variant=fit`.
+ */
+export function deriveFitThumbnailUrl(
+  thumbnailUrl: string | null | undefined,
+  imageUrl?: string | null | undefined,
+): string | null {
+  const fromThumb = thumbnailUrl?.trim();
+  if (fromThumb) {
+    if (/(?:^|[?&])variant=fit(?:&|$)/.test(fromThumb)) return fromThumb;
+    if (fromThumb.includes("variant=thumbnail")) {
+      return fromThumb.replace(/variant=thumbnail/g, "variant=fit");
+    }
+    return fromThumb.includes("?")
+      ? `${fromThumb}&variant=fit`
+      : `${fromThumb}?variant=fit`;
+  }
+  const fromImage = imageUrl?.trim();
+  if (!fromImage) return null;
+  // Don't invent a fit thumb from a video file URL.
+  if (/\.mp4(?:\?|$)/i.test(fromImage) || /\/videos\//i.test(fromImage)) {
+    return null;
+  }
+  if (/(?:^|[?&])variant=/.test(fromImage)) {
+    return fromImage.replace(/variant=[^&]*/g, "variant=fit");
+  }
+  return fromImage.includes("?")
+    ? `${fromImage}&variant=fit`
+    : `${fromImage}?variant=fit`;
 }

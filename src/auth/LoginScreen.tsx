@@ -49,6 +49,10 @@ export function LoginScreen() {
             <p className="muted">
               Complete authorization in your browser, then return here.
             </p>
+            <p className="muted login-wait-hint">
+              Taking too long? Cancel and try again — waiting forever usually
+              means the browser tab never finished.
+            </p>
             <button
               type="button"
               className="btn"

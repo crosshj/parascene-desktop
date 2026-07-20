@@ -17,6 +17,9 @@ function baseProject(overrides: Partial<Project> = {}): Project {
       { id: "a2", name: "a2", kind: "image" },
     ],
     folderIds: [],
+    imagesGroupId: null,
+    videosGroupId: null,
+    mainAudioCreationId: null,
     timeline: [
       {
         id: "clip-1",

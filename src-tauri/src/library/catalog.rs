@@ -2,7 +2,10 @@ use super::paths::{default_root, ensure_directories, resolve_paths, ParascenePat
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,7 +139,13 @@ pub struct CatalogFilterCounts {
 }
 
 fn open_db(db_path: &Path) -> Result<Connection, String> {
-    Connection::open(db_path).map_err(|e| format!("Could not open catalog DB: {e}"))
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("Could not open catalog DB: {e}"))?;
+    // Fail fast under writer contention instead of hanging Sync/auth IPC.
+    conn.busy_timeout(std::time::Duration::from_secs(2))
+        .map_err(|e| e.to_string())?;
+    let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+    Ok(conn)
 }
 
 fn migrate(conn: &Connection) -> Result<(), String> {
@@ -248,6 +257,48 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           op_json TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS jobs (
+          id TEXT PRIMARY KEY NOT NULL,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          project_id TEXT,
+          label TEXT,
+          payload_json TEXT NOT NULL,
+          result_json TEXT,
+          checkpoint_json TEXT,
+          progress_note TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS jobs_status_created_idx
+          ON jobs(status, created_at);
+        CREATE INDEX IF NOT EXISTS jobs_project_idx
+          ON jobs(project_id);
+        "#,
+    );
+
+    // Jobs may be missing on catalogs created before the generation queue.
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS jobs (
+          id TEXT PRIMARY KEY NOT NULL,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          project_id TEXT,
+          label TEXT,
+          payload_json TEXT NOT NULL,
+          result_json TEXT,
+          checkpoint_json TEXT,
+          progress_note TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS jobs_status_created_idx
+          ON jobs(status, created_at);
+        CREATE INDEX IF NOT EXISTS jobs_project_idx
+          ON jobs(project_id);
         "#,
     );
 
@@ -289,21 +340,35 @@ fn auth_meta_key(key: &str) -> String {
     format!("{AUTH_KV_PREFIX}{key}")
 }
 
-pub(crate) fn auth_kv_get(key: &str) -> Result<Option<String>, String> {
+/// Lightweight open for auth KV only — never runs migrate / folder migration.
+/// `ready_connection` is far too heavy and contended for every token read.
+fn open_auth_kv_connection() -> Result<Connection, String> {
     let paths = default_paths()?;
-    let conn = ready_connection(&paths)?;
+    ensure_directories(&paths)?;
+    let conn = open_db(&paths.catalog_db)?;
+    // Ensure sync_meta exists without the full catalog migrate path.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_meta (
+           key TEXT PRIMARY KEY NOT NULL,
+           value TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+pub(crate) fn auth_kv_get(key: &str) -> Result<Option<String>, String> {
+    let conn = open_auth_kv_connection()?;
     meta_get(&conn, &auth_meta_key(key))
 }
 
 pub(crate) fn auth_kv_set(key: &str, value: &str) -> Result<(), String> {
-    let paths = default_paths()?;
-    let conn = ready_connection(&paths)?;
+    let conn = open_auth_kv_connection()?;
     meta_set(&conn, &auth_meta_key(key), value)
 }
 
 pub(crate) fn auth_kv_delete(key: &str) -> Result<(), String> {
-    let paths = default_paths()?;
-    let conn = ready_connection(&paths)?;
+    let conn = open_auth_kv_connection()?;
     meta_delete(&conn, &auth_meta_key(key))
 }
 
@@ -739,6 +804,56 @@ fn dir_size_bytes(path: &Path) -> u64 {
     total
 }
 
+/// Walking multi‑GB media trees on every Sync status poll freezes the UI.
+/// Cache for a short TTL; “On disk” is a summary, not a live meter.
+const DISK_SIZE_CACHE_TTL: Duration = Duration::from_secs(90);
+
+struct DiskSizeCache {
+    media_path: PathBuf,
+    thumbs_path: PathBuf,
+    media_bytes: u64,
+    thumbs_bytes: u64,
+    computed_at: Instant,
+}
+
+fn disk_size_cache() -> &'static Mutex<Option<DiskSizeCache>> {
+    static CACHE: OnceLock<Mutex<Option<DiskSizeCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Drop cached media/thumbs byte totals (e.g. after large download batches).
+pub(crate) fn invalidate_disk_size_cache() {
+    if let Ok(mut guard) = disk_size_cache().lock() {
+        *guard = None;
+    }
+}
+
+fn cached_dir_sizes(paths: &ParascenePaths) -> (u64, u64) {
+    if let Ok(guard) = disk_size_cache().lock() {
+        if let Some(cache) = guard.as_ref() {
+            if cache.media_path == paths.media
+                && cache.thumbs_path == paths.thumbs
+                && cache.computed_at.elapsed() < DISK_SIZE_CACHE_TTL
+            {
+                return (cache.media_bytes, cache.thumbs_bytes);
+            }
+        }
+    }
+
+    let media_bytes = dir_size_bytes(&paths.media);
+    let thumbs_bytes = dir_size_bytes(&paths.thumbs);
+    if let Ok(mut guard) = disk_size_cache().lock() {
+        *guard = Some(DiskSizeCache {
+            media_path: paths.media.clone(),
+            thumbs_path: paths.thumbs.clone(),
+            media_bytes,
+            thumbs_bytes,
+            computed_at: Instant::now(),
+        });
+    }
+    (media_bytes, thumbs_bytes)
+}
+
 const WITHOUT_CLOUD_URLS_LIMIT: u32 = 50;
 
 /// Cloud-backed rows only (not desktop-local imports). Local-only never had
@@ -846,6 +961,7 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
              AND (remote_url IS NULL OR remote_url = '')"#
         ),
     )?;
+    let (media_bytes, thumbs_bytes) = cached_dir_sizes(paths);
     Ok(SyncStatus {
         root_path: paths.root.display().to_string(),
         last_sync_at: meta_get(conn, "last_sync_at")?,
@@ -861,13 +977,48 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
         missing_media_cacheable,
         missing_thumb_uncacheable,
         missing_media_uncacheable,
-        media_bytes: dir_size_bytes(&paths.media),
-        thumbs_bytes: dir_size_bytes(&paths.thumbs),
+        media_bytes,
+        thumbs_bytes,
         without_cloud_urls: list_without_cloud_urls(conn)?,
     })
 }
 
 fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result<(), String> {
+    // Group covers (and any row) can change cloud URLs when membership updates.
+    // Keep stale local media/thumbs only when the remote pointers are unchanged.
+    let prev = match conn.query_row(
+        r#"
+        SELECT remote_url, thumbnail_url, fit_thumbnail_url, video_url,
+               local_path, local_thumb_path
+        FROM creations WHERE id = ?1
+        "#,
+        params![&row.id],
+        |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        },
+    ) {
+        Ok(v) => Some(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(format!("Lookup creation before upsert failed: {e}")),
+    };
+
+    let urls_changed = prev
+        .as_ref()
+        .map(|(remote, thumb, fit, video, _, _)| {
+            remote.as_deref() != row.remote_url.as_deref()
+                || thumb.as_deref() != row.thumbnail_url.as_deref()
+                || fit.as_deref() != row.fit_thumbnail_url.as_deref()
+                || video.as_deref() != row.video_url.as_deref()
+        })
+        .unwrap_or(false);
+
     conn.execute(
         r#"
         INSERT INTO creations (
@@ -906,10 +1057,13 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
           remote_json = excluded.remote_json,
           updated_at = excluded.updated_at,
           download_state = CASE
+            WHEN ?24 THEN 'remote'
             WHEN creations.local_path IS NOT NULL AND creations.download_state = 'local'
               THEN creations.download_state
             ELSE excluded.download_state
-          END
+          END,
+          local_path = CASE WHEN ?24 THEN NULL ELSE creations.local_path END,
+          local_thumb_path = CASE WHEN ?24 THEN NULL ELSE creations.local_thumb_path END
         "#,
         params![
             row.id,
@@ -935,9 +1089,19 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
             if row.nsfw { 1 } else { 0 },
             if row.is_moderated_error { 1 } else { 0 },
             row.remote_json,
+            urls_changed,
         ],
     )
     .map_err(|e| format!("Upsert creation failed: {e}"))?;
+
+    if urls_changed {
+        if let Some((_, _, _, _, local_path, local_thumb)) = prev {
+            if let Ok(paths) = default_paths() {
+                remove_file_under_root(&paths.media, local_path.as_deref());
+                remove_file_under_root(&paths.thumbs, local_thumb.as_deref());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1088,11 +1252,17 @@ fn remove_file_under_root(root: &Path, stored: Option<&str>) {
 pub(crate) fn ready_connection(paths: &ParascenePaths) -> Result<Connection, String> {
     ensure_directories(paths)?;
     let conn = open_db(&paths.catalog_db)?;
-    migrate(&conn)?;
-    meta_set(&conn, "root_path", &paths.root.display().to_string())?;
-    conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
-        .map_err(|e| e.to_string())?;
-    super::folders::ensure_folder_sync_ready(&conn)?;
+    // Migrate + folder UUID fix once per process — Sync status polls hit this
+    // every couple seconds and were re-running the full setup path each time.
+    static READY: AtomicBool = AtomicBool::new(false);
+    if !READY.load(Ordering::Acquire) {
+        migrate(&conn)?;
+        meta_set(&conn, "root_path", &paths.root.display().to_string())?;
+        conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
+            .map_err(|e| e.to_string())?;
+        super::folders::ensure_folder_sync_ready(&conn)?;
+        READY.store(true, Ordering::Release);
+    }
     Ok(conn)
 }
 
@@ -1114,6 +1284,346 @@ fn apply_manifest(conn: &Connection, rows: &[CreationUpsert]) -> Result<(), Stri
     }
     meta_set(conn, "last_sync_at", &now)?;
     Ok(())
+}
+
+/// Site origin used when absolutizing relative Parascene asset paths.
+/// Must stay aligned with the TypeScript `getEnvConfig().baseUrl` / SDK origin.
+const PARASCENE_ORIGIN: &str = "https://www.parascene.com";
+
+fn json_id(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn json_opt_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value.and_then(|v| match v {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        _ => None,
+    })
+}
+
+fn json_bool(raw: &serde_json::Value, key: &str) -> bool {
+    match raw.get(key) {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0) != 0,
+        _ => false,
+    }
+}
+
+fn json_positive_int(raw: &serde_json::Value, key: &str) -> Option<i64> {
+    match raw.get(key)? {
+        serde_json::Value::Number(n) => n.as_i64().filter(|v| *v > 0),
+        serde_json::Value::String(s) => s.parse::<i64>().ok().filter(|v| *v > 0),
+        _ => None,
+    }
+}
+
+/// Mirror of TypeScript `absolutizeAssetUrl`.
+fn absolutize_asset_url(value: Option<&str>, origin: &str) -> Option<String> {
+    let v = value.map(str::trim).filter(|s| !s.is_empty())?;
+    if v.starts_with("http://") || v.starts_with("https://") {
+        return Some(v.to_string());
+    }
+    if let Some(rest) = v.strip_prefix("//") {
+        return Some(format!("https:{rest}"));
+    }
+    let base = origin.trim_end_matches('/');
+    if v.starts_with('/') {
+        return Some(format!("{base}{v}"));
+    }
+    Some(v.to_string())
+}
+
+/// Mirror of TypeScript `deriveFitThumbnailUrl`.
+/// Create/detail often omit `fit_thumbnail_url` even when `?variant=fit` exists.
+fn derive_fit_thumbnail_url(
+    thumbnail_url: Option<&str>,
+    image_url: Option<&str>,
+) -> Option<String> {
+    if let Some(t) = thumbnail_url.map(str::trim).filter(|s| !s.is_empty()) {
+        if t.contains("variant=fit") {
+            return Some(t.to_string());
+        }
+        if t.contains("variant=thumbnail") {
+            return Some(t.replace("variant=thumbnail", "variant=fit"));
+        }
+        return Some(if t.contains('?') {
+            format!("{t}&variant=fit")
+        } else {
+            format!("{t}?variant=fit")
+        });
+    }
+    let u = image_url.map(str::trim).filter(|s| !s.is_empty())?;
+    let lower = u.to_ascii_lowercase();
+    if lower.contains(".mp4") || lower.contains("/videos/") {
+        return None;
+    }
+    if let Some(start) = u.find("variant=") {
+        let mut s = u.to_string();
+        let after = start + "variant=".len();
+        let end = s[after..]
+            .find('&')
+            .map(|i| after + i)
+            .unwrap_or(s.len());
+        s.replace_range(after..end, "fit");
+        return Some(s);
+    }
+    Some(if u.contains('?') {
+        format!("{u}&variant=fit")
+    } else {
+        format!("{u}?variant=fit")
+    })
+}
+
+fn prompt_from_meta(meta: Option<&serde_json::Value>) -> Option<String> {
+    let meta = meta?;
+    if let Some(s) = json_opt_string(meta.get("prompt")) {
+        return Some(s);
+    }
+    meta.get("args")
+        .and_then(|args| json_opt_string(args.get("prompt")))
+}
+
+/// Mirror of TypeScript `aspectRatioFromMeta` (trusts `meta.args.aspect_ratio`).
+fn aspect_ratio_from_meta(meta: Option<&serde_json::Value>) -> Option<String> {
+    let raw = meta?
+        .get("args")
+        .and_then(|args| json_opt_string(args.get("aspect_ratio")))?;
+    // Accept preset-like or numeric "W:H" strings (same as FE parseAspectRatioString).
+    let parts: Vec<_> = raw.split(':').map(str::trim).collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let (Ok(w), Ok(h)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) else {
+        return None;
+    };
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some(raw)
+}
+
+/// Map a Parascene create-images JSON row the same way FE `mapRemoteCreation` does.
+///
+/// - Absolutizes url / thumbnail / fit / video
+/// - Infers media_type from video_url when missing
+/// - Prefers video_url as remote_url for videos
+/// - Derives aspect_ratio from meta.args, else width×height
+/// - Synthesizes url/thumbnail from `file_path` when sparse (group source rows)
+/// - Derives `fit_thumbnail_url` from thumbnail/url when the API omits it
+/// - Stores an absolutized remote_json snapshot
+pub(crate) fn map_remote_creation_json(
+    raw: &serde_json::Value,
+) -> Result<CreationUpsert, String> {
+    let id = raw
+        .get("id")
+        .and_then(json_id)
+        .ok_or_else(|| "remote creation missing id".to_string())?;
+
+    let file_path = json_opt_string(raw.get("file_path"));
+    let mut url = json_opt_string(raw.get("url"))
+        .or_else(|| json_opt_string(raw.get("image_url")))
+        .or_else(|| file_path.clone());
+    let mut thumbnail_url = json_opt_string(raw.get("thumbnail_url")).or_else(|| {
+        file_path
+            .as_ref()
+            .map(|p| format!("{p}?variant=thumbnail"))
+    });
+    let mut fit_thumbnail_url = json_opt_string(raw.get("fit_thumbnail_url"));
+    let mut video_url = json_opt_string(raw.get("video_url"));
+
+    let media_type = json_opt_string(raw.get("media_type")).unwrap_or_else(|| {
+        if video_url.is_some() {
+            "video".into()
+        } else {
+            "image".into()
+        }
+    });
+
+    let origin = PARASCENE_ORIGIN;
+    url = absolutize_asset_url(url.as_deref(), origin);
+    thumbnail_url = absolutize_asset_url(thumbnail_url.as_deref(), origin);
+    fit_thumbnail_url = absolutize_asset_url(fit_thumbnail_url.as_deref(), origin)
+        .or_else(|| derive_fit_thumbnail_url(thumbnail_url.as_deref(), url.as_deref()));
+    video_url = absolutize_asset_url(video_url.as_deref(), origin);
+
+    let remote_url = if media_type.eq_ignore_ascii_case("video") {
+        video_url.clone().or_else(|| url.clone())
+    } else {
+        url.clone().or_else(|| video_url.clone())
+    };
+
+    let filename = json_opt_string(raw.get("filename"));
+    let title = json_opt_string(raw.get("title"))
+        .or_else(|| filename.clone())
+        .unwrap_or_else(|| format!("Creation {id}"));
+    let width = json_positive_int(raw, "width");
+    let height = json_positive_int(raw, "height");
+    let meta = raw.get("meta");
+    let aspect_ratio = aspect_ratio_from_meta(meta).or_else(|| match (width, height) {
+        (Some(w), Some(h)) => Some(format!("{w}:{h}")),
+        _ => None,
+    });
+    let status = json_opt_string(raw.get("status")).unwrap_or_else(|| "completed".into());
+    let created_at =
+        json_opt_string(raw.get("created_at")).unwrap_or_else(|| Utc::now().to_rfc3339());
+    let description = json_opt_string(raw.get("description"));
+    let color = json_opt_string(raw.get("color"));
+    let published = json_bool(raw, "published");
+    let published_at = json_opt_string(raw.get("published_at"));
+    let nsfw = json_bool(raw, "nsfw");
+    let is_moderated_error = json_bool(raw, "is_moderated_error");
+    let prompt = prompt_from_meta(meta);
+
+    // Absolutized cloud snapshot — same fields FE writes into remoteJson.
+    let mut snapshot = raw.clone();
+    if let Some(obj) = snapshot.as_object_mut() {
+        obj.insert("id".into(), serde_json::Value::String(id.clone()));
+        obj.insert(
+            "url".into(),
+            match &url {
+                Some(u) => serde_json::Value::String(u.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "thumbnail_url".into(),
+            match &thumbnail_url {
+                Some(u) => serde_json::Value::String(u.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "fit_thumbnail_url".into(),
+            match &fit_thumbnail_url {
+                Some(u) => serde_json::Value::String(u.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "video_url".into(),
+            match &video_url {
+                Some(u) => serde_json::Value::String(u.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "media_type".into(),
+            serde_json::Value::String(media_type.clone()),
+        );
+        if let Some(w) = width {
+            obj.insert("width".into(), serde_json::json!(w));
+        }
+        if let Some(h) = height {
+            obj.insert("height".into(), serde_json::json!(h));
+        }
+        obj.insert(
+            "filename".into(),
+            match &filename {
+                Some(f) => serde_json::Value::String(f.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "title".into(),
+            match json_opt_string(raw.get("title")) {
+                Some(t) => serde_json::Value::String(t),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "description".into(),
+            match &description {
+                Some(d) => serde_json::Value::String(d.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "color".into(),
+            match &color {
+                Some(c) => serde_json::Value::String(c.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "status".into(),
+            serde_json::Value::String(status.clone()),
+        );
+        obj.insert("published".into(), serde_json::Value::Bool(published));
+        obj.insert(
+            "published_at".into(),
+            match &published_at {
+                Some(p) => serde_json::Value::String(p.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "created_at".into(),
+            serde_json::Value::String(created_at.clone()),
+        );
+        obj.insert("nsfw".into(), serde_json::Value::Bool(nsfw));
+        obj.insert(
+            "is_moderated_error".into(),
+            serde_json::Value::Bool(is_moderated_error),
+        );
+        if !obj.contains_key("meta") {
+            obj.insert("meta".into(), serde_json::Value::Null);
+        }
+    }
+
+    Ok(CreationUpsert {
+        id,
+        title,
+        media_type,
+        remote_url,
+        thumbnail_url,
+        fit_thumbnail_url,
+        video_url,
+        published,
+        published_at,
+        created_at,
+        // Match FE mapRemoteCreation — always "remote"; upsert preserves local when present.
+        download_state: "remote".into(),
+        prompt,
+        filename,
+        description,
+        color,
+        status: Some(status),
+        width,
+        height,
+        aspect_ratio,
+        nsfw,
+        is_moderated_error,
+        remote_json: serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".into()),
+    })
+}
+
+/// Upsert a Parascene create-images JSON row into the local catalog (job worker path).
+pub(crate) fn ingest_remote_creation_json(raw: &serde_json::Value) -> Result<String, String> {
+    let row = map_remote_creation_json(raw)?;
+    let id = row.id.clone();
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    let now = Utc::now().to_rfc3339();
+    upsert_creation(&conn, &row, &now)?;
+    Ok(id)
 }
 
 #[tauri::command]
@@ -1207,6 +1717,50 @@ fn existing_creation_ids(conn: &Connection, ids: &[String]) -> Result<Vec<String
     Ok(unique.into_iter().filter(|id| found.contains(id)).collect())
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreationIdAt {
+    pub id: String,
+    pub created_at: String,
+}
+
+/// Cloud catalog ids with `created_at >= since_iso` (excludes local-only imports).
+#[tauri::command]
+pub fn library_cloud_ids_since(since_iso: String) -> Result<Vec<CreationIdAt>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    cloud_ids_since(&conn, &since_iso)
+}
+
+fn cloud_ids_since(conn: &Connection, since_iso: &str) -> Result<Vec<CreationIdAt>, String> {
+    let since = since_iso.trim();
+    if since.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, created_at FROM creations
+             WHERE created_at >= ?1
+               AND id NOT LIKE 'local-%'
+               AND id NOT LIKE 'fixture-%'
+             ORDER BY created_at DESC, id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![since], |row| {
+            Ok(CreationIdAt {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn library_list_group_member_ids() -> Result<Vec<String>, String> {
     let paths = default_paths()?;
@@ -1215,8 +1769,13 @@ pub fn library_list_group_member_ids() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn library_sync_status() -> Result<SyncStatus, String> {
-    sync_status_for(&default_paths()?)
+pub async fn library_sync_status() -> Result<SyncStatus, String> {
+    tokio::task::spawn_blocking(|| {
+        let paths = default_paths()?;
+        sync_status_for(&paths)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1436,5 +1995,115 @@ mod tests {
         assert!(existing_creation_ids(&conn, &[]).expect("empty").is_empty());
 
         let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn map_remote_creation_mirrors_fe_sync_fields() {
+        let raw = serde_json::json!({
+            "id": 7,
+            "filename": "clip.mp4",
+            "video_url": "https://cdn.example/clip.mp4",
+            "thumbnail_url": "https://cdn.example/thumb.jpg",
+            "fit_thumbnail_url": "https://cdn.example/thumb.jpg?variant=fit",
+            "media_type": "video",
+            "width": 1920,
+            "height": 1080,
+            "color": "#abcdef",
+            "published": false,
+            "published_at": "2026-03-02T00:00:00Z",
+            "created_at": "2026-03-01T12:00:00Z",
+            "description": "noir",
+            "status": "completed",
+            "meta": { "args": { "prompt": "noir alley", "aspect_ratio": "16:9" } }
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(mapped.id, "7");
+        assert_eq!(mapped.title, "clip.mp4");
+        assert_eq!(mapped.media_type, "video");
+        assert_eq!(
+            mapped.remote_url.as_deref(),
+            Some("https://cdn.example/clip.mp4")
+        );
+        assert_eq!(
+            mapped.thumbnail_url.as_deref(),
+            Some("https://cdn.example/thumb.jpg")
+        );
+        assert_eq!(
+            mapped.fit_thumbnail_url.as_deref(),
+            Some("https://cdn.example/thumb.jpg?variant=fit")
+        );
+        assert_eq!(mapped.aspect_ratio.as_deref(), Some("16:9"));
+        assert_eq!(mapped.prompt.as_deref(), Some("noir alley"));
+        assert_eq!(mapped.download_state, "remote");
+
+        let snap: serde_json::Value =
+            serde_json::from_str(&mapped.remote_json).expect("snap");
+        assert_eq!(
+            snap.get("fit_thumbnail_url").and_then(|v| v.as_str()),
+            Some("https://cdn.example/thumb.jpg?variant=fit")
+        );
+    }
+
+    #[test]
+    fn map_remote_creation_absolutizes_and_synthesizes_from_file_path() {
+        let raw = serde_json::json!({
+            "id": 17804,
+            "file_path": "/api/images/created/26_17804_x.png",
+            "media_type": "image",
+            "meta": { "prompt": "member" }
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(
+            mapped.remote_url.as_deref(),
+            Some("https://www.parascene.com/api/images/created/26_17804_x.png")
+        );
+        assert_eq!(
+            mapped.thumbnail_url.as_deref(),
+            Some(
+                "https://www.parascene.com/api/images/created/26_17804_x.png?variant=thumbnail"
+            )
+        );
+        assert_eq!(mapped.prompt.as_deref(), Some("member"));
+    }
+
+    #[test]
+    fn map_remote_creation_infers_video_and_width_height_aspect() {
+        let raw = serde_json::json!({
+            "id": "99",
+            "video_url": "/cdn/v.mp4",
+            "thumbnail_url": "/cdn/t.jpg",
+            "width": 1080,
+            "height": 1920
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(mapped.media_type, "video");
+        assert_eq!(
+            mapped.remote_url.as_deref(),
+            Some("https://www.parascene.com/cdn/v.mp4")
+        );
+        assert_eq!(mapped.aspect_ratio.as_deref(), Some("1080:1920"));
+        assert_eq!(
+            mapped.fit_thumbnail_url.as_deref(),
+            Some("https://www.parascene.com/cdn/t.jpg?variant=fit")
+        );
+    }
+
+    #[test]
+    fn map_remote_creation_derives_fit_from_thumbnail_query() {
+        let raw = serde_json::json!({
+            "id": "18843",
+            "video_url": "/api/videos/created/video/x.mp4",
+            "thumbnail_url": "/api/images/created/x.png?creation_id=18843&variant=thumbnail",
+            "media_type": "video",
+            "width": 576,
+            "height": 1024
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(
+            mapped.fit_thumbnail_url.as_deref(),
+            Some(
+                "https://www.parascene.com/api/images/created/x.png?creation_id=18843&variant=fit"
+            )
+        );
     }
 }

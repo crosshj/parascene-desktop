@@ -1,18 +1,23 @@
 import { listen } from "@tauri-apps/api/event";
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { AudioWaveform } from "../../library/AudioWaveform";
-import { ensureLocal, getCreation } from "../../library/catalogClient";
+import { creationAspectCss } from "../../library/aspectRatio";
+import {
+  applyManifest,
+  ensureLocal,
+  getCreations,
+} from "../../library/catalogClient";
+import { CreationCard } from "../../library/CreationCard";
 import {
   creationCardTitle,
-  isGroupCreation,
+  groupEmbeddedSourceCreations,
+  groupSourceCreationIds,
 } from "../../library/creationFlags";
 import { isLocalOnlyCreation } from "../../library/creationFilters";
 import { FolderCard } from "../../library/FolderCard";
@@ -20,11 +25,14 @@ import type { LibraryFolder } from "../../library/folderClient";
 import {
   canFetchLocal,
   creationPreviewUrl,
-  isParasceneUnavailable,
 } from "../../library/previewUrl";
 import type { Creation, MediaType } from "../../library/types";
-import { isPreviewDecoded, whenPreviewReady } from "../../library/warmPreviews";
+import {
+  isEditorProjectCabinet,
+  type ProjectCabinetIds,
+} from "../../project/desktopProjectGroups";
 import type { ProjectAsset } from "../../project/types";
+import { mapGroupSourceCreations } from "../../sync/manifestSync";
 
 export type AssetKindFilter = "all" | MediaType;
 
@@ -38,6 +46,10 @@ const FILTERS: { id: AssetKindFilter; label: string }[] = [
 type AssetBrowserPaneProps = {
   assets: ProjectAsset[];
   folders?: LibraryFolder[];
+  /** Desktop Images cabinet id — expand members; hide cover. */
+  imagesGroupId?: string | null;
+  /** Desktop Videos cabinet id — expand members; hide cover. */
+  videosGroupId?: string | null;
   filter: AssetKindFilter;
   selectedId: string | null;
   selectedIds: readonly string[];
@@ -81,100 +93,50 @@ function displayName(
   return asset.name;
 }
 
-function AssetThumb({
-  kind,
-  creation,
-  isGroup = false,
+/** Fallback when the id is not in the local catalog yet. */
+function StubAssetTile({
+  asset,
+  selected,
+  onSelect,
+  onContextMenu,
 }: {
-  kind: ProjectAsset["kind"];
-  creation: Creation | undefined;
-  isGroup?: boolean;
+  asset: ProjectAsset;
+  selected: boolean;
+  onSelect: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
-  const preview = creation ? creationPreviewUrl(creation) : null;
-  const unavailable = creation ? isParasceneUnavailable(creation) : false;
-  const waitingOnDisk = Boolean(creation) && !preview && !unavailable;
-  const [paintSrc, setPaintSrc] = useState<string | null>(() =>
-    preview && isPreviewDecoded(preview) ? preview : null,
-  );
-  const [paintPreview, setPaintPreview] = useState(preview);
-  if (preview !== paintPreview) {
-    setPaintPreview(preview);
-    setPaintSrc(preview && isPreviewDecoded(preview) ? preview : null);
-  }
-
-  useLayoutEffect(() => {
-    if (!preview || isPreviewDecoded(preview)) return;
-    let cancelled = false;
-    void whenPreviewReady(preview).then(() => {
-      if (!cancelled) setPaintSrc(preview);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [preview]);
-
-  useEffect(() => {
-    if (!creation || unavailable || !canFetchLocal(creation) || preview) {
-      return;
-    }
-    void ensureLocal([creation.id], { fullMedia: false });
-  }, [creation, unavailable, preview]);
-
-  const showImage = Boolean(paintSrc && paintSrc === preview);
-  // Decorative icon — always for audio kind (no need for local media first).
-  const showAudio = kind === "audio" && !showImage;
-  const showPending =
-    !showAudio && (waitingOnDisk || (Boolean(preview) && !showImage));
-  const label = kind === "video" ? "Video" : kind === "audio" ? "Audio" : "Image";
-
   return (
-    <div
-      className={[
-        "editor-asset-thumb",
-        `kind-${kind}`,
-        showPending ? "is-pending" : "",
-        unavailable && !showAudio ? "is-broken" : "",
-        showImage ? "has-image" : "",
-        showAudio ? "is-audio" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      aria-hidden
+    <button
+      type="button"
+      className={
+        selected ? "editor-asset-tile is-selected" : "editor-asset-tile"
+      }
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
+      title={asset.name}
     >
-      {showImage ? (
-        <img src={paintSrc!} alt="" loading="eager" decoding="async" draggable={false} />
-      ) : showAudio ? (
-        <span className="editor-asset-audio-icon">
-          <AudioWaveform className="editor-asset-audio-wave" />
+      <span className={`editor-asset-thumb kind-${asset.kind}`} aria-hidden>
+        <span className="editor-asset-thumb-label">
+          {asset.kind === "video"
+            ? "Video"
+            : asset.kind === "audio"
+              ? "Audio"
+              : "Image"}
         </span>
-      ) : showPending ? (
-        <span className="editor-asset-thumb-shimmer" />
-      ) : (
-        <span className="editor-asset-thumb-label">{label}</span>
-      )}
-      {kind === "video" && showImage ? (
-        <span className="editor-asset-play-badge" />
-      ) : null}
-      {isGroup ? (
-        <span className="editor-asset-group-badge" title="Group">
-          <svg
-            viewBox="0 0 16 16"
-            width="12"
-            height="12"
-            aria-hidden
-          >
-            <rect x="2.5" y="4.5" width="8" height="8" rx="1.2" />
-            <rect x="5.5" y="2.5" width="8" height="8" rx="1.2" />
-          </svg>
-        </span>
-      ) : null}
-    </div>
+      </span>
+      <span className="editor-asset-meta">
+        <span className="editor-asset-kind">{asset.kind}</span>
+        <span className="editor-asset-name">{asset.name}</span>
+      </span>
+    </button>
   );
 }
 
 export function AssetBrowserPane({
   assets,
   folders = [],
+  imagesGroupId = null,
+  videosGroupId = null,
   filter,
   selectedId,
   selectedIds,
@@ -193,6 +155,11 @@ export function AssetBrowserPane({
   const [contextMenu, setContextMenu] = useState<AssetContextMenu | null>(null);
   const [folderViewId, setFolderViewId] = useState<string | null>(null);
   const selectionAnchorRef = useRef<string | null>(null);
+
+  const projectCabinets = useMemo<ProjectCabinetIds>(
+    () => ({ imagesGroupId, videosGroupId }),
+    [imagesGroupId, videosGroupId],
+  );
 
   const folderView =
     folders.find((folder) => folder.id === folderViewId) ?? null;
@@ -266,24 +233,56 @@ export function AssetBrowserPane({
     let cancelled = false;
 
     const load = async () => {
-      const next: Record<string, Creation> = {};
-      await Promise.all(
-        ids.map(async (id) => {
-          try {
-            next[id] = await getCreation(id);
-          } catch {
-            // Not in local catalog (fixture ids / stale references).
-          }
-        }),
-      );
-      if (cancelled) return;
-      setCreationsById(next);
+      try {
+        const rows = await getCreations(ids);
+        if (cancelled) return;
+        const next: Record<string, Creation> = {};
+        for (const row of rows) next[row.id] = row;
 
-      const needThumbs = Object.values(next)
-        .filter((c) => !creationPreviewUrl(c) && canFetchLocal(c))
-        .map((c) => c.id);
-      if (needThumbs.length > 0) {
-        void ensureLocal(needThumbs, { fullMedia: false });
+        // Pull cabinet members so Assets can show them outside the cover.
+        // Same as Library lightbox: if a member row was pruned/missing, rebuild
+        // it from the cover's embedded source_creations so we don't paint stubs.
+        const memberIds = new Set<string>();
+        const cabinetCovers: Creation[] = [];
+        for (const row of rows) {
+          if (!isEditorProjectCabinet(row.id, row, projectCabinets)) continue;
+          cabinetCovers.push(row);
+          for (const mid of groupSourceCreationIds(row)) {
+            if (!next[mid]) memberIds.add(mid);
+          }
+        }
+        if (memberIds.size > 0) {
+          let members = await getCreations([...memberIds]);
+          if (cancelled) return;
+          const found = new Set(members.map((row) => row.id));
+          const missing = [...memberIds].filter((id) => !found.has(id));
+          if (missing.length > 0) {
+            const missingSet = new Set(missing);
+            const upserts = cabinetCovers.flatMap((cover) =>
+              mapGroupSourceCreations(
+                groupEmbeddedSourceCreations(cover),
+              ).filter((row) => missingSet.has(row.id)),
+            );
+            if (upserts.length > 0) {
+              await applyManifest(upserts);
+              if (cancelled) return;
+              members = await getCreations([...memberIds]);
+            }
+          }
+          if (cancelled) return;
+          for (const row of members) next[row.id] = row;
+        }
+
+        setCreationsById(next);
+
+        const needThumbs = Object.values(next)
+          .filter((c) => !creationPreviewUrl(c) && canFetchLocal(c))
+          .map((c) => c.id);
+        if (needThumbs.length > 0) {
+          void ensureLocal(needThumbs, { fullMedia: false });
+        }
+      } catch {
+        if (!cancelled) setCreationsById({});
       }
     };
 
@@ -292,8 +291,12 @@ export function AssetBrowserPane({
     let unlisten: (() => void) | undefined;
     void listen<Creation>("library-creation-updated", (event) => {
       const row = event.payload;
-      if (!ids.includes(row.id)) return;
-      setCreationsById((prev) => ({ ...prev, [row.id]: row }));
+      setCreationsById((prev) => {
+        if (prev[row.id] || ids.includes(row.id)) {
+          return { ...prev, [row.id]: row };
+        }
+        return prev;
+      });
     }).then((off) => {
       unlisten = off;
     });
@@ -302,9 +305,44 @@ export function AssetBrowserPane({
       cancelled = true;
       unlisten?.();
     };
-  }, [assetIdsKey]);
+  }, [assetIdsKey, projectCabinets]);
 
-  const visible = rootAssets.filter((asset) => {
+  /** Flat list for the grid: cabinets expand to members (covers are hidden). */
+  const displayAssets = useMemo(() => {
+    const out: ProjectAsset[] = [];
+    const seen = new Set<string>();
+
+    const pushId = (id: string, fallbackKind: ProjectAsset["kind"]) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const creation = creationsById[id];
+      const existing = assets.find((a) => a.id === id);
+      out.push({
+        id,
+        name: existing?.name ?? id,
+        kind: kindFromCreation(creation, existing?.kind ?? fallbackKind),
+        durationLabel: existing?.durationLabel,
+      });
+    };
+
+    for (const asset of rootAssets) {
+      const creation = creationsById[asset.id];
+      if (isEditorProjectCabinet(asset.id, creation, projectCabinets)) {
+        const memberIds = creation ? groupSourceCreationIds(creation) : [];
+        const cabinetKind =
+          asset.id === projectCabinets?.videosGroupId ? "video" : "image";
+        for (const mid of memberIds) {
+          pushId(mid, cabinetKind);
+        }
+        continue;
+      }
+      pushId(asset.id, asset.kind);
+    }
+
+    return out;
+  }, [assets, creationsById, projectCabinets, rootAssets]);
+
+  const visible = displayAssets.filter((asset) => {
     if (filter === "all") return true;
     return kindFromCreation(creationsById[asset.id], asset.kind) === filter;
   });
@@ -354,7 +392,7 @@ export function AssetBrowserPane({
 
   const openContextMenu = (
     assetId: string,
-    event: ReactMouseEvent<HTMLButtonElement>,
+    event: ReactMouseEvent,
   ) => {
     if (!onDeleteAssets && !onRemoveAssets) return;
     event.preventDefault();
@@ -385,10 +423,7 @@ export function AssetBrowserPane({
     });
   };
 
-  const selectAsset = (
-    assetId: string,
-    event: ReactMouseEvent<HTMLButtonElement>,
-  ) => {
+  const selectAsset = (assetId: string, event: ReactMouseEvent) => {
     if (event.shiftKey && selectionAnchorRef.current) {
       const ids = visible.map((asset) => asset.id);
       const anchorIndex = ids.indexOf(selectionAnchorRef.current);
@@ -516,39 +551,32 @@ export function AssetBrowserPane({
               : null}
             {visible.map((asset) => {
               const creation = creationsById[asset.id];
-              const kind = kindFromCreation(creation, asset.kind);
-              const isGroup = creation ? isGroupCreation(creation) : false;
-              const name = displayName(asset, creation);
+              const selected = selectedIds.includes(asset.id);
               return (
                 <li key={asset.id}>
-                  <button
-                    type="button"
-                    className={
-                      selectedIds.includes(asset.id)
-                        ? "editor-asset-tile is-selected"
-                        : "editor-asset-tile"
-                    }
-                    onClick={(event) => selectAsset(asset.id, event)}
-                    onContextMenu={(event) => openContextMenu(asset.id, event)}
-                    title={name}
-                  >
-                    <AssetThumb
-                      kind={kind}
+                  {creation ? (
+                    <CreationCard
                       creation={creation}
-                      isGroup={isGroup}
+                      aspectCss={creationAspectCss(creation)}
+                      selected={selected}
+                      onOpen={(row, event) => selectAsset(row.id, event)}
+                      onContextMenu={(row, event) =>
+                        openContextMenu(row.id, event)
+                      }
                     />
-                    <span className="editor-asset-meta">
-                      <span className="editor-asset-kind">
-                        {isGroup ? "group" : kind}
-                      </span>
-                      <span className="editor-asset-name">{name}</span>
-                      {(kind === "video" || kind === "audio") && (
-                        <span className="editor-asset-duration muted">
-                          {asset.durationLabel ?? "—"}
-                        </span>
-                      )}
-                    </span>
-                  </button>
+                  ) : (
+                    <StubAssetTile
+                      asset={{
+                        ...asset,
+                        name: displayName(asset, creation),
+                      }}
+                      selected={selected}
+                      onSelect={(event) => selectAsset(asset.id, event)}
+                      onContextMenu={(event) =>
+                        openContextMenu(asset.id, event)
+                      }
+                    />
+                  )}
                 </li>
               );
             })}

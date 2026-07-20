@@ -10,9 +10,11 @@ import { listen } from "@tauri-apps/api/event";
 import { useShell } from "../../app/ShellProvider";
 import {
   deleteLocal,
+  getCreations,
   mergeTimelineClips,
   type MergeProgress,
 } from "../../library/catalogClient";
+import { groupSourceCreationIds } from "../../library/creationFlags";
 import {
   listFolders,
   type LibraryFolder,
@@ -114,6 +116,7 @@ export function EditorLayout() {
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
+    selectCreationsOnOpenProject,
     setOpenProjectPendingStagedDraft,
     setOpenProjectTimelineZoom,
     setOpenProjectTimelineMonitorActive,
@@ -173,6 +176,11 @@ export function EditorLayout() {
   /** Internal clipboard for Cmd/Ctrl+C / Cmd/Ctrl+V of timeline clips. */
   const clipClipboardRef = useRef<TimelineClip[]>([]);
   const mergeRunningRef = useRef(false);
+  /** Asset ids last observed on the open project — used to detect removals only. */
+  const knownAssetIdsRef = useRef<{
+    projectId: string;
+    ids: Set<string>;
+  } | null>(null);
 
   const clearClipSelection = () => {
     setSelectedClipId(null);
@@ -245,6 +253,50 @@ export function EditorLayout() {
       cancelled = true;
     };
   }, [projectFolderIdsKey, project.assets.length, project.folderIds]);
+
+  const projectAssetIdsKey = useMemo(
+    () => project.assets.map((asset) => asset.id).join("\0"),
+    [project.assets],
+  );
+
+  // Cabinet covers alone are on the project; members must be project assets too
+  // so Assets selection / timeline staging aren't cleared as "stale".
+  useEffect(() => {
+    const cabinetIds = [project.imagesGroupId, project.videosGroupId]
+      .map((id) => (id ? String(id).trim() : ""))
+      .filter(Boolean);
+    if (cabinetIds.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const covers = await getCreations(cabinetIds);
+        if (cancelled) return;
+        const known = new Set(
+          projectAssetIdsKey ? projectAssetIdsKey.split("\0") : [],
+        );
+        const missing: string[] = [];
+        for (const cover of covers) {
+          for (const mid of groupSourceCreationIds(cover)) {
+            if (!known.has(mid) && !missing.includes(mid)) missing.push(mid);
+          }
+        }
+        if (missing.length > 0) addCreationsToOpenProject(missing);
+      } catch (error) {
+        console.error("Failed to hydrate project cabinet members", error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addCreationsToOpenProject,
+    project.imagesGroupId,
+    project.id,
+    project.videosGroupId,
+    projectAssetIdsKey,
+  ]);
 
   const pauseTimelinePlayback = () => {
     if (!timelinePlaying) return;
@@ -479,21 +531,52 @@ export function EditorLayout() {
     }
   }
 
-  // Drop local asset selections if assets left the project.
-  if (selectedAssetIds.length > 0 || selectedAssetId) {
+  // Drop local asset selections only when assets leave the project.
+  // Expanded cabinet members can be selected (and briefly held) before they
+  // are promoted onto project.assets — those must not look "stale".
+  // Intentional prev-vs-current diff via a ref during render (see removed-set logic).
+  /* eslint-disable react-hooks/refs */
+  if (
+    knownAssetIdsRef.current === null ||
+    knownAssetIdsRef.current.projectId !== project.id
+  ) {
+    knownAssetIdsRef.current = {
+      projectId: project.id,
+      ids: new Set(project.assets.map((asset) => asset.id)),
+    };
+  }
+  {
     const alive = new Set(project.assets.map((asset) => asset.id));
-    const next = selectedAssetIds.filter((id) => alive.has(id));
-    const assetSelectionStale =
-      next.length !== selectedAssetIds.length ||
-      (selectedAssetId !== null && !alive.has(selectedAssetId));
-    if (assetSelectionStale) {
-      const primary =
-        selectedAssetId && next.includes(selectedAssetId)
+    const known = knownAssetIdsRef.current.ids;
+    const removed: string[] = [];
+    for (const id of known) {
+      if (!alive.has(id)) removed.push(id);
+    }
+    knownAssetIdsRef.current = { projectId: project.id, ids: alive };
+    /* eslint-enable react-hooks/refs */
+
+    if (
+      removed.length > 0 &&
+      (selectedAssetIds.length > 0 || selectedAssetId)
+    ) {
+      const removeSet = new Set(removed);
+      const next = selectedAssetIds.filter((id) => !removeSet.has(id));
+      const primaryStill =
+        selectedAssetId !== null && !removeSet.has(selectedAssetId)
           ? selectedAssetId
-          : (next[next.length - 1] ?? null);
-      setSelectedAssetIds(next);
-      setSelectedAssetId(primary);
-      setOpenProjectSelectedAssetId(primary);
+          : null;
+      const assetSelectionStale =
+        next.length !== selectedAssetIds.length ||
+        (selectedAssetId !== null && primaryStill === null);
+      if (assetSelectionStale) {
+        const primary =
+          primaryStill && next.includes(primaryStill)
+            ? primaryStill
+            : (next[next.length - 1] ?? null);
+        setSelectedAssetIds(next);
+        setSelectedAssetId(primary);
+        setOpenProjectSelectedAssetId(primary);
+      }
     }
   }
 
@@ -647,9 +730,11 @@ export function EditorLayout() {
     setSelectedClipId(null);
     setSelectedClipIds([]);
     setClipStagingSeed(null);
+    // Promote cabinet members onto the project in the same write as selection
+    // so persisted selectedAssetId isn't normalized away.
+    selectCreationsOnOpenProject(ids, primaryId);
     setSelectedAssetIds(ids);
     setSelectedAssetId(primaryId);
-    setOpenProjectSelectedAssetId(primaryId);
     if (!pendingDraftMatchesSelection(pendingStagedDraft, ids)) {
       clearPendingStagedDraft();
     }
@@ -1221,6 +1306,8 @@ export function EditorLayout() {
         <AssetBrowserPane
           assets={project.assets}
           folders={projectFolders}
+          imagesGroupId={project.imagesGroupId}
+          videosGroupId={project.videosGroupId}
           filter={assetFilter}
           selectedId={selectedAssetId}
           selectedIds={selectedAssetIds}
@@ -1263,6 +1350,10 @@ export function EditorLayout() {
             ? selectedAssetIds
             : []
         }
+        projectCabinets={{
+          imagesGroupId: project.imagesGroupId,
+          videosGroupId: project.videosGroupId,
+        }}
         aspectRatio={project.aspectRatio}
         monitorMode={monitorMode}
         timelineClips={project.timeline}

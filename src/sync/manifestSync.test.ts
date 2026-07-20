@@ -2,7 +2,9 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   mapGroupSourceCreations,
   mapRemoteCreation,
+  NEWEST_SYNC_MAX_PAGES,
   NEWEST_SYNC_PAGE_SIZE,
+  recentPruneSinceIso,
   remoteFromGroupSource,
   syncCreationsManifest,
   syncFullCreationsManifest,
@@ -12,13 +14,13 @@ import {
 
 const invoke = vi.fn();
 const listMyCreations = vi.fn();
+const getCreation = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
 vi.mock("../auth/session", () => ({
-  ensureAccessToken: vi.fn(async () => "fresh-token"),
   getEnvConfig: () => ({
     baseUrl: "https://www.parascene.com",
     apiBaseUrl: "https://api.parascene.com",
@@ -26,8 +28,10 @@ vi.mock("../auth/session", () => ({
     redirectUri: "http://127.0.0.1:17423/oauth/callback",
     loopbackPort: 17423,
   }),
+  ensureAccessToken: vi.fn(async () => "access-jwt"),
   createAuthedSdk: () => ({
     listMyCreations: (...args: unknown[]) => listMyCreations(...args),
+    getCreation: (...args: unknown[]) => getCreation(...args),
   }),
 }));
 
@@ -88,6 +92,12 @@ function mockDownloadPending() {
         status: { ...emptyStatus, local: 1, total: 1 },
       };
     }
+    if (cmd === "library_cloud_ids_since") {
+      return [];
+    }
+    if (cmd === "library_delete_local") {
+      return emptyStatus;
+    }
     if (cmd === "library_sync_status") {
       return emptyStatus;
     }
@@ -99,6 +109,11 @@ describe("manifestSync", () => {
   beforeEach(() => {
     invoke.mockReset();
     listMyCreations.mockReset();
+    getCreation.mockReset();
+    getCreation.mockImplementation(async (id: string | number) => ({
+      id,
+      status: "completed",
+    }));
     mockDownloadPending();
     listMyCreations.mockImplementation(async ({ offset }: { offset: number }) => {
       if (offset > 0) {
@@ -109,6 +124,23 @@ describe("manifestSync", () => {
         hasMore: false,
       };
     });
+  });
+
+  it("derives fit_thumbnail_url from square thumbnail when API omits it", () => {
+    const mapped = mapRemoteCreation({
+      id: 18843,
+      filename: "clip.png",
+      video_url: "https://cdn.example/clip.mp4",
+      thumbnail_url:
+        "https://www.parascene.com/api/images/created/x.png?creation_id=18843&variant=thumbnail",
+      media_type: "video",
+      width: 576,
+      height: 1024,
+      created_at: "2026-07-20T00:00:00Z",
+    });
+    expect(mapped.fitThumbnailUrl).toBe(
+      "https://www.parascene.com/api/images/created/x.png?creation_id=18843&variant=fit",
+    );
   });
 
   it("maps API rows into catalog upserts with full remote snapshot", () => {
@@ -166,6 +198,20 @@ describe("manifestSync", () => {
     });
   });
 
+  it("derives video_url for embedded i2v members that only have a poster path", () => {
+    const remote = remoteFromGroupSource({
+      id: 18843,
+      file_path: "/api/images/created/26_18843_1784522709211_7in916e.png",
+      filename: "26_18843_1784522709211_7in916e.png",
+      meta: { media_type: "video" },
+    });
+    expect(remote).toMatchObject({
+      id: "18843",
+      media_type: "video",
+      video_url: "/api/videos/created/video/26_18843_1784522709211_7in916e.mp4",
+    });
+  });
+
   it("maps embedded group source creations and absolutizes file_path", () => {
     const remote = remoteFromGroupSource({
       id: 17804,
@@ -219,9 +265,10 @@ describe("manifestSync", () => {
     expect(expanded.find((c) => c.id === "17804")?.title).toBe("Already local");
   });
 
-  it("full sync paginates creations, applies the manifest, then downloads", async () => {
+  it("full sync paginates creations and applies the manifest", async () => {
     const status = await syncFullCreationsManifest();
-    expect(status.local).toBe(1);
+    expect(status.total).toBe(1);
+    expect(status.remote).toBe(1);
     expect(listMyCreations).toHaveBeenCalledWith({ limit: 100, offset: 0 });
     expect(invoke).toHaveBeenCalledWith(
       "library_apply_manifest",
@@ -240,9 +287,6 @@ describe("manifestSync", () => {
         ],
       }),
     );
-    expect(invoke).toHaveBeenCalledWith("library_download_pending", {
-      limit: 80,
-    });
   });
 
   it("syncCreationsManifest aliases full sync", async () => {
@@ -252,7 +296,9 @@ describe("manifestSync", () => {
   });
 
   it("newest sync on empty local catalog applies the first page", async () => {
-    await syncNewestCreationsManifest();
+    const result = await syncNewestCreationsManifest();
+    expect(result.added).toBe(1);
+    expect(result.pruned).toBe(0);
     expect(listMyCreations).toHaveBeenCalledWith({
       limit: NEWEST_SYNC_PAGE_SIZE,
       offset: 0,
@@ -266,9 +312,6 @@ describe("manifestSync", () => {
         creations: [expect.objectContaining({ id: "99" })],
       }),
     );
-    expect(invoke).toHaveBeenCalledWith("library_download_pending", {
-      limit: 80,
-    });
   });
 
   it("newest sync no-ops when a complete page is already local", async () => {
@@ -292,14 +335,75 @@ describe("manifestSync", () => {
           status: emptyStatus,
         };
       }
+      if (cmd === "library_cloud_ids_since") {
+        return [];
+      }
+      if (cmd === "library_sync_status") {
+        return emptyStatus;
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
-    await syncNewestCreationsManifest();
+    const result = await syncNewestCreationsManifest();
+    expect(result.added).toBe(0);
     expect(listMyCreations).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith("library_apply_manifest", {
       creations: [],
     });
+  });
+
+  it("newest sync prunes local rows deleted remotely in the recent window", async () => {
+    const stillThere = remoteImage(10, "Keep");
+    listMyCreations.mockResolvedValueOnce({
+      images: [stillThere],
+      hasMore: false,
+    });
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[]; sinceIso?: string; id?: string }) => {
+      if (cmd === "library_existing_creation_ids") {
+        return args?.ids ?? [];
+      }
+      if (cmd === "library_apply_manifest") {
+        return {
+          ...emptyStatus,
+          total: Array.isArray(args?.creations) ? args.creations.length : 0,
+        };
+      }
+      if (cmd === "library_cloud_ids_since") {
+        return [
+          { id: "10", createdAt: stillThere.created_at },
+          { id: "11", createdAt: stillThere.created_at },
+        ];
+      }
+      if (cmd === "library_delete_local") {
+        expect(args?.id).toBe("11");
+        return emptyStatus;
+      }
+      if (cmd === "library_download_pending") {
+        return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
+      }
+      if (cmd === "library_sync_status") {
+        return { ...emptyStatus, total: 1 };
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+    getCreation.mockImplementation(async (id: string | number) => {
+      if (String(id) === "11") throw new Error("not found");
+      return { id, status: "completed" };
+    });
+
+    const result = await syncNewestCreationsManifest();
+    expect(result.pruned).toBe(1);
+    expect(invoke).toHaveBeenCalledWith("library_delete_local", { id: "11" });
+  });
+
+  it("recentPruneSinceIso never looks further back than a few hours", () => {
+    const now = Date.parse("2026-07-19T18:00:00.000Z");
+    const sixHoursAgo = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+    const dayAgo = "2026-07-18T18:00:00.000Z";
+    expect(recentPruneSinceIso(dayAgo, now)).toBe(sixHoursAgo);
+    expect(recentPruneSinceIso("2026-07-19T17:00:00.000Z", now)).toBe(
+      "2026-07-19T17:00:00.000Z",
+    );
   });
 
   it("newest sync applies only unknown ids and continues past mixed pages", async () => {
@@ -337,6 +441,12 @@ describe("manifestSync", () => {
           skipped: 0,
           status: emptyStatus,
         };
+      }
+      if (cmd === "library_cloud_ids_since") {
+        return [];
+      }
+      if (cmd === "library_sync_status") {
+        return emptyStatus;
       }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
@@ -379,11 +489,66 @@ describe("manifestSync", () => {
           status: emptyStatus,
         };
       }
+      if (cmd === "library_cloud_ids_since") {
+        return [];
+      }
+      if (cmd === "library_sync_status") {
+        return emptyStatus;
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
     await syncNewestCreationsManifest();
-    expect(listMyCreations).toHaveBeenCalledTimes(3);
-    expect(appliedCounts).toEqual([NEWEST_SYNC_PAGE_SIZE, NEWEST_SYNC_PAGE_SIZE]);
+    // Hard-capped — must not walk the whole remote catalog.
+    expect(listMyCreations).toHaveBeenCalledTimes(NEWEST_SYNC_MAX_PAGES);
+    expect(appliedCounts).toEqual([
+      NEWEST_SYNC_PAGE_SIZE,
+      NEWEST_SYNC_PAGE_SIZE,
+    ]);
+  });
+
+  it("newest sync stops as soon as a page is fully local", async () => {
+    const page1 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(100 + i, i === 0 ? "New" : "Known"),
+    );
+    const page2 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
+      remoteImage(2000 + i),
+    );
+    listMyCreations
+      .mockResolvedValueOnce({ images: page1, hasMore: true })
+      .mockResolvedValueOnce({ images: page2, hasMore: true });
+
+    // Only the first id on page1 is unknown; page2 is entirely known → stop.
+    const known = new Set([
+      ...page1.slice(1).map((img) => String(img.id)),
+      ...page2.map((img) => String(img.id)),
+    ]);
+
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
+      if (cmd === "library_existing_creation_ids") {
+        return (args?.ids ?? []).filter((id) => known.has(id));
+      }
+      if (cmd === "library_apply_manifest") {
+        return emptyStatus;
+      }
+      if (cmd === "library_download_pending") {
+        return {
+          downloaded: 0,
+          failed: 0,
+          skipped: 0,
+          status: emptyStatus,
+        };
+      }
+      if (cmd === "library_cloud_ids_since") {
+        return [];
+      }
+      if (cmd === "library_sync_status") {
+        return emptyStatus;
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    await syncNewestCreationsManifest();
+    expect(listMyCreations).toHaveBeenCalledTimes(2);
   });
 });

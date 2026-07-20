@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   createParasceneSdk,
   absolutizeAssetUrl,
+  deriveFitThumbnailUrl,
   isAccessTokenExpiredOrNear,
   LibraryFoldersConflictError,
   LibraryFoldersUnavailableError,
@@ -82,6 +83,20 @@ describe("ParasceneSdk", () => {
     ).toBe("https://www.parascene.com/avatars/a.png");
   });
 
+  it("derives fit thumbnail urls when the API omits fit_thumbnail_url", () => {
+    expect(
+      deriveFitThumbnailUrl(
+        "https://www.parascene.com/api/images/created/x.png?creation_id=18843&variant=thumbnail",
+      ),
+    ).toBe(
+      "https://www.parascene.com/api/images/created/x.png?creation_id=18843&variant=fit",
+    );
+    expect(deriveFitThumbnailUrl("https://cdn.example/t.jpg")).toBe(
+      "https://cdn.example/t.jpg?variant=fit",
+    );
+    expect(deriveFitThumbnailUrl(null, "https://cdn.example/v.mp4")).toBeNull();
+  });
+
   it("detects expired access JWTs", () => {
     const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 10 }))
       .replace(/\+/g, "-")
@@ -116,6 +131,34 @@ describe("ParasceneSdk", () => {
         bearer: "access-jwt",
       }),
     );
+  });
+
+  it("retries list creations once after a transient transport error", async () => {
+    invoke
+      .mockRejectedValueOnce(
+        new Error(
+          "Request failed: error sending request for url (https://api.parascene.com/api/create/images?limit=50&offset=0)",
+        ),
+      )
+      .mockResolvedValueOnce({
+        status: 200,
+        body: JSON.stringify({
+          images: [{ id: 2, title: "Two", media_type: "image" }],
+          has_more: false,
+        }),
+      });
+
+    const sdk = createParasceneSdk({
+      baseUrl: "https://www.parascene.com",
+      apiBaseUrl: "https://api.parascene.com",
+      clientId: "app",
+      redirectUri: "http://127.0.0.1:17423/oauth/callback",
+      getAccessToken: async () => "access-jwt",
+    });
+    const page = await sdk.listMyCreations({ limit: 50, offset: 0 });
+    expect(page.images).toHaveLength(1);
+    expect(page.images[0]?.id).toBe(2);
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 
   it("loads library folders from the API origin", async () => {

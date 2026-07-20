@@ -37,6 +37,12 @@ export type StoredProject = {
   timelineMonitorActive?: boolean;
   /** Timeline playhead seconds; omitted → 0. */
   timelinePlayheadSec?: number;
+  /** Parascene Images group creation id; omitted → null. */
+  imagesGroupId?: string | null;
+  /** Parascene Videos group creation id; omitted → null. */
+  videosGroupId?: string | null;
+  /** Preferred main song creation id; omitted → null. */
+  mainAudioCreationId?: string | null;
   updatedAt: string;
 };
 
@@ -261,7 +267,14 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
+    imagesGroupId: normalizeOptionalId(project.imagesGroupId),
+    videosGroupId: normalizeOptionalId(project.videosGroupId),
+    mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
   };
+}
+
+function normalizeOptionalId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function saveStoredProjects(projects: StoredProject[]): void {
@@ -294,6 +307,9 @@ export function createStoredProject(
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
+    imagesGroupId: null,
+    videosGroupId: null,
+    mainAudioCreationId: null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -316,13 +332,43 @@ export function removeCreationIds(
   creationIds: string[],
 ): StoredProject {
   if (creationIds.length === 0) return project;
-  const remove = new Set(creationIds);
+  const remove = new Set(
+    creationIds.map((id) => String(id).trim()).filter(Boolean),
+  );
+  if (remove.size === 0) return project;
+
   const nextIds = project.creationIds.filter((id) => !remove.has(id));
-  if (nextIds.length === project.creationIds.length) return project;
+  const prevTimeline = normalizeStoredTimeline(project.timeline);
+  const nextTimeline = prevTimeline.filter((clip) => {
+    if (clip.assetId && remove.has(clip.assetId)) return false;
+    const slideIds = clip.slideshow?.imageAssetIds;
+    if (slideIds?.some((id) => remove.has(id))) return false;
+    if (clip.slideshow?.audioAssetId && remove.has(clip.slideshow.audioAssetId)) {
+      return false;
+    }
+    return true;
+  });
+  const nextMainAudio =
+    project.mainAudioCreationId && remove.has(project.mainAudioCreationId)
+      ? null
+      : project.mainAudioCreationId;
+
+  const assetsChanged = nextIds.length !== project.creationIds.length;
+  const timelineChanged = nextTimeline.length !== prevTimeline.length;
+  const mainAudioChanged = nextMainAudio !== project.mainAudioCreationId;
+  if (!assetsChanged && !timelineChanged && !mainAudioChanged) return project;
+
+  const nextSelectedClip = normalizeSelectedTimelineClipId(
+    project.selectedTimelineClipId,
+    nextTimeline,
+  );
   return {
     ...project,
     creationIds: nextIds,
+    timeline: nextTimeline,
+    mainAudioCreationId: nextMainAudio,
     selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
+    selectedTimelineClipId: nextSelectedClip,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -581,6 +627,45 @@ export function setStoredProjectTimelinePlayheadSec(
   };
 }
 
+export function setStoredProjectGroupIds(
+  project: StoredProject,
+  ids: { imagesGroupId?: string | null; videosGroupId?: string | null },
+): StoredProject {
+  const imagesGroupId =
+    ids.imagesGroupId !== undefined
+      ? normalizeOptionalId(ids.imagesGroupId)
+      : normalizeOptionalId(project.imagesGroupId);
+  const videosGroupId =
+    ids.videosGroupId !== undefined
+      ? normalizeOptionalId(ids.videosGroupId)
+      : normalizeOptionalId(project.videosGroupId);
+  if (
+    imagesGroupId === normalizeOptionalId(project.imagesGroupId) &&
+    videosGroupId === normalizeOptionalId(project.videosGroupId)
+  ) {
+    return project;
+  }
+  return {
+    ...project,
+    imagesGroupId,
+    videosGroupId,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectMainAudioCreationId(
+  project: StoredProject,
+  creationId: string | null,
+): StoredProject {
+  const next = normalizeOptionalId(creationId);
+  if (next === normalizeOptionalId(project.mainAudioCreationId)) return project;
+  return {
+    ...project,
+    mainAudioCreationId: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /** Map a stored project into the shell UI Project shape. */
 export function storedProjectToUi(project: StoredProject): Project {
   const assets: ProjectAsset[] = project.creationIds.map((id) => ({
@@ -614,6 +699,9 @@ export function storedProjectToUi(project: StoredProject): Project {
     ],
     assets,
     folderIds: normalizeFolderIds(project.folderIds),
+    imagesGroupId: normalizeOptionalId(project.imagesGroupId),
+    videosGroupId: normalizeOptionalId(project.videosGroupId),
+    mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
     timeline,
     selectedTimelineClipId,
     selectedAssetId,
@@ -636,6 +724,9 @@ export function emptyUiProject(): Project {
     scenes: [],
     assets: [],
     folderIds: [],
+    imagesGroupId: null,
+    videosGroupId: null,
+    mainAudioCreationId: null,
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,

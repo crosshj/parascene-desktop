@@ -3,6 +3,7 @@ import {
   canFetchLocal,
   hasLocalMedia,
   isParasceneUnavailable,
+  withPreviewCacheBust,
 } from "./previewUrl";
 import type { Creation } from "./types";
 
@@ -38,6 +39,22 @@ function base(overrides: Partial<Creation> = {}): Creation {
     ...overrides,
   };
 }
+
+describe("withPreviewCacheBust", () => {
+  it("appends updatedAt so rewritten files remount", () => {
+    expect(withPreviewCacheBust("asset://thumb.jpg", "2026-07-20T01:00:00Z")).toBe(
+      "asset://thumb.jpg?v=2026-07-20T01%3A00%3A00Z",
+    );
+    expect(
+      withPreviewCacheBust("asset://thumb.jpg?x=1", "2026-07-20T01:00:00Z"),
+    ).toBe("asset://thumb.jpg?x=1&v=2026-07-20T01%3A00%3A00Z");
+  });
+
+  it("leaves src unchanged when version is empty", () => {
+    expect(withPreviewCacheBust("asset://thumb.jpg", "")).toBe("asset://thumb.jpg");
+    expect(withPreviewCacheBust("asset://thumb.jpg", null)).toBe("asset://thumb.jpg");
+  });
+});
 
 describe("isParasceneUnavailable", () => {
   it("treats disk-only imports with localPath as available", () => {

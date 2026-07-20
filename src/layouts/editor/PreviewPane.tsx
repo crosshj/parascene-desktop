@@ -64,6 +64,10 @@ import {
   groupSourceCreationIds,
   isGroupCreation,
 } from "../../library/creationFlags";
+import {
+  isEditorProjectCabinet,
+  type ProjectCabinetIds,
+} from "../../project/desktopProjectGroups";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
 import {
   mediaUrlForBakePath,
@@ -77,6 +81,11 @@ type PreviewPaneProps = {
   assetId: string | null;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
+  /**
+   * Desktop project cabinets — do not expand into slideshow composites
+   * (members are shown as flat assets in the Assets pane instead).
+   */
+  projectCabinets?: ProjectCabinetIds | null;
   /** Project creative frame shown as a matte overlay on the asset. */
   aspectRatio: ProjectAspectRatio;
   /** Source asset preview vs timeline-owned monitor. */
@@ -224,6 +233,7 @@ function SourceLabelIcon({
 export function PreviewPane({
   assetId,
   selectedAssetIds = [],
+  projectCabinets = null,
   aspectRatio,
   monitorMode = "source",
   timelineClips = [],
@@ -371,6 +381,8 @@ export function PreviewPane({
         const expandedIds = sourceSelectionIds.flatMap((id) => {
           const row = selectedById.get(id);
           if (!row || !isGroupCreation(row)) return [id];
+          // Desktop cabinets are filing folders, not creative packs.
+          if (isEditorProjectCabinet(id, row, projectCabinets)) return [id];
           return groupSourceCreationIds(row);
         });
         const uniqueExpandedIds = [...new Set(expandedIds)];
@@ -381,7 +393,11 @@ export function PreviewPane({
         if (missingIds.length > 0) {
           const missingSet = new Set(missingIds);
           const upserts = selectedRows
-            .filter((row) => isGroupCreation(row))
+            .filter(
+              (row) =>
+                isGroupCreation(row) &&
+                !isEditorProjectCabinet(row.id, row, projectCabinets),
+            )
             .flatMap((row) =>
               mapGroupSourceCreations(groupEmbeddedSourceCreations(row)).filter(
                 (u) => missingSet.has(u.id),
@@ -457,7 +473,7 @@ export function PreviewPane({
     return () => {
       cancelled = true;
     };
-  }, [monitorMode, editingClip, selectionKey]);
+  }, [monitorMode, editingClip, projectCabinets, selectionKey]);
 
   const unsupportedSelection =
     selectionClass?.type === "unsupportedVideos" ||

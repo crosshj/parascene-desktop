@@ -5,7 +5,7 @@ import {
 
 export type PrimaryTab = "library" | "project";
 export type LibrarySurface = "creations" | "sync";
-export type LayoutMode = "director" | "editor" | "hook";
+export type LayoutMode = "director" | "editor" | "hook" | "lab";
 
 export const SHELL_SESSION_KEY = "parascene.shellSession.v1";
 
@@ -38,7 +38,7 @@ export const DEFAULT_SHELL_SESSION: ShellSessionSnapshot = {
 
 const PRIMARY_TABS = new Set<PrimaryTab>(["library", "project"]);
 const LIBRARY_SURFACES = new Set<LibrarySurface>(["creations", "sync"]);
-const MODES = new Set<LayoutMode>(["director", "editor", "hook"]);
+const MODES = new Set<LayoutMode>(["director", "editor", "hook", "lab"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

@@ -7,10 +7,10 @@ use std::thread;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize)]
-struct OAuthCallbackPayload {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
+pub struct OAuthCallbackPayload {
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
 }
 
 struct ListenerState {
@@ -21,6 +21,26 @@ struct ListenerState {
 fn state() -> &'static Mutex<Option<ListenerState>> {
     static STATE: OnceLock<Mutex<Option<ListenerState>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
+}
+
+/// Survives emit races: FE polls this until the browser callback arrives.
+fn pending_result() -> &'static Mutex<Option<OAuthCallbackPayload>> {
+    static PENDING: OnceLock<Mutex<Option<OAuthCallbackPayload>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(None))
+}
+
+fn publish_outcome(app: &AppHandle, outcome: OAuthCallbackPayload) {
+    if let Ok(mut slot) = pending_result().lock() {
+        *slot = Some(outcome.clone());
+    }
+    // Best-effort notify; FE must not depend on this alone.
+    let _ = app.emit("oauth-callback", &outcome);
+}
+
+fn publish_outcome_without_app(outcome: OAuthCallbackPayload) {
+    if let Ok(mut slot) = pending_result().lock() {
+        *slot = Some(outcome);
+    }
 }
 
 fn parse_oauth_callback(request_line: &str) -> OAuthCallbackPayload {
@@ -261,13 +281,25 @@ fn html_err(msg: &str) -> Vec<u8> {
 }
 
 /// Bind loopback redirect and accept in a background thread.
-/// When Parascene redirects here, emits `oauth-callback` (UI stays responsive).
 #[tauri::command]
 pub fn start_oauth_listener(app: AppHandle, port: u16) -> Result<u16, String> {
+    // Drop any leftover callback from a prior attempt.
+    if let Ok(mut slot) = pending_result().lock() {
+        *slot = None;
+    }
+
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(existing) = guard.as_ref() {
         if existing.active.load(Ordering::SeqCst) {
-            return Err("oauth_listener_already_active".into());
+            drop(guard);
+            let _ = cancel_oauth_listener();
+            thread::sleep(std::time::Duration::from_millis(120));
+            guard = state().lock().map_err(|e| e.to_string())?;
+            if let Some(still) = guard.as_ref() {
+                if still.active.load(Ordering::SeqCst) {
+                    return Err("oauth_listener_already_active".into());
+                }
+            }
         }
     }
 
@@ -284,29 +316,58 @@ pub fn start_oauth_listener(app: AppHandle, port: u16) -> Result<u16, String> {
     drop(guard);
 
     thread::spawn(move || {
-        let outcome = match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buf = [0u8; 8192];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let first_line = req.lines().next().unwrap_or("");
-                let payload = parse_oauth_callback(first_line);
-                let response = if payload.error.is_some() && payload.code.is_none() {
-                    html_err(payload.error.as_deref().unwrap_or("error"))
-                } else if payload.code.is_some() {
-                    html_ok()
-                } else {
-                    html_err("missing_code")
+        let outcome = loop {
+            let active = state()
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|s| s.active.load(Ordering::SeqCst)))
+                .unwrap_or(false);
+            if !active {
+                break OAuthCallbackPayload {
+                    code: None,
+                    state: None,
+                    error: Some("cancelled".into()),
                 };
-                let _ = stream.write_all(&response);
-                let _ = stream.flush();
-                payload
             }
-            Err(e) => OAuthCallbackPayload {
-                code: None,
-                state: None,
-                error: Some(format!("accept_failed: {e}")),
-            },
+
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 8192];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let first_line = req.lines().next().unwrap_or("");
+                    let payload = parse_oauth_callback(first_line);
+                    let has_oauth = payload.code.is_some() || payload.error.is_some();
+                    if !has_oauth {
+                        let body = b"Not Found";
+                        let header = format!(
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(body);
+                        let _ = stream.flush();
+                        continue;
+                    }
+                    let response = if payload.error.is_some() && payload.code.is_none() {
+                        html_err(payload.error.as_deref().unwrap_or("error"))
+                    } else if payload.code.is_some() {
+                        html_ok()
+                    } else {
+                        html_err("missing_code")
+                    };
+                    let _ = stream.write_all(&response);
+                    let _ = stream.flush();
+                    break payload;
+                }
+                Err(e) => {
+                    break OAuthCallbackPayload {
+                        code: None,
+                        state: None,
+                        error: Some(format!("accept_failed: {e}")),
+                    };
+                }
+            }
         };
 
         if let Ok(mut g) = state().lock() {
@@ -316,10 +377,21 @@ pub fn start_oauth_listener(app: AppHandle, port: u16) -> Result<u16, String> {
             *g = None;
         }
 
-        let _ = app.emit("oauth-callback", outcome);
+        eprintln!(
+            "[oauth] callback received (code={}, error={:?})",
+            outcome.code.is_some(),
+            outcome.error
+        );
+        publish_outcome(&app, outcome);
     });
 
     Ok(port)
+}
+
+/// FE polls this — reliable even when Tauri events are missed.
+#[tauri::command]
+pub fn oauth_take_callback() -> Option<OAuthCallbackPayload> {
+    pending_result().lock().ok().and_then(|mut slot| slot.take())
 }
 
 /// Unblock a waiting listener (e.g. user cancelled login).
@@ -328,6 +400,11 @@ pub fn cancel_oauth_listener() -> Result<(), String> {
     let port = {
         let guard = state().lock().map_err(|e| e.to_string())?;
         let Some(st) = guard.as_ref() else {
+            publish_outcome_without_app(OAuthCallbackPayload {
+                code: None,
+                state: None,
+                error: Some("cancelled".into()),
+            });
             return Ok(());
         };
         if !st.active.load(Ordering::SeqCst) {
@@ -336,9 +413,7 @@ pub fn cancel_oauth_listener() -> Result<(), String> {
         st.port
     };
 
-    // Connecting unblocks accept(); the thread emits oauth-callback with error=cancelled.
     let _ = std::net::TcpStream::connect(("127.0.0.1", port)).and_then(|mut stream| {
-        use std::io::Write;
         stream.write_all(
             b"GET /oauth/callback?error=cancelled HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
         )

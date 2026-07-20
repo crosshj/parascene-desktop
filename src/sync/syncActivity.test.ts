@@ -3,11 +3,13 @@ import {
   applySyncItemEvent,
   clearFinishedSyncActivity,
   countFinishedSyncActivity,
+  MAX_JOB_HISTORY,
+  partitionSyncActivity,
   syncActivityKey,
 } from "./syncActivity";
 
 describe("syncActivity", () => {
-  it("appends new items and updates in place without reordering", () => {
+  it("keeps live downloads and drops them when done", () => {
     let items = applySyncItemEvent([], {
       id: "a",
       title: "Alpha",
@@ -28,14 +30,10 @@ describe("syncActivity", () => {
       kind: "thumb",
       state: "done",
     });
-    expect(items.map((i) => i.key)).toEqual(["thumb:a", "media:b"]);
-    expect(items[0]).toMatchObject({
-      key: syncActivityKey("thumb", "a"),
-      state: "done",
-    });
+    expect(items.map((i) => i.key)).toEqual(["media:b"]);
   });
 
-  it("keeps failure detail on the row", () => {
+  it("keeps failure detail on download rows", () => {
     const items = applySyncItemEvent([], {
       id: "1",
       title: "One",
@@ -50,7 +48,7 @@ describe("syncActivity", () => {
     let items = applySyncItemEvent([], {
       id: "1",
       title: "One",
-      kind: "thumb",
+      kind: "catalog",
       state: "done",
     });
     items = applySyncItemEvent(items, {
@@ -62,14 +60,14 @@ describe("syncActivity", () => {
     items = applySyncItemEvent(items, {
       id: "3",
       title: "Three",
-      kind: "media",
+      kind: "folders",
       state: "failed",
     });
     expect(countFinishedSyncActivity(items)).toBe(2);
     expect(clearFinishedSyncActivity(items).map((i) => i.id)).toEqual(["2"]);
   });
 
-  it("tracks repair rows separately from preview downloads", () => {
+  it("tracks repair rows as jobs", () => {
     let items = applySyncItemEvent([], {
       id: "9",
       title: "Clip",
@@ -90,5 +88,32 @@ describe("syncActivity", () => {
       detail: "Local fit uploaded",
     });
     expect(items[0]).toMatchObject({ state: "done", kind: "repair" });
+    expect(partitionSyncActivity(items).jobs).toHaveLength(1);
+  });
+
+  it("caps finished job history instead of retaining hundreds of downloads", () => {
+    let items: ReturnType<typeof applySyncItemEvent> = [];
+    for (let i = 0; i < MAX_JOB_HISTORY + 5; i++) {
+      items = applySyncItemEvent(items, {
+        id: `job-${i}`,
+        title: `Job ${i}`,
+        kind: "catalog",
+        state: "done",
+      });
+    }
+    const { jobs, downloads } = partitionSyncActivity(items);
+    expect(jobs).toHaveLength(MAX_JOB_HISTORY);
+    expect(jobs[0]?.id).toBe("job-5");
+    expect(downloads).toHaveLength(0);
+
+    for (let i = 0; i < 30; i++) {
+      items = applySyncItemEvent(items, {
+        id: `thumb-${i}`,
+        title: `Thumb ${i}`,
+        kind: "thumb",
+        state: "done",
+      });
+    }
+    expect(partitionSyncActivity(items).downloads).toHaveLength(0);
   });
 });

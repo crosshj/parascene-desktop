@@ -1,6 +1,6 @@
 import type { ProjectAspectRatio } from "./aspectRatios";
 
-export type LayoutMode = "director" | "editor" | "hook";
+export type LayoutMode = "director" | "editor" | "hook" | "lab";
 
 export type Scene = {
   id: string;
@@ -115,6 +115,14 @@ export type Project = {
   assets: ProjectAsset[];
   /** Local Library folder ids attached to this project. */
   folderIds: string[];
+  /**
+   * Parascene group creation ids for this project's Images / Videos buckets.
+   * Null until Lab (or create flow) ensures the cloud group exists.
+   */
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  /** Preferred main song creation id for Director / Lab (optional). */
+  mainAudioCreationId: string | null;
   timeline: TimelineClip[];
   /** Selected timeline clip id (editor); null when none. */
   selectedTimelineClipId: string | null;

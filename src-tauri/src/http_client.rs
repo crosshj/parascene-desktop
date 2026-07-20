@@ -1,8 +1,37 @@
 use reqwest::Client;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Duration;
 
-fn client() -> Client {
-    Client::new()
+fn client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .user_agent("ParasceneDesktop/0.1")
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
+pub(crate) fn map_request_error(url: &str, err: reqwest::Error) -> String {
+    let msg = err.to_string();
+    if err.is_timeout() || msg.contains("timed out") || msg.contains("timeout") {
+        return format!("Request timed out for {url}");
+    }
+    if err.is_connect()
+        || msg.contains("error sending request")
+        || msg.contains("connection")
+        || msg.contains("dns")
+    {
+        return format!(
+            "Couldn't reach Parascene ({url}). Check your network and try again."
+        );
+    }
+    format!("Request failed for {url}: {msg}")
 }
 
 #[derive(Clone, Serialize)]
@@ -47,7 +76,7 @@ pub async fn http_post_json(url: String, body: String) -> Result<HttpJsonResult,
         .body(body)
         .send()
         .await
-        .map_err(|e| format!("Could not reach {url} ({e})"))?;
+        .map_err(|e| map_request_error(&url, e))?;
     let status = res.status().as_u16();
     let headers = res.headers().clone();
     let body = res.text().await.map_err(|e| e.to_string())?;
@@ -61,7 +90,21 @@ pub async fn http_get_bearer(url: String, bearer: String) -> Result<HttpJsonResu
         .header("Authorization", format!("Bearer {bearer}"))
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|e| map_request_error(&url, e))?;
+    let status = res.status().as_u16();
+    let headers = res.headers().clone();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    Ok(result_from_response(status, &headers, body))
+}
+
+#[tauri::command]
+pub async fn http_delete_bearer(url: String, bearer: String) -> Result<HttpJsonResult, String> {
+    let res = client()
+        .delete(&url)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .send()
+        .await
+        .map_err(|e| map_request_error(&url, e))?;
     let status = res.status().as_u16();
     let headers = res.headers().clone();
     let body = res.text().await.map_err(|e| e.to_string())?;
@@ -81,7 +124,47 @@ pub async fn http_post_bearer(
         .body(body)
         .send()
         .await
-        .map_err(|e| format!("Could not reach {url} ({e})"))?;
+        .map_err(|e| map_request_error(&url, e))?;
+    let status = res.status().as_u16();
+    let headers = res.headers().clone();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    Ok(result_from_response(status, &headers, body))
+}
+
+/// POST raw bytes with bearer (e.g. `POST /api/images/generic`).
+#[tauri::command]
+pub async fn http_post_bytes_bearer(
+    url: String,
+    body_base64: String,
+    bearer: String,
+    content_type: String,
+    extra_headers: Option<HashMap<String, String>>,
+) -> Result<HttpJsonResult, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body_base64.trim())
+        .map_err(|e| format!("Invalid base64 body: {e}"))?;
+    let mut req = client()
+        .post(&url)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .header(
+            "Content-Type",
+            if content_type.trim().is_empty() {
+                "application/octet-stream"
+            } else {
+                content_type.trim()
+            },
+        )
+        .body(bytes);
+    if let Some(headers) = extra_headers {
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| map_request_error(&url, e))?;
     let status = res.status().as_u16();
     let headers = res.headers().clone();
     let body = res.text().await.map_err(|e| e.to_string())?;

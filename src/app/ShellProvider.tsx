@@ -27,6 +27,8 @@ import {
   setStoredProjectTimelineZoom,
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
+  setStoredProjectGroupIds,
+  setStoredProjectMainAudioCreationId,
   storedProjectToUi,
   type StoredProject,
 } from "../project/projectStore";
@@ -63,6 +65,14 @@ type ShellState = {
   setOpenProjectSelectedTimelineClipId: (clipId: string | null) => void;
   /** Remember which asset is selected in the editor. */
   setOpenProjectSelectedAssetId: (assetId: string | null) => void;
+  /**
+   * Promote creation ids onto the open project and set the primary selection
+   * in one store write (so normalizeSelectedAssetId sees the new ids).
+   */
+  selectCreationsOnOpenProject: (
+    creationIds: string[],
+    primaryId: string | null,
+  ) => void;
   setOpenProjectPendingStagedDraft: (draft: unknown | null) => void;
   /** Remember timeline zoom for the open project. */
   setOpenProjectTimelineZoom: (zoom: number) => void;
@@ -70,6 +80,13 @@ type ShellState = {
   setOpenProjectTimelineMonitorActive: (active: boolean) => void;
   /** Remember timeline playhead position (seconds). */
   setOpenProjectTimelinePlayheadSec: (sec: number) => void;
+  /** Persist Parascene Images / Videos group creation ids for the open project. */
+  setOpenProjectGroupIds: (ids: {
+    imagesGroupId?: string | null;
+    videosGroupId?: string | null;
+  }) => void;
+  /** Persist preferred main song creation id for the open project. */
+  setOpenProjectMainAudioCreationId: (creationId: string | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => void;
   /** Remove library creation IDs from the open project (no-op if none open). */
@@ -323,6 +340,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const selectCreationsOnOpenProject = useCallback(
+    (creationIds: string[], primaryId: string | null) => {
+      patchOpenProject((p) => {
+        const merged =
+          creationIds.length > 0 ? mergeCreationIds(p, creationIds) : p;
+        return setStoredProjectSelectedAssetId(merged, primaryId);
+      });
+    },
+    [patchOpenProject],
+  );
+
   const setOpenProjectPendingStagedDraft = useCallback(
     (draft: unknown | null) => {
       patchOpenProject((p) => setStoredProjectPendingStagedDraft(p, draft));
@@ -351,6 +379,23 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectGroupIds = useCallback(
+    (ids: {
+      imagesGroupId?: string | null;
+      videosGroupId?: string | null;
+    }) => {
+      patchOpenProject((p) => setStoredProjectGroupIds(p, ids));
+    },
+    [patchOpenProject],
+  );
+
+  const setOpenProjectMainAudioCreationId = useCallback(
+    (creationId: string | null) => {
+      patchOpenProject((p) => setStoredProjectMainAudioCreationId(p, creationId));
+    },
+    [patchOpenProject],
+  );
+
   const value = useMemo(
     () => ({
       primaryTab,
@@ -368,10 +413,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimeline,
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
+      selectCreationsOnOpenProject,
       setOpenProjectPendingStagedDraft,
       setOpenProjectTimelineZoom,
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
+      setOpenProjectGroupIds,
+      setOpenProjectMainAudioCreationId,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
@@ -406,10 +454,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimeline,
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
+      selectCreationsOnOpenProject,
       setOpenProjectPendingStagedDraft,
       setOpenProjectTimelineZoom,
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
+      setOpenProjectGroupIds,
+      setOpenProjectMainAudioCreationId,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,

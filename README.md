@@ -8,6 +8,7 @@ macOS shell for Parascene (Tauri 2 + React + TypeScript). This pass scaffolds th
 - Xcode Command Line Tools (`xcode-select --install`)
 - Node.js 20+
 - Rust via **rustup** (stable): https://rustup.rs — Homebrew’s older `rust` formula is often too old for Tauri 2
+- **Local media tools** (FFmpeg, Demucs for Lab vocals/a2v): see [LOCAL_TOOLS.md](LOCAL_TOOLS.md) — also **Settings → Local tools** in the app
 
 ## Install
 
@@ -106,5 +107,6 @@ No timeline editing, FFmpeg, rendering, generation, or real Hook publishing.
 - [docs/PLAN-library-sync.md](docs/PLAN-library-sync.md) — local Library + sync design
 - [docs/PLAN-macos-desktop-shell.md](docs/PLAN-macos-desktop-shell.md) — shell leftovers (About / updates)
 - [docs/PLAN-ffmpeg.md](docs/PLAN-ffmpeg.md) — FFmpeg detect + install assist
+- [LOCAL_TOOLS.md](LOCAL_TOOLS.md) — FFmpeg, Demucs, and other local installs for Lab/Editor
 - [docs/PLAN-parascene-generation.md](docs/PLAN-parascene-generation.md) — generation API deps (first–last frame, short duration, prompt relay)
 - [docs/mockups/](docs/mockups/) — Director / Editor / Hook / Library target visuals
