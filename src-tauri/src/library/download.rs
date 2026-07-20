@@ -4,6 +4,7 @@ use super::catalog::{
     mark_downloaded, ready_connection, set_download_state, set_local_thumb_path, sync_status_for,
     Creation, SyncStatus,
 };
+use super::proxy::spawn_ensure_proxies;
 use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
@@ -1098,6 +1099,7 @@ async fn download_batch(
                 }
                 try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
+                spawn_ensure_proxies(app.clone(), creation.id.clone());
                 emit_sync_item(app, &creation, "media", "done");
                 downloaded += 1;
             }
@@ -1205,6 +1207,7 @@ async fn download_media_only(
             }
             try_fill_native_thumb_after_media(paths, &creation.id);
             emit_creation_updated(app, &creation.id);
+            spawn_ensure_proxies(app.clone(), creation.id.clone());
             emit_sync_item(app, &creation, "media", "done");
             emit_progress(app, 1, 1, Some(creation.id.clone()), 0, "media");
             Ok(())
@@ -1336,6 +1339,7 @@ async fn download_media_batch(
                 }
                 try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
+                spawn_ensure_proxies(app.clone(), creation.id.clone());
                 emit_sync_item(app, &creation, "media", "done");
                 downloaded += 1;
             }

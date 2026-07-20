@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useMemo,
   useEffect,
   useRef,
@@ -304,35 +305,26 @@ export function EditorLayout() {
     setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
   };
 
-  // Virtual timeline clock — only while the program monitor is active.
-  useEffect(() => {
-    if (!timelinePlaying || monitorMode !== "timeline") return;
-    const end = Math.max(sequenceDurationSec, 0);
-    if (end <= 0) return;
-
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      const advanced = livePlayheadRef.current + dt;
-      // Loop by default — wrap at sequence end.
-      const wrapped = advanced >= end;
-      const next = wrapped ? advanced % end : advanced;
+  // Playhead while playing comes from the ONE preview stream (MSE <video>),
+  // not a parallel FE rAF clock.
+  const onTimelineStreamPlayhead = useCallback(
+    (sec: number) => {
+      if (!timelinePlaying || monitorMode !== "timeline") return;
+      const next = Math.max(0, sec);
       livePlayheadRef.current = next;
       setLivePlayheadSec(next);
-      if (wrapped) setMediaSeekEpoch((n) => n + 1);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
+    },
+    [timelinePlaying, monitorMode, setLivePlayheadSec],
+  );
+
+  useEffect(() => {
+    if (!timelinePlaying || monitorMode !== "timeline") return;
     return () => {
-      cancelAnimationFrame(raf);
       setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
     };
   }, [
     timelinePlaying,
     monitorMode,
-    sequenceDurationSec,
     setOpenProjectTimelinePlayheadSec,
   ]);
 
@@ -1388,6 +1380,7 @@ export function EditorLayout() {
         onExpandAssets={expandAssets}
         volume={previewVolume}
         onVolumeChange={setPreviewVolume}
+        onTimelinePlayheadSec={onTimelineStreamPlayhead}
       />
 
       {assistantDocked ? (

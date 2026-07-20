@@ -3,6 +3,7 @@ mod http_client;
 mod library;
 mod media_stream;
 mod oauth_listener;
+mod preview;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
 use http_client::{
@@ -13,7 +14,8 @@ use library::{
     library_cache_missing_thumbs, library_cloud_ids_since, library_create_folder,
     library_delete_folder,
     library_delete_local, library_detect_beats, library_download_ids, library_download_pending,
-    library_download_thumbs, library_ensure_clip_thumb, library_ensure_local, library_ensure_ready,
+    library_download_thumbs, library_ensure_clip_thumb, library_ensure_local, library_ensure_proxies,
+    library_ensure_proxies_async, library_ensure_ready,
     library_ensure_reversed, library_ensure_slideshow, library_fill_thumb, library_filter_counts,
     library_existing_creation_ids, library_get_creation, library_get_creations, library_get_folder,
     library_import_from_disk, library_import_local_paths, library_invalidate_mismatched_thumbs,
@@ -33,6 +35,10 @@ use library::{
     publisher_list_renders, publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
+use preview::{
+    preview_get_state, preview_pause, preview_play, preview_read_fragment, preview_seek,
+    preview_session_close, preview_session_open, preview_set_rate, preview_set_timeline,
+};
 use tauri::Manager;
 use tauri::webview::PageLoadEvent;
 
@@ -43,6 +49,21 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .register_asynchronous_uri_scheme_protocol("media", |_ctx, request, responder| {
             match media_stream::media_response(request) {
+                Ok(response) => responder.respond(response),
+                Err(error) => {
+                    let body = error.to_string().into_bytes();
+                    let response = http::Response::builder()
+                        .status(http::StatusCode::BAD_REQUEST)
+                        .header(http::header::CONTENT_TYPE, "text/plain")
+                        .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .body(body)
+                        .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                    responder.respond(response);
+                }
+            }
+        })
+        .register_asynchronous_uri_scheme_protocol("preview", |_ctx, request, responder| {
+            match preview::preview_response(request) {
                 Ok(response) => responder.respond(response),
                 Err(error) => {
                     let body = error.to_string().into_bytes();
@@ -152,7 +173,18 @@ pub fn run() {
             publisher_list_renders,
             publisher_render_timeline,
             publisher_delete_render,
-            publisher_export_render
+            publisher_export_render,
+            library_ensure_proxies,
+            library_ensure_proxies_async,
+            preview_session_open,
+            preview_session_close,
+            preview_set_timeline,
+            preview_play,
+            preview_pause,
+            preview_seek,
+            preview_set_rate,
+            preview_get_state,
+            preview_read_fragment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

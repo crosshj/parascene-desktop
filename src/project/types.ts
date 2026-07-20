@@ -97,6 +97,27 @@ export type TimelineClip = {
   bakeKey?: string | null;
   /** Absolute path to the cached silent bake MP4 when ready. */
   bakePath?: string | null;
+  /** Transition at the head of this clip (program monitor / compose). */
+  transitionIn?: ClipTransition | null;
+  /** Transition at the tail of this clip. */
+  transitionOut?: ClipTransition | null;
+  /** Visual effects applied during compose (opacity, blur stub, …). */
+  effects?: ClipEffect[] | null;
+};
+
+export type ClipTransitionKind = "cut" | "dissolve" | "fadeBlack";
+
+export type ClipTransition = {
+  kind: ClipTransitionKind;
+  durationSec: number;
+};
+
+export type ClipEffectKind = "opacity" | "blur";
+
+export type ClipEffect = {
+  kind: ClipEffectKind;
+  /** opacity 0..1; blur radius in px (stub). */
+  value: number;
 };
 
 export type HookSuggestion = {

@@ -43,6 +43,10 @@ pub fn ensure_directories(paths: &ParascenePaths) -> Result<(), String> {
         &paths.projects,
         &paths.exports,
         &paths.cache,
+        &paths.cache.join("proxies"),
+        &paths.cache.join("proxies").join("v1"),
+        &paths.cache.join("preview-compose"),
+        &paths.cache.join("preview-sessions"),
     ] {
         fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
     }

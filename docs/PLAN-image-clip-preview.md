@@ -14,11 +14,12 @@ Today those fields are stored on the staged draft / timeline clip, but the previ
 
 ## Non-goals (this pass)
 
-- Full timeline sequence playback (multi-clip compose)
+- Full timeline sequence playback (multi-clip compose) — see [PLAN-preview-mse.md](./PLAN-preview-mse.md)
 - Export / FFmpeg encode of the staged image clip ([PLAN-ffmpeg.md](./PLAN-ffmpeg.md) readiness is separate)
 - Multiple Ken Burns presets, manual keyframes, or per-clip motion editors
-- Replacing `<video>` / `<audio>` preview yet (images only first)
 - Fit / fullscreen chrome controls (still deferred in the preview deck)
+
+**Superseded for program monitor:** Replacing timeline `<video>` is done via Rust fMP4/MSE ([PLAN-preview-mse.md](./PLAN-preview-mse.md)). This canvas plan remains relevant for **source staging overspill** UX.
 
 ## Settled UX
 

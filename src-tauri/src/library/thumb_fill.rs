@@ -451,6 +451,10 @@ mod tests {
             nsfw: false,
             is_moderated_error: false,
             remote_json: None,
+            proxy_play_path: None,
+            proxy_scrub_path: None,
+            proxy_status: None,
+            proxy_hash: None,
         }
     }
 

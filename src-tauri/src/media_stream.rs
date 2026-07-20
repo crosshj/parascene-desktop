@@ -65,7 +65,7 @@ fn mime_for(path: &Path) -> &'static str {
         .map(|ext| ext.to_ascii_lowercase())
         .as_deref()
     {
-        Some("mp4") | Some("m4v") => "video/mp4",
+        Some("mp4") | Some("m4v") | Some("m4s") => "video/mp4",
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
         Some("mp3") => "audio/mpeg",

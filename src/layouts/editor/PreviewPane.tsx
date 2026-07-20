@@ -74,7 +74,7 @@ import {
   type BakeInfo,
 } from "../../library/slideshowMedia";
 import { pendingDraftMatchesSelection } from "./editorSelection";
-import { TimelineMonitor } from "./TimelineMonitor";
+import { TimelinePreviewPlayer } from "./TimelinePreviewPlayer";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
 
 type PreviewPaneProps = {
@@ -123,6 +123,8 @@ type PreviewPaneProps = {
   /** Shared preview volume (0–100). */
   volume?: number;
   onVolumeChange?: (volume: number) => void;
+  /** While timeline is playing, stream clock updates (one video → UI playhead). */
+  onTimelinePlayheadSec?: (sec: number) => void;
 };
 
 type Size = { w: number; h: number };
@@ -246,12 +248,12 @@ export function PreviewPane({
   restoredSourceDraft = null,
   onSourceDraftChange,
   bakeInfo = null,
-  bakeInfoByClipId,
   onSlideshowRender = null,
   showAssetsExpand = false,
   onExpandAssets,
   volume: volumeProp,
   onVolumeChange,
+  onTimelinePlayheadSec,
 }: PreviewPaneProps) {
   const [creation, setCreation] = useState<Creation | null>(null);
   const [selectionClass, setSelectionClass] =
@@ -1293,17 +1295,18 @@ export function PreviewPane({
         <div ref={frameRef} className="editor-preview-frame">
           <div className="editor-preview-surface" style={surfaceStyle}>
             {monitorMode === "timeline" ? (
-              <TimelineMonitor
+              <TimelinePreviewPlayer
                 clips={timelineClips}
                 playheadSec={timelinePlayheadSec}
                 playing={timelinePlaying}
                 mediaSeekEpoch={mediaSeekEpoch}
-                bakeInfoByClipId={bakeInfoByClipId}
-                volume={volume}
+                volume={volume / 100}
+                aspectRatio={aspectRatio}
                 stageW={stage.w}
                 stageH={stage.h}
                 matteW={matte.w}
                 matteH={matte.h}
+                onPlayheadSec={onTimelinePlayheadSec}
               />
             ) : unsupportedMessage ? (
               <div className="editor-preview-unsupported" role="status">

@@ -3,6 +3,7 @@
 use super::catalog::{
     default_paths, get_creation_by_id, ready_connection, sync_status_for, Creation, SyncStatus,
 };
+use super::proxy::spawn_ensure_proxies;
 use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use rusqlite::params;
@@ -201,6 +202,9 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
         let updated =
             get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Missing {id} after thumb"))?;
         let _ = app.emit("library-creation-updated", &updated);
+        if media_type == "video" || media_type == "image" || media_type == "audio" {
+            spawn_ensure_proxies(app.clone(), id.clone());
+        }
         imported.push(updated);
     }
 

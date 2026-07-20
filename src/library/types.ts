@@ -39,6 +39,13 @@ export type Creation = {
   isModeratedError: boolean;
   /** Full Parascene `GET /api/create/images` row as synced (JSON string). */
   remoteJson: string | null;
+  /** Playback fMP4 proxy path when ready. */
+  proxyPlayPath?: string | null;
+  /** All-intra scrub fMP4 proxy path when ready. */
+  proxyScrubPath?: string | null;
+  /** pending | generating | ready | failed | none */
+  proxyStatus?: string | null;
+  proxyHash?: string | null;
 };
 
 /** Payload written into SQLite by `library_apply_manifest`. */

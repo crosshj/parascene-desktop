@@ -39,6 +39,13 @@ pub struct Creation {
     pub is_moderated_error: bool,
     /// Full Parascene create-images row as synced (JSON).
     pub remote_json: Option<String>,
+    /// Playback fMP4 proxy path under Cache/proxies (when ready).
+    pub proxy_play_path: Option<String>,
+    /// All-intra scrub fMP4 proxy path.
+    pub proxy_scrub_path: Option<String>,
+    /// pending | generating | ready | failed | none
+    pub proxy_status: Option<String>,
+    pub proxy_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -230,9 +237,26 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE creations ADD COLUMN is_moderated_error INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE creations ADD COLUMN remote_json TEXT",
         "ALTER TABLE creations ADD COLUMN fit_thumbnail_url TEXT",
+        "ALTER TABLE creations ADD COLUMN proxy_play_path TEXT",
+        "ALTER TABLE creations ADD COLUMN proxy_scrub_path TEXT",
+        "ALTER TABLE creations ADD COLUMN proxy_status TEXT",
+        "ALTER TABLE creations ADD COLUMN proxy_hash TEXT",
     ] {
         let _ = conn.execute(ddl, []);
     }
+
+    let _ = conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS proxy_assets (
+          creation_id TEXT PRIMARY KEY NOT NULL,
+          proxy_play_path TEXT,
+          proxy_scrub_path TEXT,
+          proxy_status TEXT NOT NULL DEFAULT 'pending',
+          proxy_hash TEXT,
+          updated_at TEXT NOT NULL
+        );
+        "#,
+    );
 
     // Folders may be missing on catalogs created before this feature.
     let _ = conn.execute_batch(
@@ -634,6 +658,10 @@ fn map_creation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Creation> {
         nsfw: row.get::<_, i64>(24).unwrap_or(0) != 0,
         is_moderated_error: row.get::<_, i64>(25).unwrap_or(0) != 0,
         remote_json: row.get(26)?,
+        proxy_play_path: row.get(27)?,
+        proxy_scrub_path: row.get(28)?,
+        proxy_status: row.get(29)?,
+        proxy_hash: row.get(30)?,
     })
 }
 
@@ -642,7 +670,8 @@ const CREATION_SELECT: &str = r#"
            local_path, local_thumb_path,
            published, published_at, created_at, download_state, checksum, prompt, expires_at, updated_at,
            filename, description, color, status, width, height, aspect_ratio,
-           COALESCE(nsfw, 0), COALESCE(is_moderated_error, 0), remote_json
+           COALESCE(nsfw, 0), COALESCE(is_moderated_error, 0), remote_json,
+           proxy_play_path, proxy_scrub_path, proxy_status, proxy_hash
     FROM creations
 "#;
 
@@ -1204,6 +1233,45 @@ pub(crate) fn mark_downloaded(
         params![local_path, local_thumb_path, now, id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Persist dual preview-proxy paths / status for a creation.
+pub(crate) fn set_proxy_fields(
+    conn: &Connection,
+    id: &str,
+    play_path: Option<&str>,
+    scrub_path: Option<&str>,
+    status: &str,
+    hash: Option<&str>,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        r#"
+        UPDATE creations
+        SET proxy_play_path = ?1,
+            proxy_scrub_path = ?2,
+            proxy_status = ?3,
+            proxy_hash = ?4,
+            updated_at = ?5
+        WHERE id = ?6
+        "#,
+        params![play_path, scrub_path, status, hash, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = conn.execute(
+        r#"
+        INSERT INTO proxy_assets(creation_id, proxy_play_path, proxy_scrub_path, proxy_status, proxy_hash, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(creation_id) DO UPDATE SET
+          proxy_play_path = excluded.proxy_play_path,
+          proxy_scrub_path = excluded.proxy_scrub_path,
+          proxy_status = excluded.proxy_status,
+          proxy_hash = excluded.proxy_hash,
+          updated_at = excluded.updated_at
+        "#,
+        params![id, play_path, scrub_path, status, hash, now],
+    );
     Ok(())
 }
 

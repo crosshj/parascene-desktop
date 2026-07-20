@@ -1,8 +1,8 @@
 mod beats;
-mod catalog;
+pub(crate) mod catalog;
 mod clip_thumb;
 mod download;
-mod ffmpeg;
+pub(crate) mod ffmpeg;
 mod folders;
 mod import_local;
 mod jobs;
@@ -11,6 +11,7 @@ mod lab_deps;
 mod merge;
 mod parascene_api;
 pub(crate) mod paths;
+pub(crate) mod proxy;
 mod render;
 mod reverse;
 mod slideshow;
@@ -45,6 +46,7 @@ pub use lab_deps::{
     library_install_demucs, library_lab_deps_status, library_open_local_tools_doc,
 };
 pub use merge::library_merge_timeline_clips;
+pub use proxy::{library_ensure_proxies, library_ensure_proxies_async};
 pub use render::{
     publisher_delete_render, publisher_export_render, publisher_list_renders,
     publisher_render_timeline,
