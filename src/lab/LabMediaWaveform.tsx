@@ -428,6 +428,8 @@ export function LabWaveformStrip({
 
   useEffect(() => {
     let cancelled = false;
+    // Intentional: reset peaks while loading a new path.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPeaks(null);
     setError(null);
     void audioWaveformPeaks(path, 160)

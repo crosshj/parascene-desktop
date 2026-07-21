@@ -184,6 +184,7 @@ export function LabLayout() {
   const [session, setSession] = useState<LabSessionSnapshot>(() =>
     loadLabSession(project.id),
   );
+  const [buttonLabel, setButtonLabel] = useState<string | null>(null);
 
   const resumeGroupsRef = useRef(false);
   const resumeEnsurePayloadRef = useRef<{
@@ -448,7 +449,6 @@ export function LabLayout() {
 
   const [credits, setCredits] = useState<number | null>(null);
   const [assets, setAssets] = useState<Creation[]>([]);
-  const [buttonLabel, setButtonLabel] = useState<string | null>(null);
 
   const refreshAssets = useCallback(async () => {
     if (project.assets.length === 0) {
@@ -594,6 +594,7 @@ export function LabLayout() {
   // Keep Cancel available across HMR remounts while a groups job is in flight.
   useEffect(() => {
     if (!groupsBusy && !session.activeJob?.backendJobId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setGroupsJobCancellable(true);
     if (session.activeJob?.backendJobId) {
       trackGroupsJobId(session.activeJob.backendJobId);
@@ -616,7 +617,7 @@ export function LabLayout() {
       },
     }));
     setButtonLabel(note);
-  }, []);
+  }, [setButtonLabel]);
 
   const setPendingCreation = useCallback(
     (
@@ -2667,6 +2668,7 @@ function FrameModule(
   useEffect(() => {
     let cancelled = false;
     if (!videoId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSourcePath(null);
       setVideoUrl(null);
       setTimeSec(0);
@@ -3151,21 +3153,31 @@ function AlignModule(
   const transcriptRef = useRef(transcript);
   const lyricsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const linesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  linesRef.current = lines;
-  engineRef.current = engine;
-  transcriptRef.current = transcript;
 
   useEffect(() => {
-    if (!props.busy) setActiveLane(null);
+    linesRef.current = lines;
+    engineRef.current = engine;
+    transcriptRef.current = transcript;
+  }, [lines, engine, transcript]);
+
+  useEffect(() => {
+    if (!props.busy) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setActiveLane(null);
+    }
   }, [props.busy]);
 
   useEffect(() => {
-    if (props.mainAudioId && !audioId) setAudioId(props.mainAudioId);
+    if (props.mainAudioId && !audioId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAudioId(props.mainAudioId);
+    }
   }, [props.mainAudioId, audioId]);
 
   useEffect(() => {
     let cancelled = false;
     if (!audioId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMixPath(null);
       setMixUrl(null);
       setVocalsPath(null);
@@ -3201,6 +3213,7 @@ function AlignModule(
 
   useEffect(() => {
     if (!saved) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLines(reconcileAlignedLinesFromScript(saved.lyricsText, saved.lines));
     setLyrics(saved.lyricsText);
     setEngine(saved.transcribeEngine);
@@ -3728,6 +3741,7 @@ function ProposeModule(
   });
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (matchingAlignment?.lyricsText != null) {
       setLyrics(matchingAlignment.lyricsText);
     }
@@ -3736,6 +3750,7 @@ function ProposeModule(
         Math.max(...fromProject.lines.map((l) => l.endSec), 1),
       );
     }
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [
     matchingAlignment?.alignedAt,
     matchingAlignment?.sourceAudioCreationId,

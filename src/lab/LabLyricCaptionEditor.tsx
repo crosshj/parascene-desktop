@@ -88,21 +88,17 @@ export function LabLyricCaptionEditor(props: {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [playbackSource, setPlaybackSource] = useState<"mix" | "vocals">("mix");
 
-  const activeMediaUrl =
-    playbackSource === "vocals" && vocalsMediaUrl
-      ? vocalsMediaUrl
-      : mediaUrl;
+  const resolvedPlaybackSource =
+    playbackSource === "vocals" && vocalsMediaUrl ? "vocals" : "mix";
 
-  useEffect(() => {
-    if (playbackSource === "vocals" && !vocalsMediaUrl) {
-      setPlaybackSource("mix");
-    }
-  }, [playbackSource, vocalsMediaUrl]);
+  const activeMediaUrl =
+    resolvedPlaybackSource === "vocals" ? vocalsMediaUrl : mediaUrl;
+
+  const effectiveDurationSec = audioPath ? durationSec : 0;
 
   useEffect(() => {
     let cancelled = false;
     if (!audioPath) {
-      setDurationSec(0);
       return;
     }
     void audioWaveformPeaks(audioPath, 64).then((peaks) => {
@@ -117,14 +113,14 @@ export function LabLyricCaptionEditor(props: {
 
   const seek = useCallback(
     (sec: number) => {
-      const next = clamp(sec, 0, durationSec || sec);
+      const next = clamp(sec, 0, effectiveDurationSec || sec);
       const audio = audioRef.current;
       if (audio && Number.isFinite(next)) {
         audio.currentTime = next;
       }
       setCurrentSec(next);
     },
-    [durationSec],
+    [effectiveDurationSec],
   );
 
   useEffect(() => {
@@ -227,13 +223,19 @@ export function LabLyricCaptionEditor(props: {
   );
 
   const secToRatio = useCallback(
-    (sec: number) => (durationSec > 0 ? clamp(sec / durationSec, 0, 1) : 0),
-    [durationSec],
+    (sec: number) =>
+      effectiveDurationSec > 0
+        ? clamp(sec / effectiveDurationSec, 0, 1)
+        : 0,
+    [effectiveDurationSec],
   );
 
   const ratioToSec = useCallback(
-    (ratio: number) => (durationSec > 0 ? clamp(ratio, 0, 1) * durationSec : 0),
-    [durationSec],
+    (ratio: number) =>
+      effectiveDurationSec > 0
+        ? clamp(ratio, 0, 1) * effectiveDurationSec
+        : 0,
+    [effectiveDurationSec],
   );
 
   const onTrackPointerDown = (
@@ -252,7 +254,7 @@ export function LabLyricCaptionEditor(props: {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const track = trackRef.current;
-    if (!track || durationSec <= 0) return;
+    if (!track || effectiveDurationSec <= 0) return;
     const rect = track.getBoundingClientRect();
     if (rect.width <= 0) return;
     const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
@@ -310,19 +312,19 @@ export function LabLyricCaptionEditor(props: {
         >
           <button
             type="button"
-            className={playbackSource === "mix" ? "is-active" : ""}
+            className={resolvedPlaybackSource === "mix" ? "is-active" : ""}
             onClick={() => switchPlaybackSource("mix")}
             disabled={!mediaUrl}
-            aria-pressed={playbackSource === "mix"}
+            aria-pressed={resolvedPlaybackSource === "mix"}
           >
             Full
           </button>
           <button
             type="button"
-            className={playbackSource === "vocals" ? "is-active" : ""}
+            className={resolvedPlaybackSource === "vocals" ? "is-active" : ""}
             onClick={() => switchPlaybackSource("vocals")}
             disabled={!vocalsMediaUrl}
-            aria-pressed={playbackSource === "vocals"}
+            aria-pressed={resolvedPlaybackSource === "vocals"}
             title={
               vocalsMediaUrl
                 ? "Play vocals stem"
@@ -334,7 +336,9 @@ export function LabLyricCaptionEditor(props: {
         </div>
         <span className="muted">
           Playhead: {formatClock(currentSec)}
-          {durationSec > 0 ? ` / ${formatClock(durationSec)}` : ""}
+          {effectiveDurationSec > 0
+            ? ` / ${formatClock(effectiveDurationSec)}`
+            : ""}
         </span>
         {activeLineIndex != null && lines[activeLineIndex] ? (
           <span className="lab-lyric-caption-now">
@@ -351,7 +355,7 @@ export function LabLyricCaptionEditor(props: {
               <LabWaveformStrip
                 path={audioPath}
                 currentSec={currentSec}
-                durationSec={durationSec}
+                durationSec={effectiveDurationSec}
                 onSeek={seek}
               />
             ) : (
@@ -369,7 +373,7 @@ export function LabLyricCaptionEditor(props: {
               <LabWaveformStrip
                 path={vocalsPath}
                 currentSec={currentSec}
-                durationSec={durationSec}
+                durationSec={effectiveDurationSec}
                 onSeek={seek}
               />
             ) : (
@@ -383,19 +387,19 @@ export function LabLyricCaptionEditor(props: {
         <div className="lab-timeline-lane">
           <LaneHead label="Whisper" controls={whisperControls} />
           <div className="lab-timeline-lane-body">
-            {whisperWords && whisperWords.length > 0 && durationSec > 0 ? (
+            {whisperWords && whisperWords.length > 0 && effectiveDurationSec > 0 ? (
               <LabWhisperWordTrack
                 words={whisperWords}
-                durationSec={durationSec}
+                durationSec={effectiveDurationSec}
                 currentSec={currentSec}
                 vocalBlocks={vocalBlocks}
                 onSeek={seek}
                 lane
               />
-            ) : vocalBlocks && vocalBlocks.length > 0 && durationSec > 0 ? (
+            ) : vocalBlocks && vocalBlocks.length > 0 && effectiveDurationSec > 0 ? (
               <LabWhisperWordTrack
                 words={[]}
-                durationSec={durationSec}
+                durationSec={effectiveDurationSec}
                 currentSec={currentSec}
                 vocalBlocks={vocalBlocks}
                 onSeek={seek}
@@ -419,13 +423,13 @@ export function LabLyricCaptionEditor(props: {
             onPointerCancel={onTrackPointerUp}
             onClick={(e) => {
               const track = trackRef.current;
-              if (!track || durationSec <= 0) return;
+              if (!track || effectiveDurationSec <= 0) return;
               const rect = track.getBoundingClientRect();
               seek(ratioToSec((e.clientX - rect.left) / rect.width));
             }}
             role="presentation"
           >
-            {durationSec > 0 && hasSungBlocks
+            {effectiveDurationSec > 0 && hasSungBlocks
               ? lines.map((row, index) => {
                   if (isInaudibleLyricLine(row)) return null;
                   const left = `${secToRatio(row.startSec) * 100}%`;
@@ -498,7 +502,7 @@ export function LabLyricCaptionEditor(props: {
                       <input
                         type="number"
                         min={0}
-                        max={durationSec || undefined}
+                        max={effectiveDurationSec || undefined}
                         step={0.01}
                         value={row.startSec}
                         onChange={(e) =>
@@ -513,7 +517,7 @@ export function LabLyricCaptionEditor(props: {
                       <input
                         type="number"
                         min={0}
-                        max={durationSec || undefined}
+                        max={effectiveDurationSec || undefined}
                         step={0.01}
                         value={row.endSec}
                         onChange={(e) =>
