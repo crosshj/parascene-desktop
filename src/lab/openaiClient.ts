@@ -29,6 +29,9 @@ export function hasOpenAiApiKey(): boolean {
 /** Stronger model for lyric ↔ Whisper word-range alignment. */
 export const OPENAI_LYRIC_ALIGN_MODEL = "gpt-4.1";
 
+/** Stronger model for MV storyboard planning. */
+export const OPENAI_STORYBOARD_MODEL = "gpt-4.1";
+
 export type OpenAiChatResult = {
   request: Record<string, unknown>;
   response: unknown;
@@ -82,19 +85,5 @@ export async function openAiChatCompletion(opts: {
   return { request, response, content };
 }
 
-/** Starter shot catalog for storyboard propose smoke. */
-export const LAB_SHOT_CATALOG = [
-  "lip_sync_cu",
-  "lip_sync_mcu",
-  "wide_performance",
-  "instrument_detail",
-  "metaphor_broll",
-  "location_plate",
-  "lyric_card",
-  "crowd_energy",
-  "push_in",
-  "static_hold",
-  "chorus_punch",
-  "bridge_reset",
-  "outro_hold",
-] as const;
+/** @deprecated Use STORYBOARD_SHOT_TYPES from storyboardShotCatalog */
+export { STORYBOARD_SHOT_TYPES as LAB_SHOT_CATALOG } from "./storyboardShotCatalog";

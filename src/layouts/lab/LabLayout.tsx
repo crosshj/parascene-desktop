@@ -54,7 +54,6 @@ import {
 } from "../../lab/labDeps";
 import {
   hasOpenAiApiKey,
-  LAB_SHOT_CATALOG,
   loadOpenAiApiKey,
   openAiChatCompletion,
 } from "../../lab/openaiClient";
@@ -67,6 +66,15 @@ import {
 } from "../../lab/lyricAlign";
 import { transcribeAudio, type TranscribeEngine } from "../../lab/transcribe";
 import type { AlignedLyricLine, LyricAlignment, LyricTranscript } from "../../project/types";
+import {
+  hasLockedStoryboardConcept,
+  hasStoryboardBudget,
+} from "../../project/storyboardNormalize";
+import {
+  MvBudgetModule,
+  MvConceptModule,
+  MvScenesModule,
+} from "../../lab/LabMvModules";
 import {
   loadLabSession,
   sanitizeLabSession,
@@ -175,6 +183,8 @@ export function LabLayout() {
     setOpenProjectLabPrompts,
     setOpenProjectMainAudioCreationId,
     setOpenProjectLyricAlignment,
+    setOpenProjectStoryboardProposal,
+    setOpenProjectLabStoryboardDirection,
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
     closeProject,
@@ -563,6 +573,18 @@ export function LabLayout() {
   const mainAudioId =
     project.mainAudioCreationId || audioAssets[0]?.id || "";
 
+  const matchingLyricAlignment =
+    project.lyricAlignment &&
+    (!mainAudioId ||
+      project.lyricAlignment.sourceAudioCreationId === mainAudioId)
+      ? project.lyricAlignment
+      : null;
+  const hasAlignedSungLines = Boolean(
+    matchingLyricAlignment?.lines.some(
+      (line) => !isInaudibleLyricLine(line),
+    ),
+  );
+
   const gateCtx = {
     groupsReady,
     assetCount: assets.length,
@@ -574,6 +596,11 @@ export function LabLayout() {
     demucsReady,
     whisperReady,
     vocalsSliceReady: Boolean(session.vocalsSlice?.path),
+    hasAlignedSungLines,
+    hasLockedStoryboardConcept: hasLockedStoryboardConcept(
+      project.storyboardProposal,
+    ),
+    hasStoryboardBudget: hasStoryboardBudget(project.storyboardProposal),
   };
   const activeGate = labModuleGate(moduleId, gateCtx);
 
@@ -1309,6 +1336,7 @@ export function LabLayout() {
             <LabGateNotice
               gate={activeGate}
               onGoToGroups={() => setModuleId("groups")}
+              onGoToMvConcept={() => setModuleId("mvConcept")}
             />
           ) : null}
           {moduleId === "create" && !activeGate && (
@@ -1439,14 +1467,56 @@ export function LabLayout() {
               onRun={(fn) => void run("align", fn)}
             />
           )}
-          {moduleId === "propose" && !activeGate && (
-            <ProposeModule
-              lyricAlignment={project.lyricAlignment}
+          {moduleId === "mvConcept" && !activeGate && (
+            <MvConceptModule
+              projectTitle={project.title}
+              aspectRatio={project.aspectRatio}
               mainAudioId={mainAudioId}
+              lyricAlignment={project.lyricAlignment}
+              storyboardProposal={project.storyboardProposal}
+              seedDirection={project.labStoryboardDirection}
+              labStillPrompt={project.labStillPrompt}
+              labAnimatePrompt={project.labAnimatePrompt}
+              onStoryboardProposalChange={setOpenProjectStoryboardProposal}
+              onSeedDirectionChange={setOpenProjectLabStoryboardDirection}
+              onContinue={() => setModuleId("mvBudget")}
               busy={moduleBusy || anyBusy}
               buttonLabel={buttonLabel}
-              progressLog={session.progressLogByModule.propose}
-              onRun={(fn) => void run("propose", fn)}
+              progressLog={session.progressLogByModule.mvConcept}
+              onRun={(fn) => void run("mvConcept", fn)}
+            />
+          )}
+          {moduleId === "mvBudget" && !activeGate && (
+            <MvBudgetModule
+              projectTitle={project.title}
+              aspectRatio={project.aspectRatio}
+              mainAudioId={mainAudioId}
+              lyricAlignment={project.lyricAlignment}
+              storyboardProposal={project.storyboardProposal}
+              labStillPrompt={project.labStillPrompt}
+              labAnimatePrompt={project.labAnimatePrompt}
+              onStoryboardProposalChange={setOpenProjectStoryboardProposal}
+              onContinue={() => setModuleId("mvScenes")}
+              busy={moduleBusy || anyBusy}
+              buttonLabel={buttonLabel}
+              progressLog={session.progressLogByModule.mvBudget}
+              onRun={(fn) => void run("mvBudget", fn)}
+            />
+          )}
+          {moduleId === "mvScenes" && !activeGate && (
+            <MvScenesModule
+              projectTitle={project.title}
+              aspectRatio={project.aspectRatio}
+              mainAudioId={mainAudioId}
+              lyricAlignment={project.lyricAlignment}
+              storyboardProposal={project.storyboardProposal}
+              labStillPrompt={project.labStillPrompt}
+              labAnimatePrompt={project.labAnimatePrompt}
+              onStoryboardProposalChange={setOpenProjectStoryboardProposal}
+              busy={moduleBusy || anyBusy}
+              buttonLabel={buttonLabel}
+              progressLog={session.progressLogByModule.mvScenes}
+              onRun={(fn) => void run("mvScenes", fn)}
             />
           )}
         </div>
@@ -1502,8 +1572,9 @@ function ProgressLog({ lines }: { lines?: string[] }) {
 }
 
 function LabGateNotice(props: {
-  gate: { reason: string; action?: "groups" | "settings" };
+  gate: { reason: string; action?: "groups" | "settings" | "mvConcept" };
   onGoToGroups: () => void;
+  onGoToMvConcept?: () => void;
 }) {
   return (
     <div className="lab-form">
@@ -1515,6 +1586,15 @@ function LabGateNotice(props: {
           onClick={() => props.onGoToGroups()}
         >
           Go to Project groups
+        </button>
+      ) : null}
+      {props.gate.action === "mvConcept" ? (
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => props.onGoToMvConcept?.()}
+        >
+          Go to MV Concept
         </button>
       ) : null}
       {props.gate.action === "settings" ? (
@@ -3708,167 +3788,6 @@ function AlignModule(
         />
       </section>
 
-      <ProgressLog lines={props.progressLog} />
-    </div>
-  );
-}
-
-function ProposeModule(
-  props: {
-    lyricAlignment: LyricAlignment | null;
-    mainAudioId: string;
-  } & ModuleChrome,
-) {
-  const matchingAlignment =
-    props.lyricAlignment &&
-    (!props.mainAudioId ||
-      props.lyricAlignment.sourceAudioCreationId === props.mainAudioId)
-      ? props.lyricAlignment
-      : null;
-  const fromProject =
-    matchingAlignment && matchingAlignment.lines.length > 0
-      ? matchingAlignment
-      : null;
-
-  const [lyrics, setLyrics] = useState(
-    matchingAlignment?.lyricsText ||
-      fromProject?.lyricsText ||
-      "We dance until the morning light",
-  );
-  const [durationSec, setDurationSec] = useState(() => {
-    if (!fromProject?.lines.length) return 30;
-    return Math.max(...fromProject.lines.map((l) => l.endSec), 30);
-  });
-
-  useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect */
-    if (matchingAlignment?.lyricsText != null) {
-      setLyrics(matchingAlignment.lyricsText);
-    }
-    if (fromProject) {
-      setDurationSec(
-        Math.max(...fromProject.lines.map((l) => l.endSec), 1),
-      );
-    }
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [
-    matchingAlignment?.alignedAt,
-    matchingAlignment?.sourceAudioCreationId,
-    matchingAlignment?.lyricsText,
-    fromProject,
-  ]);
-
-  return (
-    <div className="lab-form">
-      <p className="muted">
-        Uses the OpenAI API key from Settings (account menu, upper right).
-        {fromProject ? (
-          <>
-            {" "}
-            Using saved lyric alignment ({fromProject.lines.length} lines).
-          </>
-        ) : matchingAlignment?.lyricsText.trim() ? (
-          <>
-            {" "}
-            Lyrics are saved on this project — run Lyric align for timings.
-          </>
-        ) : (
-          <>
-            {" "}
-            No saved alignment on this project — run Lyric align first for real
-            timings.
-          </>
-        )}
-      </p>
-      <label>
-        Lyrics sample
-        <textarea
-          rows={4}
-          value={lyrics}
-          onChange={(e) => setLyrics(e.target.value)}
-          readOnly={Boolean(fromProject || matchingAlignment?.lyricsText.trim())}
-        />
-      </label>
-      {!fromProject ? (
-        <label>
-          Duration (sec)
-          <input
-            type="number"
-            value={durationSec}
-            onChange={(e) => setDurationSec(Number(e.target.value))}
-          />
-        </label>
-      ) : null}
-      <button
-        type="button"
-        className={props.busy ? "primary-btn is-busy" : "primary-btn"}
-        disabled={props.busy}
-        onClick={() =>
-          props.onRun(async ({ onProgress }) => {
-            const apiKey = loadOpenAiApiKey();
-            if (!apiKey) {
-              throw new Error(
-                "OpenAI API key missing — set it in Settings (account menu).",
-              );
-            }
-            onProgress("Proposing storyboard…");
-            const aligned = fromProject
-              ? fromProject.lines
-                  .filter((line) => !isInaudibleLyricLine(line))
-                  .map((line) => ({
-                    line: line.line,
-                    start: line.startSec,
-                    end: line.endSec,
-                  }))
-              : (() => {
-                  const textLines = parseLyricLines(lyrics);
-                  const span = durationSec / Math.max(1, textLines.length);
-                  return textLines.map((line, i) => ({
-                    line,
-                    start: Number((i * span).toFixed(2)),
-                    end: Number(((i + 1) * span).toFixed(2)),
-                  }));
-                })();
-            const songDuration = fromProject
-              ? Math.max(
-                  ...fromProject.lines
-                    .filter((line) => !isInaudibleLyricLine(line))
-                    .map((l) => l.endSec),
-                  durationSec,
-                )
-              : durationSec;
-            const user = JSON.stringify(
-              {
-                durationSec: songDuration,
-                lyrics: aligned,
-                shotCatalog: LAB_SHOT_CATALOG,
-                constraints: {
-                  maxShotSec: 9,
-                  preferLipSyncOnVocalLines: true,
-                },
-                instruction:
-                  "Propose music-video scenes as JSON { scenes: [{ startSec, endSec, shotType, note, promptHint }] }. shotType must be from shotCatalog.",
-              },
-              null,
-              2,
-            );
-            const result = await openAiChatCompletion({
-              apiKey,
-              jsonMode: true,
-              system:
-                "You are a music-video director assistant. Reply with JSON only.",
-              user,
-            });
-            return {
-              summary: "Storyboard proposal",
-              detail: result.content,
-              json: { request: result.request, response: result.response },
-            };
-          })
-        }
-      >
-        {actionLabel(props.busy, props.buttonLabel, "Propose storyboard")}
-      </button>
       <ProgressLog lines={props.progressLog} />
     </div>
   );

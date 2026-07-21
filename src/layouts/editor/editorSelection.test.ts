@@ -23,6 +23,8 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     labAnimatePrompt: null,
     mainAudioCreationId: null,
     lyricAlignment: null,
+    storyboardProposal: null,
+    labStoryboardDirection: null,
     timeline: [
       {
         id: "clip-1",

@@ -113,7 +113,7 @@ export function SettingsModal({ open, onClose }: Props) {
           </label>
           <p className="muted settings-hint">
             Stored only on this Mac. Used by Lab tools that call OpenAI (raw
-            round-trip, storyboard propose).
+            round-trip, MV storyboard planning).
           </p>
 
           <h3 className="settings-section-title">Local tools</h3>

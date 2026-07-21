@@ -12,9 +12,36 @@ const ready: LabGateContext = {
   demucsReady: true,
   whisperReady: false,
   vocalsSliceReady: true,
+  hasAlignedSungLines: true,
+  hasLockedStoryboardConcept: true,
+  hasStoryboardBudget: true,
 };
 
 describe("labModuleGate", () => {
+  it("blocks mvConcept when lyric align is missing", () => {
+    const gate = labModuleGate("mvConcept", {
+      ...ready,
+      hasAlignedSungLines: false,
+    });
+    expect(gate?.navBlurb).toMatch(/lyric align/i);
+  });
+
+  it("blocks mvBudget when concept is not locked", () => {
+    const gate = labModuleGate("mvBudget", {
+      ...ready,
+      hasLockedStoryboardConcept: false,
+    });
+    expect(gate?.navBlurb).toMatch(/MV Concept/i);
+    expect(gate?.action).toBe("mvConcept");
+  });
+
+  it("blocks mvScenes when budget is missing", () => {
+    const gate = labModuleGate("mvScenes", {
+      ...ready,
+      hasStoryboardBudget: false,
+    });
+    expect(gate?.navBlurb).toMatch(/MV Budget/i);
+  });
   it("blocks a2v when demucs is missing", () => {
     const gate = labModuleGate("a2v", { ...ready, demucsReady: false });
     expect(gate?.navBlurb).toMatch(/Demucs/i);

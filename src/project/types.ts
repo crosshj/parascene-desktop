@@ -158,6 +158,131 @@ export type LyricAlignment = {
   transcript?: LyricTranscript | null;
 };
 
+/** How a scene's visuals are sourced in production. */
+export type SceneProductionMethod =
+  | "new_still"
+  | "new_video"
+  | "a2v_from_still"
+  | "loop_clip"
+  | "extend_clip"
+  | "mutate_still"
+  | "lyric_card"
+  | "reuse_clip";
+
+export type StoryboardShotType =
+  | "lip_sync_cu"
+  | "lip_sync_mcu"
+  | "wide_performance"
+  | "instrument_detail"
+  | "metaphor_broll"
+  | "location_plate"
+  | "lyric_card"
+  | "crowd_energy"
+  | "push_in"
+  | "static_hold"
+  | "chorus_punch"
+  | "bridge_reset"
+  | "outro_hold";
+
+export type StoryboardConceptOption = {
+  id: string;
+  title: string;
+  logline: string;
+  visualApproach: string;
+  mood: string;
+  feasibilityScore: number;
+  feasibilityRationale: string;
+  tradeoffs: string;
+};
+
+export type BrainstormTurn = {
+  at: string;
+  kind: "options" | "refine" | "user";
+  userMessage?: string;
+  options?: StoryboardConceptOption[];
+  refinedOption?: StoryboardConceptOption;
+  parentOptionId?: string;
+};
+
+/** Locked creative direction — input to budget + scenes. */
+export type StoryboardConcept = {
+  lockedAt: string;
+  source: "brainstorm" | "manual";
+  optionId: string;
+  title: string;
+  logline: string;
+  visualApproach: string;
+  mood: string;
+  feasibilityScore: number;
+  feasibilityRationale: string;
+  tradeoffs: string;
+  userNotes?: string;
+};
+
+export type BrainstormSession = {
+  startedAt: string;
+  seedPrompt?: string;
+  turns: BrainstormTurn[];
+  lockedConcept?: StoryboardConcept;
+};
+
+export type VisualGroup = {
+  id: string;
+  label: string;
+  basePromptHint: string;
+  productionMethod: SceneProductionMethod;
+  masterSceneId?: string;
+  notes?: string;
+};
+
+export type ProposedScene = {
+  id: string;
+  startSec: number;
+  endSec: number;
+  shotType: StoryboardShotType;
+  visualGroupId: string;
+  title?: string;
+  note: string;
+  promptHint: string;
+  lyricLineIndices?: number[];
+  productionMethod?: SceneProductionMethod;
+  reuseFromSceneId?: string;
+  vocalSlice?: { inSec: number; outSec: number };
+  vocalSliceWarning?: string;
+};
+
+export type StoryboardBudget = {
+  plannedAt: string;
+  model: string;
+  durationSec: number;
+  maxUniqueStills: number;
+  maxUniqueVideoMasters: number;
+  targetSceneCount: number;
+  reuseStrategy: string;
+  sectionNotes?: Array<{
+    tag: string;
+    startSec: number;
+    endSec: number;
+    note: string;
+  }>;
+};
+
+export type StoryboardProposal = {
+  sourceAudioCreationId: string;
+  durationSec: number;
+  aspectRatio: ProjectAspectRatio;
+  brainstorm: BrainstormSession;
+  budget?: StoryboardBudget;
+  proposedAt?: string;
+  model?: string;
+  logline?: string;
+  visualGroups: VisualGroup[];
+  scenes: ProposedScene[];
+  notes?: string;
+  uniqueStillCount?: number;
+  uniqueVideoMasterCount?: number;
+};
+
 export type { ProjectAspectRatio };
 
 export type Project = {
@@ -189,6 +314,10 @@ export type Project = {
   mainAudioCreationId: string | null;
   /** Lab lyric align output — timed lines on the main song. */
   lyricAlignment: LyricAlignment | null;
+  /** Lab MV storyboard pipeline output. */
+  storyboardProposal: StoryboardProposal | null;
+  /** Seed creative direction for MV Concept module. */
+  labStoryboardDirection: string | null;
   timeline: TimelineClip[];
   /** Selected timeline clip id (editor); null when none. */
   selectedTimelineClipId: string | null;

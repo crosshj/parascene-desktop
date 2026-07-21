@@ -7,12 +7,16 @@ import {
   type Project,
   type ProjectAsset,
   type SlideshowRecipe,
+  type StoryboardProposal,
   type TimelineClip,
 } from "./types";
 import {
   isInaudibleLyricText,
   reconcileAlignedLinesFromScript,
 } from "../lab/lyricAlign";
+import {
+  normalizeStoryboardProposal,
+} from "./storyboardNormalize";
 import {
   DEFAULT_PROJECT_ASPECT_RATIO,
   isProjectAspectRatio,
@@ -56,6 +60,10 @@ export type StoredProject = {
   mainAudioCreationId?: string | null;
   /** Lab lyric align output; omitted → null. */
   lyricAlignment?: LyricAlignment | null;
+  /** Lab MV storyboard; omitted → null. */
+  storyboardProposal?: StoryboardProposal | null;
+  /** MV Concept seed prompt; omitted → null. */
+  labStoryboardDirection?: string | null;
   updatedAt: string;
 };
 
@@ -286,6 +294,8 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
+    storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
+    labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
   };
 }
 
@@ -474,6 +484,8 @@ export function createStoredProject(
     labAnimatePrompt: null,
     mainAudioCreationId: null,
     lyricAlignment: null,
+    storyboardProposal: null,
+    labStoryboardDirection: null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -521,6 +533,11 @@ export function removeCreationIds(
     remove.has(project.lyricAlignment.sourceAudioCreationId)
       ? null
       : normalizeLyricAlignment(project.lyricAlignment);
+  const nextStoryboard =
+    project.storyboardProposal &&
+    remove.has(project.storyboardProposal.sourceAudioCreationId)
+      ? null
+      : normalizeStoryboardProposal(project.storyboardProposal);
 
   const assetsChanged = nextIds.length !== project.creationIds.length;
   const timelineChanged = nextTimeline.length !== prevTimeline.length;
@@ -528,7 +545,16 @@ export function removeCreationIds(
   const lyricAlignmentChanged =
     JSON.stringify(normalizeLyricAlignment(project.lyricAlignment)) !==
     JSON.stringify(nextLyricAlignment);
-  if (!assetsChanged && !timelineChanged && !mainAudioChanged && !lyricAlignmentChanged) {
+  const storyboardChanged =
+    JSON.stringify(normalizeStoryboardProposal(project.storyboardProposal)) !==
+    JSON.stringify(nextStoryboard);
+  if (
+    !assetsChanged &&
+    !timelineChanged &&
+    !mainAudioChanged &&
+    !lyricAlignmentChanged &&
+    !storyboardChanged
+  ) {
     return project;
   }
 
@@ -542,6 +568,7 @@ export function removeCreationIds(
     timeline: nextTimeline,
     mainAudioCreationId: nextMainAudio,
     lyricAlignment: nextLyricAlignment,
+    storyboardProposal: nextStoryboard,
     selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
     selectedTimelineClipId: nextSelectedClip,
     updatedAt: new Date().toISOString(),
@@ -868,10 +895,16 @@ export function setStoredProjectMainAudioCreationId(
     project.lyricAlignment.sourceAudioCreationId !== next
       ? null
       : normalizeLyricAlignment(project.lyricAlignment);
+  const storyboardProposal =
+    project.storyboardProposal &&
+    project.storyboardProposal.sourceAudioCreationId !== next
+      ? null
+      : normalizeStoryboardProposal(project.storyboardProposal);
   return {
     ...project,
     mainAudioCreationId: next,
     lyricAlignment,
+    storyboardProposal,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -886,6 +919,35 @@ export function setStoredProjectLyricAlignment(
   return {
     ...project,
     lyricAlignment: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectStoryboardProposal(
+  project: StoredProject,
+  proposal: StoryboardProposal | null,
+): StoredProject {
+  const next = proposal ? normalizeStoryboardProposal(proposal) : null;
+  const prev = normalizeStoryboardProposal(project.storyboardProposal);
+  if (JSON.stringify(prev) === JSON.stringify(next)) return project;
+  return {
+    ...project,
+    storyboardProposal: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectLabStoryboardDirection(
+  project: StoredProject,
+  direction: string | null,
+): StoredProject {
+  const next = normalizeOptionalPrompt(direction);
+  if (next === normalizeOptionalPrompt(project.labStoryboardDirection)) {
+    return project;
+  }
+  return {
+    ...project,
+    labStoryboardDirection: next,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -929,6 +991,8 @@ export function storedProjectToUi(project: StoredProject): Project {
     labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
+    storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
+    labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
     timeline,
     selectedTimelineClipId,
     selectedAssetId,
@@ -957,6 +1021,8 @@ export function emptyUiProject(): Project {
     labAnimatePrompt: null,
     mainAudioCreationId: null,
     lyricAlignment: null,
+    storyboardProposal: null,
+    labStoryboardDirection: null,
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,

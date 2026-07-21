@@ -24,6 +24,8 @@ export const mockProject: Project = {
   labAnimatePrompt: null,
   mainAudioCreationId: null,
   lyricAlignment: null,
+  storyboardProposal: null,
+  labStoryboardDirection: null,
   timeline: [
     { id: "c1", label: "Opening", startSec: 0, endSec: 8 },
     { id: "c2", label: "Interview A", startSec: 8, endSec: 32 },

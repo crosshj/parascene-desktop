@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { LayoutMode, LyricAlignment, Project, TimelineClip } from "../project/types";
+import type { LayoutMode, LyricAlignment, Project, StoryboardProposal, TimelineClip } from "../project/types";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import {
   createStoredProject,
@@ -31,6 +31,8 @@ import {
   setStoredProjectLabPrompts,
   setStoredProjectMainAudioCreationId,
   setStoredProjectLyricAlignment,
+  setStoredProjectStoryboardProposal,
+  setStoredProjectLabStoryboardDirection,
   storedProjectToUi,
   type StoredProject,
 } from "../project/projectStore";
@@ -96,6 +98,10 @@ type ShellState = {
   setOpenProjectMainAudioCreationId: (creationId: string | null) => void;
   /** Persist lyric alignment for the open project. */
   setOpenProjectLyricAlignment: (alignment: LyricAlignment | null) => void;
+  /** Persist MV storyboard proposal for the open project. */
+  setOpenProjectStoryboardProposal: (proposal: StoryboardProposal | null) => void;
+  /** Persist MV Concept seed direction for the open project. */
+  setOpenProjectLabStoryboardDirection: (direction: string | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => void;
   /** Remove library creation IDs from the open project (no-op if none open). */
@@ -432,6 +438,20 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectStoryboardProposal = useCallback(
+    (proposal: StoryboardProposal | null) => {
+      patchOpenProject((p) => setStoredProjectStoryboardProposal(p, proposal));
+    },
+    [patchOpenProject],
+  );
+
+  const setOpenProjectLabStoryboardDirection = useCallback(
+    (direction: string | null) => {
+      patchOpenProject((p) => setStoredProjectLabStoryboardDirection(p, direction));
+    },
+    [patchOpenProject],
+  );
+
   const value = useMemo(
     () => ({
       primaryTab,
@@ -458,6 +478,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
+      setOpenProjectStoryboardProposal,
+      setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
@@ -501,6 +523,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
+      setOpenProjectStoryboardProposal,
+      setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,

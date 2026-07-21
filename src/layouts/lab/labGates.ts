@@ -1,6 +1,6 @@
 import type { LabModuleId } from "./labTypes";
 
-export type LabGateAction = "groups" | "settings";
+export type LabGateAction = "groups" | "settings" | "mvConcept";
 
 export type LabGate = {
   reason: string;
@@ -24,6 +24,10 @@ export type LabGateContext = {
   whisperReady: boolean;
   /** Vocals slice prepared in Vocals / slice (required for a2v). */
   vocalsSliceReady: boolean;
+  /** Lyric align has at least one sung timed line. */
+  hasAlignedSungLines: boolean;
+  hasLockedStoryboardConcept: boolean;
+  hasStoryboardBudget: boolean;
 };
 
 /** Prerequisites for each Lab tool — null means the module can run. */
@@ -70,8 +74,6 @@ export function labModuleGate(
     };
   }
 
-  // a2v always prepares a vocals stem — require Demucs. Isolate can still
-  // time-slice the full mix when Demucs is missing (vocals checkbox off).
   if (id === "a2v" && !ctx.demucsReady) {
     return {
       navBlurb: "Requires Demucs",
@@ -116,7 +118,13 @@ export function labModuleGate(
     };
   }
 
-  if ((id === "openai" || id === "propose" || id === "align") && !ctx.openAiReady) {
+  const needsOpenAi =
+    id === "openai" ||
+    id === "align" ||
+    id === "mvConcept" ||
+    id === "mvBudget" ||
+    id === "mvScenes";
+  if (needsOpenAi && !ctx.openAiReady) {
     return {
       navBlurb: "Requires OpenAI API key",
       reason:
@@ -139,6 +147,30 @@ export function labModuleGate(
       reason:
         "Demucs is required to use the full vocals stem from Vocals / slice. Install from Settings → Local tools.",
       action: "settings",
+    };
+  }
+
+  if (id === "mvConcept" && !ctx.hasAlignedSungLines) {
+    return {
+      navBlurb: "Requires lyric align",
+      reason:
+        "Run Lyric align first — MV Concept needs timed lyric blocks on the main song.",
+    };
+  }
+
+  if (id === "mvBudget" && !ctx.hasLockedStoryboardConcept) {
+    return {
+      navBlurb: "Requires MV Concept",
+      reason:
+        "Run MV Concept first and lock a creative direction.",
+      action: "mvConcept",
+    };
+  }
+
+  if (id === "mvScenes" && !ctx.hasStoryboardBudget) {
+    return {
+      navBlurb: "Requires MV Budget",
+      reason: "Run MV Budget first and plan a generation budget.",
     };
   }
 

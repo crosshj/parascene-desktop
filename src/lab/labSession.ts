@@ -103,7 +103,9 @@ const ALL_MODULE_IDS: LabModuleId[] = [
   "mutate",
   "openai",
   "align",
-  "propose",
+  "mvConcept",
+  "mvBudget",
+  "mvScenes",
 ];
 
 export function emptyLabSession(moduleId: LabModuleId = "groups"): LabSessionSnapshot {
@@ -120,6 +122,11 @@ export function emptyLabSession(moduleId: LabModuleId = "groups"): LabSessionSna
 
 function isModuleId(value: unknown): value is LabModuleId {
   return typeof value === "string" && ALL_MODULE_IDS.includes(value as LabModuleId);
+}
+
+function normalizeModuleId(value: unknown): LabModuleId {
+  if (value === "propose") return "mvConcept";
+  return isModuleId(value) ? value : "groups";
 }
 
 /** True when a last-result blob clearly belongs to Project groups cleanup/ensure. */
@@ -208,7 +215,7 @@ export function sanitizeLabSession(snapshot: LabSessionSnapshot): LabSessionSnap
       : null;
   if (vocalsClip !== snapshot.vocalsClip) changed = true;
 
-  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "propose"] as const) {
+  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "mvConcept", "mvBudget", "mvScenes"] as const) {
     const last = lastByModule[id];
     if (!last) continue;
     if (looksLikeGroupsResult(last)) {
@@ -218,7 +225,7 @@ export function sanitizeLabSession(snapshot: LabSessionSnapshot): LabSessionSnap
     }
   }
 
-  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "propose"] as const) {
+  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "mvConcept", "mvBudget", "mvScenes"] as const) {
     const log = progressLogByModule[id];
     if (!log?.length) continue;
     const joined = log.join("\n").toLowerCase();
@@ -254,7 +261,7 @@ function migrateLegacy(raw: string): LabSessionSnapshot | null {
       last?: unknown;
       activeJob?: LabSessionSnapshot["activeJob"];
     };
-    const moduleId = isModuleId(parsed.moduleId) ? parsed.moduleId : "groups";
+    const moduleId = normalizeModuleId(parsed.moduleId);
     const base = emptyLabSession(moduleId);
     const moduleProgress =
       parsed.moduleProgress && typeof parsed.moduleProgress === "object"
@@ -292,7 +299,7 @@ export function loadLabSession(projectId: string): LabSessionSnapshot {
         progressLog?: unknown;
         last?: unknown;
       };
-      const moduleId = isModuleId(parsed.moduleId) ? parsed.moduleId : "groups";
+      const moduleId = normalizeModuleId(parsed.moduleId);
       const base = emptyLabSession(moduleId);
       const moduleProgress =
         parsed.moduleProgress && typeof parsed.moduleProgress === "object"

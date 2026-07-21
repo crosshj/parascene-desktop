@@ -9,7 +9,9 @@ export type LabModuleId =
   | "mutate"
   | "openai"
   | "align"
-  | "propose";
+  | "mvConcept"
+  | "mvBudget"
+  | "mvScenes";
 
 export const LAB_MODULES: {
   id: LabModuleId;
@@ -26,5 +28,7 @@ export const LAB_MODULES: {
   { id: "mutate", label: "Image mutate", blurb: "i2i edit → Images group" },
   { id: "openai", label: "OpenAI raw", blurb: "Structured JSON round-trip" },
   { id: "align", label: "Lyric align", blurb: "Vocals STT + lyrics → timed captions" },
-  { id: "propose", label: "Storyboard propose", blurb: "OpenAI + shot catalog → scenes" },
+  { id: "mvConcept", label: "MV Concept", blurb: "Brainstorm or lock creative direction" },
+  { id: "mvBudget", label: "MV Budget", blurb: "Plan generation budget from concept" },
+  { id: "mvScenes", label: "MV Scenes", blurb: "Propose timed scenes + timeline" },
 ];
