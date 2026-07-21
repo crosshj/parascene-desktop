@@ -5103,6 +5103,21 @@ body.is-timeline-clip-moving * {
   font-size: 0.85rem;
 }
 
+.lab-form label.lab-checkbox-row,
+.settings-form label.lab-checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.lab-form label.lab-checkbox-row input[type="checkbox"],
+.settings-form label.lab-checkbox-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+}
+
 .lab-row {
   display: flex;
   gap: 0.75rem;
@@ -5299,8 +5314,6 @@ body.is-timeline-clip-moving * {
   border-radius: 6px;
   background: #12141a;
   color: inherit;
-  cursor: pointer;
-  text-align: left;
   overflow: hidden;
 }
 
@@ -5313,7 +5326,21 @@ body.is-timeline-clip-moving * {
   box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.45);
 }
 
-.lab-image-picker-item:focus-visible {
+.lab-image-picker-select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lab-image-picker-select:focus-visible {
   outline: 2px solid #a855f7;
   outline-offset: 2px;
 }
@@ -5343,9 +5370,6 @@ body.is-timeline-clip-moving * {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.lab-image-picker-fallback {
   font-size: 0.7rem;
   text-align: center;
   padding: 0.25rem;
@@ -5358,6 +5382,138 @@ body.is-timeline-clip-moving * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.lab-image-picker-preview-link {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.lab-video-range {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 42rem;
+}
+
+.lab-video-range-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lab-video-range-preview .lab-video {
+  max-height: 18rem;
+  object-fit: contain;
+  background: #0a0c10;
+}
+
+.lab-video-range-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.lab-video-range-clock {
+  font-size: 0.82rem;
+}
+
+.lab-video-range-track {
+  position: relative;
+  height: 2rem;
+  touch-action: none;
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.lab-video-range-track-bg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 0.4rem;
+  margin-top: -0.2rem;
+  border-radius: 999px;
+  background: #2a2f3a;
+}
+
+.lab-video-range-selection {
+  position: absolute;
+  top: 50%;
+  height: 0.4rem;
+  margin-top: -0.2rem;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.75);
+  pointer-events: none;
+}
+
+.lab-video-range-playhead {
+  position: absolute;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  width: 2px;
+  margin-left: -1px;
+  background: #e9d5ff;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.lab-video-range-handle {
+  position: absolute;
+  top: 50%;
+  width: 0.85rem;
+  height: 1.5rem;
+  margin-top: -0.75rem;
+  margin-left: -0.425rem;
+  padding: 0;
+  border: 2px solid #e9d5ff;
+  border-radius: 3px;
+  background: #a855f7;
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.lab-video-range-handle:focus-visible {
+  outline: 2px solid #a855f7;
+  outline-offset: 2px;
+}
+
+.lab-video-range-fine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem 1.25rem;
+}
+
+.lab-video-range-fine-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.lab-video-range-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.lab-video-range-stepper input[type="number"] {
+  width: 5.5rem;
+}
+
+.lab-video-range-stepper .lab-secondary-btn {
+  min-width: 2rem;
+  padding: 0.25rem 0.45rem;
+}
+
+.lab-video-range-fine-meta {
+  margin: 0;
+  font-size: 0.82rem;
+  align-self: center;
 }
 
 .lab-isolate-section {

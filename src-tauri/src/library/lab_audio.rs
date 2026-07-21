@@ -336,11 +336,11 @@ fn find_vocals_wav(root: &Path) -> Result<PathBuf, String> {
     walk(root, 0).ok_or_else(|| "demucs output vocals.wav not found".into())
 }
 
-/// Extend a short clip to `target_sec` via loop / ping-pong / trim-loop.
+/// Extend a short clip to `target_sec` by looping the trimmed region (optional ping-pong).
 #[tauri::command]
 pub async fn library_extend_clip(
     source_path: String,
-    mode: String,
+    ping_pong: bool,
     target_sec: f64,
     in_sec: Option<f64>,
     out_sec: Option<f64>,
@@ -352,10 +352,7 @@ pub async fn library_extend_clip(
     if !(target_sec > 0.1) {
         return Err("targetSec must be > 0.1".into());
     }
-    let mode = mode.trim().to_ascii_lowercase();
-    if !matches!(mode.as_str(), "loop" | "pingpong" | "trimloop") {
-        return Err("mode must be loop, pingPong, or trimLoop".into());
-    }
+    let mode = if ping_pong { "pingpong" } else { "loop" };
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
         "FFmpeg is required. Install with: brew install ffmpeg".to_string()
     })?;
@@ -415,7 +412,7 @@ pub async fn library_extend_clip(
         .max(0.1);
 
     let reverse = dir.join(format!("{key}.rev.mp4"));
-    if matches!(mode.as_str(), "pingpong") && !reverse.is_file() {
+    if ping_pong && !reverse.is_file() {
         let tmp = dir.join(format!("{key}.rev.tmp.mp4"));
         run_ffmpeg(
             &ffmpeg,
@@ -436,10 +433,7 @@ pub async fn library_extend_clip(
         fs::rename(&tmp, &reverse).map_err(|e| format!("reverse rename: {e}"))?;
     }
 
-    let unit = match mode.as_str() {
-        "pingpong" => seg_dur * 2.0,
-        _ => seg_dur,
-    };
+    let unit = if ping_pong { seg_dur * 2.0 } else { seg_dur };
     let loops = ((target_sec / unit).ceil() as usize).max(1);
 
     let list = dir.join(format!("{key}.txt"));
@@ -450,7 +444,7 @@ pub async fn library_extend_clip(
                 "file '{}'\n",
                 segment.to_string_lossy().replace('\'', "'\\''")
             ));
-            if mode == "pingpong" {
+            if ping_pong {
                 body.push_str(&format!(
                     "file '{}'\n",
                     reverse.to_string_lossy().replace('\'', "'\\''")

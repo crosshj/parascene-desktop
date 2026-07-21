@@ -162,6 +162,13 @@ export async function importFromDisk(): Promise<ImportLocalResult> {
   return invoke<ImportLocalResult>("library_import_from_disk");
 }
 
+/** Copy explicit filesystem paths into Library/media as local-only creations. */
+export async function importLocalPaths(
+  paths: string[],
+): Promise<ImportLocalResult> {
+  return invoke<ImportLocalResult>("library_import_local_paths", { paths });
+}
+
 /** Regenerate local board preview from full local media (native aspect JPEG). */
 export async function fillThumb(id: string): Promise<Creation> {
   return invoke<Creation>("library_fill_thumb", { id });

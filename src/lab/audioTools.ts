@@ -122,18 +122,16 @@ export async function audioWaveformPeaks(
   return invoke<WaveformPeaks>("library_audio_waveform_peaks", { path, buckets });
 }
 
-export type ExtendMode = "loop" | "pingPong" | "trimLoop";
-
 export async function bakeClipExtend(opts: {
   sourcePath: string;
-  mode: ExtendMode;
+  pingPong: boolean;
   targetSec: number;
   inSec?: number;
   outSec?: number;
 }): Promise<{ path: string; mediaUrl: string }> {
   const path = await invoke<string>("library_extend_clip", {
     sourcePath: opts.sourcePath,
-    mode: opts.mode,
+    pingPong: opts.pingPong,
     targetSec: opts.targetSec,
     inSec: opts.inSec ?? null,
     outSec: opts.outSec ?? null,

@@ -20,7 +20,7 @@ export const LAB_MODULES: {
   { id: "seeds", label: "Upload / seeds", blurb: "Inspect seed URLs from project assets" },
   { id: "isolate", label: "Vocals / slice", blurb: "Full-track demucs + vocals slice" },
   { id: "a2v", label: "a2v compose", blurb: "Still + vocals slice → ltx_a2v" },
-  { id: "extend", label: "Clip extend", blurb: "Loop / ping-pong / trim-loop" },
+  { id: "extend", label: "Clip extend", blurb: "Loop / ping-pong extend" },
   { id: "mutate", label: "Image mutate", blurb: "i2i edit → Images group" },
   { id: "openai", label: "OpenAI raw", blurb: "Structured JSON round-trip" },
   { id: "align", label: "Lyric align", blurb: "Even-spaced draft timings (Lab)" },

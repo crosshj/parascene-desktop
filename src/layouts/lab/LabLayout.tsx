@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShell } from "../../app/ShellProvider";
 import { createAuthedSdk } from "../../auth/session";
-import { deleteLocal, getCreations } from "../../library/catalogClient";
+import {
+  deleteLocal,
+  getCreations,
+  importLocalPaths,
+} from "../../library/catalogClient";
+import { isGroupCreation } from "../../library/creationFlags";
 import { creationDetailUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -23,10 +28,11 @@ import {
   separateFullVocals,
   sliceAudioRange,
   uploadVocalsSliceClip,
-  type ExtendMode,
 } from "../../lab/audioTools";
 import { LabAudioTrack, LabWaveformSlicePicker } from "../../lab/LabMediaWaveform";
 import { LabImagePicker } from "../../lab/LabImagePicker";
+import { LabVideoRangePicker } from "../../lab/LabVideoRangePicker";
+import { CreationLightbox } from "../../library/CreationLightbox";
 import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
 import {
   LAB_A2V_PROMPT,
@@ -402,13 +408,26 @@ export function LabLayout() {
     () => assets.filter((c) => c.mediaType === "audio"),
     [assets],
   );
+  // Exclude Images / Videos group covers — they duplicate a member already listed.
   const imageAssets = useMemo(
-    () => assets.filter((c) => c.mediaType === "image"),
-    [assets],
+    () =>
+      assets.filter(
+        (c) =>
+          c.mediaType === "image" &&
+          !isGroupCreation(c) &&
+          c.id !== project.imagesGroupId,
+      ),
+    [assets, project.imagesGroupId],
   );
   const videoAssets = useMemo(
-    () => assets.filter((c) => c.mediaType === "video"),
-    [assets],
+    () =>
+      assets.filter(
+        (c) =>
+          c.mediaType === "video" &&
+          !isGroupCreation(c) &&
+          c.id !== project.videosGroupId,
+      ),
+    [assets, project.videosGroupId],
   );
 
   const mainAudioId =
@@ -1094,6 +1113,7 @@ export function LabLayout() {
               buttonLabel={buttonLabel}
               progressLog={session.progressLogByModule.extend}
               onRun={(fn) => void run("extend", fn)}
+              onCreated={(ids) => addCreationsToOpenProject(ids)}
             />
           )}
           {moduleId === "mutate" && !activeGate && (
@@ -2098,35 +2118,95 @@ function A2vModule(
 }
 
 function ExtendModule(
-  props: { videoAssets: Creation[] } & ModuleChrome,
+  props: {
+    videoAssets: Creation[];
+    onCreated: (ids: string[]) => void;
+  } & ModuleChrome,
 ) {
   const [videoId, setVideoId] = useState(props.videoAssets[0]?.id || "");
-  const [mode, setMode] = useState<ExtendMode>("pingPong");
+  const [pingPong, setPingPong] = useState(true);
   const [targetSec, setTargetSec] = useState(18);
+  const [inSec, setInSec] = useState(0);
+  const [outSec, setOutSec] = useState(0);
+  const [previewCreation, setPreviewCreation] = useState<Creation | null>(null);
+
+  useEffect(() => {
+    // Intentional: keep the selected video valid as the asset list changes.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (!props.videoAssets.length) {
+      setVideoId("");
+      return;
+    }
+    if (!props.videoAssets.some((c) => c.id === videoId)) {
+      setVideoId(props.videoAssets[0]!.id);
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [props.videoAssets, videoId]);
+
+  const handleVideoChange = useCallback((id: string) => {
+    setVideoId(id);
+    setInSec(0);
+    setOutSec(0);
+  }, []);
+
+  const selectedVideo = props.videoAssets.find((c) => c.id === videoId);
+  const videoPlayUrl = selectedVideo
+    ? creationPlayUrl(selectedVideo)
+    : null;
+
+  const handleRangeChange = useCallback(
+    (next: { inSec: number; outSec: number }) => {
+      setInSec(next.inSec);
+      setOutSec(next.outSec);
+    },
+    [],
+  );
 
   return (
     <div className="lab-form">
-      <label>
-        Video
-        <select value={videoId} onChange={(e) => setVideoId(e.target.value)}>
-          <option value="">Select…</option>
-          {props.videoAssets.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title || c.id}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Mode
-        <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value as ExtendMode)}
-        >
-          <option value="loop">loop</option>
-          <option value="pingPong">pingPong</option>
-          <option value="trimLoop">trimLoop</option>
-        </select>
+      <p className="muted">
+        Pick a video, trim a region with the handles (or Start / End fields),
+        preview that region on loop, then bake to a target length.
+      </p>
+      <div className="lab-image-picker-field">
+        <span className="lab-image-picker-heading">Video</span>
+        <LabImagePicker
+          images={props.videoAssets}
+          value={videoId}
+          onChange={handleVideoChange}
+          onPreview={setPreviewCreation}
+          mediaLabel="videos"
+        />
+      </div>
+      {previewCreation ? (
+        <CreationLightbox
+          creation={previewCreation}
+          onClose={() => setPreviewCreation(null)}
+        />
+      ) : null}
+      {videoId && videoPlayUrl ? (
+        <div className="lab-image-picker-field">
+          <span className="lab-image-picker-heading">Region</span>
+          <LabVideoRangePicker
+            mediaUrl={videoPlayUrl}
+            inSec={inSec}
+            outSec={outSec}
+            onRangeChange={handleRangeChange}
+          />
+        </div>
+      ) : videoId ? (
+        <p className="muted">
+          Selected video has no local file yet — sync / download it before
+          trimming.
+        </p>
+      ) : null}
+      <label className="lab-checkbox-row">
+        <input
+          type="checkbox"
+          checked={pingPong}
+          onChange={(e) => setPingPong(e.target.checked)}
+        />
+        Ping-pong (play forward then reversed between loops)
       </label>
       <label>
         Target seconds
@@ -2140,7 +2220,7 @@ function ExtendModule(
       <button
         type="button"
         className={props.busy ? "primary-btn is-busy" : "primary-btn"}
-        disabled={props.busy || !videoId}
+        disabled={props.busy || !videoId || !(outSec > inSec)}
         onClick={() =>
           props.onRun(async ({ onProgress }) => {
             onProgress("Baking extend…");
@@ -2151,15 +2231,27 @@ function ExtendModule(
             }
             const baked = await bakeClipExtend({
               sourcePath: row.localPath,
-              mode,
+              pingPong,
               targetSec,
+              inSec,
+              outSec,
             });
+            onProgress("Importing to Library (local-only)…");
+            const imported = await importLocalPaths([baked.path]);
+            const created = imported.creations[0];
+            if (!created) {
+              throw new Error("Import produced no Library creation");
+            }
+            props.onCreated([created.id]);
+            onProgress("Added to project assets.");
+            const playUrl = creationPlayUrl(created) ?? baked.mediaUrl;
             return {
-              summary: `Extended → ${baked.path}`,
-              detail: `${mode} to ${targetSec}s`,
-              playUrl: baked.mediaUrl,
+              summary: `Extended → ${created.id} (local-only)`,
+              detail: `${pingPong ? "ping-pong" : "loop"} ${inSec.toFixed(2)}–${outSec.toFixed(2)}s → ${targetSec}s`,
+              creationId: created.id,
+              playUrl,
               playMediaType: "video",
-              json: baked,
+              json: { baked, imported: created, inSec, outSec, pingPong, targetSec },
             };
           })
         }
