@@ -111,15 +111,51 @@ export type AlignedLyricLine = {
   endSec: number;
   /** 0..1 when produced by the aligner; omitted after manual edits. */
   confidence?: number;
+  /** Suno section tag ([Intro], etc.) — shown but not matched to audio. */
+  inaudible?: boolean;
 };
 
-/** Persisted lyric alignment for Director / storyboard propose. */
+/**
+ * Persisted Whisper (or local) transcription for lyric align.
+ * Reused across aligns until the vocals stem or engine changes, or the user refreshes.
+ */
+export type LyricTranscript = {
+  engine: "openai" | "local";
+  transcribedAt: string;
+  /** Absolute path of the vocals stem that was transcribed. */
+  vocalsPath: string;
+  fullText: string;
+  language?: string;
+  segments: Array<{
+    text: string;
+    startSec: number;
+    endSec: number;
+  }>;
+  /** Per-word timings when Whisper provides them. */
+  words?: Array<{
+    word: string;
+    startSec: number;
+    endSec: number;
+  }>;
+  /** Silence-separated vocal regions used for block-wise transcription. */
+  vocalBlocks?: Array<{
+    startSec: number;
+    endSec: number;
+  }>;
+};
+
+/**
+ * Persisted lyric alignment for Director / storyboard propose.
+ * `lines` may be empty when the user has saved lyrics text but not yet aligned.
+ * `transcript` caches the STT response so Align can skip repeat Whisper calls.
+ */
 export type LyricAlignment = {
   sourceAudioCreationId: string;
   lyricsText: string;
   alignedAt: string;
   transcribeEngine: "openai" | "local";
   lines: AlignedLyricLine[];
+  transcript?: LyricTranscript | null;
 };
 
 export type { ProjectAspectRatio };
@@ -139,6 +175,16 @@ export type Project = {
    */
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  /**
+   * Lab Project-groups still prompt (image mint). Null uses the shared Lab
+   * default until the user edits it in Lab.
+   */
+  labStillPrompt: string | null;
+  /**
+   * Lab Project-groups animate prompt (image→video). Null uses the shared Lab
+   * default until the user edits it in Lab.
+   */
+  labAnimatePrompt: string | null;
   /** Preferred main song creation id for Director / Lab (optional). */
   mainAudioCreationId: string | null;
   /** Lab lyric align output — timed lines on the main song. */

@@ -63,6 +63,13 @@ type AssetBrowserPaneProps = {
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
   onRemoveFolders?: (ids: string[]) => void;
+  onDeleteFromGroup?: (opts: {
+    groupId: string;
+    kind: "images" | "videos";
+    memberIds: string[];
+  }) => void;
+  /** Asset ids referenced on the project timeline (blocks group delete). */
+  timelineUsedAssetIds?: ReadonlySet<string>;
 };
 
 type AssetContextMenu =
@@ -148,6 +155,8 @@ export function AssetBrowserPane({
   onDeleteAssets,
   onRemoveAssets,
   onRemoveFolders,
+  onDeleteFromGroup,
+  timelineUsedAssetIds,
 }: AssetBrowserPaneProps) {
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
@@ -390,11 +399,76 @@ export function AssetBrowserPane({
     return creation ? isLocalOnlyCreation(creation) : false;
   };
 
+  const groupMembershipByMemberId = useMemo(() => {
+    const map = new Map<
+      string,
+      { groupId: string; kind: "images" | "videos" }
+    >();
+    const cabinets: Array<{
+      id: string | null | undefined;
+      kind: "images" | "videos";
+    }> = [
+      { id: imagesGroupId, kind: "images" },
+      { id: videosGroupId, kind: "videos" },
+    ];
+    for (const { id, kind } of cabinets) {
+      const groupId = id ? String(id).trim() : "";
+      if (!groupId) continue;
+      const cover = creationsById[groupId];
+      if (!cover) continue;
+      for (const memberId of groupSourceCreationIds(cover)) {
+        if (memberId === groupId) continue;
+        map.set(memberId, { groupId, kind });
+      }
+    }
+    return map;
+  }, [creationsById, imagesGroupId, videosGroupId]);
+
+  const groupDeleteTarget = useMemo(() => {
+    if (!contextMenu || contextMenu.kind !== "assets" || !onDeleteFromGroup) {
+      return null;
+    }
+    const groupIds = new Set(
+      contextMenu.assetIds
+        .map((id) => groupMembershipByMemberId.get(id)?.groupId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    if (groupIds.size !== 1) return null;
+    const groupId = [...groupIds][0];
+    const kind = groupMembershipByMemberId.get(contextMenu.assetIds[0])?.kind;
+    if (!kind) return null;
+    if (
+      !contextMenu.assetIds.every(
+        (id) => groupMembershipByMemberId.get(id)?.groupId === groupId,
+      )
+    ) {
+      return null;
+    }
+    return { groupId, kind, memberIds: contextMenu.assetIds };
+  }, [contextMenu, groupMembershipByMemberId, onDeleteFromGroup]);
+
+  const groupDeleteBlocked =
+    groupDeleteTarget != null &&
+    groupDeleteTarget.memberIds.some((id) =>
+      timelineUsedAssetIds?.has(id),
+    );
+
+  const contextMenuHasGroupMembers =
+    contextMenu?.kind === "assets" &&
+    contextMenu.assetIds.some((id) => groupMembershipByMemberId.has(id));
+
   const openContextMenu = (
     assetId: string,
     event: ReactMouseEvent,
   ) => {
-    if (!onDeleteAssets && !onRemoveAssets) return;
+    const isGroupMember = groupMembershipByMemberId.has(assetId);
+    if (
+      !onDeleteAssets &&
+      !onRemoveAssets &&
+      !(onDeleteFromGroup && isGroupMember)
+    ) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     const assetIds = selectedIds.includes(assetId) ? [...selectedIds] : [assetId];
@@ -607,7 +681,37 @@ export function AssetBrowserPane({
                   Remove folder from project
                 </button>
               ) : null}
-              {contextMenu.kind === "assets" && onRemoveAssets ? (
+              {contextMenu.kind === "assets" &&
+              onDeleteFromGroup &&
+              groupDeleteTarget ? (
+                <button
+                  type="button"
+                  className="editor-asset-context-item is-danger"
+                  role="menuitem"
+                  disabled={groupDeleteBlocked}
+                  title={
+                    groupDeleteBlocked
+                      ? "Remove timeline clips that use these assets first."
+                      : undefined
+                  }
+                  onClick={() => {
+                    if (groupDeleteBlocked) return;
+                    const target = groupDeleteTarget;
+                    setContextMenu(null);
+                    onDeleteFromGroup(target);
+                  }}
+                >
+                  Delete from{" "}
+                  {groupDeleteTarget.kind === "images" ? "Images" : "Videos"}{" "}
+                  group
+                  {groupDeleteTarget.memberIds.length > 1
+                    ? ` (${groupDeleteTarget.memberIds.length})`
+                    : ""}
+                </button>
+              ) : null}
+              {contextMenu.kind === "assets" &&
+              onRemoveAssets &&
+              !contextMenuHasGroupMembers ? (
                 <button
                   type="button"
                   className="editor-asset-context-item"

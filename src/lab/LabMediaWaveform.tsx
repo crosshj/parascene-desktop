@@ -85,7 +85,7 @@ function drawPeaks(
   ctx.fill();
 }
 
-function PlayPauseIcon({ playing }: { playing: boolean }) {
+export function PlayPauseIcon({ playing }: { playing: boolean }) {
   return playing ? (
     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
       <path fill="currentColor" d="M4 3h3v10H4zm5 0h3v10H9z" />
@@ -397,6 +397,137 @@ export function LabAudioTrack({
       </div>
       <LabWaveformPlayer path={path} mediaUrl={mediaUrl} />
     </div>
+  );
+}
+
+/** Synchronized waveform lane — no audio element; shares a parent playhead. */
+export function LabWaveformStrip({
+  path,
+  currentSec,
+  durationSec,
+  onSeek,
+}: {
+  path: string;
+  currentSec: number;
+  durationSec: number;
+  onSeek?: (sec: number) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const peaksRef = useRef<number[] | null>(null);
+  const dragRef = useRef(false);
+
+  const [peaks, setPeaks] = useState<number[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const progress =
+    durationSec > 0 ? clamp(currentSec / durationSec, 0, 1) : 0;
+
+  useEffect(() => {
+    peaksRef.current = peaks;
+  }, [peaks]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPeaks(null);
+    setError(null);
+    void audioWaveformPeaks(path, 160)
+      .then((next) => {
+        if (cancelled) return;
+        setPeaks(next.peaks);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+
+  const redraw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const currentPeaks = peaksRef.current;
+    if (!canvas || !currentPeaks?.length) return;
+    drawPeaks(canvas, currentPeaks, progress, null);
+  }, [progress]);
+
+  useEffect(() => {
+    redraw();
+  }, [peaks, progress, redraw]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !peaks?.length) return;
+    const ro = new ResizeObserver(() => redraw());
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, [peaks, redraw]);
+
+  const seekFromClientX = useCallback(
+    (clientX: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas || !onSeek || durationSec <= 0) return;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      onSeek(clamp((clientX - rect.left) / rect.width, 0, 1) * durationSec);
+    },
+    [durationSec, onSeek],
+  );
+
+  if (error) {
+    return (
+      <div className="lab-waveform is-error lab-waveform-strip" title={error}>
+        Waveform unavailable
+      </div>
+    );
+  }
+  if (!peaks) {
+    return <div className="lab-waveform is-loading lab-waveform-strip">Loading waveform…</div>;
+  }
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="lab-waveform lab-waveform-interactive lab-waveform-strip"
+      role="slider"
+      aria-label="Audio scrubber"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(durationSec * 100) / 100}
+      aria-valuenow={Math.round(currentSec * 100) / 100}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        dragRef.current = true;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        seekFromClientX(event.clientX);
+      }}
+      onPointerMove={(event) => {
+        if (!dragRef.current) return;
+        seekFromClientX(event.clientX);
+      }}
+      onPointerUp={(event) => {
+        dragRef.current = false;
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          /* ignore */
+        }
+      }}
+      onPointerCancel={() => {
+        dragRef.current = false;
+      }}
+      onKeyDown={(event) => {
+        if (!onSeek || durationSec <= 0) return;
+        const step = event.shiftKey ? 1 : 0.05;
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          onSeek(Math.min(durationSec, currentSec + step));
+        } else if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          onSeek(Math.max(0, currentSec - step));
+        }
+      }}
+    />
   );
 }
 

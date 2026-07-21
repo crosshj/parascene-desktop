@@ -3,11 +3,16 @@ import {
   normalizeSlideshowMode,
   type AlignedLyricLine,
   type LyricAlignment,
+  type LyricTranscript,
   type Project,
   type ProjectAsset,
   type SlideshowRecipe,
   type TimelineClip,
 } from "./types";
+import {
+  isInaudibleLyricText,
+  reconcileAlignedLinesFromScript,
+} from "../lab/lyricAlign";
 import {
   DEFAULT_PROJECT_ASPECT_RATIO,
   isProjectAspectRatio,
@@ -43,6 +48,10 @@ export type StoredProject = {
   imagesGroupId?: string | null;
   /** Parascene Videos group creation id; omitted → null. */
   videosGroupId?: string | null;
+  /** Lab still prompt for Project groups; omitted → null (use Lab default). */
+  labStillPrompt?: string | null;
+  /** Lab animate prompt for Project groups; omitted → null (use Lab default). */
+  labAnimatePrompt?: string | null;
   /** Preferred main song creation id; omitted → null. */
   mainAudioCreationId?: string | null;
   /** Lab lyric align output; omitted → null. */
@@ -273,6 +282,8 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
+    labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
+    labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
   };
@@ -288,18 +299,104 @@ function normalizeAlignedLyricLine(value: unknown): AlignedLyricLine | null {
   if (typeof row.line !== "string" || !row.line.trim()) return null;
   const startSec = Number(row.startSec);
   const endSec = Number(row.endSec);
-  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+  const inaudible =
+    row.inaudible === true || isInaudibleLyricText(row.line.trim());
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec < startSec) {
     return null;
   }
+  if (!inaudible && endSec <= startSec) return null;
   const confidence = Number(row.confidence);
   return {
     line: row.line.trim(),
     startSec,
-    endSec,
-    confidence:
-      Number.isFinite(confidence) && confidence >= 0 && confidence <= 1
+    endSec: inaudible ? startSec : endSec,
+    inaudible: inaudible || undefined,
+    confidence: inaudible
+      ? undefined
+      : Number.isFinite(confidence) && confidence >= 0 && confidence <= 1
         ? confidence
         : undefined,
+  };
+}
+
+function normalizeTranscriptSegment(
+  value: unknown,
+): LyricTranscript["segments"][number] | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.text !== "string" || !row.text.trim()) return null;
+  const startSec = Number(row.startSec);
+  const endSec = Number(row.endSec);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+    return null;
+  }
+  return { text: row.text.trim(), startSec, endSec };
+}
+
+function normalizeTranscriptWord(
+  value: unknown,
+): NonNullable<LyricTranscript["words"]>[number] | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const word =
+    typeof row.word === "string"
+      ? row.word.trim()
+      : typeof row.text === "string"
+        ? row.text.trim()
+        : "";
+  const startSec = Number(row.startSec ?? row.start);
+  const endSec = Number(row.endSec ?? row.end);
+  if (!word || !Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+    return null;
+  }
+  return { word, startSec, endSec };
+}
+
+export function normalizeLyricTranscript(value: unknown): LyricTranscript | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const engine =
+    row.engine === "openai" || row.engine === "local" ? row.engine : null;
+  if (!engine) return null;
+  if (typeof row.transcribedAt !== "string" || !row.transcribedAt.trim()) return null;
+  if (typeof row.vocalsPath !== "string" || !row.vocalsPath.trim()) return null;
+  if (typeof row.fullText !== "string") return null;
+  if (!Array.isArray(row.segments)) return null;
+  const segments = row.segments
+    .map(normalizeTranscriptSegment)
+    .filter((s): s is LyricTranscript["segments"][number] => s !== null);
+  if (segments.length === 0) return null;
+  const words = Array.isArray(row.words)
+    ? row.words
+        .map(normalizeTranscriptWord)
+        .filter((w): w is NonNullable<LyricTranscript["words"]>[number] => w !== null)
+    : [];
+  const language =
+    typeof row.language === "string" && row.language.trim()
+      ? row.language.trim()
+      : undefined;
+  const vocalBlocks = Array.isArray(row.vocalBlocks)
+    ? row.vocalBlocks
+        .map((block) => {
+          if (!block || typeof block !== "object") return null;
+          const b = block as Record<string, unknown>;
+          const startSec = Number(b.startSec);
+          const endSec = Number(b.endSec);
+          if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) return null;
+          if (endSec <= startSec) return null;
+          return { startSec, endSec };
+        })
+        .filter((b): b is { startSec: number; endSec: number } => b !== null)
+    : undefined;
+  return {
+    engine,
+    transcribedAt: row.transcribedAt.trim(),
+    vocalsPath: row.vocalsPath.trim(),
+    fullText: row.fullText,
+    language,
+    segments,
+    words: words.length > 0 ? words : undefined,
+    vocalBlocks: vocalBlocks?.length ? vocalBlocks : undefined,
   };
 }
 
@@ -319,14 +416,26 @@ export function normalizeLyricAlignment(value: unknown): LyricAlignment | null {
   const lines = row.lines
     .map(normalizeAlignedLyricLine)
     .filter((line): line is AlignedLyricLine => line !== null);
-  if (lines.length === 0) return null;
+  const reconciled = reconcileAlignedLinesFromScript(row.lyricsText, lines);
+  const transcript =
+    row.transcript === undefined || row.transcript === null
+      ? null
+      : normalizeLyricTranscript(row.transcript);
   return {
     sourceAudioCreationId,
     lyricsText: row.lyricsText,
     alignedAt: row.alignedAt.trim(),
     transcribeEngine,
-    lines,
+    lines: reconciled,
+    transcript,
   };
+}
+
+function normalizeOptionalPrompt(value: unknown): string | null {
+  // Preserve empty string so Lab prompt textareas can be cleared without
+  // snapping back to the shared default mid-edit. Null means "never set".
+  if (typeof value !== "string") return null;
+  return value;
 }
 
 export function saveStoredProjects(projects: StoredProject[]): void {
@@ -361,6 +470,8 @@ export function createStoredProject(
     timelinePlayheadSec: 0,
     imagesGroupId: null,
     videosGroupId: null,
+    labStillPrompt: null,
+    labAnimatePrompt: null,
     mainAudioCreationId: null,
     lyricAlignment: null,
     updatedAt: new Date().toISOString(),
@@ -717,6 +828,35 @@ export function setStoredProjectGroupIds(
   };
 }
 
+export function setStoredProjectLabPrompts(
+  project: StoredProject,
+  prompts: {
+    labStillPrompt?: string | null;
+    labAnimatePrompt?: string | null;
+  },
+): StoredProject {
+  const labStillPrompt =
+    prompts.labStillPrompt !== undefined
+      ? normalizeOptionalPrompt(prompts.labStillPrompt)
+      : normalizeOptionalPrompt(project.labStillPrompt);
+  const labAnimatePrompt =
+    prompts.labAnimatePrompt !== undefined
+      ? normalizeOptionalPrompt(prompts.labAnimatePrompt)
+      : normalizeOptionalPrompt(project.labAnimatePrompt);
+  if (
+    labStillPrompt === normalizeOptionalPrompt(project.labStillPrompt) &&
+    labAnimatePrompt === normalizeOptionalPrompt(project.labAnimatePrompt)
+  ) {
+    return project;
+  }
+  return {
+    ...project,
+    labStillPrompt,
+    labAnimatePrompt,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function setStoredProjectMainAudioCreationId(
   project: StoredProject,
   creationId: string | null,
@@ -785,6 +925,8 @@ export function storedProjectToUi(project: StoredProject): Project {
     folderIds: normalizeFolderIds(project.folderIds),
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
+    labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
+    labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     timeline,
@@ -811,6 +953,8 @@ export function emptyUiProject(): Project {
     folderIds: [],
     imagesGroupId: null,
     videosGroupId: null,
+    labStillPrompt: null,
+    labAnimatePrompt: null,
     mainAudioCreationId: null,
     lyricAlignment: null,
     timeline: [],

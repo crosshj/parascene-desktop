@@ -26,6 +26,9 @@ export function hasOpenAiApiKey(): boolean {
   return Boolean(loadOpenAiApiKey());
 }
 
+/** Stronger model for lyric ↔ Whisper word-range alignment. */
+export const OPENAI_LYRIC_ALIGN_MODEL = "gpt-4.1";
+
 export type OpenAiChatResult = {
   request: Record<string, unknown>;
   response: unknown;
@@ -38,6 +41,7 @@ export async function openAiChatCompletion(opts: {
   system?: string;
   user: string;
   jsonMode?: boolean;
+  temperature?: number;
 }): Promise<OpenAiChatResult> {
   const model = opts.model?.trim() || "gpt-4o-mini";
   const messages: Array<{ role: string; content: string }> = [];
@@ -52,6 +56,9 @@ export async function openAiChatCompletion(opts: {
   };
   if (opts.jsonMode) {
     request.response_format = { type: "json_object" };
+  }
+  if (opts.temperature !== undefined) {
+    request.temperature = opts.temperature;
   }
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {

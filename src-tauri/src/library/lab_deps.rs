@@ -65,6 +65,8 @@ pub(crate) fn resolve_demucs() -> Option<PathBuf> {
     let home = dirs_home();
     if let Some(home) = &home {
         candidates.push(home.join(".local/bin/demucs"));
+        // Dedicated Parascene / agent venv (pipx-style install on PEP 668 Homebrew Python).
+        candidates.push(home.join(".local/share/demucs-venv/bin/demucs"));
         // ~/Library/Python/3.x/bin/demucs
         let py_root = home.join("Library/Python");
         if let Ok(entries) = std::fs::read_dir(&py_root) {

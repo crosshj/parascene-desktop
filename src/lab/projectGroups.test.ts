@@ -4,6 +4,7 @@ import {
   expectedMembersAfterAppend,
   idsForGroupApiCall,
   memberIdsFromRemoteGroup,
+  remainingMembersAfterRemoval,
   stillCandidateIdsFromGroup,
   withGroupMembership,
 } from "./projectGroups";
@@ -23,6 +24,21 @@ describe("idsForGroupApiCall", () => {
       "18846",
     ]);
   });
+
+  it("can rebuild a group with remaining members after removal", () => {
+    expect(idsForGroupApiCall("18842", ["18845"])).toEqual(["18842", "18845"]);
+  });
+
+  it("refreshes an existing cover without re-sending filed members", () => {
+    expect(idsForGroupApiCall("18842", [])).toEqual(["18842"]);
+  });
+
+  it("starts a fresh group from standalone survivors after ungroup", () => {
+    expect(idsForGroupApiCall(null, ["18841", "18845"])).toEqual([
+      "18841",
+      "18845",
+    ]);
+  });
 });
 
 describe("expectedMembersAfterAppend", () => {
@@ -32,6 +48,24 @@ describe("expectedMembersAfterAppend", () => {
       "18845",
       "18846",
     ]);
+  });
+});
+
+describe("remainingMembersAfterRemoval", () => {
+  it("drops removed ids and the cover id", () => {
+    expect(
+      remainingMembersAfterRemoval(
+        ["18842", "18841", "18845"],
+        ["18841"],
+        "18842",
+      ),
+    ).toEqual(["18845"]);
+  });
+
+  it("returns empty when all members are removed", () => {
+    expect(
+      remainingMembersAfterRemoval(["18841", "18845"], ["18841", "18845"]),
+    ).toEqual([]);
   });
 });
 

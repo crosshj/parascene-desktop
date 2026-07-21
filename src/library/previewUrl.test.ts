@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   canFetchLocal,
+  creationDetailUrl,
   hasLocalMedia,
   isParasceneUnavailable,
   withPreviewCacheBust,
 } from "./previewUrl";
 import type { Creation } from "./types";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string, protocol?: string) =>
+    protocol ? `${protocol}://${path}` : `asset://${path}`,
+}));
 
 function base(overrides: Partial<Creation> = {}): Creation {
   return {
@@ -53,6 +59,40 @@ describe("withPreviewCacheBust", () => {
   it("leaves src unchanged when version is empty", () => {
     expect(withPreviewCacheBust("asset://thumb.jpg", "")).toBe("asset://thumb.jpg");
     expect(withPreviewCacheBust("asset://thumb.jpg", null)).toBe("asset://thumb.jpg");
+  });
+});
+
+describe("creationDetailUrl", () => {
+  it("serves video and audio over the Range-capable media scheme", () => {
+    const video = creationDetailUrl(
+      base({
+        mediaType: "video",
+        localPath: "/Movies/Parascene/Library/media/1.mp4",
+        updatedAt: "t1",
+      }),
+    );
+    expect(video).toMatch(/^media:\/\//);
+    expect(video).toContain("1.mp4");
+
+    const audio = creationDetailUrl(
+      base({
+        mediaType: "audio",
+        localPath: "/Movies/Parascene/Library/media/a.mp3",
+        updatedAt: "t1",
+      }),
+    );
+    expect(audio).toMatch(/^media:\/\//);
+  });
+
+  it("keeps images on the asset scheme", () => {
+    const image = creationDetailUrl(
+      base({
+        mediaType: "image",
+        localPath: "/Movies/Parascene/Library/media/1.png",
+        updatedAt: "t1",
+      }),
+    );
+    expect(image).toMatch(/^asset:\/\//);
   });
 });
 

@@ -18,6 +18,9 @@ import {
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
   storedProjectToUi,
+  setStoredProjectLabPrompts,
+  setStoredProjectLyricAlignment,
+  normalizeLyricAlignment,
 } from "./projectStore";
 
 describe("projectStore", () => {
@@ -477,5 +480,79 @@ describe("projectStore", () => {
 
     expect(project.timeline?.[0].bakeKey).toBeNull();
     expect(project.timeline?.[0].bakePath).toBeNull();
+  });
+
+  it("persists Lab still and animate prompts with the project", () => {
+    let a = createStoredProject("Demo");
+    expect(a.labStillPrompt).toBeNull();
+    expect(a.labAnimatePrompt).toBeNull();
+
+    a = setStoredProjectLabPrompts(a, {
+      labStillPrompt: "  a custom still  ",
+      labAnimatePrompt: "custom animate",
+    });
+    expect(a.labStillPrompt).toBe("  a custom still  ");
+    expect(a.labAnimatePrompt).toBe("custom animate");
+
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects();
+    expect(loaded[0].labStillPrompt).toBe("  a custom still  ");
+    expect(loaded[0].labAnimatePrompt).toBe("custom animate");
+    expect(storedProjectToUi(loaded[0]).labStillPrompt).toBe(
+      "  a custom still  ",
+    );
+
+    a = setStoredProjectLabPrompts(loaded[0], { labStillPrompt: "" });
+    expect(a.labStillPrompt).toBe("");
+    expect(a.labAnimatePrompt).toBe("custom animate");
+  });
+
+  it("persists lyric text before timed lines exist", () => {
+    let a = createStoredProject("Demo", ["audio-1"]);
+    a = setStoredProjectLyricAlignment(a, {
+      sourceAudioCreationId: "audio-1",
+      lyricsText: "Verse one\nChorus",
+      alignedAt: "2026-07-21T12:00:00.000Z",
+      transcribeEngine: "openai",
+      lines: [],
+    });
+    expect(a.lyricAlignment?.lyricsText).toBe("Verse one\nChorus");
+    expect(a.lyricAlignment?.lines).toEqual([]);
+    expect(
+      normalizeLyricAlignment({
+        sourceAudioCreationId: "audio-1",
+        lyricsText: "draft",
+        alignedAt: "2026-07-21T12:00:00.000Z",
+        transcribeEngine: "local",
+        lines: [],
+      })?.lyricsText,
+    ).toBe("draft");
+  });
+
+  it("persists Whisper transcript with lyric alignment", () => {
+    let a = createStoredProject("Demo", ["audio-1"]);
+    a = setStoredProjectLyricAlignment(a, {
+      sourceAudioCreationId: "audio-1",
+      lyricsText: "Hello",
+      alignedAt: "2026-07-21T12:00:00.000Z",
+      transcribeEngine: "openai",
+      lines: [{ line: "Hello", startSec: 0, endSec: 1 }],
+      transcript: {
+        engine: "openai",
+        transcribedAt: "2026-07-21T11:59:00.000Z",
+        vocalsPath: "/tmp/vocals.wav",
+        fullText: "hello",
+        language: "en",
+        segments: [{ text: "hello", startSec: 0, endSec: 1 }],
+        words: [{ word: "hello", startSec: 0, endSec: 1 }],
+      },
+    });
+    expect(a.lyricAlignment?.transcript?.segments).toHaveLength(1);
+    expect(a.lyricAlignment?.transcript?.words).toHaveLength(1);
+    expect(a.lyricAlignment?.transcript?.vocalsPath).toBe("/tmp/vocals.wav");
+    saveStoredProjects([a]);
+    expect(loadStoredProjects()[0].lyricAlignment?.transcript?.fullText).toBe(
+      "hello",
+    );
   });
 });

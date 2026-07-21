@@ -40,7 +40,8 @@ pub use import_local::{library_import_from_disk, library_import_local_paths};
 pub use jobs::{jobs_cancel, jobs_enqueue, jobs_get, jobs_list};
 pub use lab_audio::{
     library_audio_waveform_peaks, library_cached_full_vocals, library_extend_clip,
-    library_read_file_base64, library_separate_vocals, library_slice_audio,
+    library_extract_video_frame, library_prepare_openai_whisper_audio, library_read_file_base64,
+    library_separate_vocals, library_slice_audio,
 };
 pub use lab_deps::{
     library_install_demucs, library_lab_deps_status, library_open_local_tools_doc,

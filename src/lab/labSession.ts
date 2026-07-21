@@ -13,7 +13,7 @@ export type LabLastResult = {
   detail?: string;
   json?: unknown;
   playUrl?: string;
-  playMediaType?: "audio" | "video";
+  playMediaType?: "audio" | "video" | "image";
   creationId?: string;
 };
 
@@ -99,6 +99,7 @@ const ALL_MODULE_IDS: LabModuleId[] = [
   "isolate",
   "a2v",
   "extend",
+  "frame",
   "mutate",
   "openai",
   "align",

@@ -19,6 +19,8 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     folderIds: [],
     imagesGroupId: null,
     videosGroupId: null,
+    labStillPrompt: null,
+    labAnimatePrompt: null,
     mainAudioCreationId: null,
     lyricAlignment: null,
     timeline: [

@@ -850,6 +850,31 @@ export class ParasceneSdk {
     return JSON.parse(res.body) as RemoteCreateImage;
   }
 
+  /**
+   * Restore grouped sources and archive the group cover row.
+   * `POST /api/create/images/:id/ungroup`
+   */
+  async ungroupCreations(id: string | number): Promise<{
+    restoredCreationIds: string[];
+  }> {
+    const res = await this.postBearerAuthed(
+      `${this.apiBaseUrl}/api/create/images/${encodeURIComponent(String(id))}/ungroup`,
+      {},
+    );
+    if (res.status >= 400) {
+      throw new Error(parseApiError(res, `ungroup failed (${res.status})`));
+    }
+    const data = JSON.parse(res.body) as {
+      restored_creation_ids?: Array<number | string>;
+    };
+    const restoredCreationIds = Array.isArray(data.restored_creation_ids)
+      ? data.restored_creation_ids
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [];
+    return { restoredCreationIds };
+  }
+
   /** `DELETE /api/create/images/:id` — missing ids count as already gone. */
   async deleteCreation(id: string | number): Promise<void> {
     const res = await this.deleteBearerAuthed(

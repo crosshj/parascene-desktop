@@ -124,15 +124,22 @@ fn reversed_thumb_dest(paths: &ParascenePaths, creation: &Creation) -> PathBuf {
 }
 
 fn partial_path(dest: &Path) -> PathBuf {
+    // FFmpeg sniffs format from the *final* extension. Keep the dest extension
+    // at the end: `{stem}.partial.{pid}.{nanos}.{ext}` (e.g. `.mp4` / `.m4a`).
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    let stem = dest
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("reversed");
+    let ext = dest
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mp4");
     let name = format!(
-        "{}.partial.{}.{}",
-        dest.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("reversed"),
+        "{stem}.partial.{}.{}.{ext}",
         std::process::id(),
         nanos
     );

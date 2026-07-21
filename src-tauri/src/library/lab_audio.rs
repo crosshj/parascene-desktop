@@ -492,6 +492,182 @@ pub fn library_read_file_base64(path: String) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+/// OpenAI Whisper multipart limit (25 MiB). Leave a small headroom for form overhead.
+const OPENAI_WHISPER_MAX_BYTES: u64 = 24 * 1024 * 1024;
+
+/// Encode audio to mono 16 kHz MP3 for OpenAI Whisper (under the 25 MB upload cap).
+#[tauri::command]
+pub fn library_prepare_openai_whisper_audio(audio_path: String) -> Result<String, String> {
+    let src = PathBuf::from(&audio_path);
+    if !src.is_file() {
+        return Err("Audio file not found".into());
+    }
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required to prepare audio for OpenAI Whisper. Install with: brew install ffmpeg"
+            .to_string()
+    })?;
+
+    let key = source_fingerprint(&src)?;
+    let dir = cache_dir("whisper")?;
+    // Prefer 64 kbps; fall back to 32 kbps if still somehow over the cap (very long tracks).
+    for bitrate in ["64k", "32k"] {
+        let dest = dir.join(format!("{key}.openai-{bitrate}.mp3"));
+        if dest.is_file() {
+            let len = dest.metadata().map(|m| m.len()).unwrap_or(0);
+            if len > 0 && len <= OPENAI_WHISPER_MAX_BYTES {
+                return Ok(dest.to_string_lossy().to_string());
+            }
+        }
+        let tmp = dir.join(format!("{key}.openai-{bitrate}.tmp.mp3"));
+        let _ = fs::remove_file(&tmp);
+        run_ffmpeg(
+            &ffmpeg,
+            &[
+                "-y",
+                "-i",
+                src.to_str().ok_or("bad path")?,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                bitrate,
+                tmp.to_str().ok_or("bad out")?,
+            ],
+        )?;
+        let len = tmp.metadata().map(|m| m.len()).unwrap_or(0);
+        if len == 0 {
+            let _ = fs::remove_file(&tmp);
+            return Err("ffmpeg produced empty Whisper upload audio".into());
+        }
+        if len <= OPENAI_WHISPER_MAX_BYTES {
+            let _ = fs::remove_file(&dest);
+            fs::rename(&tmp, &dest).map_err(|e| format!("whisper prepare rename: {e}"))?;
+            return Ok(dest.to_string_lossy().to_string());
+        }
+        let _ = fs::remove_file(&tmp);
+    }
+    Err(format!(
+        "Audio is too long to fit under OpenAI Whisper's {} MB limit even after compression",
+        OPENAI_WHISPER_MAX_BYTES / (1024 * 1024)
+    ))
+}
+
+/// Pull a full-resolution JPEG frame from a local video at `time_sec` (Lab → Pull frame).
+#[tauri::command]
+pub async fn library_extract_video_frame(
+    source_path: String,
+    time_sec: f64,
+) -> Result<String, String> {
+    let src = PathBuf::from(&source_path);
+    if !src.is_file() {
+        return Err("Source video file not found".into());
+    }
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
+    })?;
+
+    // Seek past EOF yields exit 234 / "Nothing was written" — clamp to the last readable frame.
+    let duration = probe_media_duration_sec(&ffmpeg, &src)?;
+    let max_t = if duration > 0.05 {
+        (duration - 0.05).max(0.0)
+    } else {
+        0.0
+    };
+    let t = time_sec.max(0.0).min(max_t);
+
+    let fp = source_fingerprint(&src)?;
+    let millis = (t * 1000.0).round() as u64;
+    let dir = cache_dir("frames")?;
+    let dest = dir.join(format!("{fp}-{millis}.jpg"));
+    if dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        return Ok(dest.to_string_lossy().to_string());
+    }
+
+    let tmp = dir.join(format!("{fp}-{millis}.tmp.jpg"));
+    let _ = fs::remove_file(&tmp);
+    // `-ss` after `-i` for accurate frame; yuvj420p matches JPEG full-range (avoids mjpeg -22).
+    let t_arg = format!("{t:.3}");
+    let src_arg = src.to_string_lossy().to_string();
+    let tmp_arg = tmp.to_string_lossy().to_string();
+    run_ffmpeg_frame(
+        &ffmpeg,
+        &[
+            "-y",
+            "-i",
+            &src_arg,
+            "-ss",
+            &t_arg,
+            "-an",
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-vf",
+            "format=yuvj420p",
+            "-q:v",
+            "2",
+            "-update",
+            "1",
+            &tmp_arg,
+        ],
+    )?;
+    if !tmp.is_file() || tmp.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+        return Err(format!(
+            "No frame at {t:.2}s (video is {duration:.2}s). Try an earlier time."
+        ));
+    }
+    fs::rename(&tmp, &dest).map_err(|e| format!("frame rename: {e}"))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+fn probe_media_duration_sec(ffmpeg: &Path, source: &Path) -> Result<f64, String> {
+    // `-i` alone exits non-zero after printing metadata — no full decode.
+    let output = Command::new(ffmpeg)
+        .args(["-hide_banner", "-i", source.to_str().ok_or("bad source path")?])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Could not probe media duration: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_duration_from_ffmpeg_stderr(&stderr).ok_or_else(|| {
+        "Could not read video duration from FFmpeg (is this a valid video?)".to_string()
+    })
+}
+
+/// Like `run_ffmpeg`, but surfaces the useful tail of stderr (not the version banner).
+fn run_ffmpeg_frame(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
+    let output = Command::new(ffmpeg)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let useful: String = stderr
+        .lines()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "ffmpeg failed (exit {}): {}",
+        output.status,
+        if useful.trim().is_empty() {
+            stderr.chars().take(400).collect::<String>()
+        } else {
+            useful
+        }
+    ))
+}
+
 fn parse_duration_from_ffmpeg_stderr(stderr: &str) -> Option<f64> {
     let idx = stderr.find("Duration:")?;
     let slice = &stderr[idx + "Duration:".len()..];

@@ -15,8 +15,17 @@ pub struct TranscriptSegment {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TranscriptWord {
+    word: String,
+    start_sec: f64,
+    end_sec: f64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalTranscriptResult {
     segments: Vec<TranscriptSegment>,
+    words: Vec<TranscriptWord>,
     full_text: String,
     language: Option<String>,
 }
@@ -51,6 +60,14 @@ pub fn library_transcribe_local(audio_path: String) -> Result<LocalTranscriptRes
             "base",
             "--output_format",
             "json",
+            "--word_timestamps",
+            "True",
+            "--no_speech_threshold",
+            "0.6",
+            "--compression_ratio_threshold",
+            "2.4",
+            "--logprob_threshold",
+            "-1.0",
             "--output_dir",
         ])
         .arg(&out_dir)
@@ -75,6 +92,23 @@ pub fn library_transcribe_local(audio_path: String) -> Result<LocalTranscriptRes
     parse_whisper_json(&raw)
 }
 
+fn parse_word(seg: &serde_json::Value) -> Option<TranscriptWord> {
+    let word = seg.get("word")?.as_str()?.trim();
+    if word.is_empty() {
+        return None;
+    }
+    let start = seg.get("start")?.as_f64()?;
+    let end = seg.get("end")?.as_f64()?;
+    if end <= start {
+        return None;
+    }
+    Some(TranscriptWord {
+        word: word.to_string(),
+        start_sec: start,
+        end_sec: end,
+    })
+}
+
 fn parse_whisper_json(raw: &str) -> Result<LocalTranscriptResult, String> {
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("Invalid whisper JSON: {e}"))?;
@@ -88,12 +122,20 @@ fn parse_whisper_json(raw: &str) -> Result<LocalTranscriptResult, String> {
         .get("language")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let mut words: Vec<TranscriptWord> = Vec::new();
     let segments = value
         .get("segments")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
                 .filter_map(|seg| {
+                    if let Some(word_arr) = seg.get("words").and_then(|v| v.as_array()) {
+                        for w in word_arr {
+                            if let Some(parsed) = parse_word(w) {
+                                words.push(parsed);
+                            }
+                        }
+                    }
                     let text = seg.get("text")?.as_str()?.trim();
                     if text.is_empty() {
                         return None;
@@ -115,6 +157,7 @@ fn parse_whisper_json(raw: &str) -> Result<LocalTranscriptResult, String> {
 
     Ok(LocalTranscriptResult {
         segments,
+        words,
         full_text,
         language,
     })

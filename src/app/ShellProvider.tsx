@@ -28,6 +28,7 @@ import {
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
   setStoredProjectGroupIds,
+  setStoredProjectLabPrompts,
   setStoredProjectMainAudioCreationId,
   setStoredProjectLyricAlignment,
   storedProjectToUi,
@@ -86,6 +87,11 @@ type ShellState = {
     imagesGroupId?: string | null;
     videosGroupId?: string | null;
   }) => void;
+  /** Persist Lab still / animate prompts for the open project. */
+  setOpenProjectLabPrompts: (prompts: {
+    labStillPrompt?: string | null;
+    labAnimatePrompt?: string | null;
+  }) => void;
   /** Persist preferred main song creation id for the open project. */
   setOpenProjectMainAudioCreationId: (creationId: string | null) => void;
   /** Persist lyric alignment for the open project. */
@@ -124,7 +130,17 @@ type ShellState = {
   setHookRange: (range: { startSec: number; endSec: number }) => void;
 };
 
-const ShellContext = createContext<ShellState | null>(null);
+const SHELL_CONTEXT_KEY = "__parasceneShellContext";
+
+type ShellContextGlobal = typeof globalThis & {
+  [SHELL_CONTEXT_KEY]?: ReturnType<typeof createContext<ShellState | null>>;
+};
+
+/** Survive Vite HMR so Provider and useShell keep the same Context identity. */
+const ShellContext =
+  (globalThis as ShellContextGlobal)[SHELL_CONTEXT_KEY] ??
+  createContext<ShellState | null>(null);
+(globalThis as ShellContextGlobal)[SHELL_CONTEXT_KEY] = ShellContext;
 
 function sortByUpdatedDesc(projects: StoredProject[]): StoredProject[] {
   return [...projects].sort((a, b) =>
@@ -392,6 +408,16 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectLabPrompts = useCallback(
+    (prompts: {
+      labStillPrompt?: string | null;
+      labAnimatePrompt?: string | null;
+    }) => {
+      patchOpenProject((p) => setStoredProjectLabPrompts(p, prompts));
+    },
+    [patchOpenProject],
+  );
+
   const setOpenProjectMainAudioCreationId = useCallback(
     (creationId: string | null) => {
       patchOpenProject((p) => setStoredProjectMainAudioCreationId(p, creationId));
@@ -429,6 +455,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
+      setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
       addCreationsToOpenProject,
@@ -471,6 +498,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
+      setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
       addCreationsToOpenProject,
@@ -500,4 +528,9 @@ export function useShell(): ShellState {
   const ctx = useContext(ShellContext);
   if (!ctx) throw new Error("useShell must be used within ShellProvider");
   return ctx;
+}
+
+/** Soft read for decorative UI that should not crash during HMR remounts. */
+export function useShellOptional(): ShellState | null {
+  return useContext(ShellContext);
 }

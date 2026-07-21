@@ -31,7 +31,8 @@ export function labModuleGate(
   id: LabModuleId,
   ctx: LabGateContext,
 ): LabGate | null {
-  const needsGroups = id === "create" || id === "mutate" || id === "a2v";
+  const needsGroups =
+    id === "create" || id === "mutate" || id === "a2v" || id === "frame";
   if (needsGroups && !ctx.groupsReady) {
     return {
       navBlurb: "Requires Project groups first",
@@ -58,7 +59,7 @@ export function labModuleGate(
   }
 
   if (
-    (id === "isolate" || id === "a2v" || id === "extend") &&
+    (id === "isolate" || id === "a2v" || id === "extend" || id === "frame") &&
     !ctx.ffmpegReady
   ) {
     return {
@@ -97,11 +98,13 @@ export function labModuleGate(
     }
   }
 
-  if (id === "extend" && ctx.videoCount === 0) {
+  if ((id === "extend" || id === "frame") && ctx.videoCount === 0) {
     return {
       navBlurb: "Requires a project video",
       reason:
-        "Add a video to this project and sync/download it locally before clip extend.",
+        id === "frame"
+          ? "Add a video to this project and sync/download it locally before pulling a frame."
+          : "Add a video to this project and sync/download it locally before clip extend.",
     };
   }
 

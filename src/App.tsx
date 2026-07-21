@@ -9,8 +9,8 @@ import { HookLayout } from "./layouts/hook/HookLayout";
 import { LabLayout } from "./layouts/lab/LabLayout";
 import { LibraryView } from "./library/LibraryView";
 import { ProjectWelcome } from "./project/ProjectWelcome";
+import { AppErrorBoundary } from "./ui/AppErrorBoundary";
 import { ConfirmProvider } from "./ui/ConfirmDialog";
-import { WipOverlay } from "./ui/WipOverlay";
 import "./styles.css";
 
 function LayoutRouter() {
@@ -47,21 +47,22 @@ function Root() {
 
   return (
     <ShellProvider>
-      <ConfirmProvider>
-        <WipOverlay />
-        <ReauthOverlay />
-        <AppChrome>
-          <LayoutRouter />
-        </AppChrome>
-      </ConfirmProvider>
+      <ReauthOverlay />
+      <AppChrome>
+        <LayoutRouter />
+      </AppChrome>
     </ShellProvider>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Root />
-    </AuthProvider>
+    <AppErrorBoundary>
+      <ConfirmProvider>
+        <AuthProvider>
+          <Root />
+        </AuthProvider>
+      </ConfirmProvider>
+    </AppErrorBoundary>
   );
 }

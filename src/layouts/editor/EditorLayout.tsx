@@ -61,6 +61,10 @@ import {
   type TimelineClip,
 } from "../../project/types";
 import { useConfirm } from "../../ui/ConfirmDialog";
+import {
+  removeMembersFromProjectGroup,
+  type ProjectGroupKind,
+} from "../../lab/projectGroups";
 
 const NARROW_MQ = "(max-width: 1100px)";
 
@@ -113,6 +117,7 @@ export function EditorLayout() {
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
     removeFoldersFromOpenProject,
+    setOpenProjectGroupIds,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
@@ -1152,6 +1157,20 @@ export function EditorLayout() {
     return used;
   };
 
+  const timelineUsedAssetIds = useMemo(() => {
+    const used = new Set<string>();
+    for (const clip of project.timeline) {
+      if (clip.assetId) used.add(clip.assetId);
+      for (const id of clip.slideshow?.imageAssetIds ?? []) {
+        used.add(id);
+      }
+      if (clip.slideshow?.audioAssetId) {
+        used.add(clip.slideshow.audioAssetId);
+      }
+    }
+    return used;
+  }, [project.timeline]);
+
   const removeAssetsFromProject = async (assetIds: string[]) => {
     const usedIds = assetsUsedOnTimeline(assetIds);
     if (usedIds.size > 0) {
@@ -1293,6 +1312,83 @@ export function EditorLayout() {
     }
   };
 
+  const deleteMembersFromProjectGroup = async (opts: {
+    groupId: string;
+    kind: ProjectGroupKind;
+    memberIds: string[];
+  }) => {
+    const usedIds = opts.memberIds.filter((id) =>
+      timelineUsedAssetIds.has(id),
+    );
+    if (usedIds.length > 0) {
+      await confirm({
+        title: usedIds.length === 1 ? "Asset in use" : "Assets in use",
+        message:
+          usedIds.length === 1
+            ? "This asset is used on the timeline. Remove its clips first, then try again."
+            : `${usedIds.length} selected assets are used on the timeline. Remove their clips first, then try again.`,
+        confirmLabel: "OK",
+        hideCancel: true,
+      });
+      return;
+    }
+
+    const count = opts.memberIds.length;
+    const groupLabel = opts.kind === "images" ? "Images" : "Videos";
+    await confirm({
+      title:
+        count === 1
+          ? `Delete from ${groupLabel} group?`
+          : `Delete ${count} from ${groupLabel} group?`,
+      message:
+        count === 1
+          ? `This will permanently delete the asset on Parascene and update the ${groupLabel} group in the cloud. This cannot be undone.`
+          : `This will permanently delete these ${count} assets on Parascene and update the ${groupLabel} group in the cloud. This cannot be undone.`,
+      confirmLabel: "Delete from group",
+      cancelLabel: "Cancel",
+      danger: true,
+      errorTitle: "Could not delete from group",
+      onConfirm: async ({ setMessage }) => {
+        setMessage("Starting…");
+        const result = await removeMembersFromProjectGroup({
+          projectId: project.id,
+          projectTitle: project.title,
+          kind: opts.kind,
+          groupId: opts.groupId,
+          memberIds: opts.memberIds,
+          onProgress: setMessage,
+        });
+        if (result.projectCreationIdsToRemove.length > 0) {
+          removeCreationsFromOpenProject(result.projectCreationIdsToRemove);
+        }
+        if (result.projectCreationIdsToAdd.length > 0) {
+          addCreationsToOpenProject(result.projectCreationIdsToAdd);
+        }
+        if (result.groupId === null) {
+          setOpenProjectGroupIds(
+            opts.kind === "images"
+              ? { imagesGroupId: null }
+              : { videosGroupId: null },
+          );
+        } else {
+          setOpenProjectGroupIds(
+            opts.kind === "images"
+              ? { imagesGroupId: result.groupId }
+              : { videosGroupId: result.groupId },
+          );
+        }
+        if (
+          selectedAssetId &&
+          result.projectCreationIdsToRemove.includes(selectedAssetId)
+        ) {
+          setSelectedAssetId(null);
+          setSelectedAssetIds([]);
+          setOpenProjectSelectedAssetId(null);
+        }
+      },
+    });
+  };
+
   // Source monitor: assets panel selection, or the selected clip's source asset.
   // Timeline monitor owns the pane when active (no source asset loaded).
   const previewAssetId =
@@ -1327,6 +1423,10 @@ export function EditorLayout() {
           onRemoveFolders={(ids) => {
             void removeFoldersFromProject(ids);
           }}
+          onDeleteFromGroup={(target) => {
+            void deleteMembersFromProjectGroup(target);
+          }}
+          timelineUsedAssetIds={timelineUsedAssetIds}
         />
       ) : null}
 

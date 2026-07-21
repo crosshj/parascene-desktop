@@ -86,4 +86,55 @@ describe("ConfirmDialog", () => {
     await user.click(screen.getByRole("button", { name: "OK" }));
     expect(onResult).toHaveBeenCalledWith(true);
   });
+
+  it("stays open and shows activity while onConfirm runs", async () => {
+    const user = userEvent.setup();
+    const onResult = vi.fn();
+    let resolveWork: (() => void) | undefined;
+    const work = new Promise<void>((resolve) => {
+      resolveWork = resolve;
+    });
+
+    function BusyProbe() {
+      const confirm = useConfirm();
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void confirm({
+              title: "Delete from group?",
+              message: "This will update Parascene.",
+              confirmLabel: "Delete from group",
+              danger: true,
+              onConfirm: async ({ setMessage }) => {
+                setMessage("Ungrouping…");
+                await work;
+              },
+            }).then(onResult);
+          }}
+        >
+          Delete
+        </button>
+      );
+    }
+
+    render(
+      <ConfirmProvider>
+        <BusyProbe />
+      </ConfirmProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete from group" }));
+
+    expect(screen.getByText("Ungrouping…")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Working…" })).toBeDisabled();
+
+    resolveWork?.();
+    await vi.waitFor(() => {
+      expect(onResult).toHaveBeenCalledWith(true);
+    });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
 });

@@ -1,8 +1,21 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Creation } from "./types";
 
-function fileSrc(path: string): string | null {
+/**
+ * Local file URL for WebView.
+ * Video/audio must use the custom `media` scheme (HTTP Range) — WebKit on
+ * macOS often fails mid-stream on Tauri's built-in `asset://` for large A/V,
+ * which surfaces as a stuck poster/thumb with no sound while the playhead
+ * still advances.
+ */
+function fileSrc(
+  path: string,
+  opts?: { playback?: boolean },
+): string | null {
   try {
+    if (opts?.playback) {
+      return convertFileSrc(path, "media");
+    }
     return convertFileSrc(path);
   } catch {
     return null;
@@ -80,10 +93,11 @@ export function creationPreviewUrl(c: Creation): string | null {
   return null;
 }
 
-/** Lightbox media — local disk only (never remote). */
+/** Lightbox / Editor / timeline media — local disk only (never remote). */
 export function creationDetailUrl(c: Creation): string | null {
   if (c.localPath) {
-    const src = fileSrc(c.localPath);
+    const playback = c.mediaType === "video" || c.mediaType === "audio";
+    const src = fileSrc(c.localPath, { playback });
     if (src) return withPreviewCacheBust(src, c.updatedAt);
   }
   return null;

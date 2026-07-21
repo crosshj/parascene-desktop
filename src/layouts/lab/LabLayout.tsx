@@ -6,10 +6,14 @@ import {
   getCreations,
   importLocalPaths,
 } from "../../library/catalogClient";
-import { isGroupCreation } from "../../library/creationFlags";
+import {
+  groupSourceCreationIds,
+  isGroupCreation,
+} from "../../library/creationFlags";
 import { creationDetailUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listJobs } from "../../jobs/jobsClient";
 import {
   cancelProjectGroupsJob,
   cleanupProjectGroups,
@@ -26,8 +30,10 @@ import {
   audioWaveformPeaks,
   cachedFullVocalsPath,
   deleteAudioClip,
+  extractVideoFrame,
   separateFullVocals,
   sliceAudioRange,
+  uploadLocalImageFile,
   uploadVocalsSliceClip,
 } from "../../lab/audioTools";
 import { LabAudioTrack, LabWaveformSlicePicker } from "../../lab/LabMediaWaveform";
@@ -38,9 +44,9 @@ import { CreationLightbox } from "../../library/CreationLightbox";
 import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
 import {
   LAB_A2V_PROMPT,
-  LAB_ANIMATE_PROMPT,
   LAB_MUTATE_PROMPT,
-  LAB_STILL_PROMPT,
+  resolveLabAnimatePrompt,
+  resolveLabStillPrompt,
 } from "../../lab/labPrompts";
 import {
   getLabDepsStatus,
@@ -53,11 +59,14 @@ import {
   openAiChatCompletion,
 } from "../../lab/openaiClient";
 import {
-  alignLyricsToTranscript,
+  alignLyricScript,
+  alignLyricScriptWithOpenAi,
+  isInaudibleLyricLine,
   parseLyricLines,
+  reconcileAlignedLinesFromScript,
 } from "../../lab/lyricAlign";
 import { transcribeAudio, type TranscribeEngine } from "../../lab/transcribe";
-import type { AlignedLyricLine, LyricAlignment } from "../../project/types";
+import type { AlignedLyricLine, LyricAlignment, LyricTranscript } from "../../project/types";
 import {
   loadLabSession,
   sanitizeLabSession,
@@ -100,8 +109,13 @@ function LabResultMedia({
   mediaType,
 }: {
   playUrl: string;
-  mediaType: "audio" | "video";
+  mediaType: "audio" | "video" | "image";
 }) {
+  if (mediaType === "image") {
+    return (
+      <img src={playUrl} alt="Lab result" className="lab-frame-still" />
+    );
+  }
   if (mediaType === "video") {
     return (
       <video
@@ -113,7 +127,33 @@ function LabResultMedia({
       />
     );
   }
-  return <audio controls src={playUrl} className="lab-audio" />;
+  return (
+    <audio controls src={playUrl} className="lab-audio" preload="metadata" />
+  );
+}
+
+function LabModuleErrorAlert(props: {
+  message: string;
+  details?: string;
+  cancelled?: boolean;
+}) {
+  const { message, details, cancelled } = props;
+  if (!message.trim()) return null;
+  const detailText = details?.trim() || message;
+  return (
+    <div
+      className={`lab-module-error auth-error login-error${cancelled ? " is-cancelled" : ""}`}
+      role="alert"
+    >
+      <div className="login-error-summary">
+        <strong>{message}</strong>
+      </div>
+      <details className="login-error-details">
+        <summary>Details</summary>
+        <pre className="login-error-pre">{detailText}</pre>
+      </details>
+    </div>
+  );
 }
 
 type LastResult = LabLastResult;
@@ -132,6 +172,7 @@ export function LabLayout() {
   const {
     project,
     setOpenProjectGroupIds,
+    setOpenProjectLabPrompts,
     setOpenProjectMainAudioCreationId,
     setOpenProjectLyricAlignment,
     addCreationsToOpenProject,
@@ -157,8 +198,85 @@ export function LabLayout() {
     pendingMediaType: "image" | "video";
   } | null>(null);
   const ensureAbortRef = useRef<AbortController | null>(null);
-  const ensureBackendJobIdRef = useRef<string | null>(null);
-  const [ensureCancellable, setEnsureCancellable] = useState(false);
+  const groupsJobIdRef = useRef<string | null>(null);
+  const groupsCancelRequestedRef = useRef(false);
+  const [groupsJobCancellable, setGroupsJobCancellable] = useState(false);
+
+  const trackGroupsJobId = useCallback((jobId: string | null | undefined) => {
+    const id = jobId?.trim() || null;
+    if (!id) return;
+    groupsJobIdRef.current = id;
+    if (groupsCancelRequestedRef.current) {
+      void cancelProjectGroupsJob(id);
+    }
+  }, []);
+
+  const cancelGroupsJob = useCallback(() => {
+    groupsCancelRequestedRef.current = true;
+    const knownIds = [
+      groupsJobIdRef.current,
+      session.activeJob?.backendJobId,
+    ]
+      .map((id) => (id == null ? "" : String(id).trim()))
+      .filter(Boolean);
+    for (const jobId of [...new Set(knownIds)]) {
+      void cancelProjectGroupsJob(jobId);
+    }
+    // Stop the FE watcher immediately (detach). Backend cancel is separate.
+    ensureAbortRef.current?.abort();
+    ensureAbortRef.current = null;
+    // Also cancel any in-flight ensure/cleanup jobs for this project — covers
+    // HMR remounts / lost refs while the backend is still polling.
+    void (async () => {
+      try {
+        const jobs = await listJobs({ projectId: project.id, limit: 20 });
+        for (const job of jobs) {
+          const kind = String(job.kind || "");
+          const status = String(job.status || "");
+          if (
+            (kind === "ensure_project_groups" ||
+              kind === "cleanup_project_groups") &&
+            (status === "queued" ||
+              status === "running" ||
+              status === "waiting")
+          ) {
+            void cancelProjectGroupsJob(job.id);
+          }
+        }
+      } catch {
+        /* best-effort */
+      }
+    })();
+    // Unstick the Lab UI even if the FE watcher was lost (HMR / remount).
+    setGroupsJobCancellable(false);
+    setSession((s) => ({
+      ...s,
+      activeJob:
+        s.activeJob?.moduleId === "groups" ? null : s.activeJob,
+      moduleProgress: {
+        ...s.moduleProgress,
+        groups: { status: "failed", note: "Cancelled" },
+      },
+      lastByModule: {
+        ...s.lastByModule,
+        groups: {
+          summary: "Cancelled",
+          detail: "Backend Project groups job cancelled.",
+        },
+      },
+      progressLogByModule: {
+        ...s.progressLogByModule,
+        groups: [
+          ...(s.progressLogByModule.groups ?? []),
+          knownIds.length > 0
+            ? `Cancel requested for job ${knownIds.join(", ")}…`
+            : "Cancel requested — stopping active Project groups jobs…",
+          "Cancelled.",
+        ].slice(-40),
+      },
+    }));
+    setButtonLabel(null);
+  }, [project.id, session.activeJob?.backendJobId]);
 
   // Reload when switching projects. In-flight backend jobs auto-resume.
   useEffect(() => {
@@ -463,6 +581,28 @@ export function LabLayout() {
   const anyBusy = Object.values(session.moduleProgress).some(
     (p) => p?.status === "running",
   );
+  const groupsBusy = session.moduleProgress.groups?.status === "running";
+  const moduleFailed = session.moduleProgress[moduleId]?.status === "failed";
+  const moduleError = moduleFailed
+    ? session.lastByModule[moduleId]
+    : undefined;
+  const groupsCanCancel =
+    groupsJobCancellable ||
+    groupsBusy ||
+    Boolean(session.activeJob?.backendJobId?.trim());
+
+  // Keep Cancel available across HMR remounts while a groups job is in flight.
+  useEffect(() => {
+    if (!groupsBusy && !session.activeJob?.backendJobId) return;
+    setGroupsJobCancellable(true);
+    if (session.activeJob?.backendJobId) {
+      trackGroupsJobId(session.activeJob.backendJobId);
+    }
+  }, [
+    groupsBusy,
+    session.activeJob?.backendJobId,
+    trackGroupsJobId,
+  ]);
 
   const appendProgress = useCallback((forModule: LabModuleId, note: string) => {
     setSession((s) => ({
@@ -597,31 +737,43 @@ export function LabLayout() {
         : err instanceof Error
           ? err.message
           : String(err);
-      setSession((s) => ({
-        ...s,
-        activeJob: null,
-        lastByModule: {
-          ...s.lastByModule,
-          [forModule]: {
-            summary: cancelled ? "Cancelled" : "Failed",
-            detail: message,
+      const technical =
+        err instanceof Error && err.stack ? err.stack : String(err);
+      setSession((s) => {
+        const prevLog = s.progressLogByModule[forModule] ?? [];
+        const nextLog = [
+          ...prevLog,
+          cancelled ? "Cancelled." : `Failed: ${message}`,
+        ].slice(-40);
+        const detailParts = [
+          technical,
+          nextLog.length
+            ? `\n\nProgress log:\n${nextLog.slice(-12).join("\n")}`
+            : "",
+        ].filter(Boolean);
+        return {
+          ...s,
+          activeJob: null,
+          lastByModule: {
+            ...s.lastByModule,
+            [forModule]: {
+              summary: message,
+              detail: detailParts.join(""),
+            },
           },
-        },
-        moduleProgress: {
-          ...s.moduleProgress,
-          [forModule]: {
-            status: "failed",
-            note: cancelled ? "Cancelled" : message,
+          moduleProgress: {
+            ...s.moduleProgress,
+            [forModule]: {
+              status: "failed",
+              note: cancelled ? "Cancelled" : "Error",
+            },
           },
-        },
-        progressLogByModule: {
-          ...s.progressLogByModule,
-          [forModule]: [
-            ...(s.progressLogByModule[forModule] ?? []),
-            cancelled ? "Cancelled." : `Failed: ${message}`,
-          ].slice(-40),
-        },
-      }));
+          progressLogByModule: {
+            ...s.progressLogByModule,
+            [forModule]: nextLog,
+          },
+        };
+      });
       setButtonLabel(null);
     }
   };
@@ -691,7 +843,7 @@ export function LabLayout() {
   const applyEnsureCheckpoint = useCallback(
     (state: EnsureCheckpoint) => {
       if (state.backendJobId) {
-        ensureBackendJobIdRef.current = state.backendJobId;
+        trackGroupsJobId(state.backendJobId);
       }
       if (
         state.imagesGroupId !== undefined ||
@@ -734,7 +886,7 @@ export function LabLayout() {
           : s.activeJob,
       }));
     },
-    [addCreationsToOpenProject, setOpenProjectGroupIds],
+    [addCreationsToOpenProject, setOpenProjectGroupIds, trackGroupsJobId],
   );
 
   const runEnsureGroups = useCallback(
@@ -745,19 +897,24 @@ export function LabLayout() {
         pendingCreationId?: string | null;
         imagesGroupId?: string | null;
         videosGroupId?: string | null;
+        mode?: "images" | "videos" | "both";
       },
     ): Promise<LastResult> => {
       // Replace a prior FE watcher; cancel its backend job only when starting fresh
       // (resume passes backendJobId and should attach, not kill).
-      const priorJobId = ensureBackendJobIdRef.current;
+      const priorJobId = groupsJobIdRef.current;
       ensureAbortRef.current?.abort();
       const ac = new AbortController();
       ensureAbortRef.current = ac;
-      setEnsureCancellable(true);
+      groupsCancelRequestedRef.current = false;
+      setGroupsJobCancellable(true);
       const backendJobId =
         overrides?.backendJobId !== undefined
           ? overrides.backendJobId
           : (session.activeJob?.backendJobId ?? null);
+      if (backendJobId) {
+        trackGroupsJobId(backendJobId);
+      }
       if (priorJobId && priorJobId !== backendJobId) {
         void cancelProjectGroupsJob(priorJobId);
       }
@@ -765,6 +922,7 @@ export function LabLayout() {
         overrides?.pendingCreationId !== undefined
           ? overrides.pendingCreationId
           : (session.activeJob?.pendingCreationId ?? null);
+      const mode = overrides?.mode ?? "both";
       try {
         const result = await ensureProjectGroups({
           projectId: project.id,
@@ -778,22 +936,62 @@ export function LabLayout() {
             overrides?.videosGroupId !== undefined
               ? overrides.videosGroupId
               : (session.activeJob?.videosGroupId ?? project.videosGroupId),
+          stillPrompt: project.labStillPrompt,
+          animatePrompt: project.labAnimatePrompt,
+          mode,
           pendingCreationId,
           backendJobId,
           signal: ac.signal,
           onProgress,
           onCheckpoint: applyEnsureCheckpoint,
         });
-        ensureBackendJobIdRef.current = result.jobId;
-        setOpenProjectGroupIds({
-          imagesGroupId: result.imagesGroupId,
-          videosGroupId: result.videosGroupId,
-        });
+        trackGroupsJobId(result.jobId);
+        if (mode === "images") {
+          setOpenProjectGroupIds({ imagesGroupId: result.imagesGroupId });
+        } else if (mode === "videos") {
+          setOpenProjectGroupIds({
+            imagesGroupId: result.imagesGroupId,
+            videosGroupId: result.videosGroupId,
+          });
+        } else {
+          setOpenProjectGroupIds({
+            imagesGroupId: result.imagesGroupId,
+            videosGroupId: result.videosGroupId,
+          });
+        }
         if (result.projectCreationIds.length > 0) {
           addCreationsToOpenProject(result.projectCreationIds);
           onProgress(
             `Added ${result.projectCreationIds.length} group cover(s) to project.`,
           );
+        }
+        if (mode === "images") {
+          if (!result.imagesGroupId) {
+            throw new Error(
+              [result.messages.join("\n"), "Images group: missing"]
+                .filter(Boolean)
+                .join("\n") || "Images group is required",
+            );
+          }
+          return {
+            summary: `Images group ready — ${result.imagesGroupId}`,
+            detail: result.messages.join("\n"),
+            json: result,
+          };
+        }
+        if (mode === "videos") {
+          if (!result.videosGroupId) {
+            throw new Error(
+              [result.messages.join("\n"), "Videos group: missing"]
+                .filter(Boolean)
+                .join("\n") || "Videos group is required",
+            );
+          }
+          return {
+            summary: `Videos group ready — ${result.videosGroupId}`,
+            detail: result.messages.join("\n"),
+            json: result,
+          };
         }
         if (!result.imagesGroupId || !result.videosGroupId) {
           throw new Error(
@@ -812,7 +1010,8 @@ export function LabLayout() {
           json: result,
         };
       } finally {
-        setEnsureCancellable(false);
+        setGroupsJobCancellable(false);
+        groupsCancelRequestedRef.current = false;
         if (ensureAbortRef.current === ac) ensureAbortRef.current = null;
       }
     },
@@ -822,6 +1021,8 @@ export function LabLayout() {
       project.aspectRatio,
       project.id,
       project.imagesGroupId,
+      project.labAnimatePrompt,
+      project.labStillPrompt,
       project.title,
       project.videosGroupId,
       session.activeJob?.backendJobId,
@@ -829,18 +1030,9 @@ export function LabLayout() {
       session.activeJob?.pendingCreationId,
       session.activeJob?.videosGroupId,
       setOpenProjectGroupIds,
+      trackGroupsJobId,
     ],
   );
-
-  const cancelEnsureGroups = useCallback(() => {
-    const jobId =
-      ensureBackendJobIdRef.current ||
-      session.activeJob?.backendJobId ||
-      null;
-    // Cancel backend only — watchJob observes `cancelled` and surfaces Cancelled.
-    // Do not abort the FE signal here (abort means "detached / left Lab").
-    void cancelProjectGroupsJob(jobId);
-  }, [session.activeJob?.backendJobId]);
 
   const runCleanupGroups = useCallback(
     async (onProgress: (note: string) => void): Promise<LastResult> => {
@@ -853,22 +1045,55 @@ export function LabLayout() {
       if (!imagesGroupId && !videosGroupId && !pendingCreationId) {
         throw new Error("No Images/Videos groups to clean up.");
       }
-      const result = await cleanupProjectGroups({
-        projectId: project.id,
-        imagesGroupId,
-        videosGroupId,
-        pendingCreationId,
-        onProgress,
-      });
-      // Always strip group covers / pending / remotely deleted members from the
-      // open project — even when Parascene delete failed — so Editor assets clear.
+
+      groupsCancelRequestedRef.current = false;
+      setGroupsJobCancellable(true);
+
+      // Discover members from local Library covers so cleanup still works when
+      // Parascene detail omits meta.group.
+      const coverIds = [imagesGroupId, videosGroupId]
+        .map((id) => (id == null ? "" : String(id).trim()))
+        .filter(Boolean);
+      let localMemberIds: string[] = [];
+      if (coverIds.length > 0) {
+        try {
+          const covers = await getCreations(coverIds);
+          localMemberIds = [
+            ...new Set(covers.flatMap((cover) => groupSourceCreationIds(cover))),
+          ];
+          if (localMemberIds.length > 0) {
+            onProgress(
+              `Found ${localMemberIds.length} group member(s) in local Library.`,
+            );
+          }
+        } catch {
+          /* job will still try remote membership */
+        }
+      }
+
+      try {
+        const result = await cleanupProjectGroups({
+          projectId: project.id,
+          imagesGroupId,
+          videosGroupId,
+          pendingCreationId,
+          memberIds: localMemberIds,
+          onProgress,
+          onJobId: trackGroupsJobId,
+        });
+
+      // Strip covers, members, and pending from the open project even if a
+      // Parascene delete failed — Editor / Library should not keep orphans.
       const projectIdsToRemove = [
         ...new Set(
           [
             imagesGroupId,
             videosGroupId,
             pendingCreationId,
+            ...localMemberIds,
+            ...result.cleanedIds,
             ...result.deletedIds,
+            ...result.localDeletedIds,
           ]
             .map((id) => (id == null ? "" : String(id).trim()))
             .filter(Boolean),
@@ -880,7 +1105,8 @@ export function LabLayout() {
           `Removed ${projectIdsToRemove.length} asset(s) from the project.`,
         );
       }
-      for (const id of result.deletedIds) {
+      // Belt-and-suspenders local purge if the job missed a row.
+      for (const id of projectIdsToRemove) {
         try {
           await deleteLocal(id);
         } catch {
@@ -914,11 +1140,15 @@ export function LabLayout() {
       onProgress("Cleared project group ids.");
       return {
         summary:
-          result.deletedIds.length > 0
-            ? `Cleaned up ${result.deletedIds.length} creation(s)`
-            : "Cleanup finished (nothing deleted remotely)",
+          result.cleanedIds.length > 0
+            ? `Cleaned up ${result.cleanedIds.length} creation(s) (Parascene ${result.deletedIds.length}, local ${result.localDeletedIds.length})`
+            : "Cleanup finished (nothing to remove)",
         detail: result.messages.join("\n"),
       };
+      } finally {
+        setGroupsJobCancellable(false);
+        groupsCancelRequestedRef.current = false;
+      }
     },
     [
       project.id,
@@ -929,6 +1159,7 @@ export function LabLayout() {
       session.activeJob?.pendingCreationId,
       session.activeJob?.videosGroupId,
       setOpenProjectGroupIds,
+      trackGroupsJobId,
     ],
   );
 
@@ -1024,6 +1255,14 @@ export function LabLayout() {
           <h2>{LAB_MODULES.find((m) => m.id === moduleId)?.label}</h2>
         </header>
 
+        {!activeGate && moduleError?.summary ? (
+          <LabModuleErrorAlert
+            message={moduleError.summary}
+            details={moduleError.detail}
+            cancelled={moduleError.summary === "Cancelled"}
+          />
+        ) : null}
+
         <div className="lab-module-body">
           {moduleId === "groups" && (
             <GroupsModule
@@ -1033,18 +1272,30 @@ export function LabLayout() {
               videosGroupId={
                 session.activeJob?.videosGroupId ?? project.videosGroupId
               }
+              stillPrompt={project.labStillPrompt ?? resolveLabStillPrompt(null)}
+              animatePrompt={
+                project.labAnimatePrompt ?? resolveLabAnimatePrompt(null)
+              }
+              onStillPromptChange={(value) =>
+                setOpenProjectLabPrompts({ labStillPrompt: value })
+              }
+              onAnimatePromptChange={(value) =>
+                setOpenProjectLabPrompts({ labAnimatePrompt: value })
+              }
               busy={moduleBusy || anyBusy}
-              running={ensureCancellable}
+              running={groupsCanCancel}
               buttonLabel={buttonLabel}
               progressLog={session.progressLogByModule.groups}
               onRun={(fn) => void run("groups", fn)}
-              onEnsure={runEnsureGroups}
-              onCancel={cancelEnsureGroups}
+              onEnsure={(mode, onProgress) =>
+                runEnsureGroups(onProgress, { mode })
+              }
+              onCancel={cancelGroupsJob}
               onCleanup={async (onProgress) => {
                 const ok = await confirm({
                   title: "Delete Lab groups?",
                   message:
-                    "Deletes the Images and Videos groups and their seed members on Parascene, removes them from this project, and clears local catalog rows. This cannot be undone.",
+                    "Deletes the Images and Videos groups and their seed members on Parascene, removes them from this project, and clears matching Library catalog rows. This cannot be undone.",
                   confirmLabel: "Delete / clean up",
                   danger: true,
                 });
@@ -1071,6 +1322,8 @@ export function LabLayout() {
                 projectId={project.id}
                 projectTitle={project.title}
                 aspectRatio={project.aspectRatio}
+                stillPrompt={resolveLabStillPrompt(project.labStillPrompt)}
+                animatePrompt={resolveLabAnimatePrompt(project.labAnimatePrompt)}
                 onGroups={(ids) => setOpenProjectGroupIds(ids)}
               />
           )}
@@ -1129,6 +1382,22 @@ export function LabLayout() {
               onCreated={(ids) => addCreationsToOpenProject(ids)}
             />
           )}
+          {moduleId === "frame" && !activeGate && (
+            <FrameModule
+              videoAssets={videoAssets}
+              busy={moduleBusy || anyBusy}
+              buttonLabel={buttonLabel}
+              progressLog={session.progressLogByModule.frame}
+              projectId={project.id}
+              projectTitle={project.title}
+              aspectRatio={project.aspectRatio}
+              imagesGroupId={project.imagesGroupId}
+              videosGroupId={project.videosGroupId}
+              onRun={(fn) => void run("frame", fn)}
+              onCreated={(ids) => addCreationsToOpenProject(ids)}
+              onGroups={(ids) => setOpenProjectGroupIds(ids)}
+            />
+          )}
           {moduleId === "mutate" && !activeGate && (
               <MutateModule
                 imageAssets={imageAssets}
@@ -1163,7 +1432,6 @@ export function LabLayout() {
               lyricAlignment={project.lyricAlignment}
               onLyricAlignmentChange={setOpenProjectLyricAlignment}
               onPickMain={(id) => setOpenProjectMainAudioCreationId(id)}
-              onGoToIsolate={() => setModuleId("isolate")}
               busy={moduleBusy || anyBusy}
               buttonLabel={buttonLabel}
               progressLog={session.progressLogByModule.align}
@@ -1184,8 +1452,9 @@ export function LabLayout() {
 
         {(() => {
           const last = session.lastByModule[moduleId];
-          // Never show leftover output on a gated screen.
-          if (!last || activeGate) return null;
+          const failed = session.moduleProgress[moduleId]?.status === "failed";
+          // Never show leftover output on a gated screen or duplicate errors at the footer.
+          if (!last || activeGate || failed) return null;
           return (
             <footer className="lab-last-result" aria-label="Last result">
               <h3>Last result</h3>
@@ -1269,6 +1538,16 @@ function actionLabel(
   return buttonLabel?.trim() || "Working…";
 }
 
+function laneActionLabel(
+  busy: boolean,
+  buttonLabel: string | null | undefined,
+  idle: string,
+  laneActive: boolean,
+): string {
+  if (!busy || !laneActive) return idle;
+  return buttonLabel?.trim() || "Working…";
+}
+
 function isolateLastTrack(
   last: LastResult | undefined,
 ): { path: string; mediaUrl: string } | null {
@@ -1303,15 +1582,29 @@ function GroupsModule(
   props: {
     imagesGroupId: string | null;
     videosGroupId: string | null;
+    stillPrompt: string;
+    animatePrompt: string;
+    onStillPromptChange: (value: string) => void;
+    onAnimatePromptChange: (value: string) => void;
     running: boolean;
-    onEnsure: (onProgress: (note: string) => void) => Promise<LastResult>;
+    onEnsure: (
+      mode: "images" | "videos",
+      onProgress: (note: string) => void,
+    ) => Promise<LastResult>;
     onCancel: () => void;
     onCleanup: (onProgress: (note: string) => void) => Promise<LastResult>;
   } & ModuleChrome,
 ) {
+  const [kind, setKind] = useState<"image" | "video">("image");
   const canCleanup = Boolean(
     props.imagesGroupId || props.videosGroupId,
   );
+  const prompt = kind === "video" ? props.animatePrompt : props.stillPrompt;
+  const setPrompt =
+    kind === "video" ? props.onAnimatePromptChange : props.onStillPromptChange;
+  const promptReady = Boolean(prompt.trim());
+  const videoNeedsImages = kind === "video" && !props.imagesGroupId;
+  const canEnsure = promptReady && !videoNeedsImages;
   return (
     <div className="lab-form">
       <p className="muted">
@@ -1319,27 +1612,63 @@ function GroupsModule(
         {props.videosGroupId ?? "—"}
       </p>
       <p className="muted">
-        Target state: one image inside the Images group, one video inside the
-        Videos group. Fresh runs mint the shared Lab suite still, then animate
-        it with image→video (same prompts as later create / mutate / a2v steps).
-        On Parascene the group cover is the tile — members live inside the
-        group. Uses stored group ids only when they still exist; if you delete
+        Ensure one side at a time. Image mints the Images group still; video
+        animates that still into the Videos group (requires Images first).
+        Prompts are saved with this project and reused by later Lab create
+        steps. Uses stored group ids only when they still exist; if you delete
         those groups on Parascene (or use Delete / clean up here), this step
         starts fresh. You can leave mid-run and come back, or Cancel.
       </p>
+      <label>
+        Kind
+        <select
+          value={kind}
+          disabled={props.busy}
+          onChange={(e) => setKind(e.target.value as "image" | "video")}
+        >
+          <option value="image">Image (Replicate)</option>
+          <option value="video">Image→video (LTX i2v)</option>
+        </select>
+      </label>
+      {kind === "video" ? (
+        <p className="muted">
+          Animate prompt for Videos. Uses the newest still from Images{" "}
+          {props.imagesGroupId ? `(${props.imagesGroupId})` : "(not ready)"}.
+        </p>
+      ) : (
+        <p className="muted">
+          Still prompt for the Images group seed
+          {props.imagesGroupId ? ` (${props.imagesGroupId})` : ""}.
+        </p>
+      )}
+      <label>
+        Prompt
+        <textarea
+          rows={4}
+          value={prompt}
+          disabled={props.busy}
+          onChange={(e) => setPrompt(e.target.value)}
+        />
+      </label>
       <div className="lab-row">
         <button
           type="button"
-          className={props.running ? "primary-btn is-busy" : "primary-btn"}
-          disabled={props.busy}
+          className={
+            props.busy || props.running ? "primary-btn is-busy" : "primary-btn"
+          }
+          disabled={props.busy || !canEnsure}
           onClick={() =>
-            props.onRun(async ({ onProgress }) => props.onEnsure(onProgress))
+            props.onRun(async ({ onProgress }) =>
+              props.onEnsure(kind === "video" ? "videos" : "images", onProgress),
+            )
           }
         >
           {actionLabel(
-            props.running,
+            props.busy || props.running,
             props.buttonLabel,
-            "Ensure Images + Videos groups",
+            kind === "video"
+              ? "Ensure Videos group"
+              : "Ensure Images group",
           )}
         </button>
         {props.running ? (
@@ -1413,6 +1742,8 @@ function CreateModule(
     projectId: string;
     projectTitle: string;
     aspectRatio: string;
+    stillPrompt: string;
+    animatePrompt: string;
     onGroups: (ids: {
       imagesGroupId?: string | null;
       videosGroupId?: string | null;
@@ -1420,14 +1751,14 @@ function CreateModule(
   } & ModuleChrome,
 ) {
   const [kind, setKind] = useState<"image" | "video">("image");
-  const [prompt, setPrompt] = useState(LAB_STILL_PROMPT);
+  const [prompt, setPrompt] = useState(props.stillPrompt);
 
   return (
     <div className="lab-form">
       <p className="muted">
-        Defaults match the Lab suite prompts (same musician / studio look as
-        Project groups). Video create animates the newest still from the Images
-        group (same i2v path as Project groups Videos).
+        Defaults match this project&apos;s Lab prompts (set under Project
+        groups). Video create animates the newest still from the Images group
+        (same i2v path as Project groups Videos).
       </p>
       <label>
         Kind
@@ -1436,7 +1767,9 @@ function CreateModule(
           onChange={(e) => {
             const next = e.target.value as "image" | "video";
             setKind(next);
-            setPrompt(next === "video" ? LAB_ANIMATE_PROMPT : LAB_STILL_PROMPT);
+            setPrompt(
+              next === "video" ? props.animatePrompt : props.stillPrompt,
+            );
           }}
         >
           <option value="image">Image (Replicate)</option>
@@ -1647,7 +1980,7 @@ function IsolateModule(
       const row = rows[0];
       const path = row?.localPath?.trim() || null;
       setOriginalPath(path);
-      setOriginalUrl(path ? convertFileSrc(path) : null);
+      setOriginalUrl(path ? convertFileSrc(path, "media") : null);
 
       if (path) {
         try {
@@ -1894,10 +2227,11 @@ function A2vModule(
 ) {
   const [imageId, setImageId] = useState(props.imageAssets[0]?.id || "");
   const [prompt, setPrompt] = useState(LAB_A2V_PROMPT);
+  const [previewCreation, setPreviewCreation] = useState<Creation | null>(null);
   const [clipBusy, setClipBusy] = useState(false);
   const [clipError, setClipError] = useState<string | null>(null);
   const vocalsSliceUrl = props.vocalsSlice?.path
-    ? convertFileSrc(props.vocalsSlice.path)
+    ? convertFileSrc(props.vocalsSlice.path, "media")
     : null;
   const clipReady = vocalsClipMatchesSlice(props.vocalsClip, props.vocalsSlice);
   const staleClip = Boolean(props.vocalsClip) && !clipReady;
@@ -1971,8 +2305,15 @@ function A2vModule(
           images={props.imageAssets}
           value={imageId}
           onChange={setImageId}
+          onPreview={setPreviewCreation}
         />
       </div>
+      {previewCreation ? (
+        <CreationLightbox
+          creation={previewCreation}
+          onClose={() => setPreviewCreation(null)}
+        />
+      ) : null}
       {props.vocalsSlice ? (
         <>
           <LabAudioTrack
@@ -2287,6 +2628,294 @@ function ExtendModule(
   );
 }
 
+function FrameModule(
+  props: {
+    videoAssets: Creation[];
+    projectId: string;
+    projectTitle: string;
+    aspectRatio: string;
+    imagesGroupId: string | null;
+    videosGroupId: string | null;
+    onCreated: (ids: string[]) => void;
+    onGroups: (ids: {
+      imagesGroupId?: string | null;
+      videosGroupId?: string | null;
+    }) => void;
+  } & ModuleChrome,
+) {
+  const [videoId, setVideoId] = useState(props.videoAssets[0]?.id || "");
+  const [sourcePath, setSourcePath] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [timeSec, setTimeSec] = useState(0);
+  const [durationSec, setDurationSec] = useState(0);
+  const [previewCreation, setPreviewCreation] = useState<Creation | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    // Intentional: keep the selected video valid as the asset list changes.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (!props.videoAssets.length) {
+      setVideoId("");
+      return;
+    }
+    if (!props.videoAssets.some((c) => c.id === videoId)) {
+      setVideoId(props.videoAssets[0]!.id);
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [props.videoAssets, videoId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!videoId) {
+      setSourcePath(null);
+      setVideoUrl(null);
+      setTimeSec(0);
+      setDurationSec(0);
+      return;
+    }
+    void getCreations([videoId]).then((rows) => {
+      if (cancelled) return;
+      const path = rows[0]?.localPath?.trim() || null;
+      setSourcePath(path);
+      setVideoUrl(path ? convertFileSrc(path, "media") : null);
+      setTimeSec(0);
+      setDurationSec(0);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId]);
+
+  const syncFromPlayhead = () => {
+    const el = videoRef.current;
+    if (!el) return;
+    const raw = Number.isFinite(el.currentTime) ? el.currentTime : 0;
+    const maxT =
+      durationSec > 0.05 ? Math.max(0, durationSec - 0.05) : Math.max(0, raw);
+    setTimeSec(Math.round(Math.min(raw, maxT) * 1000) / 1000);
+  };
+
+  const lastFrameSec = () =>
+    durationSec > 0.05 ? Math.max(0, durationSec - 0.05) : 0;
+
+  const goToLastFrame = () => {
+    const t = Math.round(lastFrameSec() * 1000) / 1000;
+    setTimeSec(t);
+    const el = videoRef.current;
+    if (el && Number.isFinite(el.duration)) {
+      el.currentTime = t;
+    }
+  };
+
+  const pullFrameAt = (requestedSec: number) => {
+    props.onRun(async ({ onProgress, onPendingCreation }) => {
+      if (!sourcePath) {
+        throw new Error("Video has no local path");
+      }
+      const requested = Math.max(0, requestedSec);
+      const maxT =
+        durationSec > 0.05 ? Math.max(0, durationSec - 0.05) : requested;
+      const t = Math.min(requested, maxT);
+      setTimeSec(Math.round(t * 1000) / 1000);
+      if (t < requested - 0.001) {
+        onProgress(
+          `Time ${requested.toFixed(2)}s is past the end — using ${t.toFixed(2)}s…`,
+        );
+      } else {
+        onProgress(`Extracting frame at ${t.toFixed(2)}s…`);
+      }
+      const frame = await extractVideoFrame({
+        sourcePath,
+        timeSec: t,
+      });
+      onProgress("Uploading still to Parascene…");
+      const uploaded = await uploadLocalImageFile(frame.path, {
+        filename: `lab-frame-${t.toFixed(2)}s.jpg`,
+        contentType: "image/jpeg",
+      });
+      onProgress("Creating image from upload…");
+      const sdk = createAuthedSdk();
+      const started = await sdk.create({
+        serverId: 1,
+        method: "uploadImage",
+        creationToken: newCreationToken(),
+        args: {
+          image_url: uploaded.url,
+          aspect_ratio: props.aspectRatio,
+        },
+      });
+      onPendingCreation(String(started.id), "image");
+      onProgress(`Waiting for ${started.id}…`);
+      const done = await sdk.waitForCreation(started.id, {
+        onTick: (row) =>
+          onProgress(`Waiting for ${started.id} (${row.status || "…" }).`),
+      });
+      onPendingCreation(null, null);
+      if (String(done.status).toLowerCase() === "failed") {
+        throw new Error(`Frame upload failed (${done.id})`);
+      }
+      onProgress("Syncing to local Library…");
+      const id = await ingestRemoteCreation(done);
+      onProgress("Grouping into Images…");
+      const filed = await fileCreationIntoProjectGroup({
+        creationId: id,
+        mediaType: "image",
+        projectId: props.projectId,
+        projectTitle: props.projectTitle,
+        imagesGroupId: props.imagesGroupId,
+        videosGroupId: props.videosGroupId,
+      });
+      props.onCreated(filed.projectCreationIds);
+      if (filed.groupId) {
+        props.onGroups({ imagesGroupId: filed.groupId });
+      }
+      onProgress("Added to Images group.");
+      const rows = await getCreations([id]);
+      const playUrl = rows[0]
+        ? creationDetailUrl(rows[0]) ?? frame.mediaUrl
+        : frame.mediaUrl;
+      return {
+        summary: `Frame @ ${t.toFixed(2)}s → ${id}`,
+        detail: filed.message,
+        creationId: id,
+        playUrl,
+        playMediaType: "image",
+        json: { frame, uploaded, started, done, filed },
+      };
+    });
+  };
+
+  return (
+    <div className="lab-form">
+      <p className="muted">
+        Scrub the video (or type a time), pull a still, and file it into this
+        project&apos;s Images group (Parascene uploadImage → group). Use{" "}
+        <strong>Pull last frame</strong> to grab the end of the clip in one step.
+      </p>
+      <div className="lab-image-picker-field">
+        <span className="lab-image-picker-heading">Video</span>
+        <LabImagePicker
+          images={props.videoAssets}
+          value={videoId}
+          onChange={setVideoId}
+          onPreview={setPreviewCreation}
+          mediaLabel="videos"
+        />
+      </div>
+      {previewCreation ? (
+        <CreationLightbox
+          creation={previewCreation}
+          onClose={() => setPreviewCreation(null)}
+        />
+      ) : null}
+      {videoUrl ? (
+        <video
+          ref={videoRef}
+          key={videoUrl}
+          className="lab-video"
+          src={videoUrl}
+          controls
+          playsInline
+          preload="metadata"
+          onLoadedMetadata={(e) => {
+            const d = e.currentTarget.duration;
+            const next = Number.isFinite(d) ? d : 0;
+            setDurationSec(next);
+            if (next > 0.05) {
+              setTimeSec((prev) =>
+                Math.min(prev, Math.max(0, next - 0.05)),
+              );
+            }
+          }}
+          onSeeked={syncFromPlayhead}
+          onPause={syncFromPlayhead}
+        />
+      ) : videoId ? (
+        <p className="muted">Video has no local file yet — sync/download it first.</p>
+      ) : null}
+      <div className="lab-frame-time-row">
+        <label>
+          Time (seconds)
+          <input
+            type="number"
+            min={0}
+            max={durationSec > 0.05 ? durationSec - 0.05 : undefined}
+            step="0.01"
+            value={timeSec}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              if (!Number.isFinite(next)) {
+                setTimeSec(0);
+                return;
+              }
+              const maxT =
+                durationSec > 0.05 ? Math.max(0, durationSec - 0.05) : next;
+              setTimeSec(Math.max(0, Math.min(next, maxT)));
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          className="lab-secondary-btn"
+          disabled={!videoUrl || props.busy}
+          onClick={syncFromPlayhead}
+        >
+          Use playhead
+        </button>
+        <button
+          type="button"
+          className="lab-secondary-btn"
+          disabled={!videoUrl || props.busy}
+          onClick={() => {
+            const el = videoRef.current;
+            if (!el) return;
+            el.currentTime = timeSec;
+          }}
+        >
+          Seek video
+        </button>
+        <button
+          type="button"
+          className="lab-secondary-btn"
+          disabled={!videoUrl || props.busy || durationSec <= 0}
+          onClick={goToLastFrame}
+          title={
+            durationSec > 0
+              ? `Jump to ${lastFrameSec().toFixed(2)}s`
+              : "Load video metadata first"
+          }
+        >
+          Last frame
+        </button>
+      </div>
+      <div className="lab-frame-actions">
+        <button
+          type="button"
+          className={props.busy ? "primary-btn is-busy" : "primary-btn"}
+          disabled={props.busy || !sourcePath}
+          onClick={() => pullFrameAt(timeSec)}
+        >
+          {actionLabel(props.busy, props.buttonLabel, "Pull frame")}
+        </button>
+        <button
+          type="button"
+          className={
+            props.busy ? "lab-secondary-btn is-busy" : "lab-secondary-btn"
+          }
+          disabled={props.busy || !sourcePath || durationSec <= 0}
+          onClick={() => {
+            goToLastFrame();
+            pullFrameAt(lastFrameSec());
+          }}
+        >
+          {actionLabel(props.busy, props.buttonLabel, "Pull last frame")}
+        </button>
+      </div>
+      <ProgressLog lines={props.progressLog} />
+    </div>
+  );
+}
+
 function MutateModule(
   props: {
     imageAssets: Creation[];
@@ -2304,6 +2933,20 @@ function MutateModule(
 ) {
   const [imageId, setImageId] = useState(props.imageAssets[0]?.id || "");
   const [prompt, setPrompt] = useState(LAB_MUTATE_PROMPT);
+  const [previewCreation, setPreviewCreation] = useState<Creation | null>(null);
+
+  useEffect(() => {
+    // Intentional: keep the selected image valid as the asset list changes.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (!props.imageAssets.length) {
+      setImageId("");
+      return;
+    }
+    if (!props.imageAssets.some((c) => c.id === imageId)) {
+      setImageId(props.imageAssets[0]!.id);
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [props.imageAssets, imageId]);
 
   return (
     <div className="lab-form">
@@ -2311,17 +2954,21 @@ function MutateModule(
         Default edit keeps the Lab suite musician identity (same as Project
         groups / create).
       </p>
-      <label>
-        Source image
-        <select value={imageId} onChange={(e) => setImageId(e.target.value)}>
-          <option value="">Select…</option>
-          {props.imageAssets.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title || c.id}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="lab-image-picker-field">
+        <span className="lab-image-picker-heading">Source image</span>
+        <LabImagePicker
+          images={props.imageAssets}
+          value={imageId}
+          onChange={setImageId}
+          onPreview={setPreviewCreation}
+        />
+      </div>
+      {previewCreation ? (
+        <CreationLightbox
+          creation={previewCreation}
+          onClose={() => setPreviewCreation(null)}
+        />
+      ) : null}
       <label>
         Edit prompt
         <textarea
@@ -2382,10 +3029,14 @@ function MutateModule(
               props.onGroups({ imagesGroupId: filed.groupId });
             }
             onProgress("Added to project.");
+            const [created] = await getCreations([id]);
+            const playUrl = creationPlayUrl(created) ?? undefined;
             return {
               summary: `Mutated → ${id}`,
               detail: filed.message,
               creationId: id,
+              playUrl,
+              playMediaType: "image",
               json: { started, done },
             };
           })
@@ -2460,7 +3111,6 @@ function AlignModule(
     lyricAlignment: LyricAlignment | null;
     onLyricAlignmentChange: (alignment: LyricAlignment | null) => void;
     onPickMain: (id: string | null) => void;
-    onGoToIsolate: () => void;
   } & ModuleChrome,
 ) {
   const saved =
@@ -2475,17 +3125,39 @@ function AlignModule(
   );
   const [lyrics, setLyrics] = useState(
     saved?.lyricsText ||
-      "Line one of the song\nLine two keeps going\nLine three for the chorus",
+      "[Intro]\nLine one of the song\nLine two keeps going\n[Chorus]\nLine three for the chorus",
   );
   const [engine, setEngine] = useState<TranscribeEngine>(
     saved?.transcribeEngine ?? "openai",
   );
-  const [lines, setLines] = useState<AlignedLyricLine[]>(saved?.lines ?? []);
+  const [lines, setLines] = useState<AlignedLyricLine[]>(() =>
+    saved
+      ? reconcileAlignedLinesFromScript(saved.lyricsText, saved.lines)
+      : [],
+  );
+  const [transcript, setTranscript] = useState<LyricTranscript | null>(
+    saved?.transcript ?? null,
+  );
   const [mixPath, setMixPath] = useState<string | null>(null);
   const [mixUrl, setMixUrl] = useState<string | null>(null);
   const [vocalsPath, setVocalsPath] = useState<string | null>(null);
+  const [vocalsUrl, setVocalsUrl] = useState<string | null>(null);
   const [vocalsReady, setVocalsReady] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [activeLane, setActiveLane] = useState<
+    "vocals" | "whisper" | "lyrics" | "lyricsAi" | null
+  >(null);
+  const linesRef = useRef(lines);
+  const engineRef = useRef(engine);
+  const transcriptRef = useRef(transcript);
+  const lyricsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const linesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  linesRef.current = lines;
+  engineRef.current = engine;
+  transcriptRef.current = transcript;
+
+  useEffect(() => {
+    if (!props.busy) setActiveLane(null);
+  }, [props.busy]);
 
   useEffect(() => {
     if (props.mainAudioId && !audioId) setAudioId(props.mainAudioId);
@@ -2497,6 +3169,7 @@ function AlignModule(
       setMixPath(null);
       setMixUrl(null);
       setVocalsPath(null);
+      setVocalsUrl(null);
       setVocalsReady(false);
       return;
     }
@@ -2506,12 +3179,14 @@ function AlignModule(
       setMixPath(path);
       setMixUrl(path ? convertFileSrc(path) : null);
       setVocalsPath(null);
+      setVocalsUrl(null);
       setVocalsReady(false);
       if (path) {
         try {
           const cached = await cachedFullVocalsPath(path);
           if (!cancelled && cached) {
             setVocalsPath(cached);
+            setVocalsUrl(convertFileSrc(cached, "media"));
             setVocalsReady(true);
           }
         } catch {
@@ -2526,207 +3201,499 @@ function AlignModule(
 
   useEffect(() => {
     if (!saved) return;
-    setLines(saved.lines);
+    setLines(reconcileAlignedLinesFromScript(saved.lyricsText, saved.lines));
     setLyrics(saved.lyricsText);
     setEngine(saved.transcribeEngine);
-    setDirty(false);
-  }, [saved?.alignedAt, saved?.sourceAudioCreationId]);
+    setTranscript(saved.transcript ?? null);
+    // Hydrate when switching audio / loading a saved draft — not on every
+    // alignedAt write from our own lyrics autosave.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [saved?.sourceAudioCreationId]);
 
-  const persistAlignment = (nextLines: AlignedLyricLine[], transcribeEngine: TranscribeEngine) => {
-    if (!audioId) return;
+  useEffect(() => {
+    return () => {
+      if (lyricsSaveTimer.current) clearTimeout(lyricsSaveTimer.current);
+      if (linesSaveTimer.current) clearTimeout(linesSaveTimer.current);
+    };
+  }, []);
+
+  const persistAlignment = (opts: {
+    nextLines: AlignedLyricLine[];
+    transcribeEngine: TranscribeEngine;
+    lyricsText?: string;
+    sourceAudioCreationId?: string;
+    /** Pass explicitly to update; omit to keep the current cached transcript. */
+    transcript?: LyricTranscript | null;
+  }) => {
+    const id = opts.sourceAudioCreationId ?? audioId;
+    if (!id) return;
+    const nextTranscript =
+      opts.transcript !== undefined
+        ? opts.transcript
+        : transcriptRef.current;
+    if (opts.transcript !== undefined) {
+      setTranscript(opts.transcript);
+    }
     props.onLyricAlignmentChange({
-      sourceAudioCreationId: audioId,
-      lyricsText: lyrics,
+      sourceAudioCreationId: id,
+      lyricsText: opts.lyricsText ?? lyrics,
       alignedAt: new Date().toISOString(),
-      transcribeEngine,
-      lines: nextLines,
+      transcribeEngine: opts.transcribeEngine,
+      lines: opts.nextLines,
+      transcript: nextTranscript,
     });
-    setDirty(false);
+  };
+
+  const scheduleLyricsPersist = (text: string) => {
+    if (!audioId) return;
+    if (lyricsSaveTimer.current) clearTimeout(lyricsSaveTimer.current);
+    lyricsSaveTimer.current = setTimeout(() => {
+      persistAlignment({
+        nextLines: linesRef.current,
+        transcribeEngine: engineRef.current,
+        lyricsText: text,
+      });
+    }, 400);
+  };
+
+  const scheduleLinesPersist = (nextLines: AlignedLyricLine[]) => {
+    if (!audioId) return;
+    if (linesSaveTimer.current) clearTimeout(linesSaveTimer.current);
+    linesSaveTimer.current = setTimeout(() => {
+      persistAlignment({
+        nextLines,
+        transcribeEngine: engineRef.current,
+      });
+    }, 400);
+  };
+
+  const handleAudioChange = (nextId: string) => {
+    setAudioId(nextId);
+    props.onPickMain(nextId || null);
+    setLines([]);
+    setTranscript(null);
+    if (nextId) {
+      persistAlignment({
+        sourceAudioCreationId: nextId,
+        nextLines: [],
+        transcribeEngine: engine,
+        transcript: null,
+      });
+    }
+  };
+
+  const cachedTranscriptUsable = (path: string, eng: TranscribeEngine) => {
+    const t = transcriptRef.current;
+    return Boolean(
+      t &&
+        t.vocalsPath === path &&
+        t.engine === eng &&
+        t.segments.length > 0 &&
+        (t.words?.length ?? 0) > 0,
+    );
+  };
+
+  const runVocalsStem = () => {
+    setActiveLane("vocals");
+    props.onRun(async ({ onProgress }) => {
+      if (!mixPath) throw new Error("Select main audio first.");
+      if (!props.demucsReady) throw new Error("Demucs is not available.");
+      onProgress(
+        vocalsReady ? "Refreshing vocals stem…" : "Generating vocals stem…",
+      );
+      const full = await separateFullVocals({ sourcePath: mixPath });
+      const nextPath = full.path;
+      setVocalsPath(nextPath);
+      setVocalsUrl(convertFileSrc(nextPath, "media"));
+      setVocalsReady(true);
+      const prevTranscript = transcriptRef.current;
+      if (prevTranscript && prevTranscript.vocalsPath !== nextPath) {
+        setTranscript(null);
+        setLines([]);
+        persistAlignment({
+          nextLines: [],
+          transcribeEngine: engineRef.current,
+          transcript: null,
+        });
+      }
+      onProgress("Vocals stem ready (cached on disk).");
+      return {
+        summary: "Vocals stem ready",
+        detail: full.note,
+        json: full,
+      };
+    });
+  };
+
+  const runWhisper = (refresh: boolean) => {
+    setActiveLane("whisper");
+    props.onRun(async ({ onProgress }) => {
+      if (!vocalsPath) {
+        throw new Error("Generate a vocals stem first.");
+      }
+      if (engine === "openai" && !props.openAiReady) {
+        throw new Error(
+          "OpenAI API key missing — required for cloud Whisper (Settings).",
+        );
+      }
+      if (engine === "local" && !props.whisperReady) {
+        throw new Error("Local Whisper CLI is not installed.");
+      }
+
+      const apiKey = loadOpenAiApiKey();
+      let nextTranscript = transcriptRef.current;
+      const canReuse =
+        !refresh && cachedTranscriptUsable(vocalsPath, engine);
+
+      if (canReuse && nextTranscript) {
+        onProgress(
+          `Using saved transcription (${nextTranscript.words?.length ?? 0} words)…`,
+        );
+      } else {
+        onProgress(refresh ? "Refreshing word detection…" : "Detecting words…");
+        const result = await transcribeAudio({
+          audioPath: vocalsPath,
+          engine,
+          apiKey,
+          onProgress,
+        });
+        nextTranscript = {
+          engine: result.engine,
+          transcribedAt: new Date().toISOString(),
+          vocalsPath,
+          fullText: result.fullText,
+          language: result.language,
+          segments: result.segments,
+          words: result.words,
+          vocalBlocks: result.vocalBlocks,
+        };
+        setTranscript(nextTranscript);
+        onProgress(
+          `Detected ${nextTranscript.words?.length ?? 0} words (${nextTranscript.segments.length} segments).`,
+        );
+      }
+
+      persistAlignment({
+        nextLines: linesRef.current,
+        transcribeEngine: engine,
+        transcript: nextTranscript,
+      });
+
+      return {
+        summary: `Whisper: ${nextTranscript!.words?.length ?? 0} words`,
+        json: { mode: "whisper", transcript: nextTranscript },
+      };
+    });
+  };
+
+  const runLyricsAlign = (refresh: boolean) => {
+    setActiveLane("lyrics");
+    props.onRun(async ({ onProgress }) => {
+      if (lyricsSaveTimer.current) {
+        clearTimeout(lyricsSaveTimer.current);
+        lyricsSaveTimer.current = null;
+      }
+      if (!mixPath) throw new Error("Select main audio first.");
+      if (!vocalsPath) throw new Error("Generate a vocals stem first.");
+      const nextTranscript = transcriptRef.current;
+      if (
+        !nextTranscript ||
+        !cachedTranscriptUsable(vocalsPath, engine)
+      ) {
+        throw new Error("Detect words with Whisper first.");
+      }
+      const apiKey = loadOpenAiApiKey() ?? "";
+      const lyricLines = parseLyricLines(lyrics);
+      if (lyricLines.length === 0) {
+        throw new Error(
+          "Paste singable lyrics — section tags like [Intro] are skipped",
+        );
+      }
+
+      const peaks = await audioWaveformPeaks(mixPath, 32);
+      onProgress(
+        refresh ? "Refreshing lyric blocks…" : "Generating lyric blocks…",
+      );
+      const aligned = await alignLyricScript({
+        lyricsText: lyrics,
+        segments: nextTranscript.segments,
+        words: nextTranscript.words,
+        durationSec: peaks.durationSec,
+        apiKey,
+        vocalBlocks: nextTranscript.vocalBlocks,
+      });
+
+      setLines(aligned);
+      persistAlignment({
+        nextLines: aligned,
+        transcribeEngine: engine,
+        transcript: nextTranscript,
+      });
+
+      const tagCount = aligned.filter((row) => isInaudibleLyricLine(row)).length;
+      const sungCount = aligned.length - tagCount;
+
+      return {
+        summary: `Lyric blocks: ${sungCount} lines${tagCount ? ` + ${tagCount} tags` : ""} (word match)`,
+        json: {
+          mode: "lyric_word_align",
+          wordCount: nextTranscript.words?.length ?? 0,
+          aligned,
+        },
+      };
+    });
+  };
+
+  const runLyricsAiAlign = (refresh: boolean) => {
+    setActiveLane("lyricsAi");
+    props.onRun(async ({ onProgress }) => {
+      if (lyricsSaveTimer.current) {
+        clearTimeout(lyricsSaveTimer.current);
+        lyricsSaveTimer.current = null;
+      }
+      const apiKey = loadOpenAiApiKey();
+      if (!apiKey) {
+        throw new Error(
+          "OpenAI API key missing — required for AI align (Settings).",
+        );
+      }
+      if (!mixPath) throw new Error("Select main audio first.");
+      const nextTranscript = transcriptRef.current;
+      if (
+        !nextTranscript ||
+        nextTranscript.segments.length === 0 ||
+        (nextTranscript.words?.length ?? 0) === 0
+      ) {
+        throw new Error("Detect words with Whisper first.");
+      }
+      const lyricLines = parseLyricLines(lyrics);
+      if (lyricLines.length === 0) {
+        throw new Error(
+          "Paste singable lyrics — section tags like [Intro] are skipped",
+        );
+      }
+
+      onProgress(
+        refresh
+          ? `Refreshing AI blocks for ${lyricLines.length} lines…`
+          : `Generating AI blocks for ${lyricLines.length} lines…`,
+      );
+
+      const peaks = await audioWaveformPeaks(mixPath, 32);
+      const aligned = await alignLyricScriptWithOpenAi({
+        lyricsText: lyrics,
+        segments: nextTranscript.segments,
+        words: nextTranscript.words!,
+        durationSec: peaks.durationSec,
+        apiKey,
+        vocalBlocks: nextTranscript.vocalBlocks,
+        onProgress,
+      });
+
+      setLines(aligned);
+      persistAlignment({
+        nextLines: aligned,
+        transcribeEngine: engineRef.current,
+        transcript: nextTranscript,
+      });
+
+      const tagCount = aligned.filter((row) => isInaudibleLyricLine(row)).length;
+      const sungCount = aligned.length - tagCount;
+
+      return {
+        summary: `AI blocks: ${sungCount} lines${tagCount ? ` + ${tagCount} tags` : ""}`,
+        json: {
+          mode: "openai_lyric_align",
+          wordCount: nextTranscript.words?.length ?? 0,
+          aligned,
+        },
+      };
+    });
   };
 
   const localEngineBlocked = engine === "local" && !props.whisperReady;
+  const hasCachedTranscript = Boolean(
+    vocalsPath &&
+      transcript &&
+      transcript.vocalsPath === vocalsPath &&
+      transcript.engine === engine &&
+      transcript.segments.length > 0 &&
+      (transcript.words?.length ?? 0) > 0,
+  );
+  const hasAlignedBlocks = lines.some((row) => !isInaudibleLyricLine(row));
+  const hasSingableLyrics = parseLyricLines(lyrics).length > 0;
+  const vocalsStemDisabled =
+    props.busy || !mixPath || !props.demucsReady;
+  const whisperDisabled =
+    props.busy ||
+    !vocalsPath ||
+    localEngineBlocked ||
+    (engine === "openai" && !props.openAiReady);
+  const lyricsAlignDisabled =
+    props.busy ||
+    !mixPath ||
+    !hasCachedTranscript ||
+    !hasSingableLyrics;
+  const lyricsAiDisabled =
+    props.busy ||
+    !mixPath ||
+    !props.openAiReady ||
+    !hasCachedTranscript ||
+    !hasSingableLyrics;
 
   return (
     <div className="lab-form lab-align">
       <p className="muted">
-        Uses the <strong>full vocals stem</strong> from Vocals / slice (Demucs cache),
-        transcribes with Whisper, then maps your lyric lines onto segment timings.
-        Playback and edits use the <strong>full mix</strong>.
+        Each lane has its own step: pick the full mix, generate a vocals stem,
+        detect words with Whisper, then place lyric blocks. Results save to the
+        project automatically.
       </p>
 
       <label>
-        Main audio
-        <select
-          value={audioId}
-          onChange={(e) => {
-            setAudioId(e.target.value);
-            props.onPickMain(e.target.value || null);
-            setLines([]);
-            setDirty(false);
-          }}
-        >
-          <option value="">Select…</option>
-          {props.audioAssets.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title || c.id}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <LabAudioTrack
-        label="Full mix (playback)"
-        path={mixPath}
-        mediaUrl={mixUrl}
-        hint="Timeline edits apply to this track"
-      />
-
-      <p className="muted lab-align-vocals-status">
-        {vocalsReady ? (
-          <>
-            Vocals stem ready: <code>{vocalsPath}</code>
-          </>
-        ) : (
-          <>
-            No cached full vocals for this asset — run{" "}
-            <button
-              type="button"
-              className="lab-inline-link"
-              onClick={() => props.onGoToIsolate()}
-            >
-              Vocals / slice → Separate full vocals
-            </button>{" "}
-            first.
-          </>
-        )}
-      </p>
-
-      <label>
-        Lyrics (one line per row)
+        Lyrics (one line per row; Suno tags like [Intro] are shown but not matched)
         <textarea
           rows={8}
           value={lyrics}
           onChange={(e) => {
-            setLyrics(e.target.value);
-            setDirty(true);
+            const text = e.target.value;
+            setLyrics(text);
+            scheduleLyricsPersist(text);
           }}
         />
       </label>
 
-      <fieldset className="lab-align-engine">
-        <legend className="muted">Transcription engine</legend>
-        <label className="lab-checkbox-row">
-          <input
-            type="radio"
-            name="transcribe-engine"
-            checked={engine === "openai"}
-            onChange={() => setEngine("openai")}
-          />
-          OpenAI Whisper API
-          {!props.openAiReady ? " (API key required)" : ""}
-        </label>
-        <label className="lab-checkbox-row">
-          <input
-            type="radio"
-            name="transcribe-engine"
-            checked={engine === "local"}
-            onChange={() => setEngine("local")}
-          />
-          Local Whisper CLI
-          {!props.whisperReady ? " (not installed)" : ""}
-        </label>
-      </fieldset>
+      <section className="lab-align-workspace" aria-label="Caption timeline">
+        <h4 className="lab-align-workspace-title">Caption timeline</h4>
 
-      <button
-        type="button"
-        className={props.busy ? "primary-btn is-busy" : "primary-btn"}
-        disabled={
-          props.busy ||
-          !mixPath ||
-          !vocalsPath ||
-          !props.demucsReady ||
-          localEngineBlocked ||
-          (engine === "openai" && !props.openAiReady)
-        }
-        onClick={() =>
-          props.onRun(async ({ onProgress }) => {
-            if (!mixPath || !vocalsPath) {
-              throw new Error(
-                "Full vocals stem missing — separate full vocals in Vocals / slice first.",
-              );
-            }
-            const apiKey = loadOpenAiApiKey();
-            if (!apiKey) {
-              throw new Error(
-                "OpenAI API key missing — required for lyric matching (Settings).",
-              );
-            }
-            const lyricLines = parseLyricLines(lyrics);
-            if (lyricLines.length === 0) throw new Error("Paste lyrics");
-
-            onProgress("Transcribing vocals stem…");
-            const transcript = await transcribeAudio({
-              audioPath: vocalsPath,
-              engine,
-              apiKey,
-            });
-            onProgress(
-              `Transcribed ${transcript.segments.length} segments (${transcript.engine}).`,
-            );
-
-            const peaks = await audioWaveformPeaks(mixPath, 32);
-            const durationSec = peaks.durationSec;
-
-            onProgress("Aligning lyric lines to transcript…");
-            const aligned = await alignLyricsToTranscript({
-              lines: lyricLines,
-              segments: transcript.segments,
-              durationSec,
-              apiKey,
-            });
-
-            setLines(aligned);
-            persistAlignment(aligned, engine);
-
-            return {
-              summary: `Aligned ${aligned.length} lines (${transcript.engine} + LLM)`,
-              json: {
-                mode: "vocals_stt_lyric_align",
-                transcribeEngine: engine,
-                segmentCount: transcript.segments.length,
-                aligned,
-              },
-            };
-          })
-        }
-      >
-        {actionLabel(props.busy, props.buttonLabel, "Align lyrics")}
-      </button>
-
-      {lines.length > 0 && mixPath && mixUrl ? (
-        <section className="lab-align-results">
-          <div className="lab-align-results-head">
-            <h4>Caption timeline</h4>
+        <LabLyricCaptionEditor
+          audioPath={mixPath}
+          mediaUrl={mixUrl}
+          vocalsMediaUrl={vocalsUrl}
+          vocalsPath={vocalsPath}
+          lines={lines}
+          whisperWords={transcript?.words}
+          vocalBlocks={transcript?.vocalBlocks}
+          onChange={(next) => {
+            setLines(next);
+            scheduleLinesPersist(next);
+          }}
+          fullMixControls={
+            <select
+              className="lab-timeline-lane-control-select"
+              value={audioId}
+              onChange={(e) => handleAudioChange(e.target.value)}
+              aria-label="Main audio"
+            >
+              <option value="">Select audio…</option>
+              {props.audioAssets.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title || c.id}
+                </option>
+              ))}
+            </select>
+          }
+          vocalsControls={
             <button
               type="button"
-              className="btn subtle"
-              disabled={!dirty}
-              onClick={() => persistAlignment(lines, engine)}
+              className={
+                activeLane === "vocals" && props.busy
+                  ? "lab-secondary-btn is-busy"
+                  : "lab-secondary-btn"
+              }
+              disabled={vocalsStemDisabled}
+              onClick={() => runVocalsStem()}
             >
-              Save to project
+              {laneActionLabel(
+                props.busy,
+                props.buttonLabel,
+                vocalsReady ? "Refresh stem" : "Generate stem",
+                activeLane === "vocals",
+              )}
             </button>
-          </div>
-          <LabLyricCaptionEditor
-            audioPath={mixPath}
-            mediaUrl={mixUrl}
-            lines={lines}
-            onChange={(next) => {
-              setLines(next);
-              setDirty(true);
-            }}
-          />
-        </section>
-      ) : null}
+          }
+          whisperControls={
+            <>
+              <label className="lab-timeline-inline-option">
+                <input
+                  type="radio"
+                  name="transcribe-engine"
+                  checked={engine === "openai"}
+                  onChange={() => setEngine("openai")}
+                />
+                OpenAI
+                {!props.openAiReady ? " (key)" : ""}
+              </label>
+              <label className="lab-timeline-inline-option">
+                <input
+                  type="radio"
+                  name="transcribe-engine"
+                  checked={engine === "local"}
+                  onChange={() => setEngine("local")}
+                />
+                Local
+                {!props.whisperReady ? " (missing)" : ""}
+              </label>
+              <button
+                type="button"
+                className={
+                  activeLane === "whisper" && props.busy
+                    ? "lab-secondary-btn is-busy"
+                    : "lab-secondary-btn"
+                }
+                disabled={whisperDisabled}
+                onClick={() => runWhisper(hasCachedTranscript)}
+              >
+                {laneActionLabel(
+                  props.busy,
+                  props.buttonLabel,
+                  hasCachedTranscript ? "Refresh words" : "Detect words",
+                  activeLane === "whisper",
+                )}
+              </button>
+            </>
+          }
+          lyricsControls={
+            <>
+              <button
+                type="button"
+                className={
+                  activeLane === "lyrics" && props.busy
+                    ? "lab-secondary-btn is-busy"
+                    : "lab-secondary-btn"
+                }
+                disabled={lyricsAlignDisabled}
+                title="Fast local word matching against Whisper"
+                onClick={() => runLyricsAlign(hasAlignedBlocks)}
+              >
+                {laneActionLabel(
+                  props.busy,
+                  props.buttonLabel,
+                  hasAlignedBlocks ? "Refresh blocks" : "Generate blocks",
+                  activeLane === "lyrics",
+                )}
+              </button>
+              <button
+                type="button"
+                className={
+                  activeLane === "lyricsAi" && props.busy
+                    ? "lab-secondary-btn is-busy"
+                    : "lab-secondary-btn"
+                }
+                disabled={lyricsAiDisabled}
+                title="Ask OpenAI to place blocks using lyrics + Whisper timings"
+                onClick={() => runLyricsAiAlign(hasAlignedBlocks)}
+              >
+                {laneActionLabel(
+                  props.busy,
+                  props.buttonLabel,
+                  hasAlignedBlocks ? "Refresh AI blocks" : "Generate AI blocks",
+                  activeLane === "lyricsAi",
+                )}
+              </button>
+            </>
+          }
+        />
+      </section>
 
       <ProgressLog lines={props.progressLog} />
     </div>
@@ -2739,15 +3706,21 @@ function ProposeModule(
     mainAudioId: string;
   } & ModuleChrome,
 ) {
-  const fromProject =
+  const matchingAlignment =
     props.lyricAlignment &&
     (!props.mainAudioId ||
       props.lyricAlignment.sourceAudioCreationId === props.mainAudioId)
       ? props.lyricAlignment
       : null;
+  const fromProject =
+    matchingAlignment && matchingAlignment.lines.length > 0
+      ? matchingAlignment
+      : null;
 
   const [lyrics, setLyrics] = useState(
-    fromProject?.lyricsText || "We dance until the morning light",
+    matchingAlignment?.lyricsText ||
+      fromProject?.lyricsText ||
+      "We dance until the morning light",
   );
   const [durationSec, setDurationSec] = useState(() => {
     if (!fromProject?.lines.length) return 30;
@@ -2755,12 +3728,20 @@ function ProposeModule(
   });
 
   useEffect(() => {
-    if (!fromProject) return;
-    setLyrics(fromProject.lyricsText);
-    setDurationSec(
-      Math.max(...fromProject.lines.map((l) => l.endSec), 1),
-    );
-  }, [fromProject?.alignedAt, fromProject?.sourceAudioCreationId]);
+    if (matchingAlignment?.lyricsText != null) {
+      setLyrics(matchingAlignment.lyricsText);
+    }
+    if (fromProject) {
+      setDurationSec(
+        Math.max(...fromProject.lines.map((l) => l.endSec), 1),
+      );
+    }
+  }, [
+    matchingAlignment?.alignedAt,
+    matchingAlignment?.sourceAudioCreationId,
+    matchingAlignment?.lyricsText,
+    fromProject,
+  ]);
 
   return (
     <div className="lab-form">
@@ -2770,6 +3751,11 @@ function ProposeModule(
           <>
             {" "}
             Using saved lyric alignment ({fromProject.lines.length} lines).
+          </>
+        ) : matchingAlignment?.lyricsText.trim() ? (
+          <>
+            {" "}
+            Lyrics are saved on this project — run Lyric align for timings.
           </>
         ) : (
           <>
@@ -2785,7 +3771,7 @@ function ProposeModule(
           rows={4}
           value={lyrics}
           onChange={(e) => setLyrics(e.target.value)}
-          readOnly={Boolean(fromProject)}
+          readOnly={Boolean(fromProject || matchingAlignment?.lyricsText.trim())}
         />
       </label>
       {!fromProject ? (
@@ -2812,11 +3798,13 @@ function ProposeModule(
             }
             onProgress("Proposing storyboard…");
             const aligned = fromProject
-              ? fromProject.lines.map((line) => ({
-                  line: line.line,
-                  start: line.startSec,
-                  end: line.endSec,
-                }))
+              ? fromProject.lines
+                  .filter((line) => !isInaudibleLyricLine(line))
+                  .map((line) => ({
+                    line: line.line,
+                    start: line.startSec,
+                    end: line.endSec,
+                  }))
               : (() => {
                   const textLines = parseLyricLines(lyrics);
                   const span = durationSec / Math.max(1, textLines.length);
@@ -2827,7 +3815,12 @@ function ProposeModule(
                   }));
                 })();
             const songDuration = fromProject
-              ? Math.max(...fromProject.lines.map((l) => l.endSec), durationSec)
+              ? Math.max(
+                  ...fromProject.lines
+                    .filter((line) => !isInaudibleLyricLine(line))
+                    .map((l) => l.endSec),
+                  durationSec,
+                )
               : durationSec;
             const user = JSON.stringify(
               {

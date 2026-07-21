@@ -22,3 +22,19 @@ export const LAB_MUTATE_PROMPT =
 /** a2v compose default — performance on the same still. */
 export const LAB_A2V_PROMPT =
   "Same musician lip syncing to the vocals, subtle head motion and breathing, soft camera push-in, keep framing and identity";
+
+/** Prefer a project-saved still prompt; fall back to the shared Lab default. */
+export function resolveLabStillPrompt(
+  stored: string | null | undefined,
+): string {
+  const trimmed = typeof stored === "string" ? stored.trim() : "";
+  return trimmed || LAB_STILL_PROMPT;
+}
+
+/** Prefer a project-saved animate prompt; fall back to the shared Lab default. */
+export function resolveLabAnimatePrompt(
+  stored: string | null | undefined,
+): string {
+  const trimmed = typeof stored === "string" ? stored.trim() : "";
+  return trimmed || LAB_ANIMATE_PROMPT;
+}

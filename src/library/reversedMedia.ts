@@ -10,7 +10,8 @@ const inflight = new Map<string, Promise<ReversedMediaUrls>>();
 const resolved = new Map<string, ReversedMediaUrls>();
 
 function toUrls(media: ReversedMedia): ReversedMediaUrls {
-  const mediaUrl = convertFileSrc(media.path);
+  // Playback needs Range (`media`); thumbs stay on `asset`.
+  const mediaUrl = convertFileSrc(media.path, "media");
   const thumbUrl = media.thumbPath ? convertFileSrc(media.thumbPath) : null;
   return { mediaUrl, thumbUrl };
 }

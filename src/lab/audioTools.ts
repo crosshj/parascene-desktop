@@ -17,7 +17,8 @@ export type AudioTrackResult = {
 };
 
 function mediaUrlFor(path: string): string {
-  return convertFileSrc(path);
+  // Lab slices / stems / extends are A/V — use Range-capable `media` scheme.
+  return convertFileSrc(path, "media");
 }
 
 /** Cached full vocals stem path for this source, if demucs already ran. */
@@ -137,4 +138,30 @@ export async function bakeClipExtend(opts: {
     outSec: opts.outSec ?? null,
   });
   return { path, mediaUrl: mediaUrlFor(path) };
+}
+
+/** Full-resolution JPEG still from a local video at `timeSec` (Lab → Pull frame). */
+export async function extractVideoFrame(opts: {
+  sourcePath: string;
+  timeSec: number;
+}): Promise<{ path: string; mediaUrl: string; timeSec: number }> {
+  const path = await invoke<string>("library_extract_video_frame", {
+    sourcePath: opts.sourcePath,
+    timeSec: opts.timeSec,
+  });
+  return { path, mediaUrl: mediaUrlFor(path), timeSec: opts.timeSec };
+}
+
+/** Upload a local image file to Parascene generic storage; returns a public URL. */
+export async function uploadLocalImageFile(
+  path: string,
+  opts?: { filename?: string; contentType?: string },
+): Promise<{ url: string; key?: string }> {
+  const bytesBase64 = await invoke<string>("library_read_file_base64", { path });
+  const sdk = createAuthedSdk();
+  return sdk.uploadGenericImage({
+    bytesBase64,
+    contentType: opts?.contentType ?? "image/jpeg",
+    filename: opts?.filename ?? "lab-frame.jpg",
+  });
 }

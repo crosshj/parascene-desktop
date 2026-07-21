@@ -6,7 +6,8 @@
 //! the create/wait/group coordination loop.
 
 use super::catalog::{
-    default_paths, get_creation_by_id, ingest_remote_creation_json, ready_connection,
+    default_paths, delete_creation_local, get_creation_by_id, ingest_remote_creation_json,
+    ready_connection,
 };
 use super::download::{emit_creation_updated, enqueue_media, enqueue_thumbs};
 use super::parascene_api::{
@@ -530,14 +531,6 @@ async fn group_members(
 
 async fn create_image_seed(app: &AppHandle, ctx: &mut EnsureCtx) -> Result<String, String> {
     throw_if_cancelled(&ctx.job_id)?;
-    let title = {
-        let t = ctx.project_title.trim();
-        if t.is_empty() {
-            "Project".into()
-        } else {
-            t.to_string()
-        }
-    };
     note(
         app,
         ctx,
@@ -551,7 +544,7 @@ async fn create_image_seed(app: &AppHandle, ctx: &mut EnsureCtx) -> Result<Strin
         server_id: 1,
         method: "replicate".into(),
         args: json!({
-            "prompt": format!("{}. Project: {}.", ctx.still_prompt, title),
+            "prompt": ctx.still_prompt,
             "model": "xai/grok-imagine-image",
             "aspect_ratio": ctx.aspect_ratio,
         }),
@@ -636,19 +629,11 @@ async fn create_video_from_still(
 
 async fn create_text_video_seed(app: &AppHandle, ctx: &mut EnsureCtx) -> Result<String, String> {
     throw_if_cancelled(&ctx.job_id)?;
-    let title = {
-        let t = ctx.project_title.trim();
-        if t.is_empty() {
-            "Project".into()
-        } else {
-            t.to_string()
-        }
-    };
     let started = create_media(CreateOpts {
         server_id: 6,
         method: "text2video".into(),
         args: json!({
-            "prompt": format!("{}. Project: {}.", ctx.animate_prompt, title),
+            "prompt": ctx.animate_prompt,
             "model": "ltx_t2v",
             "aspect_ratio": ctx.aspect_ratio,
         }),
@@ -783,6 +768,146 @@ fn load_local_group_member_ids(group_id: &str) -> Vec<String> {
     }
 }
 
+/// Collect remote + local membership for a group cover (detail often omits meta.group).
+async fn resolve_group_member_ids_for_cleanup(group_id: &str) -> Vec<String> {
+    let mut members = load_group_member_ids(group_id).await;
+    if members.is_empty() {
+        members = load_local_group_member_ids(group_id);
+    } else {
+        for mid in load_local_group_member_ids(group_id) {
+            if !members.iter().any(|x| x == &mid) {
+                members.push(mid);
+            }
+        }
+    }
+    members
+}
+
+/// Best-effort local catalog + disk purge (Library). Missing rows are fine.
+fn delete_local_best_effort(app: &AppHandle, id: &str) -> bool {
+    let Ok(paths) = default_paths() else {
+        return false;
+    };
+    let Ok(conn) = ready_connection(&paths) else {
+        return false;
+    };
+    match delete_creation_local(&conn, &paths, id) {
+        Ok(()) => {
+            let _ = app.emit("library-creation-deleted", id.to_string());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+async fn run_cleanup_project_groups(app: &AppHandle, job: &Job) -> Result<Value, String> {
+    let payload: Value =
+        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
+    let images = payload_str_or_null(&payload, "imagesGroupId").unwrap_or(None);
+    let videos = payload_str_or_null(&payload, "videosGroupId").unwrap_or(None);
+    let pending = payload_str_or_null(&payload, "pendingCreationId").unwrap_or(None);
+    let hint_members: Vec<String> = payload
+        .get("memberIds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut queue: HashSet<String> = HashSet::new();
+    for id in [&images, &videos, &pending].into_iter().flatten() {
+        queue.insert(id.clone());
+    }
+    for mid in &hint_members {
+        queue.insert(mid.clone());
+    }
+
+    for group_id in [&images, &videos].into_iter().flatten() {
+        let members = resolve_group_member_ids_for_cleanup(group_id).await;
+        if members.is_empty() {
+            let note = format!(
+                "No members found for group {group_id} (remote or local) — will still try delete cover."
+            );
+            patch_job(app, &job.id, Some("running"), Some(&note), None, None, None)?;
+        }
+        for mid in members {
+            if mid != *group_id {
+                queue.insert(mid);
+            }
+        }
+    }
+
+    let mut ordered: Vec<String> = queue.into_iter().collect();
+    ordered.sort_by(|a, b| {
+        let a_g = (Some(a) == images.as_ref() || Some(a) == videos.as_ref()) as u8;
+        let b_g = (Some(b) == images.as_ref() || Some(b) == videos.as_ref()) as u8;
+        a_g.cmp(&b_g)
+    });
+
+    let cleaned: Vec<String> = ordered.clone();
+    let mut deleted = Vec::new();
+    let mut local_deleted = Vec::new();
+    let mut messages = Vec::new();
+    for id in ordered {
+        throw_if_cancelled(&job.id)?;
+        let note = format!("Deleting {id} on Parascene…");
+        messages.push(note.clone());
+        patch_job(app, &job.id, Some("running"), Some(&note), None, None, None)?;
+        match delete_creation(&id).await {
+            Ok(()) => {
+                deleted.push(id.clone());
+                let ok = format!("Deleted {id} on Parascene.");
+                messages.push(ok.clone());
+                patch_job(app, &job.id, Some("running"), Some(&ok), None, None, None)?;
+            }
+            Err(err) => {
+                let fail = format!("Parascene delete {id} failed: {err}");
+                messages.push(fail.clone());
+                patch_job(app, &job.id, Some("running"), Some(&fail), None, None, None)?;
+            }
+        }
+
+        // Always purge Library catalog / local files so Assets and sync stay clean
+        // even when the remote row was already gone or delete failed.
+        if delete_local_best_effort(app, &id) {
+            local_deleted.push(id.clone());
+            let local_ok = format!("Removed {id} from local Library.");
+            messages.push(local_ok.clone());
+            patch_job(
+                app,
+                &job.id,
+                Some("running"),
+                Some(&local_ok),
+                None,
+                None,
+                None,
+            )?;
+        }
+    }
+
+    if cleaned.is_empty() {
+        messages.push("Nothing to delete (no group / member ids).".into());
+    } else {
+        messages.push(format!(
+            "Cleanup finished — Parascene {} / local Library {} of {} target(s).",
+            deleted.len(),
+            local_deleted.len(),
+            cleaned.len()
+        ));
+    }
+
+    Ok(json!({
+        "cleanedIds": cleaned,
+        "deletedIds": deleted,
+        "localDeletedIds": local_deleted,
+        "messages": messages,
+    }))
+}
+
 async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, String> {
     let mut payload: Value =
         serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
@@ -820,6 +945,14 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
         project_creation_ids: Vec::new(),
         messages: Vec::new(),
     };
+
+    // "images" | "videos" | "both" (default) — Lab Kind selector runs one side at a time.
+    let mode = payload_str(&payload, "mode").unwrap_or_else(|| "both".into());
+    let do_images = mode == "images" || mode == "both";
+    let do_videos = mode == "videos" || mode == "both";
+    if !do_images && !do_videos {
+        return Err(format!("ensure mode must be images, videos, or both (got {mode})"));
+    }
 
     if let Some(pending) = ctx.pending_creation_id.clone() {
         note(
@@ -868,14 +1001,25 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
     }
 
     let images_to_verify = ctx.images_group_id.clone();
-    ctx.images_group_id = verify_live_group(app, &mut ctx, images_to_verify, "Images").await?;
-    throw_if_cancelled(&ctx.job_id)?;
-    let videos_to_verify = ctx.videos_group_id.clone();
-    ctx.videos_group_id = verify_live_group(app, &mut ctx, videos_to_verify, "Videos").await?;
-    throw_if_cancelled(&ctx.job_id)?;
+    // Videos needs a live Images group for the still; images mode only verifies Images.
+    if do_images || do_videos {
+        ctx.images_group_id = verify_live_group(app, &mut ctx, images_to_verify, "Images").await?;
+        throw_if_cancelled(&ctx.job_id)?;
+    }
+    if do_videos {
+        if ctx.images_group_id.is_none() {
+            return Err(
+                "Videos ensure requires an Images group first. Run Ensure Images group."
+                    .into(),
+            );
+        }
+        let videos_to_verify = ctx.videos_group_id.clone();
+        ctx.videos_group_id = verify_live_group(app, &mut ctx, videos_to_verify, "Videos").await?;
+        throw_if_cancelled(&ctx.job_id)?;
+    }
 
     // —— Images ——
-    let primary_image_id: Option<String> = {
+    let primary_image_id: Option<String> = if do_images {
         let group_id = ctx.images_group_id.clone();
         let member_ids = match &group_id {
             Some(gid) => load_group_member_ids(gid).await,
@@ -974,12 +1118,33 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
                 None
             }
         }
+    } else if do_videos {
+        // Videos-only: reuse the newest/first Images member as the i2v still.
+        let images_gid = ctx.images_group_id.clone();
+        match images_gid {
+            Some(gid) => {
+                let members = load_group_member_ids(&gid).await;
+                let mid = members.first().cloned();
+                if let Some(ref id) = mid {
+                    note(
+                        app,
+                        &mut ctx,
+                        &format!("Videos: using Images group still {id} from {gid}."),
+                    )
+                    .await?;
+                }
+                mid
+            }
+            None => None,
+        }
+    } else {
+        None
     };
 
     throw_if_cancelled(&ctx.job_id)?;
 
     // —— Videos ——
-    {
+    if do_videos {
         let group_id = ctx.videos_group_id.clone();
         let member_ids = match &group_id {
             Some(gid) => load_group_member_ids(gid).await,
@@ -1170,80 +1335,7 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
         "videosGroupId": ctx.videos_group_id,
         "projectCreationIds": canonical,
         "messages": ctx.messages,
-    }))
-}
-
-async fn run_cleanup_project_groups(app: &AppHandle, job: &Job) -> Result<Value, String> {
-    let payload: Value =
-        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
-    let images = payload_str_or_null(&payload, "imagesGroupId").unwrap_or(None);
-    let videos = payload_str_or_null(&payload, "videosGroupId").unwrap_or(None);
-    let pending = payload_str_or_null(&payload, "pendingCreationId").unwrap_or(None);
-
-    let mut queue: HashSet<String> = HashSet::new();
-    for id in [&images, &videos, &pending].into_iter().flatten() {
-        queue.insert(id.clone());
-    }
-
-    for group_id in [&images, &videos].into_iter().flatten() {
-        match get_creation(group_id).await {
-            Ok(row) => {
-                for mid in group_member_ids(&row) {
-                    if mid != *group_id {
-                        queue.insert(mid);
-                    }
-                }
-            }
-            Err(_) => {
-                let note = format!(
-                    "Could not load group {group_id} for member list — will still try delete."
-                );
-                patch_job(app, &job.id, Some("running"), Some(&note), None, None, None)?;
-            }
-        }
-    }
-
-    let mut ordered: Vec<String> = queue.into_iter().collect();
-    ordered.sort_by(|a, b| {
-        let a_g = (Some(a) == images.as_ref() || Some(a) == videos.as_ref()) as u8;
-        let b_g = (Some(b) == images.as_ref() || Some(b) == videos.as_ref()) as u8;
-        a_g.cmp(&b_g)
-    });
-
-    let mut deleted = Vec::new();
-    let mut messages = Vec::new();
-    for id in ordered {
-        throw_if_cancelled(&job.id)?;
-        let note = format!("Deleting {id} on Parascene…");
-        messages.push(note.clone());
-        patch_job(app, &job.id, Some("running"), Some(&note), None, None, None)?;
-        match delete_creation(&id).await {
-            Ok(()) => {
-                deleted.push(id.clone());
-                let ok = format!("Deleted {id}.");
-                messages.push(ok.clone());
-                patch_job(app, &job.id, Some("running"), Some(&ok), None, None, None)?;
-            }
-            Err(err) => {
-                let fail = format!("Delete {id} failed: {err}");
-                messages.push(fail.clone());
-                patch_job(app, &job.id, Some("running"), Some(&fail), None, None, None)?;
-            }
-        }
-    }
-
-    if deleted.is_empty() {
-        messages.push("Nothing to delete (no group / member ids).".into());
-    } else {
-        messages.push(format!(
-            "Cleanup finished — removed {} creation(s).",
-            deleted.len()
-        ));
-    }
-
-    Ok(json!({
-        "deletedIds": deleted,
-        "messages": messages,
+        "mode": mode,
     }))
 }
 

@@ -39,4 +39,20 @@ describe("labModuleGate", () => {
   it("allows isolate when tools are ready", () => {
     expect(labModuleGate("isolate", ready)).toBeNull();
   });
+
+  it("blocks frame when ffmpeg is missing", () => {
+    const gate = labModuleGate("frame", { ...ready, ffmpegReady: false });
+    expect(gate?.navBlurb).toMatch(/FFmpeg/i);
+  });
+
+  it("blocks frame when there is no project video", () => {
+    const gate = labModuleGate("frame", { ...ready, videoCount: 0 });
+    expect(gate?.navBlurb).toMatch(/video/i);
+  });
+
+  it("blocks frame when project groups are missing", () => {
+    const gate = labModuleGate("frame", { ...ready, groupsReady: false });
+    expect(gate?.navBlurb).toMatch(/Project groups/i);
+    expect(gate?.action).toBe("groups");
+  });
 });

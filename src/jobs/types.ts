@@ -54,7 +54,12 @@ export type EnsureGroupsJobResult = {
 };
 
 export type CleanupGroupsJobResult = {
+  /** All group / member / pending ids targeted by cleanup. */
+  cleanedIds?: string[];
+  /** Ids successfully deleted on Parascene. */
   deletedIds: string[];
+  /** Ids removed from the local Library catalog. */
+  localDeletedIds?: string[];
   messages: string[];
 };
 

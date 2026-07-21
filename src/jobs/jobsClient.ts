@@ -177,8 +177,16 @@ export function cleanupResultFromJob(job: Job): CleanupGroupsJobResult | null {
   const deletedIds = Array.isArray(parsed.deletedIds)
     ? parsed.deletedIds.map((id) => String(id).trim()).filter(Boolean)
     : [];
+  const cleanedIds = Array.isArray(parsed.cleanedIds)
+    ? parsed.cleanedIds.map((id) => String(id).trim()).filter(Boolean)
+    : deletedIds;
+  const localDeletedIds = Array.isArray(parsed.localDeletedIds)
+    ? parsed.localDeletedIds.map((id) => String(id).trim()).filter(Boolean)
+    : [];
   return {
+    cleanedIds,
     deletedIds,
+    localDeletedIds,
     messages: Array.isArray(parsed.messages)
       ? parsed.messages.filter((m): m is string => typeof m === "string")
       : [],

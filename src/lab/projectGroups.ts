@@ -18,6 +18,7 @@ import {
 } from "../jobs/jobsClient";
 import type { Job } from "../jobs/types";
 import {
+  deleteLocal,
   downloadIds,
   downloadThumbs,
   getCreations,
@@ -36,7 +37,10 @@ import {
   roleForProjectGroupKind,
 } from "../project/desktopProjectGroups";
 import { ingestRemoteCreation } from "./ingestCreation";
-import { LAB_ANIMATE_PROMPT, LAB_STILL_PROMPT } from "./labPrompts";
+import {
+  resolveLabAnimatePrompt,
+  resolveLabStillPrompt,
+} from "./labPrompts";
 
 /**
  * Ids to send on `POST /api/create/images/group`.
@@ -76,6 +80,155 @@ export function expectedMembersAfterAppend(
     out.push(id);
   }
   return out;
+}
+
+/** Member ids left on a group cover after removing one or more sources. */
+export function remainingMembersAfterRemoval(
+  existingMemberIds: readonly string[],
+  removeIds: readonly string[],
+  groupId?: string | null,
+): string[] {
+  const remove = new Set(
+    removeIds.map((id) => String(id).trim()).filter(Boolean),
+  );
+  const cover = groupId ? String(groupId).trim() : "";
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of existingMemberIds) {
+    const id = String(raw).trim();
+    if (!id || seen.has(id) || remove.has(id) || (cover && id === cover)) {
+      continue;
+    }
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+export type RemoveGroupMembersResult = {
+  deletedMemberIds: string[];
+  /** Null when every member was deleted and the group was not recreated. */
+  groupId: string | null;
+  /** Ids to drop from the open project (deleted members + archived cover). */
+  projectCreationIdsToRemove: string[];
+  /** New group cover id to add when regrouping produced a fresh cover row. */
+  projectCreationIdsToAdd: string[];
+};
+
+/**
+ * Remove member creations from a desktop project group on Parascene:
+ * ungroup → delete targets → regroup survivors (when any remain).
+ */
+export async function removeMembersFromProjectGroup(opts: {
+  projectId: string;
+  projectTitle: string;
+  kind: ProjectGroupKind;
+  groupId: string;
+  memberIds: string[];
+  onProgress?: (note: string) => void;
+}): Promise<RemoveGroupMembersResult> {
+  const sdk = createAuthedSdk();
+  const groupId = String(opts.groupId).trim();
+  const toRemove = [
+    ...new Set(
+      opts.memberIds.map((id) => String(id).trim()).filter(Boolean),
+    ),
+  ].filter((id) => id !== groupId);
+  if (!groupId || toRemove.length === 0) {
+    throw new Error("Nothing to remove from group.");
+  }
+
+  const existingMembers = await loadExistingMemberIds(sdk, groupId);
+  const unknown = toRemove.filter((id) => !existingMembers.includes(id));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Not in group ${groupId}: ${unknown.join(", ")}`,
+    );
+  }
+
+  const remaining = remainingMembersAfterRemoval(
+    existingMembers,
+    toRemove,
+    groupId,
+  );
+  const role = roleForProjectGroupKind(opts.kind);
+  const groupMeta = desktopProjectGroupMeta({
+    role,
+    projectId: opts.projectId,
+  });
+  const partyName = desktopProjectGroupPartyName(opts.projectTitle, role);
+
+  opts.onProgress?.(`Ungrouping ${groupId} on Parascene…`);
+  const { restoredCreationIds } = await sdk.ungroupCreations(groupId);
+  const restoredSet = new Set(restoredCreationIds);
+  for (const id of remainingMembersAfterRemoval(existingMembers, [], groupId)) {
+    if (!restoredSet.has(id)) {
+      throw new Error(`Ungroup did not restore member ${id}`);
+    }
+  }
+
+  try {
+    await deleteLocal(groupId);
+  } catch {
+    /* archived cover row may already be gone locally */
+  }
+
+  const deletedMemberIds: string[] = [];
+  for (const id of toRemove) {
+    opts.onProgress?.(`Deleting ${id} on Parascene…`);
+    try {
+      await sdk.deleteCreation(id);
+      deletedMemberIds.push(id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Parascene delete ${id} failed: ${msg}`);
+    }
+    try {
+      await deleteLocal(id);
+    } catch {
+      /* local row may already be gone */
+    }
+  }
+
+  let finalGroupId: string | null = null;
+  const projectCreationIdsToAdd: string[] = [];
+
+  if (remaining.length > 0) {
+    opts.onProgress?.(
+      `Regrouping ${remaining.length} remaining member${remaining.length === 1 ? "" : "s"}…`,
+    );
+    const grouped = await sdk.groupCreations({
+      ids: idsForGroupApiCall(null, remaining),
+      partyName,
+      meta: groupMeta,
+    });
+    finalGroupId = String(grouped.id);
+    const fresh = await sdk.getCreation(finalGroupId);
+    const liveMembers = memberIdsFromRemoteGroup(fresh);
+    await ingestRemoteCreation(
+      withGroupMembership(
+        fresh,
+        liveMembers.length > 0 ? liveMembers : remaining,
+        {
+          kind: opts.kind,
+          projectId: opts.projectId,
+          projectTitle: opts.projectTitle,
+        },
+      ),
+    );
+    await downloadIds([finalGroupId]);
+    await downloadThumbs([finalGroupId]);
+    projectCreationIdsToAdd.push(finalGroupId);
+  }
+
+  const projectCreationIdsToRemove = [...toRemove, groupId];
+
+  return {
+    deletedMemberIds,
+    groupId: finalGroupId,
+    projectCreationIdsToRemove,
+    projectCreationIdsToAdd,
+  };
 }
 
 /** Member creation ids from a live Parascene group row. */
@@ -298,6 +451,8 @@ export type EnsureCheckpoint = {
 
 export type CleanupGroupsResult = {
   deletedIds: string[];
+  cleanedIds: string[];
+  localDeletedIds: string[];
   messages: string[];
   jobId: string;
 };
@@ -336,7 +491,7 @@ function applyJobCheckpoint(
 }
 
 /**
- * Ensure Images + Videos party groups via the backend job queue.
+ * Ensure Images and/or Videos party groups via the backend job queue.
  * Mid-run leave/resume is owned by the job UUID (SQLite), not FE polling.
  */
 export async function ensureProjectGroups(opts: {
@@ -346,6 +501,15 @@ export async function ensureProjectGroups(opts: {
   aspectRatio?: ProjectAspectRatio | string | null;
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  /** Still prompt for minting the Images group seed (defaults to Lab suite). */
+  stillPrompt?: string | null;
+  /** Animate prompt for image→video into Videos group (defaults to Lab suite). */
+  animatePrompt?: string | null;
+  /**
+   * Which side to ensure. Lab Kind selector uses images | videos; omit/`both`
+   * keeps the legacy full suite (e.g. resume of older jobs).
+   */
+  mode?: "images" | "videos" | "both";
   /** Resume waiting on a creation from a previous interrupted run. */
   pendingCreationId?: string | null;
   /** Attach to an already-enqueued backend job instead of minting a new one. */
@@ -356,6 +520,25 @@ export async function ensureProjectGroups(opts: {
   onCheckpoint?: (state: EnsureCheckpoint) => void;
 }): Promise<EnsureGroupsResult> {
   const aspectRatio = resolveAspectRatio(opts.aspectRatio);
+  const stillPrompt = resolveLabStillPrompt(opts.stillPrompt);
+  const animatePrompt = resolveLabAnimatePrompt(opts.animatePrompt);
+  const mode = opts.mode ?? "both";
+  const payload = {
+    projectTitle: opts.projectTitle,
+    aspectRatio,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+    pendingCreationId: opts.pendingCreationId ?? null,
+    stillPrompt,
+    animatePrompt,
+    mode,
+  };
+  const label =
+    mode === "images"
+      ? "Ensure Images group"
+      : mode === "videos"
+        ? "Ensure Videos group"
+        : "Ensure project groups";
   let job: Job;
 
   if (opts.backendJobId) {
@@ -367,16 +550,8 @@ export async function ensureProjectGroups(opts: {
       job = await enqueueJob({
         kind: "ensure_project_groups",
         projectId: opts.projectId,
-        label: "Ensure project groups",
-        payload: {
-          projectTitle: opts.projectTitle,
-          aspectRatio,
-          imagesGroupId: opts.imagesGroupId,
-          videosGroupId: opts.videosGroupId,
-          pendingCreationId: opts.pendingCreationId ?? null,
-          stillPrompt: LAB_STILL_PROMPT,
-          animatePrompt: LAB_ANIMATE_PROMPT,
-        },
+        label,
+        payload,
       });
     } else {
       job = existing;
@@ -397,16 +572,8 @@ export async function ensureProjectGroups(opts: {
     job = await enqueueJob({
       kind: "ensure_project_groups",
       projectId: opts.projectId,
-      label: "Ensure project groups",
-      payload: {
-        projectTitle: opts.projectTitle,
-        aspectRatio,
-        imagesGroupId: opts.imagesGroupId,
-        videosGroupId: opts.videosGroupId,
-        pendingCreationId: opts.pendingCreationId ?? null,
-        stillPrompt: LAB_STILL_PROMPT,
-        animatePrompt: LAB_ANIMATE_PROMPT,
-      },
+      label,
+      payload,
     });
     opts.onProgress?.(`Queued ensure as job ${job.id}.`);
     opts.onCheckpoint?.({ backendJobId: job.id });
@@ -450,14 +617,19 @@ function finalizeEnsureJob(job: Job): EnsureGroupsResult {
 
 /**
  * Delete the project's Images/Videos groups (and members) via the job queue.
+ * Also purges matching rows from the local Library catalog.
  */
 export async function cleanupProjectGroups(opts: {
   projectId: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
   pendingCreationId?: string | null;
+  /** Extra member ids discovered from the local catalog (hints for the job). */
+  memberIds?: string[];
   signal?: AbortSignal;
   onProgress?: (note: string) => void;
+  /** Fired as soon as the backend job UUID exists (for Cancel). */
+  onJobId?: (jobId: string) => void;
 }): Promise<CleanupGroupsResult> {
   const job = await enqueueJob({
     kind: "cleanup_project_groups",
@@ -467,8 +639,10 @@ export async function cleanupProjectGroups(opts: {
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
       pendingCreationId: opts.pendingCreationId ?? null,
+      memberIds: opts.memberIds ?? [],
     },
   });
+  opts.onJobId?.(job.id);
   opts.onProgress?.(`Queued cleanup as job ${job.id}.`);
 
   const finalJob = await watchJob(job.id, {
@@ -489,7 +663,13 @@ export async function cleanupProjectGroups(opts: {
   if (!result) {
     throw new Error("Cleanup finished without a result payload");
   }
-  return { ...result, jobId: finalJob.id };
+  return {
+    deletedIds: result.deletedIds,
+    cleanedIds: result.cleanedIds ?? result.deletedIds,
+    localDeletedIds: result.localDeletedIds ?? [],
+    messages: result.messages,
+    jobId: finalJob.id,
+  };
 }
 
 /** Cancel an in-flight ensure/cleanup job (idempotent). */
