@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { LayoutMode, Project, TimelineClip } from "../project/types";
+import type { LayoutMode, LyricAlignment, Project, TimelineClip } from "../project/types";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import {
   createStoredProject,
@@ -29,6 +29,7 @@ import {
   setStoredProjectTimelinePlayheadSec,
   setStoredProjectGroupIds,
   setStoredProjectMainAudioCreationId,
+  setStoredProjectLyricAlignment,
   storedProjectToUi,
   type StoredProject,
 } from "../project/projectStore";
@@ -87,6 +88,8 @@ type ShellState = {
   }) => void;
   /** Persist preferred main song creation id for the open project. */
   setOpenProjectMainAudioCreationId: (creationId: string | null) => void;
+  /** Persist lyric alignment for the open project. */
+  setOpenProjectLyricAlignment: (alignment: LyricAlignment | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => void;
   /** Remove library creation IDs from the open project (no-op if none open). */
@@ -396,6 +399,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectLyricAlignment = useCallback(
+    (alignment: LyricAlignment | null) => {
+      patchOpenProject((p) => setStoredProjectLyricAlignment(p, alignment));
+    },
+    [patchOpenProject],
+  );
+
   const value = useMemo(
     () => ({
       primaryTab,
@@ -420,6 +430,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
       setOpenProjectMainAudioCreationId,
+      setOpenProjectLyricAlignment,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
@@ -461,6 +472,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
       setOpenProjectMainAudioCreationId,
+      setOpenProjectLyricAlignment,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,

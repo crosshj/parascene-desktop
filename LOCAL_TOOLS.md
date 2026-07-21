@@ -6,7 +6,8 @@ Parascene Desktop calls a few **local binaries** for Lab and Editor media work. 
 |------|----------------|---------|
 | **FFmpeg** | Audio slice, clip extend, thumbs from video/audio, timeline reverse/merge/render, beat detect | `brew install ffmpeg` |
 | **Demucs** (+ Python 3) | Lab **Vocals / slice** (vocals mode) and **a2v compose** vocal stems | See below |
-| **OpenAI API key** | Lab **OpenAI raw** and **Storyboard propose** | Paste in **Settings** (stored on this Mac only) |
+| **Whisper** (+ Python 3) | Lab **Lyric align** local transcription (optional; OpenAI API also works) | See below |
+| **OpenAI API key** | Lab **OpenAI raw**, **Lyric align** (lyric matching), and **Storyboard propose** | Paste in **Settings** (stored on this Mac only) |
 | **Parascene login** | Sync, create, groups, cloud seeds | In-app **Log in with Parascene** |
 
 Dev machine extras (to build the app): Node 20+, Rust via rustup, Xcode CLT — see [README.md](README.md).
@@ -67,9 +68,42 @@ There is no small pure-Rust substitute with the same quality. Without Demucs, La
 
 ---
 
+## Whisper (local lyric transcription)
+
+[openai-whisper](https://github.com/openai/whisper) runs speech-to-text locally. Lab **Lyric align** can use it instead of the OpenAI Whisper API for step 2 (transcription). Step 3 (mapping your lyrics onto segments) still uses the OpenAI API key.
+
+### Install
+
+```bash
+python3 -m pip install --user openai-whisper
+```
+
+First install downloads **PyTorch** and model weights (large; needs network). The CLI is usually:
+
+```text
+~/Library/Python/3.x/bin/whisper
+~/.local/bin/whisper
+```
+
+### Verify
+
+```bash
+which whisper
+whisper --help
+```
+
+In the app: Settings → Local tools should show **Whisper: ready**.
+
+### If install fails
+
+- Same Python / pip / NumPy notes as Demucs above
+- Without local Whisper, use **OpenAI Whisper API** in Lyric align (still needs API key for lyric matching)
+
+---
+
 ## OpenAI
 
-Optional cloud key for Lab LLM steps only. Not required for Parascene create / Library sync.
+Optional cloud key for Lab LLM steps and cloud Whisper transcription. Not required for Parascene create / Library sync.
 
 ---
 

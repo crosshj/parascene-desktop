@@ -23,6 +23,6 @@ export const LAB_MODULES: {
   { id: "extend", label: "Clip extend", blurb: "Loop / ping-pong extend" },
   { id: "mutate", label: "Image mutate", blurb: "i2i edit → Images group" },
   { id: "openai", label: "OpenAI raw", blurb: "Structured JSON round-trip" },
-  { id: "align", label: "Lyric align", blurb: "Even-spaced draft timings (Lab)" },
+  { id: "align", label: "Lyric align", blurb: "Vocals STT + lyrics → timed captions" },
   { id: "propose", label: "Storyboard propose", blurb: "OpenAI + shot catalog → scenes" },
 ];

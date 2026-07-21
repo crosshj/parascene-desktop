@@ -10,6 +10,7 @@ const ready: LabGateContext = {
   openAiReady: true,
   ffmpegReady: true,
   demucsReady: true,
+  whisperReady: false,
   vocalsSliceReady: true,
 };
 

@@ -14,6 +14,7 @@ export type LabToolStatus = {
 export type LabDepsStatus = {
   ffmpeg: LabToolStatus;
   demucs: LabToolStatus;
+  whisper: LabToolStatus;
   docPath: string | null;
 };
 

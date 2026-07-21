@@ -22,6 +22,7 @@ pub struct LabToolStatus {
 pub struct LabDepsStatus {
     pub ffmpeg: LabToolStatus,
     pub demucs: LabToolStatus,
+    pub whisper: LabToolStatus,
     /// Absolute path to LOCAL_TOOLS.md when found (dev checkout / beside app).
     pub doc_path: Option<String>,
 }
@@ -99,6 +100,48 @@ fn demucs_runs(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn whisper_runs(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return false;
+    }
+    Command::new(path)
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Resolve `whisper` for Lab lyric align — PATH plus common user/Homebrew bins.
+pub(crate) fn resolve_whisper() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(p) = which_on_augmented_path("whisper") {
+        candidates.push(p);
+    }
+
+    if let Some(home) = dirs_home() {
+        candidates.push(home.join(".local/bin/whisper"));
+        let py_root = home.join("Library/Python");
+        if let Ok(entries) = std::fs::read_dir(&py_root) {
+            for entry in entries.flatten() {
+                candidates.push(entry.path().join("bin/whisper"));
+            }
+        }
+    }
+
+    candidates.push(PathBuf::from("/opt/homebrew/bin/whisper"));
+    candidates.push(PathBuf::from("/usr/local/bin/whisper"));
+
+    for path in candidates {
+        if whisper_runs(&path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn which_on_augmented_path(name: &str) -> Option<PathBuf> {
     let mut path_env = std::env::var_os("PATH").unwrap_or_default();
     let extras = augmented_path_dirs();
@@ -172,6 +215,7 @@ pub(crate) fn local_tools_doc_path() -> Option<PathBuf> {
 pub fn lab_deps_status_now() -> LabDepsStatus {
     let ffmpeg_path = resolve_ffmpeg();
     let demucs_path = resolve_demucs();
+    let whisper_path = resolve_whisper();
     LabDepsStatus {
         ffmpeg: tool(
             "ffmpeg",
@@ -186,6 +230,13 @@ pub fn lab_deps_status_now() -> LabDepsStatus {
             demucs_path,
             "Not found — required for vocals isolate / a2v stems",
             "python3 -m pip install --user demucs",
+        ),
+        whisper: tool(
+            "whisper",
+            "Whisper",
+            whisper_path,
+            "Not found — optional for local lyric transcription",
+            "python3 -m pip install --user openai-whisper",
         ),
         doc_path: local_tools_doc_path().map(|p| p.display().to_string()),
     }

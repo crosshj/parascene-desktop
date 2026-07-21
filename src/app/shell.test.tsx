@@ -163,6 +163,14 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
         detail: "",
         installHint: "",
       },
+      whisper: {
+        id: "whisper",
+        label: "Whisper",
+        ready: false,
+        path: null,
+        detail: "",
+        installHint: "",
+      },
       docPath: null,
     };
   }

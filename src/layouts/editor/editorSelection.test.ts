@@ -20,6 +20,7 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     imagesGroupId: null,
     videosGroupId: null,
     mainAudioCreationId: null,
+    lyricAlignment: null,
     timeline: [
       {
         id: "clip-1",

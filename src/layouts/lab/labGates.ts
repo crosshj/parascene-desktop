@@ -20,6 +20,8 @@ export type LabGateContext = {
   ffmpegReady: boolean;
   /** Demucs CLI — vocals isolate + a2v stems. */
   demucsReady: boolean;
+  /** Whisper CLI — local transcription for lyric align. */
+  whisperReady: boolean;
   /** Vocals slice prepared in Vocals / slice (required for a2v). */
   vocalsSliceReady: boolean;
 };
@@ -111,11 +113,28 @@ export function labModuleGate(
     };
   }
 
-  if ((id === "openai" || id === "propose") && !ctx.openAiReady) {
+  if ((id === "openai" || id === "propose" || id === "align") && !ctx.openAiReady) {
     return {
       navBlurb: "Requires OpenAI API key",
       reason:
         "An OpenAI API key is required. Set it in Settings from the account menu (upper right).",
+      action: "settings",
+    };
+  }
+
+  if (id === "align" && ctx.audioCount === 0) {
+    return {
+      navBlurb: "Requires project audio",
+      reason:
+        "Add audio to this project and sync/download it locally before lyric align.",
+    };
+  }
+
+  if (id === "align" && !ctx.demucsReady) {
+    return {
+      navBlurb: "Requires Demucs",
+      reason:
+        "Demucs is required to use the full vocals stem from Vocals / slice. Install from Settings → Local tools.",
       action: "settings",
     };
   }

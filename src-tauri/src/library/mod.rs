@@ -8,6 +8,7 @@ mod import_local;
 mod jobs;
 mod lab_audio;
 mod lab_deps;
+mod lab_transcribe;
 mod merge;
 mod parascene_api;
 pub(crate) mod paths;
@@ -44,6 +45,7 @@ pub use lab_audio::{
 pub use lab_deps::{
     library_install_demucs, library_lab_deps_status, library_open_local_tools_doc,
 };
+pub use lab_transcribe::library_transcribe_local;
 pub use merge::library_merge_timeline_clips;
 pub use render::{
     publisher_delete_render, publisher_export_render, publisher_list_renders,

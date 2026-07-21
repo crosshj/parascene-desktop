@@ -23,6 +23,7 @@ import {
 import { useConfirm } from "../../ui/ConfirmDialog";
 import {
   bakeClipExtend,
+  audioWaveformPeaks,
   cachedFullVocalsPath,
   deleteAudioClip,
   separateFullVocals,
@@ -31,6 +32,7 @@ import {
 } from "../../lab/audioTools";
 import { LabAudioTrack, LabWaveformSlicePicker } from "../../lab/LabMediaWaveform";
 import { LabImagePicker } from "../../lab/LabImagePicker";
+import { LabLyricCaptionEditor } from "../../lab/LabLyricCaptionEditor";
 import { LabVideoRangePicker } from "../../lab/LabVideoRangePicker";
 import { CreationLightbox } from "../../library/CreationLightbox";
 import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
@@ -50,6 +52,12 @@ import {
   loadOpenAiApiKey,
   openAiChatCompletion,
 } from "../../lab/openaiClient";
+import {
+  alignLyricsToTranscript,
+  parseLyricLines,
+} from "../../lab/lyricAlign";
+import { transcribeAudio, type TranscribeEngine } from "../../lab/transcribe";
+import type { AlignedLyricLine, LyricAlignment } from "../../project/types";
 import {
   loadLabSession,
   sanitizeLabSession,
@@ -125,6 +133,7 @@ export function LabLayout() {
     project,
     setOpenProjectGroupIds,
     setOpenProjectMainAudioCreationId,
+    setOpenProjectLyricAlignment,
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
     closeProject,
@@ -351,6 +360,7 @@ export function LabLayout() {
   const [openAiReady, setOpenAiReady] = useState(() => hasOpenAiApiKey());
   const [ffmpegReady, setFfmpegReady] = useState(true);
   const [demucsReady, setDemucsReady] = useState(true);
+  const [whisperReady, setWhisperReady] = useState(false);
 
   useEffect(() => {
     const refresh = () => setOpenAiReady(hasOpenAiApiKey());
@@ -371,11 +381,13 @@ export function LabLayout() {
           if (cancelled) return;
           setFfmpegReady(s.ffmpeg.ready);
           setDemucsReady(s.demucs.ready);
+          setWhisperReady(s.whisper.ready);
         })
         .catch(() => {
           if (cancelled) return;
           setFfmpegReady(false);
           setDemucsReady(false);
+          setWhisperReady(false);
         });
     };
     refresh();
@@ -442,6 +454,7 @@ export function LabLayout() {
     openAiReady,
     ffmpegReady,
     demucsReady,
+    whisperReady,
     vocalsSliceReady: Boolean(session.vocalsSlice?.path),
   };
   const activeGate = labModuleGate(moduleId, gateCtx);
@@ -1142,6 +1155,15 @@ export function LabLayout() {
           )}
           {moduleId === "align" && !activeGate && (
             <AlignModule
+              audioAssets={audioAssets}
+              mainAudioId={mainAudioId}
+              demucsReady={demucsReady}
+              whisperReady={whisperReady}
+              openAiReady={openAiReady}
+              lyricAlignment={project.lyricAlignment}
+              onLyricAlignmentChange={setOpenProjectLyricAlignment}
+              onPickMain={(id) => setOpenProjectMainAudioCreationId(id)}
+              onGoToIsolate={() => setModuleId("isolate")}
               busy={moduleBusy || anyBusy}
               buttonLabel={buttonLabel}
               progressLog={session.progressLogByModule.align}
@@ -1150,6 +1172,8 @@ export function LabLayout() {
           )}
           {moduleId === "propose" && !activeGate && (
             <ProposeModule
+              lyricAlignment={project.lyricAlignment}
+              mainAudioId={mainAudioId}
               busy={moduleBusy || anyBusy}
               buttonLabel={buttonLabel}
               progressLog={session.progressLogByModule.propose}
@@ -2426,74 +2450,334 @@ function OpenAiModule(props: ModuleChrome) {
   );
 }
 
-function AlignModule(props: ModuleChrome) {
-  const [lyrics, setLyrics] = useState(
-    "Line one of the song\nLine two keeps going\nLine three for the chorus",
+function AlignModule(
+  props: {
+    audioAssets: Creation[];
+    mainAudioId: string;
+    demucsReady: boolean;
+    whisperReady: boolean;
+    openAiReady: boolean;
+    lyricAlignment: LyricAlignment | null;
+    onLyricAlignmentChange: (alignment: LyricAlignment | null) => void;
+    onPickMain: (id: string | null) => void;
+    onGoToIsolate: () => void;
+  } & ModuleChrome,
+) {
+  const saved =
+    props.lyricAlignment &&
+    (!props.mainAudioId ||
+      props.lyricAlignment.sourceAudioCreationId === props.mainAudioId)
+      ? props.lyricAlignment
+      : null;
+
+  const [audioId, setAudioId] = useState(
+    saved?.sourceAudioCreationId || props.mainAudioId,
   );
-  const [durationSec, setDurationSec] = useState(24);
+  const [lyrics, setLyrics] = useState(
+    saved?.lyricsText ||
+      "Line one of the song\nLine two keeps going\nLine three for the chorus",
+  );
+  const [engine, setEngine] = useState<TranscribeEngine>(
+    saved?.transcribeEngine ?? "openai",
+  );
+  const [lines, setLines] = useState<AlignedLyricLine[]>(saved?.lines ?? []);
+  const [mixPath, setMixPath] = useState<string | null>(null);
+  const [mixUrl, setMixUrl] = useState<string | null>(null);
+  const [vocalsPath, setVocalsPath] = useState<string | null>(null);
+  const [vocalsReady, setVocalsReady] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (props.mainAudioId && !audioId) setAudioId(props.mainAudioId);
+  }, [props.mainAudioId, audioId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!audioId) {
+      setMixPath(null);
+      setMixUrl(null);
+      setVocalsPath(null);
+      setVocalsReady(false);
+      return;
+    }
+    void getCreations([audioId]).then(async (rows) => {
+      if (cancelled) return;
+      const path = rows[0]?.localPath?.trim() || null;
+      setMixPath(path);
+      setMixUrl(path ? convertFileSrc(path) : null);
+      setVocalsPath(null);
+      setVocalsReady(false);
+      if (path) {
+        try {
+          const cached = await cachedFullVocalsPath(path);
+          if (!cancelled && cached) {
+            setVocalsPath(cached);
+            setVocalsReady(true);
+          }
+        } catch {
+          /* no cached stem */
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioId]);
+
+  useEffect(() => {
+    if (!saved) return;
+    setLines(saved.lines);
+    setLyrics(saved.lyricsText);
+    setEngine(saved.transcribeEngine);
+    setDirty(false);
+  }, [saved?.alignedAt, saved?.sourceAudioCreationId]);
+
+  const persistAlignment = (nextLines: AlignedLyricLine[], transcribeEngine: TranscribeEngine) => {
+    if (!audioId) return;
+    props.onLyricAlignmentChange({
+      sourceAudioCreationId: audioId,
+      lyricsText: lyrics,
+      alignedAt: new Date().toISOString(),
+      transcribeEngine,
+      lines: nextLines,
+    });
+    setDirty(false);
+  };
+
+  const localEngineBlocked = engine === "local" && !props.whisperReady;
 
   return (
-    <div className="lab-form">
+    <div className="lab-form lab-align">
       <p className="muted">
-        Lab placeholder: even-spaced line timings. Replace with forced aligner
-        when packaged.
+        Uses the <strong>full vocals stem</strong> from Vocals / slice (Demucs cache),
+        transcribes with Whisper, then maps your lyric lines onto segment timings.
+        Playback and edits use the <strong>full mix</strong>.
       </p>
+
       <label>
-        Lyrics
+        Main audio
+        <select
+          value={audioId}
+          onChange={(e) => {
+            setAudioId(e.target.value);
+            props.onPickMain(e.target.value || null);
+            setLines([]);
+            setDirty(false);
+          }}
+        >
+          <option value="">Select…</option>
+          {props.audioAssets.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.title || c.id}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <LabAudioTrack
+        label="Full mix (playback)"
+        path={mixPath}
+        mediaUrl={mixUrl}
+        hint="Timeline edits apply to this track"
+      />
+
+      <p className="muted lab-align-vocals-status">
+        {vocalsReady ? (
+          <>
+            Vocals stem ready: <code>{vocalsPath}</code>
+          </>
+        ) : (
+          <>
+            No cached full vocals for this asset — run{" "}
+            <button
+              type="button"
+              className="lab-inline-link"
+              onClick={() => props.onGoToIsolate()}
+            >
+              Vocals / slice → Separate full vocals
+            </button>{" "}
+            first.
+          </>
+        )}
+      </p>
+
+      <label>
+        Lyrics (one line per row)
         <textarea
-          rows={6}
+          rows={8}
           value={lyrics}
-          onChange={(e) => setLyrics(e.target.value)}
+          onChange={(e) => {
+            setLyrics(e.target.value);
+            setDirty(true);
+          }}
         />
       </label>
-      <label>
-        Song duration (sec)
-        <input
-          type="number"
-          value={durationSec}
-          onChange={(e) => setDurationSec(Number(e.target.value))}
-        />
-      </label>
+
+      <fieldset className="lab-align-engine">
+        <legend className="muted">Transcription engine</legend>
+        <label className="lab-checkbox-row">
+          <input
+            type="radio"
+            name="transcribe-engine"
+            checked={engine === "openai"}
+            onChange={() => setEngine("openai")}
+          />
+          OpenAI Whisper API
+          {!props.openAiReady ? " (API key required)" : ""}
+        </label>
+        <label className="lab-checkbox-row">
+          <input
+            type="radio"
+            name="transcribe-engine"
+            checked={engine === "local"}
+            onChange={() => setEngine("local")}
+          />
+          Local Whisper CLI
+          {!props.whisperReady ? " (not installed)" : ""}
+        </label>
+      </fieldset>
+
       <button
         type="button"
         className={props.busy ? "primary-btn is-busy" : "primary-btn"}
-        disabled={props.busy}
+        disabled={
+          props.busy ||
+          !mixPath ||
+          !vocalsPath ||
+          !props.demucsReady ||
+          localEngineBlocked ||
+          (engine === "openai" && !props.openAiReady)
+        }
         onClick={() =>
           props.onRun(async ({ onProgress }) => {
-            onProgress("Aligning lines…");
-            const lines = lyrics
-              .split("\n")
-              .map((l) => l.trim())
-              .filter(Boolean);
-            if (lines.length === 0) throw new Error("Paste lyrics");
-            const span = durationSec / lines.length;
-            const aligned = lines.map((line, i) => ({
-              line,
-              startSec: Number((i * span).toFixed(3)),
-              endSec: Number(((i + 1) * span).toFixed(3)),
-            }));
+            if (!mixPath || !vocalsPath) {
+              throw new Error(
+                "Full vocals stem missing — separate full vocals in Vocals / slice first.",
+              );
+            }
+            const apiKey = loadOpenAiApiKey();
+            if (!apiKey) {
+              throw new Error(
+                "OpenAI API key missing — required for lyric matching (Settings).",
+              );
+            }
+            const lyricLines = parseLyricLines(lyrics);
+            if (lyricLines.length === 0) throw new Error("Paste lyrics");
+
+            onProgress("Transcribing vocals stem…");
+            const transcript = await transcribeAudio({
+              audioPath: vocalsPath,
+              engine,
+              apiKey,
+            });
+            onProgress(
+              `Transcribed ${transcript.segments.length} segments (${transcript.engine}).`,
+            );
+
+            const peaks = await audioWaveformPeaks(mixPath, 32);
+            const durationSec = peaks.durationSec;
+
+            onProgress("Aligning lyric lines to transcript…");
+            const aligned = await alignLyricsToTranscript({
+              lines: lyricLines,
+              segments: transcript.segments,
+              durationSec,
+              apiKey,
+            });
+
+            setLines(aligned);
+            persistAlignment(aligned, engine);
+
             return {
-              summary: `Aligned ${aligned.length} lines (even spacing)`,
-              json: { mode: "even_lab_placeholder", aligned },
+              summary: `Aligned ${aligned.length} lines (${transcript.engine} + LLM)`,
+              json: {
+                mode: "vocals_stt_lyric_align",
+                transcribeEngine: engine,
+                segmentCount: transcript.segments.length,
+                aligned,
+              },
             };
           })
         }
       >
-        {actionLabel(props.busy, props.buttonLabel, "Align (Lab placeholder)")}
+        {actionLabel(props.busy, props.buttonLabel, "Align lyrics")}
       </button>
+
+      {lines.length > 0 && mixPath && mixUrl ? (
+        <section className="lab-align-results">
+          <div className="lab-align-results-head">
+            <h4>Caption timeline</h4>
+            <button
+              type="button"
+              className="btn subtle"
+              disabled={!dirty}
+              onClick={() => persistAlignment(lines, engine)}
+            >
+              Save to project
+            </button>
+          </div>
+          <LabLyricCaptionEditor
+            audioPath={mixPath}
+            mediaUrl={mixUrl}
+            lines={lines}
+            onChange={(next) => {
+              setLines(next);
+              setDirty(true);
+            }}
+          />
+        </section>
+      ) : null}
+
       <ProgressLog lines={props.progressLog} />
     </div>
   );
 }
 
-function ProposeModule(props: ModuleChrome) {
-  const [lyrics, setLyrics] = useState("We dance until the morning light");
-  const [durationSec, setDurationSec] = useState(30);
+function ProposeModule(
+  props: {
+    lyricAlignment: LyricAlignment | null;
+    mainAudioId: string;
+  } & ModuleChrome,
+) {
+  const fromProject =
+    props.lyricAlignment &&
+    (!props.mainAudioId ||
+      props.lyricAlignment.sourceAudioCreationId === props.mainAudioId)
+      ? props.lyricAlignment
+      : null;
+
+  const [lyrics, setLyrics] = useState(
+    fromProject?.lyricsText || "We dance until the morning light",
+  );
+  const [durationSec, setDurationSec] = useState(() => {
+    if (!fromProject?.lines.length) return 30;
+    return Math.max(...fromProject.lines.map((l) => l.endSec), 30);
+  });
+
+  useEffect(() => {
+    if (!fromProject) return;
+    setLyrics(fromProject.lyricsText);
+    setDurationSec(
+      Math.max(...fromProject.lines.map((l) => l.endSec), 1),
+    );
+  }, [fromProject?.alignedAt, fromProject?.sourceAudioCreationId]);
 
   return (
     <div className="lab-form">
       <p className="muted">
         Uses the OpenAI API key from Settings (account menu, upper right).
+        {fromProject ? (
+          <>
+            {" "}
+            Using saved lyric alignment ({fromProject.lines.length} lines).
+          </>
+        ) : (
+          <>
+            {" "}
+            No saved alignment on this project — run Lyric align first for real
+            timings.
+          </>
+        )}
       </p>
       <label>
         Lyrics sample
@@ -2501,16 +2785,19 @@ function ProposeModule(props: ModuleChrome) {
           rows={4}
           value={lyrics}
           onChange={(e) => setLyrics(e.target.value)}
+          readOnly={Boolean(fromProject)}
         />
       </label>
-      <label>
-        Duration (sec)
-        <input
-          type="number"
-          value={durationSec}
-          onChange={(e) => setDurationSec(Number(e.target.value))}
-        />
-      </label>
+      {!fromProject ? (
+        <label>
+          Duration (sec)
+          <input
+            type="number"
+            value={durationSec}
+            onChange={(e) => setDurationSec(Number(e.target.value))}
+          />
+        </label>
+      ) : null}
       <button
         type="button"
         className={props.busy ? "primary-btn is-busy" : "primary-btn"}
@@ -2524,19 +2811,27 @@ function ProposeModule(props: ModuleChrome) {
               );
             }
             onProgress("Proposing storyboard…");
-            const lines = lyrics
-              .split("\n")
-              .map((l) => l.trim())
-              .filter(Boolean);
-            const span = durationSec / Math.max(1, lines.length);
-            const aligned = lines.map((line, i) => ({
-              line,
-              start: Number((i * span).toFixed(2)),
-              end: Number(((i + 1) * span).toFixed(2)),
-            }));
+            const aligned = fromProject
+              ? fromProject.lines.map((line) => ({
+                  line: line.line,
+                  start: line.startSec,
+                  end: line.endSec,
+                }))
+              : (() => {
+                  const textLines = parseLyricLines(lyrics);
+                  const span = durationSec / Math.max(1, textLines.length);
+                  return textLines.map((line, i) => ({
+                    line,
+                    start: Number((i * span).toFixed(2)),
+                    end: Number(((i + 1) * span).toFixed(2)),
+                  }));
+                })();
+            const songDuration = fromProject
+              ? Math.max(...fromProject.lines.map((l) => l.endSec), durationSec)
+              : durationSec;
             const user = JSON.stringify(
               {
-                durationSec,
+                durationSec: songDuration,
                 lyrics: aligned,
                 shotCatalog: LAB_SHOT_CATALOG,
                 constraints: {

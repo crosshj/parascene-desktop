@@ -104,6 +104,24 @@ export type HookSuggestion = {
   text: string;
 };
 
+/** One lyric line with start/end on the main song timeline. */
+export type AlignedLyricLine = {
+  line: string;
+  startSec: number;
+  endSec: number;
+  /** 0..1 when produced by the aligner; omitted after manual edits. */
+  confidence?: number;
+};
+
+/** Persisted lyric alignment for Director / storyboard propose. */
+export type LyricAlignment = {
+  sourceAudioCreationId: string;
+  lyricsText: string;
+  alignedAt: string;
+  transcribeEngine: "openai" | "local";
+  lines: AlignedLyricLine[];
+};
+
 export type { ProjectAspectRatio };
 
 export type Project = {
@@ -123,6 +141,8 @@ export type Project = {
   videosGroupId: string | null;
   /** Preferred main song creation id for Director / Lab (optional). */
   mainAudioCreationId: string | null;
+  /** Lab lyric align output — timed lines on the main song. */
+  lyricAlignment: LyricAlignment | null;
   timeline: TimelineClip[];
   /** Selected timeline clip id (editor); null when none. */
   selectedTimelineClipId: string | null;

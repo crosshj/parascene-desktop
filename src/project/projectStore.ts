@@ -1,6 +1,8 @@
 import {
   clampSensitivity,
   normalizeSlideshowMode,
+  type AlignedLyricLine,
+  type LyricAlignment,
   type Project,
   type ProjectAsset,
   type SlideshowRecipe,
@@ -43,6 +45,8 @@ export type StoredProject = {
   videosGroupId?: string | null;
   /** Preferred main song creation id; omitted → null. */
   mainAudioCreationId?: string | null;
+  /** Lab lyric align output; omitted → null. */
+  lyricAlignment?: LyricAlignment | null;
   updatedAt: string;
 };
 
@@ -270,11 +274,59 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
+    lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
   };
 }
 
 function normalizeOptionalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeAlignedLyricLine(value: unknown): AlignedLyricLine | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.line !== "string" || !row.line.trim()) return null;
+  const startSec = Number(row.startSec);
+  const endSec = Number(row.endSec);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+    return null;
+  }
+  const confidence = Number(row.confidence);
+  return {
+    line: row.line.trim(),
+    startSec,
+    endSec,
+    confidence:
+      Number.isFinite(confidence) && confidence >= 0 && confidence <= 1
+        ? confidence
+        : undefined,
+  };
+}
+
+export function normalizeLyricAlignment(value: unknown): LyricAlignment | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const sourceAudioCreationId = normalizeOptionalId(row.sourceAudioCreationId);
+  if (!sourceAudioCreationId) return null;
+  if (typeof row.lyricsText !== "string") return null;
+  if (typeof row.alignedAt !== "string" || !row.alignedAt.trim()) return null;
+  const transcribeEngine =
+    row.transcribeEngine === "openai" || row.transcribeEngine === "local"
+      ? row.transcribeEngine
+      : null;
+  if (!transcribeEngine) return null;
+  if (!Array.isArray(row.lines)) return null;
+  const lines = row.lines
+    .map(normalizeAlignedLyricLine)
+    .filter((line): line is AlignedLyricLine => line !== null);
+  if (lines.length === 0) return null;
+  return {
+    sourceAudioCreationId,
+    lyricsText: row.lyricsText,
+    alignedAt: row.alignedAt.trim(),
+    transcribeEngine,
+    lines,
+  };
 }
 
 export function saveStoredProjects(projects: StoredProject[]): void {
@@ -310,6 +362,7 @@ export function createStoredProject(
     imagesGroupId: null,
     videosGroupId: null,
     mainAudioCreationId: null,
+    lyricAlignment: null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -352,11 +405,21 @@ export function removeCreationIds(
     project.mainAudioCreationId && remove.has(project.mainAudioCreationId)
       ? null
       : project.mainAudioCreationId;
+  const nextLyricAlignment =
+    project.lyricAlignment &&
+    remove.has(project.lyricAlignment.sourceAudioCreationId)
+      ? null
+      : normalizeLyricAlignment(project.lyricAlignment);
 
   const assetsChanged = nextIds.length !== project.creationIds.length;
   const timelineChanged = nextTimeline.length !== prevTimeline.length;
   const mainAudioChanged = nextMainAudio !== project.mainAudioCreationId;
-  if (!assetsChanged && !timelineChanged && !mainAudioChanged) return project;
+  const lyricAlignmentChanged =
+    JSON.stringify(normalizeLyricAlignment(project.lyricAlignment)) !==
+    JSON.stringify(nextLyricAlignment);
+  if (!assetsChanged && !timelineChanged && !mainAudioChanged && !lyricAlignmentChanged) {
+    return project;
+  }
 
   const nextSelectedClip = normalizeSelectedTimelineClipId(
     project.selectedTimelineClipId,
@@ -367,6 +430,7 @@ export function removeCreationIds(
     creationIds: nextIds,
     timeline: nextTimeline,
     mainAudioCreationId: nextMainAudio,
+    lyricAlignment: nextLyricAlignment,
     selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
     selectedTimelineClipId: nextSelectedClip,
     updatedAt: new Date().toISOString(),
@@ -659,9 +723,29 @@ export function setStoredProjectMainAudioCreationId(
 ): StoredProject {
   const next = normalizeOptionalId(creationId);
   if (next === normalizeOptionalId(project.mainAudioCreationId)) return project;
+  const lyricAlignment =
+    project.lyricAlignment &&
+    project.lyricAlignment.sourceAudioCreationId !== next
+      ? null
+      : normalizeLyricAlignment(project.lyricAlignment);
   return {
     ...project,
     mainAudioCreationId: next,
+    lyricAlignment,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectLyricAlignment(
+  project: StoredProject,
+  alignment: LyricAlignment | null,
+): StoredProject {
+  const next = alignment ? normalizeLyricAlignment(alignment) : null;
+  const prev = normalizeLyricAlignment(project.lyricAlignment);
+  if (JSON.stringify(prev) === JSON.stringify(next)) return project;
+  return {
+    ...project,
+    lyricAlignment: next,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -702,6 +786,7 @@ export function storedProjectToUi(project: StoredProject): Project {
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
+    lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     timeline,
     selectedTimelineClipId,
     selectedAssetId,
@@ -727,6 +812,7 @@ export function emptyUiProject(): Project {
     imagesGroupId: null,
     videosGroupId: null,
     mainAudioCreationId: null,
+    lyricAlignment: null,
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,

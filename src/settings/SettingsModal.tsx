@@ -143,6 +143,16 @@ export function SettingsModal({ open, onClose }: Props) {
                   </code>
                 ) : null}
               </li>
+              <li>
+                <strong>{deps.whisper.label}</strong>
+                {deps.whisper.ready ? " — ready" : " — missing"}
+                <div className="muted">{deps.whisper.detail}</div>
+                {!deps.whisper.ready ? (
+                  <code className="settings-install-cmd">
+                    {deps.whisper.installHint}
+                  </code>
+                ) : null}
+              </li>
             </ul>
           ) : (
             <p className="muted">{depsError ?? "Checking…"}</p>

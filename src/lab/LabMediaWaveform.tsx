@@ -101,9 +101,15 @@ function PlayPauseIcon({ playing }: { playing: boolean }) {
 export function LabWaveformPlayer({
   path,
   mediaUrl,
+  onTimeUpdate,
+  controlsRef,
 }: {
   path: string;
   mediaUrl: string;
+  onTimeUpdate?: (sec: number, durationSec: number) => void;
+  controlsRef?: React.MutableRefObject<{
+    seek: (sec: number) => void;
+  } | null>;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -195,7 +201,14 @@ export function LabWaveformPlayer({
       );
       if (dur > 0) setDurationSec(dur);
     };
-    const onTime = () => setCurrentSec(audio.currentTime);
+    const onTime = () => {
+      const dur = effectiveDuration(
+        audio.duration,
+        decodedDurationRef.current,
+      );
+      setCurrentSec(audio.currentTime);
+      onTimeUpdate?.(audio.currentTime, dur);
+    };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
     const onEnded = () => {
@@ -219,7 +232,7 @@ export function LabWaveformPlayer({
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [mediaUrl, peaks]);
+  }, [mediaUrl, peaks, onTimeUpdate]);
 
   useEffect(() => {
     if (!playing) return;
@@ -244,10 +257,25 @@ export function LabWaveformPlayer({
       if (audio) audio.currentTime = sec;
       setCurrentSec(sec);
       progressRef.current = sec / dur;
+      onTimeUpdate?.(sec, dur);
       redraw();
     },
-    [trackDuration, redraw],
+    [trackDuration, redraw, onTimeUpdate],
   );
+
+  useEffect(() => {
+    if (!controlsRef) return;
+    controlsRef.current = {
+      seek: (sec: number) => {
+        const dur = trackDuration;
+        if (!(dur > 0)) return;
+        seekToRatio(sec / dur);
+      },
+    };
+    return () => {
+      controlsRef.current = null;
+    };
+  }, [controlsRef, seekToRatio, trackDuration]);
 
   const seekFromClientX = useCallback(
     (clientX: number) => {
