@@ -2,13 +2,19 @@ import { isProjectAspectRatio, DEFAULT_PROJECT_ASPECT_RATIO } from "./aspectRati
 import type {
   BrainstormSession,
   BrainstormTurn,
+  GenerationStepKind,
+  GenerationStepStatus,
   ProposedScene,
   SceneProductionMethod,
   StoryboardBudget,
   StoryboardConcept,
   StoryboardConceptOption,
+  StoryboardGenerationPlan,
+  StoryboardGenerationStep,
   StoryboardProposal,
   StoryboardShotType,
+  VideoStillSource,
+  VideoStillSourceMode,
   VisualGroup,
 } from "./types";
 import { isStoryboardShotType } from "../lab/storyboardShotCatalog";
@@ -23,6 +29,131 @@ const PRODUCTION_METHODS: SceneProductionMethod[] = [
   "lyric_card",
   "reuse_clip",
 ];
+
+const GENERATION_STEP_KINDS: GenerationStepKind[] = [
+  "create_still",
+  "create_video",
+  "a2v",
+  "pull_frame",
+  "place_clip",
+  "noop",
+];
+
+const GENERATION_STEP_STATUSES: GenerationStepStatus[] = [
+  "pending",
+  "running",
+  "done",
+  "failed",
+  "skipped",
+];
+
+function isGenerationStepKind(value: unknown): value is GenerationStepKind {
+  return (
+    typeof value === "string" &&
+    (GENERATION_STEP_KINDS as readonly string[]).includes(value)
+  );
+}
+
+function isGenerationStepStatus(value: unknown): value is GenerationStepStatus {
+  return (
+    typeof value === "string" &&
+    (GENERATION_STEP_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+const VIDEO_STILL_SOURCE_MODES: VideoStillSourceMode[] = [
+  "prompt_only",
+  "previous_video_frame",
+  "group_still",
+  "project_image",
+];
+
+function isVideoStillSourceMode(value: unknown): value is VideoStillSourceMode {
+  return (
+    typeof value === "string" &&
+    (VIDEO_STILL_SOURCE_MODES as readonly string[]).includes(value)
+  );
+}
+
+function normalizeVideoStillSource(value: unknown): VideoStillSource | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  if (!isVideoStillSourceMode(row.mode)) return undefined;
+  return {
+    mode: row.mode,
+    stillStepId:
+      typeof row.stillStepId === "string" ? row.stillStepId : undefined,
+    creationId:
+      typeof row.creationId === "string" && row.creationId.trim()
+        ? row.creationId.trim()
+        : undefined,
+  };
+}
+
+function normalizeGenerationStep(value: unknown): StoryboardGenerationStep | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || !row.id.trim()) return null;
+  if (!isGenerationStepKind(row.kind)) return null;
+  if (typeof row.label !== "string") return null;
+  if (!isGenerationStepStatus(row.status)) return null;
+  const dependsOn = Array.isArray(row.dependsOn)
+    ? row.dependsOn.filter((d): d is string => typeof d === "string")
+    : [];
+  const vocalSlice =
+    row.vocalSlice && typeof row.vocalSlice === "object"
+      ? (() => {
+          const v = row.vocalSlice as Record<string, unknown>;
+          const inSec = Number(v.inSec);
+          const outSec = Number(v.outSec);
+          if (!Number.isFinite(inSec) || !Number.isFinite(outSec) || outSec <= inSec) {
+            return undefined;
+          }
+          return { inSec, outSec };
+        })()
+      : undefined;
+  return {
+    id: row.id.trim(),
+    kind: row.kind,
+    label: row.label.trim(),
+    sceneId: typeof row.sceneId === "string" ? row.sceneId : undefined,
+    visualGroupId:
+      typeof row.visualGroupId === "string" ? row.visualGroupId : undefined,
+    status: row.status,
+    creationId:
+      typeof row.creationId === "string" && row.creationId.trim()
+        ? row.creationId.trim()
+        : undefined,
+    dependsOn,
+    prompt: typeof row.prompt === "string" ? row.prompt : undefined,
+    vocalSlice,
+    stillStepId:
+      typeof row.stillStepId === "string" ? row.stillStepId : undefined,
+    sourceStepId:
+      typeof row.sourceStepId === "string" ? row.sourceStepId : undefined,
+    stillSource: normalizeVideoStillSource(row.stillSource),
+    error: typeof row.error === "string" ? row.error : undefined,
+    completedAt:
+      typeof row.completedAt === "string" ? row.completedAt : undefined,
+  };
+}
+
+function normalizeGenerationPlan(value: unknown): StoryboardGenerationPlan | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.builtAt !== "string" || !row.builtAt.trim()) return undefined;
+  if (typeof row.proposalFingerprint !== "string") return undefined;
+  const steps = Array.isArray(row.steps)
+    ? row.steps
+        .map(normalizeGenerationStep)
+        .filter((s): s is StoryboardGenerationStep => s !== null)
+    : [];
+  return {
+    builtAt: row.builtAt.trim(),
+    proposalFingerprint: row.proposalFingerprint,
+    steps,
+  };
+}
 
 function isProductionMethod(value: unknown): value is SceneProductionMethod {
   return (
@@ -327,6 +458,7 @@ export function normalizeStoryboardProposal(value: unknown): StoryboardProposal 
     uniqueVideoMasterCount: Number.isFinite(uniqueVideoMasterCount)
       ? uniqueVideoMasterCount
       : undefined,
+    generationPlan: normalizeGenerationPlan(row.generationPlan),
   };
 }
 
@@ -360,4 +492,10 @@ export function hasStoryboardBudget(
   proposal: StoryboardProposal | null | undefined,
 ): boolean {
   return Boolean(proposal?.budget);
+}
+
+export function hasStoryboardScenes(
+  proposal: StoryboardProposal | null | undefined,
+): boolean {
+  return Boolean(proposal?.scenes?.length);
 }

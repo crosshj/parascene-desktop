@@ -11,7 +11,8 @@ export type LabModuleId =
   | "align"
   | "mvConcept"
   | "mvBudget"
-  | "mvScenes";
+  | "mvScenes"
+  | "mvBuild";
 
 export const LAB_MODULES: {
   id: LabModuleId;
@@ -31,4 +32,5 @@ export const LAB_MODULES: {
   { id: "mvConcept", label: "MV Concept", blurb: "Brainstorm or lock creative direction" },
   { id: "mvBudget", label: "MV Budget", blurb: "Plan generation budget from concept" },
   { id: "mvScenes", label: "MV Scenes", blurb: "Propose timed scenes + timeline" },
+  { id: "mvBuild", label: "MV Build", blurb: "Generation plan — run or mark done" },
 ];

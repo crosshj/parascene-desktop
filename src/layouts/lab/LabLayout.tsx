@@ -69,12 +69,15 @@ import type { AlignedLyricLine, LyricAlignment, LyricTranscript } from "../../pr
 import {
   hasLockedStoryboardConcept,
   hasStoryboardBudget,
+  hasStoryboardScenes,
 } from "../../project/storyboardNormalize";
 import {
   MvBudgetModule,
   MvConceptModule,
   MvScenesModule,
 } from "../../lab/LabMvModules";
+import { MvBuildModule } from "../../lab/LabMvBuildModule";
+import { useLabMainAudioPaths } from "../../lab/useLabMainAudioPaths";
 import {
   loadLabSession,
   sanitizeLabSession,
@@ -184,7 +187,9 @@ export function LabLayout() {
     setOpenProjectMainAudioCreationId,
     setOpenProjectLyricAlignment,
     setOpenProjectStoryboardProposal,
+    patchOpenProjectStoryboardGenerationPlan,
     setOpenProjectLabStoryboardDirection,
+    setOpenProjectTimeline,
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
     closeProject,
@@ -601,7 +606,10 @@ export function LabLayout() {
       project.storyboardProposal,
     ),
     hasStoryboardBudget: hasStoryboardBudget(project.storyboardProposal),
+    hasStoryboardScenes: hasStoryboardScenes(project.storyboardProposal),
   };
+  const mainAudioPaths = useLabMainAudioPaths(mainAudioId);
+
   const activeGate = labModuleGate(moduleId, gateCtx);
 
   const moduleBusy = session.moduleProgress[moduleId]?.status === "running";
@@ -1513,10 +1521,34 @@ export function LabLayout() {
               labStillPrompt={project.labStillPrompt}
               labAnimatePrompt={project.labAnimatePrompt}
               onStoryboardProposalChange={setOpenProjectStoryboardProposal}
+              onContinue={() => setModuleId("mvBuild")}
               busy={moduleBusy || anyBusy}
               buttonLabel={buttonLabel}
               progressLog={session.progressLogByModule.mvScenes}
               onRun={(fn) => void run("mvScenes", fn)}
+            />
+          )}
+          {moduleId === "mvBuild" && !activeGate && (
+            <MvBuildModule
+              projectId={project.id}
+              projectTitle={project.title}
+              aspectRatio={project.aspectRatio}
+              storyboardProposal={project.storyboardProposal}
+              labStillPrompt={project.labStillPrompt}
+              labAnimatePrompt={project.labAnimatePrompt}
+              mixPath={mainAudioPaths.mixPath}
+              imagesGroupId={project.imagesGroupId}
+              videosGroupId={project.videosGroupId}
+              imageAssets={imageAssets}
+              videoAssets={videoAssets}
+              timeline={project.timeline}
+              onPatchGenerationPlan={patchOpenProjectStoryboardGenerationPlan}
+              onCreated={(ids) => addCreationsToOpenProject(ids)}
+              onTimelineChange={setOpenProjectTimeline}
+              busy={moduleBusy || anyBusy}
+              buttonLabel={buttonLabel}
+              progressLog={session.progressLogByModule.mvBuild}
+              onRun={(fn) => void run("mvBuild", fn)}
             />
           )}
         </div>

@@ -28,6 +28,7 @@ export type LabGateContext = {
   hasAlignedSungLines: boolean;
   hasLockedStoryboardConcept: boolean;
   hasStoryboardBudget: boolean;
+  hasStoryboardScenes: boolean;
 };
 
 /** Prerequisites for each Lab tool — null means the module can run. */
@@ -172,6 +173,48 @@ export function labModuleGate(
       navBlurb: "Requires MV Budget",
       reason: "Run MV Budget first and plan a generation budget.",
     };
+  }
+
+  if (id === "mvBuild" && !ctx.hasStoryboardScenes) {
+    return {
+      navBlurb: "Requires MV Scenes",
+      reason:
+        "Run MV Scenes first and propose timed scenes before building assets.",
+    };
+  }
+
+  if (id === "mvBuild") {
+    if (!ctx.groupsReady) {
+      return {
+        navBlurb: "Requires Project groups first",
+        reason:
+          "MV Build files creations into project Images / Videos groups. Run Project groups first.",
+        action: "groups",
+      };
+    }
+    if (!ctx.ffmpegReady) {
+      return {
+        navBlurb: "Requires FFmpeg",
+        reason:
+          "FFmpeg is required for vocals slicing during a2v. Install from Settings → Local tools.",
+        action: "settings",
+      };
+    }
+    if (!ctx.demucsReady) {
+      return {
+        navBlurb: "Requires Demucs",
+        reason:
+          "Demucs is required for lip-sync vocals stems. Install from Settings → Local tools.",
+        action: "settings",
+      };
+    }
+    if (ctx.audioCount === 0) {
+      return {
+        navBlurb: "Requires project audio",
+        reason:
+          "Sync the main song locally before running MV Build (needed for vocal slices).",
+      };
+    }
   }
 
   return null;

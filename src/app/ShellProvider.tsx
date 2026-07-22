@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { LayoutMode, LyricAlignment, Project, StoryboardProposal, TimelineClip } from "../project/types";
+import type { LayoutMode, LyricAlignment, Project, StoryboardGenerationPlan, StoryboardProposal, TimelineClip } from "../project/types";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import {
   createStoredProject,
@@ -32,6 +32,7 @@ import {
   setStoredProjectMainAudioCreationId,
   setStoredProjectLyricAlignment,
   setStoredProjectStoryboardProposal,
+  patchStoredProjectStoryboardGenerationPlan,
   setStoredProjectLabStoryboardDirection,
   storedProjectToUi,
   type StoredProject,
@@ -100,6 +101,13 @@ type ShellState = {
   setOpenProjectLyricAlignment: (alignment: LyricAlignment | null) => void;
   /** Persist MV storyboard proposal for the open project. */
   setOpenProjectStoryboardProposal: (proposal: StoryboardProposal | null) => void;
+  /** Patch MV generation plan against the latest stored storyboard proposal. */
+  patchOpenProjectStoryboardGenerationPlan: (
+    mutate: (
+      plan: StoryboardGenerationPlan | undefined,
+      proposal: StoryboardProposal,
+    ) => StoryboardGenerationPlan,
+  ) => void;
   /** Persist MV Concept seed direction for the open project. */
   setOpenProjectLabStoryboardDirection: (direction: string | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
@@ -445,6 +453,20 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const patchOpenProjectStoryboardGenerationPlan = useCallback(
+    (
+      mutate: (
+        plan: StoryboardGenerationPlan | undefined,
+        proposal: StoryboardProposal,
+      ) => StoryboardGenerationPlan,
+    ) => {
+      patchOpenProject((p) =>
+        patchStoredProjectStoryboardGenerationPlan(p, mutate),
+      );
+    },
+    [patchOpenProject],
+  );
+
   const setOpenProjectLabStoryboardDirection = useCallback(
     (direction: string | null) => {
       patchOpenProject((p) => setStoredProjectLabStoryboardDirection(p, direction));
@@ -479,6 +501,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
       setOpenProjectStoryboardProposal,
+      patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,
@@ -524,6 +547,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
       setOpenProjectStoryboardProposal,
+      patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
       removeCreationsFromOpenProject,

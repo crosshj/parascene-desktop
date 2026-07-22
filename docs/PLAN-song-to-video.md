@@ -28,9 +28,9 @@ Project-scoped path: Lab smoke → Director storyboard → Editor AI Fill → re
 ## Phase 2 — Product
 
 - [ ] Director: main audio, timestamped scenes, storyboard playback
-- [ ] Director → Editor handoff (markers / Fill targets)
+- [ ] Director → Editor handoff (markers / Fill targets) — see [PLAN-timeline-fill.md](./PLAN-timeline-fill.md)
 - [ ] Scene fields ready for auto-Director (`shotType`, lyric ref, prompt hint)
-- [ ] Editor AI Fill clip (ghost, re-render, discard gen audio)
+- [ ] Editor: placeholder clips on timeline + continuity options + Generate (replaces MV Build checklist)
 - [ ] Timeline extend modes on clips
 - [ ] Asset mutate in Editor (not only Lab)
 - [ ] Wire Auto-storyboard to Lab propose path

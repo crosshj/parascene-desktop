@@ -106,6 +106,7 @@ const ALL_MODULE_IDS: LabModuleId[] = [
   "mvConcept",
   "mvBudget",
   "mvScenes",
+  "mvBuild",
 ];
 
 export function emptyLabSession(moduleId: LabModuleId = "groups"): LabSessionSnapshot {
@@ -215,7 +216,7 @@ export function sanitizeLabSession(snapshot: LabSessionSnapshot): LabSessionSnap
       : null;
   if (vocalsClip !== snapshot.vocalsClip) changed = true;
 
-  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "mvConcept", "mvBudget", "mvScenes"] as const) {
+  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "mvConcept", "mvBudget", "mvScenes", "mvBuild"] as const) {
     const last = lastByModule[id];
     if (!last) continue;
     if (looksLikeGroupsResult(last)) {
@@ -225,7 +226,7 @@ export function sanitizeLabSession(snapshot: LabSessionSnapshot): LabSessionSnap
     }
   }
 
-  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "mvConcept", "mvBudget", "mvScenes"] as const) {
+  for (const id of ["create", "mutate", "a2v", "seeds", "isolate", "extend", "openai", "align", "mvConcept", "mvBudget", "mvScenes", "mvBuild"] as const) {
     const log = progressLogByModule[id];
     if (!log?.length) continue;
     const joined = log.join("\n").toLowerCase();
