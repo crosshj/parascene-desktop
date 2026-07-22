@@ -101,6 +101,7 @@ function layoutBoardSticky(
 }
 
 /** True when `next` is the same prefix as `prev` plus optional new rows (infinite scroll). */
+// eslint-disable-next-line react-refresh/only-export-components
 export function isAppendOnlyIdList(prev: string[], next: string[]): boolean {
   if (next.length < prev.length) return false;
   for (let i = 0; i < prev.length; i++) {

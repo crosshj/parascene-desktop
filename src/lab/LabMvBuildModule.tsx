@@ -130,6 +130,7 @@ export function MvBuildModule(
     onRun: BuildRunner;
   } & MvModuleChrome,
 ) {
+  const { onPatchGenerationPlan } = props;
   const proposal = props.storyboardProposal;
   const [activeLane, setActiveLane] = useState<"run" | "runAll" | null>(null);
   const [markingStepId, setMarkingStepId] = useState<string | null>(null);
@@ -157,7 +158,7 @@ export function MvBuildModule(
       patch: (plan: StoryboardGenerationPlan) => StoryboardGenerationPlan,
     ): StoryboardGenerationPlan => {
       let next!: StoryboardGenerationPlan;
-      props.onPatchGenerationPlan((current, p) => {
+      onPatchGenerationPlan((current, p) => {
         const reconciled = reconcileGenerationPlan(
           { ...p, generationPlan: current },
           styleHints,
@@ -167,7 +168,7 @@ export function MvBuildModule(
       });
       return next;
     },
-    [props.onPatchGenerationPlan, styleHints],
+    [onPatchGenerationPlan, styleHints],
   );
 
   const progress = plan ? countPlanProgress(plan) : null;

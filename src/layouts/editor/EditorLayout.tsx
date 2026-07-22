@@ -383,12 +383,9 @@ export function EditorLayout() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [
-    monitorMode,
-    timelinePlaying,
-    sequenceDurationSec,
-    project.timelinePlayheadSec,
-  ]);
+    // Handlers are intentionally fresh each render; monitorMode gates subscription.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitorMode]);
 
   // Delete / Backspace removes selected timeline clips after confirm.
   useEffect(() => {
@@ -421,6 +418,8 @@ export function EditorLayout() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // Handlers are intentionally fresh each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     selectedClipIds,
     project.timeline,
@@ -485,6 +484,8 @@ export function EditorLayout() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // Handlers are intentionally fresh each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     selectedClipIds,
     project.timeline,
@@ -890,6 +891,39 @@ export function EditorLayout() {
       });
   };
 
+  const slideshowBakeTimelineKey = project.timeline
+    .map((c) => {
+      const s = c.slideshow;
+      return [
+        c.id,
+        c.kind,
+        c.bakePath ?? "",
+        c.startSec,
+        c.endSec,
+        c.inSec ?? "",
+        c.outSec ?? "",
+        c.framing ?? "",
+        s?.mode ?? "",
+        s?.random ? 1 : 0,
+        s?.seed ?? "",
+        s?.sensitivity ?? "",
+        (s?.imageAssetIds ?? []).join(","),
+        s?.audioAssetId ?? "",
+        s?.audioInSec ?? "",
+        s?.audioOutSec ?? "",
+        s?.audioStartSec ?? "",
+        s?.audioEndSec ?? "",
+      ].join(":");
+    })
+    .join("|");
+  const audioClipTimelineKey = project.timeline
+    .filter((c) => c.lane === "audio" || c.kind === "audio")
+    .map(
+      (c) =>
+        `${c.id}:${c.assetId ?? ""}:${c.startSec}:${c.endSec}:${c.inSec ?? ""}:${c.outSec ?? ""}`,
+    )
+    .join("|");
+
   // Rebind beat-sync audio from current overlap (does not bake).
   useEffect(() => {
     let changed = false;
@@ -961,44 +995,13 @@ export function EditorLayout() {
         return next;
       });
     }
-    // Intentionally keyed on timeline identity + bake-sensitive fields.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     project.id,
     project.aspectRatio,
-    project.timeline
-      .map((c) => {
-        const s = c.slideshow;
-        return [
-          c.id,
-          c.kind,
-          c.bakePath ?? "",
-          c.startSec,
-          c.endSec,
-          c.inSec ?? "",
-          c.outSec ?? "",
-          c.framing ?? "",
-          s?.mode ?? "",
-          s?.random ? 1 : 0,
-          s?.seed ?? "",
-          s?.sensitivity ?? "",
-          (s?.imageAssetIds ?? []).join(","),
-          s?.audioAssetId ?? "",
-          s?.audioInSec ?? "",
-          s?.audioOutSec ?? "",
-          s?.audioStartSec ?? "",
-          s?.audioEndSec ?? "",
-        ].join(":");
-      })
-      .join("|"),
-    // Audio clip identity/trims affect beat rebind even when slideshow rows are unchanged.
-    project.timeline
-      .filter((c) => c.lane === "audio" || c.kind === "audio")
-      .map(
-        (c) =>
-          `${c.id}:${c.assetId ?? ""}:${c.startSec}:${c.endSec}:${c.inSec ?? ""}:${c.outSec ?? ""}`,
-      )
-      .join("|"),
+    project.timeline,
+    setOpenProjectTimeline,
+    slideshowBakeTimelineKey,
+    audioClipTimelineKey,
   ]);
 
   const onClipDraftChange = (clipId: string, draft: StagedClipDraft) => {

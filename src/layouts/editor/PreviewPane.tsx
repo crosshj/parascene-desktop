@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -318,10 +319,13 @@ export function PreviewPane({
   }
 
   const editingClip = Boolean(stagingSeedKey);
-  const sourceSelectionIds =
-    monitorMode === "source" && !editingClip
-      ? selectedAssetIds.map((id) => id.trim()).filter(Boolean)
-      : [];
+  const sourceSelectionIds = useMemo(
+    () =>
+      monitorMode === "source" && !editingClip
+        ? selectedAssetIds.map((id) => id.trim()).filter(Boolean)
+        : [],
+    [monitorMode, editingClip, selectedAssetIds],
+  );
   const selectionKey = sourceSelectionIds.join("|");
 
   // Drop stale multi-select classification immediately on selection change so
@@ -473,7 +477,7 @@ export function PreviewPane({
     return () => {
       cancelled = true;
     };
-  }, [monitorMode, editingClip, projectCabinets, selectionKey]);
+  }, [monitorMode, editingClip, projectCabinets, selectionKey, restoredSourceDraft, sourceSelectionIds]);
 
   const unsupportedSelection =
     selectionClass?.type === "unsupportedVideos" ||

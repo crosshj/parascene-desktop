@@ -868,6 +868,7 @@ export function LabLayout() {
     },
     [
       addCreationsToOpenProject,
+      project.id,
       project.imagesGroupId,
       project.title,
       project.videosGroupId,
@@ -2015,6 +2016,7 @@ function IsolateModule(
     onPickMain: (id: string | null) => void;
   } & ModuleChrome,
 ) {
+  const { vocalsSlice, onVocalsSliceChange } = props;
   const [audioId, setAudioId] = useState(props.mainAudioId);
   const [clipLengthSec, setClipLengthSec] = useState(8);
   const [sliceStartSec, setSliceStartSec] = useState(0);
@@ -2039,13 +2041,10 @@ function IsolateModule(
   }, [props.mainAudioId, audioId]);
 
   useEffect(() => {
-    if (
-      props.vocalsSlice?.sourceAudioId &&
-      props.vocalsSlice.sourceAudioId !== audioId
-    ) {
-      props.onVocalsSliceChange(null);
+    if (vocalsSlice?.sourceAudioId && vocalsSlice.sourceAudioId !== audioId) {
+      onVocalsSliceChange(null);
     }
-  }, [audioId, props.vocalsSlice?.sourceAudioId, props.onVocalsSliceChange]);
+  }, [audioId, vocalsSlice?.sourceAudioId, onVocalsSliceChange]);
 
   useEffect(() => {
     if (!props.busy) {

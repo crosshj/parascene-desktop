@@ -564,6 +564,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       toggleRight,
       hookUrl,
       hookRange,
+      setChromeStatus,
     ],
   );
 
@@ -572,6 +573,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useShell(): ShellState {
   const ctx = useContext(ShellContext);
   if (!ctx) throw new Error("useShell must be used within ShellProvider");
@@ -579,6 +581,7 @@ export function useShell(): ShellState {
 }
 
 /** Soft read for decorative UI that should not crash during HMR remounts. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useShellOptional(): ShellState | null {
   return useContext(ShellContext);
 }

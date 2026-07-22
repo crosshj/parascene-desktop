@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { getCreation } from "./catalogClient";
 import type { LibraryFolder } from "./folderClient";
 import { creationPreviewUrl } from "./previewUrl";
@@ -42,7 +42,7 @@ function FolderCollage({
   memberIds: readonly string[];
   creationsById?: ReadonlyMap<string, Creation>;
 }) {
-  const ids = memberIds.slice(0, 4);
+  const ids = useMemo(() => memberIds.slice(0, 4), [memberIds]);
   const [urls, setUrls] = useState<(string | null)[]>(() =>
     ids.map((id) => {
       const creation = creationsById?.get(id);
@@ -69,7 +69,7 @@ function FolderCollage({
     return () => {
       cancelled = true;
     };
-  }, [creationsById, ids.join("|")]);
+  }, [creationsById, ids]);
 
   if (ids.length === 0) return <FolderGlyph />;
 

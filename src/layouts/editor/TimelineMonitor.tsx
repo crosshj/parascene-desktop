@@ -53,6 +53,7 @@ type MediaUrls = {
 /** Unique decoder identity: one DOM media element per asset × direction. */
 export type AssetDecoderKey = string;
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function assetDecoderKey(clip: TimelineClip): AssetDecoderKey {
   if (clip.kind === "slideshow") {
     const bake = clip.bakeKey?.trim() || clip.bakePath?.trim() || "pending";
@@ -863,7 +864,6 @@ function PersistentVideo({
       cancelled = true;
     };
     // decoderKey/src identity only — align uses refs for the rest.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, decoderKey, clockSync]);
 
   // Standby park: only once we've left the screen — never disturb a hold frame.
@@ -932,7 +932,6 @@ function PersistentVideo({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clockSync, active, warm, playing, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
 
   // Cut / activate while playing: one align at the commanded in-point, then
@@ -953,7 +952,6 @@ function PersistentVideo({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clockSync, active, warm, playing, clipId, mediaSeekEpoch, decoderKey]);
 
   // Keep play/pause in sync once this decoder is the painted one.
