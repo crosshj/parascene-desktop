@@ -16,6 +16,8 @@ use std::time::UNIX_EPOCH;
 pub struct WaveformPeaksResult {
     peaks: Vec<f32>,
     duration_sec: f64,
+    /// Peak bucket max before per-file normalization (for shared-scale overlays).
+    amplitude_max: f32,
 }
 
 fn cache_dir(kind: &str) -> Result<PathBuf, String> {
@@ -307,6 +309,7 @@ fn decode_peak_buckets(
     Ok(WaveformPeaksResult {
         peaks,
         duration_sec,
+        amplitude_max: max,
     })
 }
 

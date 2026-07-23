@@ -42,8 +42,17 @@ import {
   selectionFromProject,
   pendingDraftMatchesSelection,
 } from "./editorSelection";
+import type { Creation } from "../../library/types";
+import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
+import {
+  createRunningAddAssetGenerationSession,
+  replaceAddAssetPlaceholderWithVideo,
+  runAddAssetGeneration,
+  type AddAssetGenerationSession,
+} from "./addAssetGenerate";
 import {
   applyDraftToTimelineClip,
+  isAddAssetPlaceholderClip,
   newSlideshowSeed,
   slideshowRecipesEqual,
   timelineClipToStagedDraft,
@@ -163,10 +172,18 @@ export function EditorLayout() {
   );
   const [previewVolume, setPreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
+  const [addAssetSlotActive, setAddAssetSlotActive] = useState(false);
   const [projectFolders, setProjectFolders] = useState<LibraryFolder[]>([]);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
   );
+  const [addAssetGenerationSession, setAddAssetGenerationSession] =
+    useState<AddAssetGenerationSession | null>(null);
+  const addAssetGenerationInflightRef = useRef(false);
+  const [loadedGenerateImageAssets, setLoadedGenerateImageAssets] = useState<{
+    key: string;
+    rows: Creation[];
+  } | null>(null);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
   const [assetsDrawerOpen, setAssetsDrawerOpen] = useState(false);
   const [assistantDrawerOpen, setAssistantDrawerOpen] = useState(false);
@@ -200,6 +217,7 @@ export function EditorLayout() {
   };
 
   const applyPrimaryClip = (clip: TimelineClip) => {
+    setAddAssetSlotActive(false);
     setSelectedAssetId(null);
     setSelectedAssetIds([]);
     clearPendingStagedDraft();
@@ -396,6 +414,12 @@ export function EditorLayout() {
       if (event.key !== "Delete" && event.key !== "Backspace") return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (selectedClipIds.length === 0) return;
+      if (
+        addAssetGenerationSession?.phase === "running" &&
+        selectedClipIds.includes(addAssetGenerationSession.clipId)
+      ) {
+        return;
+      }
       if (isEditableKeyboardTarget(event.target)) return;
       event.preventDefault();
       const ids = new Set(selectedClipIds);
@@ -423,6 +447,7 @@ export function EditorLayout() {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     selectedClipIds,
+    addAssetGenerationSession,
     project.timeline,
     confirm,
     setOpenProjectTimeline,
@@ -732,6 +757,7 @@ export function EditorLayout() {
 
   const selectAssets = (ids: string[], primaryId: string | null) => {
     pauseTimelinePlayback();
+    setAddAssetSlotActive(false);
     setSelectedClipId(null);
     setSelectedClipIds([]);
     setClipStagingSeed(null);
@@ -743,6 +769,20 @@ export function EditorLayout() {
     if (!pendingDraftMatchesSelection(pendingStagedDraft, ids)) {
       clearPendingStagedDraft();
     }
+  };
+
+  const selectAddAssetSlot = () => {
+    pauseTimelinePlayback();
+    setSelectedClipId(null);
+    setSelectedClipIds([]);
+    setClipStagingSeed(null);
+    setSelectedAssetIds([]);
+    setSelectedAssetId(null);
+    setOpenProjectSelectedAssetId(null);
+    setOpenProjectSelectedTimelineClipId(null);
+    setOpenProjectTimelineMonitorActive(false);
+    clearPendingStagedDraft();
+    setAddAssetSlotActive(true);
   };
 
   const onSourceDraftChange = (draft: StagedClipDraft) => {
@@ -791,6 +831,7 @@ export function EditorLayout() {
     setClipStagingSeed(null);
     setSelectedAssetId(null);
     setSelectedAssetIds([]);
+    setAddAssetSlotActive(false);
     clearPendingStagedDraft();
     setOpenProjectTimelineMonitorActive(true);
   };
@@ -801,11 +842,16 @@ export function EditorLayout() {
   const bakeInflightRef = useRef<Set<string>>(new Set());
   const timelineRef = useRef(project.timeline);
   const aspectRatioRef = useRef(project.aspectRatio);
+  const selectedClipIdsRef = useRef(selectedClipIds);
 
   useEffect(() => {
     timelineRef.current = project.timeline;
     aspectRatioRef.current = project.aspectRatio;
   }, [project.timeline, project.aspectRatio]);
+
+  useEffect(() => {
+    selectedClipIdsRef.current = selectedClipIds;
+  }, [selectedClipIds]);
 
   const ensureSlideshowBake = (clip: TimelineClip) => {
     if (clip.kind !== "slideshow" || !clip.slideshow) return;
@@ -1002,6 +1048,12 @@ export function EditorLayout() {
   ]);
 
   const onClipDraftChange = (clipId: string, draft: StagedClipDraft) => {
+    if (
+      addAssetGenerationSession?.phase === "running" &&
+      addAssetGenerationSession.clipId === clipId
+    ) {
+      return;
+    }
     setClipStagingSeed({ clipId, draft });
     const next = project.timeline.map((clip) =>
       clip.id === clipId ? applyDraftToTimelineClip(clip, draft) : clip,
@@ -1391,9 +1443,189 @@ export function EditorLayout() {
 
   // Source monitor: assets panel selection, or the selected clip's source asset.
   // Timeline monitor owns the pane when active (no source asset loaded).
+  const clipDraftAssetId = clipStagingSeed?.draft.assetId?.trim() || null;
+
+  const selectedTimelineClip = useMemo(
+    () => project.timeline.find((clip) => clip.id === selectedClipId) ?? null,
+    [project.timeline, selectedClipId],
+  );
+
+  const addAssetMode =
+    monitorMode === "source" &&
+    (addAssetSlotActive ||
+      (selectedTimelineClip != null &&
+        isAddAssetPlaceholderClip(selectedTimelineClip)));
+
+  const generateTargetClip = useMemo(() => {
+    if (selectedClipId) {
+      const clip = project.timeline.find((c) => c.id === selectedClipId);
+      if (clip && isAddAssetPlaceholderClip(clip)) return clip;
+    }
+    return project.timeline.find(isAddAssetPlaceholderClip) ?? null;
+  }, [project.timeline, selectedClipId]);
+
+  const generateImageAssetIds = useMemo(() => {
+    if (!generateTargetClip) return null;
+    const imageIds = project.assets
+      .filter((asset) => asset.kind === "image")
+      .map((asset) => asset.id);
+    return imageIds.length > 0 ? imageIds : [];
+  }, [generateTargetClip, project.assets]);
+
+  const generateImageAssetKey = generateImageAssetIds?.join("\0") ?? null;
+  const generateImageAssets =
+    !generateImageAssetIds || generateImageAssetIds.length === 0
+      ? []
+      : loadedGenerateImageAssets?.key === generateImageAssetKey
+        ? loadedGenerateImageAssets.rows
+        : [];
+
+  useEffect(() => {
+    if (!generateImageAssetIds || generateImageAssetIds.length === 0) return;
+    let cancelled = false;
+    void getCreations(generateImageAssetIds).then((rows) => {
+      if (!cancelled && generateImageAssetKey) {
+        setLoadedGenerateImageAssets({ key: generateImageAssetKey, rows });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [generateImageAssetIds, generateImageAssetKey]);
+
+  useEffect(() => {
+    if (!addAssetGenerationSession) return;
+    const stillOnTimeline = project.timeline.some(
+      (clip) => clip.id === addAssetGenerationSession.clipId,
+    );
+    if (!stillOnTimeline) {
+      addAssetGenerationInflightRef.current = false;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAddAssetGenerationSession(null);
+    }
+  }, [project.timeline, addAssetGenerationSession]);
+
+  const addAssetGenerationByClipId = useMemo(() => {
+    if (!addAssetGenerationSession) return new Map<string, BakeInfo>();
+    const status =
+      addAssetGenerationSession.phase === "running" ? "generating" : "failed";
+    return new Map<string, BakeInfo>([
+      [
+        addAssetGenerationSession.clipId,
+        {
+          status,
+          error: addAssetGenerationSession.errorMessage,
+        },
+      ],
+    ]);
+  }, [addAssetGenerationSession]);
+
+  const clearAddAssetGenerationError = () => {
+    setAddAssetGenerationSession((prev) =>
+      prev?.phase === "error" ? null : prev,
+    );
+  };
+
+  const startAddAssetGeneration = (request: StartAddAssetGenerationRequest) => {
+    if (addAssetGenerationInflightRef.current) return;
+    const clipId = request.clip.id;
+    const audioMode = request.audioMode;
+    addAssetGenerationInflightRef.current = true;
+    setAddAssetGenerationSession(
+      createRunningAddAssetGenerationSession(clipId, audioMode),
+    );
+
+    void runAddAssetGeneration({
+      placeholder: request.clip,
+      mainAudioCreationId:
+        project.mainAudioCreationId ??
+        project.assets.find((asset) => asset.kind === "audio")?.id ??
+        null,
+      aspectRatio: project.aspectRatio,
+      projectId: project.id,
+      projectTitle: project.title,
+      imagesGroupId: project.imagesGroupId,
+      videosGroupId: project.videosGroupId,
+      prompt: request.prompt,
+      lyricsText: request.lyricsText,
+      audioMode: request.audioMode,
+      startFrame: request.startFrame,
+      imageAssets: generateImageAssets,
+      onSteps: (steps) => {
+        setAddAssetGenerationSession((prev) =>
+          prev?.clipId === clipId ? { ...prev, steps } : prev,
+        );
+      },
+      onProgress: (progressNote) => {
+        setAddAssetGenerationSession((prev) =>
+          prev?.clipId === clipId ? { ...prev, progressNote } : prev,
+        );
+      },
+    })
+      .then((result) => {
+        onGenerateComplete({
+          creationId: result.creationId,
+          clipId,
+          projectCreationIds: result.projectCreationIds,
+          videosGroupId: result.videosGroupId,
+        });
+      })
+      .catch((error) => {
+        setAddAssetGenerationSession((prev) => {
+          const base =
+            prev?.clipId === clipId
+              ? prev
+              : createRunningAddAssetGenerationSession(clipId, audioMode);
+          return {
+            ...base,
+            phase: "error",
+            progressNote: "Generation failed",
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+          };
+        });
+      })
+      .finally(() => {
+        addAssetGenerationInflightRef.current = false;
+      });
+  };
+
+  const onGenerateComplete = (result: {
+    creationId: string;
+    clipId: string;
+    projectCreationIds: string[];
+    videosGroupId?: string | null;
+  }) => {
+    addCreationsToOpenProject(result.projectCreationIds);
+    if (result.videosGroupId) {
+      setOpenProjectGroupIds({ videosGroupId: result.videosGroupId });
+    }
+    const nextTimeline = replaceAddAssetPlaceholderWithVideo(
+      timelineRef.current,
+      result.clipId,
+      result.creationId,
+    );
+    const hadClip = timelineRef.current.some((clip) => clip.id === result.clipId);
+    if (hadClip) {
+      setOpenProjectTimeline(nextTimeline);
+      timelineRef.current = nextTimeline;
+    }
+    setAddAssetGenerationSession(null);
+    if (selectedClipIdsRef.current.includes(result.clipId)) {
+      const realClip = nextTimeline.find((clip) => clip.id === result.clipId);
+      if (realClip) {
+        const draft = timelineClipToStagedDraft(realClip);
+        setClipStagingSeed(draft ? { clipId: realClip.id, draft } : null);
+      }
+    }
+  };
+
   const previewAssetId =
     monitorMode === "source"
-      ? (selectedAssetId ?? clipStagingSeed?.draft.assetId ?? null)
+      ? (selectedAssetId ??
+          (clipStagingSeed?.draft.isAddAssetPlaceholder
+            ? null
+            : clipDraftAssetId))
       : null;
 
   return (
@@ -1412,8 +1644,12 @@ export function EditorLayout() {
           onCollapse={collapseAssets}
           drawer={narrow}
           previewActive={
-            monitorMode === "source" && Boolean(selectedAssetId)
+            monitorMode === "source" &&
+            Boolean(selectedAssetId || addAssetSlotActive)
           }
+          aspectRatio={project.aspectRatio}
+          addSlotSelected={addAssetSlotActive}
+          onAddSlotSelect={selectAddAssetSlot}
           onDeleteAssets={(ids) => {
             void deleteAssetsFromProjectAndLibrary(ids);
           }}
@@ -1445,6 +1681,18 @@ export function EditorLayout() {
 
       <PreviewPane
         assetId={previewAssetId}
+        addAssetMode={addAssetMode}
+        addAssetSlotActive={addAssetSlotActive}
+        addAssetPlaceholderClip={generateTargetClip}
+        addAssetGenerationSession={addAssetGenerationSession}
+        lyricAlignment={project.lyricAlignment}
+        mainAudioCreationId={
+          project.mainAudioCreationId ??
+          project.assets.find((asset) => asset.kind === "audio")?.id ??
+          null
+        }
+        onStartAddAssetGeneration={startAddAssetGeneration}
+        onClearAddAssetGenerationError={clearAddAssetGenerationError}
         selectedAssetIds={
           monitorMode === "source" && !clipStagingSeed
             ? selectedAssetIds
@@ -1539,6 +1787,13 @@ export function EditorLayout() {
         aspectRatio={project.aspectRatio}
         onClipsChange={setOpenProjectTimeline}
         bakeInfoByClipId={bakeInfoByClipId}
+        addAssetGenerationByClipId={addAssetGenerationByClipId}
+        lyricAlignment={project.lyricAlignment}
+        mainAudioCreationId={
+          project.mainAudioCreationId ??
+          project.assets.find((asset) => asset.kind === "audio")?.id ??
+          null
+        }
         selectedClipIds={selectedClipIds}
         onSelectClip={selectClip}
         zoom={project.timelineZoom}

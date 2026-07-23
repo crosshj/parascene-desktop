@@ -33,7 +33,7 @@ import {
   PROJECT_ASPECT_OPTIONS,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
-import type { TimelineClip } from "../../project/types";
+import type { LyricAlignment, TimelineClip } from "../../project/types";
 import { kindFromMediaType } from "./stagingKind";
 import { PreviewScrubber } from "./PreviewScrubber";
 import {
@@ -49,6 +49,8 @@ import {
 import {
   defaultSlideshowDraft,
   defaultStagedClipDraft,
+  ADD_ASSET_DRAG_DRAFT,
+  ADD_ASSET_TIMELINE_DURATION_SEC,
   framingClassName,
   framingViewportStyle,
   isProvisionalOutSec,
@@ -76,9 +78,26 @@ import {
 import { pendingDraftMatchesSelection } from "./editorSelection";
 import { TimelineMonitor } from "./TimelineMonitor";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
+import {
+  AddAssetGeneratePanel,
+  type StartAddAssetGenerationRequest,
+} from "./AddAssetGeneratePanel";
+import type { AddAssetGenerationSession } from "./addAssetGenerate";
+import { isAddAssetPlaceholderClip } from "./stagedClip";
 
 type PreviewPaneProps = {
   assetId: string | null;
+  /** Add-asset slot selected in the assets pane (empty preview + reserved controls). */
+  addAssetMode?: boolean;
+  /** True when the assets-pane generate (+) slot is selected (drag staging). */
+  addAssetSlotActive?: boolean;
+  /** Placeholder clip on the timeline for add-asset generation. */
+  addAssetPlaceholderClip?: TimelineClip | null;
+  addAssetGenerationSession?: AddAssetGenerationSession | null;
+  lyricAlignment?: LyricAlignment | null;
+  mainAudioCreationId?: string | null;
+  onStartAddAssetGeneration?: (request: StartAddAssetGenerationRequest) => void;
+  onClearAddAssetGenerationError?: () => void;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
   /**
@@ -232,6 +251,14 @@ function SourceLabelIcon({
 
 export function PreviewPane({
   assetId,
+  addAssetMode = false,
+  addAssetSlotActive = false,
+  addAssetPlaceholderClip = null,
+  addAssetGenerationSession = null,
+  lyricAlignment = null,
+  mainAudioCreationId = null,
+  onStartAddAssetGeneration,
+  onClearAddAssetGenerationError,
   selectedAssetIds = [],
   projectCabinets = null,
   aspectRatio,
@@ -286,6 +313,19 @@ export function PreviewPane({
   useEffect(() => {
     onClipDraftChangeRef.current = onClipDraftChange;
   }, [onClipDraftChange]);
+
+  useEffect(() => {
+    if (!addAssetMode || !addAssetSlotActive) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setStagedDraft(null);
+    setCreation(null);
+    setCatalogError(false);
+    setDetailFailed(false);
+    setPlaying(false);
+    setCurrentSec(0);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    appliedSeedKeyRef.current = null;
+  }, [addAssetMode, addAssetSlotActive]);
 
   useEffect(() => {
     const el = frameRef.current;
@@ -706,6 +746,7 @@ export function PreviewPane({
   ]);
 
   if (
+    !addAssetMode &&
     !selectionOwnsPreview &&
     !(
       stagedDraft?.kind === "slideshow" &&
@@ -715,6 +756,14 @@ export function PreviewPane({
   ) {
     if (stagedDraft !== null) setStagedDraft(null);
   }
+
+  useEffect(() => {
+    if (!stagingSeedKey || !stagingSeed?.isAddAssetPlaceholder) return;
+    appliedSeedKeyRef.current = stagingSeedKey;
+    void Promise.resolve().then(() => {
+      setStagedDraft(stagingSeed);
+    });
+  }, [stagingSeedKey, stagingSeed]);
 
   useEffect(() => {
     if (!assetId || !creation || catalogError) {
@@ -1027,8 +1076,14 @@ export function PreviewPane({
     slideshowBakeUrl ?? playbackDetail,
   );
   const slideshowCount = stagedDraft?.slideshow?.imageAssetIds.length ?? 0;
-  const sourceKind: "timeline" | "asset" | "clip" | null =
-    monitorMode === "timeline"
+  const showAddAssetGenerate =
+    addAssetMode &&
+    !addAssetSlotActive &&
+    addAssetPlaceholderClip != null &&
+    isAddAssetPlaceholderClip(addAssetPlaceholderClip);
+  const sourceKind: "timeline" | "asset" | "clip" | null = addAssetMode
+    ? null
+    : monitorMode === "timeline"
       ? "timeline"
       : editingClip
         ? "clip"
@@ -1037,8 +1092,11 @@ export function PreviewPane({
           : assetId
             ? "asset"
             : null;
-  const sourceLabelText =
-    sourceKind === "timeline"
+  const sourceLabelText = addAssetMode
+    ? showAddAssetGenerate
+      ? "Generate video"
+      : null
+    : sourceKind === "timeline"
       ? "Timeline"
       : sourceKind === "clip"
         ? stagedDraft?.kind === "slideshow"
@@ -1197,7 +1255,9 @@ export function PreviewPane({
   }, [audioExcluded, volume]);
 
   const showAspectOverlay =
-    monitorMode === "timeline" || (Boolean(assetId) && !catalogError);
+    !addAssetMode &&
+    (monitorMode === "timeline" ||
+      (Boolean(assetId) && !catalogError));
   const stage = fitAspect(frameSize.w, frameSize.h, 16, 9);
   const projectAr = aspectParts(aspectRatio);
   const matte = fitAspect(stage.w, stage.h, projectAr.w, projectAr.h);
@@ -1244,6 +1304,8 @@ export function PreviewPane({
     } else {
       status = "Drop on the timeline, then hit Render";
     }
+  } else if (addAssetMode) {
+    status = null;
   } else if (!assetId) status = "Select an asset";
   else if (catalogError) status = "Asset not in local catalog";
   else if (!creationMatchesAsset && !thumb && !holdThumb)
@@ -1256,8 +1318,11 @@ export function PreviewPane({
   else if (!useDetail && !thumb) status = "No local media";
 
   const transportSec = currentSec;
-  const transportCanPlay = monitorMode === "source" && canPlay;
-  const scrubMax = Math.max(durationSec, 0.1);
+  const transportCanPlay =
+    monitorMode === "source" && !addAssetMode && canPlay;
+  const scrubMax = addAssetMode
+    ? ADD_ASSET_TIMELINE_DURATION_SEC
+    : Math.max(durationSec, 0.1);
   const showTrimHandles =
     Boolean(stagedDraft) &&
     (stagedDraft?.kind === "video" ||
@@ -1291,7 +1356,12 @@ export function PreviewPane({
 
       <div className="editor-preview-stage">
         <div ref={frameRef} className="editor-preview-frame">
-          <div className="editor-preview-surface" style={surfaceStyle}>
+          <div
+            className={`editor-preview-surface${
+              showAddAssetGenerate ? " is-add-asset-generate" : ""
+            }`}
+            style={surfaceStyle}
+          >
             {monitorMode === "timeline" ? (
               <TimelineMonitor
                 clips={timelineClips}
@@ -1310,6 +1380,26 @@ export function PreviewPane({
                 <strong>{unsupportedMessage.title}</strong>
                 <p className="muted">{unsupportedMessage.body}</p>
               </div>
+            ) : addAssetMode ? (
+              showAddAssetGenerate ? (
+                <AddAssetGeneratePanel
+                  key={addAssetPlaceholderClip.id}
+                  clip={addAssetPlaceholderClip}
+                  aspectRatio={aspectRatio}
+                  timeline={timelineClips}
+                  lyricAlignment={lyricAlignment}
+                  mainAudioCreationId={mainAudioCreationId}
+                  session={addAssetGenerationSession}
+                  onStartGeneration={(request) =>
+                    onStartAddAssetGeneration?.(request)
+                  }
+                  onClearError={onClearAddAssetGenerationError}
+                />
+              ) : (
+                <div className="editor-preview-add-slot-message muted">
+                  <p>Drop the clip on the timeline to generate a video.</p>
+                </div>
+              )
             ) : status ? (
               <span className="editor-preview-status muted">{status}</span>
             ) : slideshowBakeUrl && !detailFailed ? (
@@ -1416,14 +1506,14 @@ export function PreviewPane({
           {sourceLabelText ? (
             <div
               className="editor-preview-source-label"
-              data-source={sourceKind ?? undefined}
+              data-source={sourceKind ?? (showAddAssetGenerate ? "generate" : undefined)}
             >
               <SourceLabelIcon kind={sourceKind} />
               <span>{sourceLabelText}</span>
             </div>
           ) : null}
         </div>
-        {monitorMode !== "timeline" ? (
+        {monitorMode !== "timeline" && !showAddAssetGenerate ? (
         <div className="editor-preview-deck" aria-label="Preview controls">
           <PreviewScrubber
             currentSec={Math.min(transportSec, scrubMax)}
@@ -1486,9 +1576,11 @@ export function PreviewPane({
                 <span className="editor-transport-tc">
                   {formatClock(transportSec)}
                 </span>
-                {durationSec > 0 ? (
+                {durationSec > 0 || addAssetMode ? (
                   <span className="editor-transport-tc is-duration" title="Duration">
-                    {formatClock(durationSec)}
+                    {formatClock(
+                      addAssetMode ? ADD_ASSET_TIMELINE_DURATION_SEC : durationSec,
+                    )}
                   </span>
                 ) : null}
               </div>
@@ -1546,7 +1638,11 @@ export function PreviewPane({
             </div>
 
             <div className="editor-preview-deck-row">
-              {unsupportedMessage ? (
+              {addAssetMode ? (
+                <p className="muted editor-staging-empty">
+                  Drop the clip on the timeline to generate a video.
+                </p>
+              ) : unsupportedMessage ? (
                 <p className="muted editor-staging-empty">
                   Unsupported multi-selection — choose images only for a
                   slideshow, or select a single asset.
@@ -1570,7 +1666,9 @@ export function PreviewPane({
                   Select an asset to prepare a clip
                 </p>
               )}
-              {canStage &&
+              {addAssetMode && !editingClip ? (
+                <ClipDragHandle draft={ADD_ASSET_DRAG_DRAFT} />
+              ) : canStage &&
               stagedDraft &&
               !editingClip &&
               !unsupportedMessage ? (

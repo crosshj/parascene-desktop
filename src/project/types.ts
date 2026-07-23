@@ -97,6 +97,8 @@ export type TimelineClip = {
   bakeKey?: string | null;
   /** Absolute path to the cached silent bake MP4 when ready. */
   bakePath?: string | null;
+  /** Placeholder clip staged from the add-asset slot (no library asset yet). */
+  isAddAssetPlaceholder?: boolean;
 };
 
 export type HookSuggestion = {

@@ -24,6 +24,7 @@ import {
 } from "../../project/aspectRatios";
 import {
   isBeatSlideshowMode,
+  type LyricAlignment,
   type TimelineClip,
 } from "../../project/types";
 import { findOverlappingAudioClip } from "./audioOverlap";
@@ -38,11 +39,20 @@ import {
   targetLaneForDraft,
   TIMELINE_PX_PER_SEC,
   normalizeFraming,
+  isAddAssetPlaceholderClip,
   type StagedClipDraft,
   type StagedClipFraming,
   type TimelineGhostClip,
 } from "./stagedClip";
-import { timelineSequenceDuration } from "./timelineCompose";
+import {
+  clipInSec,
+  clipOutSec,
+  timelineSequenceDuration,
+} from "./timelineCompose";
+import { timelineLyricBlocks } from "./timelineLyricBlocks";
+import { resolveMainAudioClip } from "./addAssetStartFrame";
+import { EditorClipAudioWaveform } from "./EditorClipAudioWaveform";
+import { useLabMainAudioPaths } from "../../lab/useLabMainAudioPaths";
 
 type TimelinePaneProps = {
   clips: TimelineClip[];
@@ -54,6 +64,11 @@ type TimelinePaneProps = {
   onClipsChange?: (clips: TimelineClip[]) => void;
   /** Runtime bake status for slideshow clips (not persisted). */
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
+  /** Runtime A2V generation status for add-asset placeholder clips. */
+  addAssetGenerationByClipId?: ReadonlyMap<string, BakeInfo>;
+  /** Aligned lyrics drawn on a dedicated lane. */
+  lyricAlignment?: LyricAlignment | null;
+  mainAudioCreationId?: string | null;
   /** Currently selected clip ids (multi-select). */
   selectedClipIds?: readonly string[];
   onSelectClip?: (
@@ -209,6 +224,8 @@ function draftToClip(
     slideshow,
     bakeKey: draft.bakeKey ?? null,
     bakePath: draft.bakePath ?? null,
+    isAddAssetPlaceholder:
+      draft.isAddAssetPlaceholder === true ? true : undefined,
   };
 }
 
@@ -288,6 +305,10 @@ function MiniClip({
   bakeStatus,
   bakeError,
   waveSeed,
+  audioMixPath,
+  audioVocalsPath,
+  clipInSec = 0,
+  clipOutSec,
   onPointerDown,
 }: {
   startSec: number;
@@ -308,10 +329,16 @@ function MiniClip({
   bakeStatus?: BakeStatus;
   bakeError?: string | null;
   waveSeed?: string;
+  audioMixPath?: string | null;
+  audioVocalsPath?: string | null;
+  clipInSec?: number;
+  clipOutSec?: number;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const safeDuration =
     Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 1;
+  const resolvedClipOutSec =
+    clipOutSec ?? clipInSec + safeDuration;
   const widthPx = Math.max(4, Math.round(safeDuration * pxPerSec));
   const isGhost = className.includes("ghost");
   const movable = Boolean(onPointerDown) && !isGhost;
@@ -397,10 +424,22 @@ function MiniClip({
         </span>
       ) : null}
       {audio ? (
-        <ClipAudioWaveform
-          widthPx={widthPx}
-          seed={waveSeed ?? label ?? "audio"}
-        />
+        audioMixPath ? (
+          <EditorClipAudioWaveform
+            mixPath={audioMixPath}
+            overlayPath={audioVocalsPath}
+            widthPx={widthPx}
+            inSec={clipInSec}
+            outSec={resolvedClipOutSec}
+            reversed={reversed}
+            selected={selected}
+          />
+        ) : (
+          <ClipAudioWaveform
+            widthPx={widthPx}
+            seed={waveSeed ?? label ?? "audio"}
+          />
+        )
       ) : showThumb && thumbUrl ? (
         <img
           className={`editor-timeline-clip-thumb${
@@ -431,6 +470,9 @@ export function TimelinePane({
   aspectRatio = "16:9",
   onClipsChange,
   bakeInfoByClipId,
+  addAssetGenerationByClipId,
+  lyricAlignment = null,
+  mainAudioCreationId = null,
   selectedClipIds = [],
   onSelectClip,
   zoom: zoomProp = 1,
@@ -498,6 +540,14 @@ export function TimelinePane({
   const pxPerSecRef = useRef(TIMELINE_PX_PER_SEC * zoom);
   const seekRef = useRef<{ pointerId: number } | null>(null);
 
+  const addAssetGenerationByClipIdRef = useRef(addAssetGenerationByClipId);
+  const isClipGenerating = useCallback((clipId: string) => {
+    return (
+      addAssetGenerationByClipIdRef.current?.get(clipId)?.status ===
+      "generating"
+    );
+  }, []);
+
   useEffect(() => {
     clipsRef.current = clips;
     selectedClipIdsRef.current = selectedClipIds;
@@ -506,6 +556,7 @@ export function TimelinePane({
     onActivateMonitorRef.current = onActivateMonitor;
     onPlayheadChangeRef.current = onPlayheadChange;
     magneticRef.current = magnetic;
+    addAssetGenerationByClipIdRef.current = addAssetGenerationByClipId;
   }, [
     clips,
     selectedClipIds,
@@ -514,6 +565,7 @@ export function TimelinePane({
     onActivateMonitor,
     onPlayheadChange,
     magnetic,
+    addAssetGenerationByClipId,
   ]);
 
   const commitClips = useCallback((next: TimelineClip[]) => {
@@ -698,6 +750,17 @@ export function TimelinePane({
 
   const videoClips = clips.filter((c) => (c.lane ?? "video") === "video");
   const audioClips = clips.filter((c) => c.lane === "audio");
+  const mainAudioClip = useMemo(
+    () => resolveMainAudioClip(clips, mainAudioCreationId ?? null),
+    [clips, mainAudioCreationId],
+  );
+  const mainAudioPaths = useLabMainAudioPaths(
+    mainAudioCreationId?.trim() || mainAudioClip?.assetId?.trim() || "",
+  );
+  const lyricBlocks = useMemo(
+    () => timelineLyricBlocks(clips, lyricAlignment, mainAudioCreationId),
+    [clips, lyricAlignment, mainAudioCreationId],
+  );
 
   const pointToStartSec = useCallback(
     (clientX: number) => {
@@ -804,6 +867,8 @@ export function TimelinePane({
         selected.includes(clip.id) && selected.length > 0
           ? [...selected]
           : [clip.id];
+      const unlocked = movingIds.filter((id) => !isClipGenerating(id));
+      if (unlocked.length === 0 || !unlocked.includes(clip.id)) return;
       // Dragging an unselected clip adopts it as the sole selection.
       if (!selected.includes(clip.id)) {
         onSelectClipRef.current?.(clip);
@@ -811,23 +876,23 @@ export function TimelinePane({
       const originStarts: Record<string, number> = {};
       const durations: Record<string, number> = {};
       for (const c of clipsRef.current) {
-        if (!movingIds.includes(c.id)) continue;
+        if (!unlocked.includes(c.id)) continue;
         originStarts[c.id] = c.startSec;
         durations[c.id] = Math.max(0.1, c.endSec - c.startSec);
       }
       const pointerSec = pointToStartSec(clientX);
       moveRef.current = {
         primaryId: clip.id,
-        movingIds,
+        movingIds: unlocked,
         originStarts,
         durations,
         grabOffsetSec: pointerSec - clip.startSec,
         pointerId,
       };
-      setMovingClipIds(movingIds);
+      setMovingClipIds(unlocked);
       document.body.classList.add("is-timeline-clip-moving");
     },
-    [pointToStartSec],
+    [isClipGenerating, pointToStartSec],
   );
 
   useEffect(() => {
@@ -1305,6 +1370,7 @@ export function TimelinePane({
         <div className="editor-timeline-labels" aria-hidden>
           <div className="editor-timeline-label-spacer" />
           <div className="editor-timeline-label">V1</div>
+          <div className="editor-timeline-label">LYR</div>
           <div className="editor-timeline-label">A1</div>
         </div>
 
@@ -1323,6 +1389,7 @@ export function TimelinePane({
               const target = event.target as HTMLElement | null;
               if (target?.closest(".editor-timeline-clip")) return;
               if (target?.closest(".editor-timeline-ruler")) return;
+              if (target?.closest(".editor-timeline-lyric-block")) return;
               onActivateMonitor?.();
               onSelectClip?.(null);
             }}
@@ -1384,7 +1451,17 @@ export function TimelinePane({
                         : clip.label
                     }
                     title={
-                      clip.kind === "slideshow"
+                      isAddAssetPlaceholderClip(clip)
+                        ? addAssetGenerationByClipId?.get(clip.id)?.status ===
+                          "generating"
+                          ? "Generating video…"
+                          : addAssetGenerationByClipId?.get(clip.id)?.status ===
+                              "failed"
+                            ? addAssetGenerationByClipId
+                                .get(clip.id)
+                                ?.error?.trim() || "Video generation failed"
+                            : "New asset slot"
+                        : clip.kind === "slideshow"
                         ? bakeInfoByClipId?.get(clip.id)?.status === "failed"
                           ? bakeInfoByClipId.get(clip.id)?.error?.trim() ||
                             `Slideshow (${clip.slideshow?.imageAssetIds.length ?? 0} images) — render failed`
@@ -1398,13 +1475,17 @@ export function TimelinePane({
                     framing={normalizeFraming(clip.framing)}
                     thumbAspectRatio={thumbAspectRatio}
                     bakeStatus={
-                      clip.kind === "slideshow"
+                      isAddAssetPlaceholderClip(clip)
+                        ? addAssetGenerationByClipId?.get(clip.id)?.status
+                        : clip.kind === "slideshow"
                         ? bakeInfoByClipId?.get(clip.id)?.status ??
                           (clip.bakePath ? "ready" : "idle")
                         : undefined
                     }
                     bakeError={
-                      clip.kind === "slideshow"
+                      isAddAssetPlaceholderClip(clip)
+                        ? addAssetGenerationByClipId?.get(clip.id)?.error
+                        : clip.kind === "slideshow"
                         ? bakeInfoByClipId?.get(clip.id)?.error
                         : undefined
                     }
@@ -1425,6 +1506,49 @@ export function TimelinePane({
             </div>
 
             <div
+              className="editor-timeline-lane is-lyrics"
+              aria-label="Lyrics lane"
+            >
+              {lyricBlocks.length === 0 ? (
+                <div className="editor-timeline-lane-empty muted">
+                  {lyricAlignment ? "No sung lyrics" : "No lyric alignment"}
+                </div>
+              ) : (
+                lyricBlocks.map((block, index) => {
+                  const widthPx = Math.max(
+                    4,
+                    Math.round((block.endSec - block.startSec) * pxPerSec),
+                  );
+                  const isActive =
+                    playheadSec >= block.startSec &&
+                    playheadSec < block.endSec;
+                  return (
+                    <button
+                      key={`${index}-${block.startSec.toFixed(3)}-${block.line.slice(0, 16)}`}
+                      type="button"
+                      className={`editor-timeline-lyric-block${isActive ? " is-active" : ""}`}
+                      style={{
+                        left: block.startSec * pxPerSec,
+                        width: widthPx,
+                      }}
+                      title={block.line}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onActivateMonitor?.();
+                        onPlayheadChange?.(block.startSec);
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <span className="editor-timeline-lyric-block-label">
+                        {block.line}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <div
               className="editor-timeline-lane is-audio"
               aria-label="Master audio lane"
             >
@@ -1433,7 +1557,9 @@ export function TimelinePane({
                   Master Audio
                 </div>
               ) : (
-                audioClips.map((clip) => (
+                audioClips.map((clip) => {
+                  const isMainAudio = mainAudioClip?.id === clip.id;
+                  return (
                   <MiniClip
                     key={clip.id}
                     className="editor-timeline-clip"
@@ -1452,9 +1578,16 @@ export function TimelinePane({
                     audio
                     reversed={Boolean(clip.reverse)}
                     waveSeed={clip.id}
+                    audioMixPath={isMainAudio ? mainAudioPaths.mixPath : null}
+                    audioVocalsPath={
+                      isMainAudio ? mainAudioPaths.vocalsPath : null
+                    }
+                    clipInSec={clipInSec(clip)}
+                    clipOutSec={clipOutSec(clip)}
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />
-                ))
+                  );
+                })
               )}
               {ghost?.lane === "audio" ? (
                 <MiniClip

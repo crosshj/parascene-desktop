@@ -230,4 +230,14 @@ describe("columnCountForWidth", () => {
     expect(columnCountForWidth(400)).toBe(2);
     expect(columnCountForWidth(5000)).toBe(14);
   });
+
+  it("uses fewer wider columns for cinema layout", () => {
+    const cinema = {
+      targetColumnWidthPx: 310,
+      maxColumns: 5,
+      minColumns: 2,
+    };
+    expect(columnCountForWidth(1600, cinema)).toBe(5);
+    expect(columnCountForWidth(1600)).toBe(7);
+  });
 });

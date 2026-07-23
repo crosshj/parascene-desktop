@@ -10,8 +10,9 @@ import { creationAspectCss, creationPackHeight } from "./aspectRatio";
 import { ensureLocal } from "./catalogClient";
 import { CreationCard } from "./CreationCard";
 import { FolderCard } from "./FolderCard";
+import { FolderCardSkeleton } from "./FolderCardSkeleton";
 import type { LibraryFolder } from "./folderClient";
-import { MASONRY_GAP_PX, useMasonryLayout } from "./CreationsMasonry";
+import { MASONRY_GAP_PX, useMasonryLayout, type BoardColumnLayoutOpts } from "./CreationsMasonry";
 import { canFetchLocal, creationPreviewUrl } from "./previewUrl";
 import type { Creation } from "./types";
 import { warmLocalPreviews } from "./warmPreviews";
@@ -127,7 +128,10 @@ export function VirtualCreationsGrid({
   folderPackHeight = 1,
   folderAspectCss = "1 / 1",
   folderCollageIdsByFolderId,
+  folderMemberCountsByFolderId,
   folderCreationsById,
+  loadingFolderIds,
+  boardColumnLayout,
   onOpen,
   onToggleSelect,
   onOpenFolder,
@@ -147,7 +151,13 @@ export function VirtualCreationsGrid({
   folderAspectCss?: string;
   /** When filtering, collage thumbs are limited to matching members. */
   folderCollageIdsByFolderId?: ReadonlyMap<string, readonly string[]>;
+  /** When filtering, label counts reflect matching members only. */
+  folderMemberCountsByFolderId?: ReadonlyMap<string, number>;
   folderCreationsById?: ReadonlyMap<string, Creation>;
+  /** Folder tiles that are known but not ready to render (collage / filter data). */
+  loadingFolderIds?: ReadonlySet<string>;
+  /** Optional wider/narrower columns for aspect-focused views (e.g. 16:9 cinema). */
+  boardColumnLayout?: BoardColumnLayoutOpts;
   onOpen: (creation: Creation) => void;
   onToggleSelect: (creation: Creation) => void;
   onOpenFolder?: (folder: LibraryFolder) => void;
@@ -155,7 +165,7 @@ export function VirtualCreationsGrid({
   onNearEnd: () => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const layout = useMasonryLayout(scrollerRef);
+  const layout = useMasonryLayout(scrollerRef, boardColumnLayout);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(800);
   const nearEndSent = useRef(false);
@@ -362,18 +372,25 @@ export function VirtualCreationsGrid({
               style={style}
             >
               {card.item.kind === "folder" ? (
-                <FolderCard
-                  folder={card.item.folder}
-                  variant="board"
-                  selected={selectedFolderIds?.has(card.item.folder.id) ?? false}
-                  collageMemberIds={
-                    folderCollageIdsByFolderId?.get(card.item.folder.id) ??
-                    card.item.folder.memberIds
-                  }
-                  creationsById={folderCreationsById}
-                  onOpen={onOpenFolder ?? (() => {})}
-                  onToggleSelect={onToggleFolderSelect}
-                />
+                loadingFolderIds?.has(card.item.folder.id) ? (
+                  <FolderCardSkeleton />
+                ) : (
+                  <FolderCard
+                    folder={card.item.folder}
+                    variant="board"
+                    selected={selectedFolderIds?.has(card.item.folder.id) ?? false}
+                    collageMemberIds={
+                      folderCollageIdsByFolderId?.get(card.item.folder.id) ??
+                      card.item.folder.memberIds
+                    }
+                    creationsById={folderCreationsById}
+                    displayMemberCount={folderMemberCountsByFolderId?.get(
+                      card.item.folder.id,
+                    )}
+                    onOpen={onOpenFolder ?? (() => {})}
+                    onToggleSelect={onToggleFolderSelect}
+                  />
+                )
               ) : (
                 <CreationCard
                   creation={card.item.creation}

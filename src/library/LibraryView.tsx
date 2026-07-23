@@ -53,7 +53,9 @@ import {
   activeFilterId,
   filterCreationsVisible,
   folderBoardAspect,
+  boardColumnLayoutForFilter,
   folderCollageMemberIds,
+  folderFilteredMemberCount,
   folderMatchesFilters,
   folderNeedsMemberCreations,
   mergeFilterCounts,
@@ -63,6 +65,7 @@ import {
   type FilterId,
 } from "./creationFilters";
 import { CreationsSidebar } from "./CreationsSidebar";
+import { LibraryPageSkeleton } from "./LibraryLoadingSkeleton";
 import {
   cacheMissingMedia,
   cacheMissingThumbs,
@@ -1359,6 +1362,11 @@ function CreationsPanel({
     [gridFilters],
   );
 
+  const boardColumnLayout = useMemo(
+    () => boardColumnLayoutForFilter(gridFilterKey) ?? undefined,
+    [gridFilterKey],
+  );
+
   const homeFolders = useMemo(() => {
     if (folderView || gridBlank) return [];
     if (
@@ -1396,9 +1404,27 @@ function CreationsPanel({
     selectedIds,
   ]);
 
+  const showFolderSkeletons =
+    !folderView &&
+    !gridBlank &&
+    folders.length > 0 &&
+    folderFilterMembersLoading &&
+    needsFolderMemberFilter &&
+    homeFolders.length === 0;
+
+  const boardFolders = showFolderSkeletons ? folders : homeFolders;
+
+  const loadingFolderIds = useMemo(
+    () =>
+      showFolderSkeletons
+        ? new Set(folders.map((folder) => folder.id))
+        : undefined,
+    [folders, showFolderSkeletons],
+  );
+
   const folderCollageIdsByFolderId = useMemo(() => {
     const map = new Map<string, string[]>();
-    for (const folder of homeFolders) {
+    for (const folder of boardFolders) {
       map.set(
         folder.id,
         folderCollageMemberIds(
@@ -1416,10 +1442,39 @@ function CreationsPanel({
     }
     return map;
   }, [
+    boardFolders,
     folderFilterCreationsById,
     gridFilters,
     groupMemberIds,
-    homeFolders,
+    inProjectIds,
+    projectFolderIds,
+    selectedFolderIds,
+    selectedIds,
+  ]);
+
+  const folderMemberCountsByFolderId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const folder of boardFolders) {
+      map.set(
+        folder.id,
+        folderFilteredMemberCount(
+          folder,
+          gridFilters,
+          selectedIds,
+          selectedFolderIds,
+          inProjectIds,
+          projectFolderIds,
+          folderFilterCreationsById,
+          groupMemberIds,
+        ),
+      );
+    }
+    return map;
+  }, [
+    boardFolders,
+    folderFilterCreationsById,
+    gridFilters,
+    groupMemberIds,
     inProjectIds,
     projectFolderIds,
     selectedFolderIds,
@@ -1429,9 +1484,9 @@ function CreationsPanel({
   const filterEmpty =
     !gridBlank &&
     !folderMembersLoading &&
-    !(folderFilterMembersLoading && needsFolderMemberFilter) &&
+    !(folderFilterMembersLoading && needsFolderMemberFilter && !showFolderSkeletons) &&
     visibleCreations.length === 0 &&
-    homeFolders.length === 0;
+    boardFolders.length === 0;
   const [showFilterEmpty, setShowFilterEmpty] = useState(false);
   if (!filterEmpty && showFilterEmpty) {
     setShowFilterEmpty(false);
@@ -1677,9 +1732,10 @@ function CreationsPanel({
     <section className="stub-panel creations-panel" aria-label="Creations">
       {error ? <p className="library-error">{error}</p> : null}
       {creations === null ? (
-        <p className="muted" style={{ padding: "1rem" }}>
-          Loading catalog…
-        </p>
+        <LibraryPageSkeleton
+          sidebarWidth={sidebarWidth}
+          filterId={sidebarFilterKey}
+        />
       ) : empty ? (
         <div className="library-empty-body">
           <p className="muted">No local creations yet.</p>
@@ -1779,8 +1835,10 @@ function CreationsPanel({
             ) : null}
             {gridBlank ||
             folderMembersLoading ||
-            (folderFilterMembersLoading && needsFolderMemberFilter) ||
-            (filterEmpty && !showFilterEmpty && homeFolders.length === 0) ? (
+            (folderFilterMembersLoading &&
+              needsFolderMemberFilter &&
+              !showFolderSkeletons) ||
+            (filterEmpty && !showFilterEmpty && boardFolders.length === 0) ? (
               <div
                 className="creations-grid-blank"
                 aria-busy={
@@ -1790,12 +1848,13 @@ function CreationsPanel({
                   undefined
                 }
               />
-            ) : showFilterEmpty && homeFolders.length === 0 ? (
+            ) : showFilterEmpty && boardFolders.length === 0 ? (
               <CreationsFilterEmpty />
             ) : (
               <VirtualCreationsGrid
                 creations={visibleCreations}
-                folders={homeFolders}
+                folders={boardFolders}
+                loadingFolderIds={loadingFolderIds}
                 selectedIds={selectedIds}
                 selectedFolderIds={selectedFolderIds}
                 dimmedIds={dimmedIds}
@@ -1804,7 +1863,9 @@ function CreationsPanel({
                 folderPackHeight={homeFolderAspect.packHeight}
                 folderAspectCss={homeFolderAspect.aspectCss}
                 folderCollageIdsByFolderId={folderCollageIdsByFolderId}
+                folderMemberCountsByFolderId={folderMemberCountsByFolderId}
                 folderCreationsById={folderFilterCreationsById}
+                boardColumnLayout={boardColumnLayout}
                 onOpen={(creation) => {
                   setActive(creation);
                   if (

@@ -6,6 +6,7 @@ import {
   isInaudibleLyricText,
   isSunoTagLine,
   mergeAlignedLyricsWithTags,
+  lyricsTextFromAlignedLines,
   parseLyricLines,
   parseLyricScript,
   reconcileAlignedLinesFromScript,
@@ -41,6 +42,15 @@ describe("lyricAlign", () => {
       { kind: "tag", text: "[Intro\nsoft fade]" },
       { kind: "line", text: "Hello" },
     ]);
+  });
+
+  it("serializes aligned lines back to lyrics script text", () => {
+    expect(
+      lyricsTextFromAlignedLines([
+        { line: "[Intro]", startSec: 0, endSec: 0, inaudible: true },
+        { line: "Hey, baby", startSec: 2, endSec: 6 },
+      ]),
+    ).toBe("[Intro]\nHey, baby");
   });
 
   it("reclassifies old alignments that timed Suno tags as segments", () => {

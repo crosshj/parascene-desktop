@@ -64,6 +64,28 @@ export const ASPECT_FILTER_PRESETS = {
 
 export type AspectFilterId = keyof typeof ASPECT_FILTER_PRESETS;
 
+/** Masonry column sizing overrides for aspect-focused board views. */
+export type BoardColumnLayout = {
+  targetColumnWidthPx: number;
+  maxColumns: number;
+  minColumns: number;
+};
+
+/** Wider tiles for cinema — ~5 columns on a typical board (~310px cards). */
+const CINEMA_BOARD_COLUMN_LAYOUT: BoardColumnLayout = {
+  targetColumnWidthPx: 310,
+  maxColumns: 5,
+  minColumns: 2,
+};
+
+/** When set, VirtualCreationsGrid uses custom column packing for this filter. */
+export function boardColumnLayoutForFilter(
+  filterId: FilterId,
+): BoardColumnLayout | null {
+  if (filterId === "aspect169") return CINEMA_BOARD_COLUMN_LAYOUT;
+  return null;
+}
+
 /** Pack height / CSS aspect for folder tiles under an aspect filter (else 1:1). */
 export function folderBoardAspect(toggles: CreationFilterToggles): {
   packHeight: number;
@@ -305,6 +327,81 @@ export function folderMatchesFilters(
   return false;
 }
 
+/** Member ids in a folder that match the active filter. */
+export function folderMatchingMemberIds(
+  folder: { id: string; memberIds: readonly string[] },
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  selectedFolderIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+  projectFolderIds: ReadonlySet<string> = emptyIdSet,
+  creationsById: ReadonlyMap<string, Creation> = emptyCreationMap,
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
+): string[] {
+  const active = activeFilterId(toggles);
+  if (active === "all") return [...folder.memberIds];
+
+  if (active === "selected") {
+    const selectedMembers = folder.memberIds.filter((id) => selectedIds.has(id));
+    if (selectedMembers.length > 0) return selectedMembers;
+    if (selectedFolderIds.has(folder.id)) return [...folder.memberIds];
+    return [];
+  }
+  if (active === "notSelected") {
+    return folder.memberIds.filter((id) => !selectedIds.has(id));
+  }
+  if (active === "inProject") {
+    const inProjectMembers = folder.memberIds.filter((id) =>
+      inProjectIds.has(id),
+    );
+    if (inProjectMembers.length > 0) return inProjectMembers;
+    if (projectFolderIds.has(folder.id)) return [...folder.memberIds];
+    return [];
+  }
+
+  const matching: string[] = [];
+  for (const id of folder.memberIds) {
+    const creation = creationsById.get(id);
+    if (!creation) continue;
+    if (
+      creationMatchesFilters(
+        creation,
+        toggles,
+        selectedIds,
+        inProjectIds,
+        groupMemberIds,
+      )
+    ) {
+      matching.push(id);
+    }
+  }
+  return matching;
+}
+
+/** Count of folder members visible under the active filter. */
+export function folderFilteredMemberCount(
+  folder: { id: string; memberIds: readonly string[]; memberCount: number },
+  toggles: CreationFilterToggles,
+  selectedIds: ReadonlySet<string>,
+  selectedFolderIds: ReadonlySet<string>,
+  inProjectIds: ReadonlySet<string> = emptyIdSet,
+  projectFolderIds: ReadonlySet<string> = emptyIdSet,
+  creationsById: ReadonlyMap<string, Creation> = emptyCreationMap,
+  groupMemberIds: ReadonlySet<string> = emptyIdSet,
+): number {
+  if (activeFilterId(toggles) === "all") return folder.memberCount;
+  return folderMatchingMemberIds(
+    folder,
+    toggles,
+    selectedIds,
+    selectedFolderIds,
+    inProjectIds,
+    projectFolderIds,
+    creationsById,
+    groupMemberIds,
+  ).length;
+}
+
 /** Up to 4 member ids whose previews should appear on a folder tile. */
 export function folderCollageMemberIds(
   folder: { id: string; memberIds: readonly string[] },
@@ -317,53 +414,16 @@ export function folderCollageMemberIds(
   limit = 4,
   groupMemberIds: ReadonlySet<string> = emptyIdSet,
 ): string[] {
-  const active = activeFilterId(toggles);
-  if (active === "all") return folder.memberIds.slice(0, limit);
-
-  if (active === "selected") {
-    const selectedMembers = folder.memberIds.filter((id) => selectedIds.has(id));
-    if (selectedMembers.length > 0) return selectedMembers.slice(0, limit);
-    // Folder tile selected but no selected members — keep generic collage.
-    if (selectedFolderIds.has(folder.id)) {
-      return folder.memberIds.slice(0, limit);
-    }
-    return [];
-  }
-  if (active === "notSelected") {
-    return folder.memberIds
-      .filter((id) => !selectedIds.has(id))
-      .slice(0, limit);
-  }
-  if (active === "inProject") {
-    const inProjectMembers = folder.memberIds.filter((id) =>
-      inProjectIds.has(id),
-    );
-    if (inProjectMembers.length > 0) return inProjectMembers.slice(0, limit);
-    if (projectFolderIds.has(folder.id)) {
-      return folder.memberIds.slice(0, limit);
-    }
-    return [];
-  }
-
-  const matching: string[] = [];
-  for (const id of folder.memberIds) {
-    const creation = creationsById.get(id);
-    if (!creation) continue;
-    if (
-      !creationMatchesFilters(
-        creation,
-        toggles,
-        selectedIds,
-        inProjectIds,
-        groupMemberIds,
-      )
-    ) {
-      continue;
-    }
-    matching.push(id);
-    if (matching.length >= limit) break;
-  }
-  return matching;
+  return folderMatchingMemberIds(
+    folder,
+    toggles,
+    selectedIds,
+    selectedFolderIds,
+    inProjectIds,
+    projectFolderIds,
+    creationsById,
+    groupMemberIds,
+  ).slice(0, limit);
 }
 
 const emptyCreationMap: ReadonlyMap<string, Creation> = new Map();

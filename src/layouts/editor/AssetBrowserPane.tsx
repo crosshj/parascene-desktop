@@ -31,6 +31,10 @@ import {
   isEditorProjectCabinet,
   type ProjectCabinetIds,
 } from "../../project/desktopProjectGroups";
+import {
+  projectAspectCss,
+  type ProjectAspectRatio,
+} from "../../project/aspectRatios";
 import type { ProjectAsset } from "../../project/types";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
 
@@ -60,6 +64,11 @@ type AssetBrowserPaneProps = {
   drawer?: boolean;
   /** True when a selected asset owns the preview. */
   previewActive?: boolean;
+  /** Project creative frame — used for the add-asset slot card. */
+  aspectRatio: ProjectAspectRatio;
+  /** True when the add-asset slot owns the preview. */
+  addSlotSelected?: boolean;
+  onAddSlotSelect?: () => void;
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
   onRemoveFolders?: (ids: string[]) => void;
@@ -98,6 +107,55 @@ function displayName(
     if (filename) return filename;
   }
   return asset.name;
+}
+
+/** Default slot for adding assets — project aspect, outline with plus. */
+function AddAssetSlotCard({
+  aspectCss,
+  selected,
+  onSelect,
+}: {
+  aspectCss: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <div className="editor-add-asset-card">
+      <button
+        type="button"
+        className={
+          selected
+            ? "editor-add-asset-card-hit is-selected"
+            : "editor-add-asset-card-hit"
+        }
+        onClick={onSelect}
+        aria-label="Add asset"
+        title="Add asset"
+      >
+        <span
+          className="editor-add-asset-card-clip"
+          style={{ aspectRatio: aspectCss }}
+          aria-hidden
+        >
+          <svg
+            className="editor-add-asset-card-icon"
+            viewBox="0 0 24 24"
+            width="28"
+            height="28"
+            aria-hidden
+          >
+            <path
+              d="M12 5v14M5 12h14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </span>
+      </button>
+    </div>
+  );
 }
 
 /** Fallback when the id is not in the local catalog yet. */
@@ -152,6 +210,9 @@ export function AssetBrowserPane({
   onCollapse,
   drawer = false,
   previewActive = false,
+  aspectRatio,
+  addSlotSelected = false,
+  onAddSlotSelect,
   onDeleteAssets,
   onRemoveAssets,
   onRemoveFolders,
@@ -497,6 +558,9 @@ export function AssetBrowserPane({
     });
   };
 
+  const showAddSlot = !folderView && Boolean(onAddSlotSelect);
+  const addSlotAspectCss = projectAspectCss(aspectRatio);
+
   const selectAsset = (assetId: string, event: ReactMouseEvent) => {
     if (event.shiftKey && selectionAnchorRef.current) {
       const ids = visible.map((asset) => asset.id);
@@ -598,10 +662,19 @@ export function AssetBrowserPane({
       </div>
 
       <div className="editor-asset-scroll">
-        {visible.length === 0 && !showRootFolders ? (
+        {visible.length === 0 && !showRootFolders && !showAddSlot ? (
           <p className="muted editor-asset-empty">No assets in this filter.</p>
         ) : (
           <ul className="editor-asset-grid">
+            {showAddSlot ? (
+              <li key="add-asset-slot">
+                <AddAssetSlotCard
+                  aspectCss={addSlotAspectCss}
+                  selected={addSlotSelected}
+                  onSelect={() => onAddSlotSelect?.()}
+                />
+              </li>
+            ) : null}
             {showRootFolders
               ? visibleFolders.map((folder) => (
                   <li key={`folder:${folder.id}`}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShell } from "../../app/ShellProvider";
 import { createAuthedSdk } from "../../auth/session";
 import {
@@ -61,6 +61,7 @@ import {
   alignLyricScript,
   alignLyricScriptWithOpenAi,
   isInaudibleLyricLine,
+  lyricsTextFromAlignedLines,
   parseLyricLines,
   reconcileAlignedLinesFromScript,
 } from "../../lab/lyricAlign";
@@ -3195,12 +3196,7 @@ function AlignModule(
     onPickMain: (id: string | null) => void;
   } & ModuleChrome,
 ) {
-  const saved =
-    props.lyricAlignment &&
-    (!props.mainAudioId ||
-      props.lyricAlignment.sourceAudioCreationId === props.mainAudioId)
-      ? props.lyricAlignment
-      : null;
+  const saved = props.lyricAlignment;
 
   const [audioId, setAudioId] = useState(
     saved?.sourceAudioCreationId || props.mainAudioId,
@@ -3213,9 +3209,11 @@ function AlignModule(
     saved?.transcribeEngine ?? "openai",
   );
   const [lines, setLines] = useState<AlignedLyricLine[]>(() =>
-    saved
-      ? reconcileAlignedLinesFromScript(saved.lyricsText, saved.lines)
-      : [],
+    saved?.lines.length
+      ? [...saved.lines]
+      : saved
+        ? reconcileAlignedLinesFromScript(saved.lyricsText, saved.lines)
+        : [],
   );
   const [transcript, setTranscript] = useState<LyricTranscript | null>(
     saved?.transcript ?? null,
@@ -3229,16 +3227,39 @@ function AlignModule(
     "vocals" | "whisper" | "lyrics" | "lyricsAi" | null
   >(null);
   const linesRef = useRef(lines);
+  const lyricsRef = useRef(lyrics);
+  const audioIdRef = useRef(audioId);
   const engineRef = useRef(engine);
   const transcriptRef = useRef(transcript);
-  const lyricsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const linesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alignmentSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingAlignmentSaveRef = useRef<{
+    nextLines?: AlignedLyricLine[];
+    lyricsText?: string;
+  } | null>(null);
+  const onLyricAlignmentChangeRef = useRef(props.onLyricAlignmentChange);
+  const onPickMainRef = useRef(props.onPickMain);
+  const mainAudioIdRef = useRef(props.mainAudioId);
+  const lastPersistedAlignedAtRef = useRef<string | null>(saved?.alignedAt ?? null);
 
   useEffect(() => {
     linesRef.current = lines;
+    lyricsRef.current = lyrics;
+    audioIdRef.current = audioId;
     engineRef.current = engine;
     transcriptRef.current = transcript;
-  }, [lines, engine, transcript]);
+    onLyricAlignmentChangeRef.current = props.onLyricAlignmentChange;
+    onPickMainRef.current = props.onPickMain;
+    mainAudioIdRef.current = props.mainAudioId;
+  }, [
+    lines,
+    lyrics,
+    audioId,
+    engine,
+    transcript,
+    props.onLyricAlignmentChange,
+    props.onPickMain,
+    props.mainAudioId,
+  ]);
 
   useEffect(() => {
     if (!props.busy) {
@@ -3292,23 +3313,20 @@ function AlignModule(
   }, [audioId]);
 
   useEffect(() => {
-    if (!saved) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines(reconcileAlignedLinesFromScript(saved.lyricsText, saved.lines));
+    if (!saved?.alignedAt || saved.alignedAt === lastPersistedAlignedAtRef.current) {
+      return;
+    }
+    lastPersistedAlignedAtRef.current = saved.alignedAt;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLines(saved.lines.length > 0 ? [...saved.lines] : []);
     setLyrics(saved.lyricsText);
     setEngine(saved.transcribeEngine);
     setTranscript(saved.transcript ?? null);
-    // Hydrate when switching audio / loading a saved draft — not on every
-    // alignedAt write from our own lyrics autosave.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
-  }, [saved?.sourceAudioCreationId]);
-
-  useEffect(() => {
-    return () => {
-      if (lyricsSaveTimer.current) clearTimeout(lyricsSaveTimer.current);
-      if (linesSaveTimer.current) clearTimeout(linesSaveTimer.current);
-    };
-  }, []);
+    if (saved.sourceAudioCreationId) {
+      setAudioId(saved.sourceAudioCreationId);
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [saved]);
 
   const persistAlignment = (opts: {
     nextLines: AlignedLyricLine[];
@@ -3318,8 +3336,17 @@ function AlignModule(
     /** Pass explicitly to update; omit to keep the current cached transcript. */
     transcript?: LyricTranscript | null;
   }) => {
-    const id = opts.sourceAudioCreationId ?? audioId;
+    if (alignmentSaveTimer.current) {
+      clearTimeout(alignmentSaveTimer.current);
+      alignmentSaveTimer.current = null;
+    }
+    pendingAlignmentSaveRef.current = null;
+
+    const id = opts.sourceAudioCreationId ?? audioIdRef.current;
     if (!id) return;
+    if (id !== mainAudioIdRef.current) {
+      onPickMainRef.current(id);
+    }
     const nextTranscript =
       opts.transcript !== undefined
         ? opts.transcript
@@ -3327,38 +3354,77 @@ function AlignModule(
     if (opts.transcript !== undefined) {
       setTranscript(opts.transcript);
     }
-    props.onLyricAlignmentChange({
+    linesRef.current = opts.nextLines;
+    const nextLyricsText = opts.lyricsText ?? lyricsRef.current;
+    lyricsRef.current = nextLyricsText;
+    const alignedAt = new Date().toISOString();
+    lastPersistedAlignedAtRef.current = alignedAt;
+    onLyricAlignmentChangeRef.current({
       sourceAudioCreationId: id,
-      lyricsText: opts.lyricsText ?? lyrics,
-      alignedAt: new Date().toISOString(),
+      lyricsText: nextLyricsText,
+      alignedAt,
       transcribeEngine: opts.transcribeEngine,
       lines: opts.nextLines,
       transcript: nextTranscript,
     });
   };
 
-  const scheduleLyricsPersist = (text: string) => {
-    if (!audioId) return;
-    if (lyricsSaveTimer.current) clearTimeout(lyricsSaveTimer.current);
-    lyricsSaveTimer.current = setTimeout(() => {
-      persistAlignment({
-        nextLines: linesRef.current,
-        transcribeEngine: engineRef.current,
-        lyricsText: text,
-      });
+  const commitAlignedBlocks = (
+    aligned: AlignedLyricLine[],
+    opts?: {
+      transcribeEngine?: TranscribeEngine;
+      transcript?: LyricTranscript | null;
+    },
+  ) => {
+    const nextLyricsText = lyricsTextFromAlignedLines(aligned);
+    setLines(aligned);
+    setLyrics(nextLyricsText);
+    persistAlignment({
+      nextLines: aligned,
+      lyricsText: nextLyricsText,
+      transcribeEngine: opts?.transcribeEngine ?? engineRef.current,
+      transcript: opts?.transcript,
+    });
+  };
+
+  const flushScheduledAlignmentSave = () => {
+    if (alignmentSaveTimer.current) {
+      clearTimeout(alignmentSaveTimer.current);
+      alignmentSaveTimer.current = null;
+    }
+    const pending = pendingAlignmentSaveRef.current;
+    if (!pending) return;
+    pendingAlignmentSaveRef.current = null;
+    persistAlignment({
+      nextLines: pending.nextLines ?? linesRef.current,
+      transcribeEngine: engineRef.current,
+      lyricsText: pending.lyricsText,
+    });
+  };
+
+  const scheduleAlignmentSave = (patch: {
+    nextLines?: AlignedLyricLine[];
+    lyricsText?: string;
+  }) => {
+    if (!audioIdRef.current) return;
+    pendingAlignmentSaveRef.current = {
+      ...pendingAlignmentSaveRef.current,
+      ...patch,
+    };
+    if (alignmentSaveTimer.current) {
+      clearTimeout(alignmentSaveTimer.current);
+    }
+    alignmentSaveTimer.current = setTimeout(() => {
+      alignmentSaveTimer.current = null;
+      flushScheduledAlignmentSave();
     }, 400);
   };
 
-  const scheduleLinesPersist = (nextLines: AlignedLyricLine[]) => {
-    if (!audioId) return;
-    if (linesSaveTimer.current) clearTimeout(linesSaveTimer.current);
-    linesSaveTimer.current = setTimeout(() => {
-      persistAlignment({
-        nextLines,
-        transcribeEngine: engineRef.current,
-      });
-    }, 400);
-  };
+  useLayoutEffect(() => {
+    return () => {
+      flushScheduledAlignmentSave();
+    };
+  }, []);
 
   const handleAudioChange = (nextId: string) => {
     setAudioId(nextId);
@@ -3482,10 +3548,7 @@ function AlignModule(
   const runLyricsAlign = (refresh: boolean) => {
     setActiveLane("lyrics");
     props.onRun(async ({ onProgress }) => {
-      if (lyricsSaveTimer.current) {
-        clearTimeout(lyricsSaveTimer.current);
-        lyricsSaveTimer.current = null;
-      }
+      flushScheduledAlignmentSave();
       if (!mixPath) throw new Error("Select main audio first.");
       if (!vocalsPath) throw new Error("Generate a vocals stem first.");
       const nextTranscript = transcriptRef.current;
@@ -3496,7 +3559,7 @@ function AlignModule(
         throw new Error("Detect words with Whisper first.");
       }
       const apiKey = loadOpenAiApiKey() ?? "";
-      const lyricLines = parseLyricLines(lyrics);
+      const lyricLines = parseLyricLines(lyricsRef.current);
       if (lyricLines.length === 0) {
         throw new Error(
           "Paste singable lyrics — section tags like [Intro] are skipped",
@@ -3508,7 +3571,7 @@ function AlignModule(
         refresh ? "Refreshing lyric blocks…" : "Generating lyric blocks…",
       );
       const aligned = await alignLyricScript({
-        lyricsText: lyrics,
+        lyricsText: lyricsRef.current,
         segments: nextTranscript.segments,
         words: nextTranscript.words,
         durationSec: peaks.durationSec,
@@ -3516,9 +3579,7 @@ function AlignModule(
         vocalBlocks: nextTranscript.vocalBlocks,
       });
 
-      setLines(aligned);
-      persistAlignment({
-        nextLines: aligned,
+      commitAlignedBlocks(aligned, {
         transcribeEngine: engine,
         transcript: nextTranscript,
       });
@@ -3540,10 +3601,7 @@ function AlignModule(
   const runLyricsAiAlign = (refresh: boolean) => {
     setActiveLane("lyricsAi");
     props.onRun(async ({ onProgress }) => {
-      if (lyricsSaveTimer.current) {
-        clearTimeout(lyricsSaveTimer.current);
-        lyricsSaveTimer.current = null;
-      }
+      flushScheduledAlignmentSave();
       const apiKey = loadOpenAiApiKey();
       if (!apiKey) {
         throw new Error(
@@ -3559,7 +3617,7 @@ function AlignModule(
       ) {
         throw new Error("Detect words with Whisper first.");
       }
-      const lyricLines = parseLyricLines(lyrics);
+      const lyricLines = parseLyricLines(lyricsRef.current);
       if (lyricLines.length === 0) {
         throw new Error(
           "Paste singable lyrics — section tags like [Intro] are skipped",
@@ -3574,7 +3632,7 @@ function AlignModule(
 
       const peaks = await audioWaveformPeaks(mixPath, 32);
       const aligned = await alignLyricScriptWithOpenAi({
-        lyricsText: lyrics,
+        lyricsText: lyricsRef.current,
         segments: nextTranscript.segments,
         words: nextTranscript.words!,
         durationSec: peaks.durationSec,
@@ -3583,12 +3641,7 @@ function AlignModule(
         onProgress,
       });
 
-      setLines(aligned);
-      persistAlignment({
-        nextLines: aligned,
-        transcribeEngine: engineRef.current,
-        transcript: nextTranscript,
-      });
+      commitAlignedBlocks(aligned, { transcript: nextTranscript });
 
       const tagCount = aligned.filter((row) => isInaudibleLyricLine(row)).length;
       const sungCount = aligned.length - tagCount;
@@ -3650,7 +3703,7 @@ function AlignModule(
           onChange={(e) => {
             const text = e.target.value;
             setLyrics(text);
-            scheduleLyricsPersist(text);
+            scheduleAlignmentSave({ lyricsText: text });
           }}
         />
       </label>
@@ -3668,7 +3721,7 @@ function AlignModule(
           vocalBlocks={transcript?.vocalBlocks}
           onChange={(next) => {
             setLines(next);
-            scheduleLinesPersist(next);
+            scheduleAlignmentSave({ nextLines: next });
           }}
           fullMixControls={
             <select

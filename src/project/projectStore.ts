@@ -11,6 +11,7 @@ import {
   type TimelineClip,
 } from "./types";
 import {
+  enforceNonOverlappingAlignedLines,
   isInaudibleLyricText,
   reconcileAlignedLinesFromScript,
 } from "../lab/lyricAlign";
@@ -170,6 +171,8 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     slideshow,
     bakeKey,
     bakePath,
+    isAddAssetPlaceholder:
+      c.isAddAssetPlaceholder === true ? true : undefined,
   };
 }
 
@@ -410,6 +413,32 @@ export function normalizeLyricTranscript(value: unknown): LyricTranscript | null
   };
 }
 
+function needsLegacyLyricReconcile(lines: readonly AlignedLyricLine[]): boolean {
+  return lines.some(
+    (line) =>
+      isInaudibleLyricText(line.line) &&
+      line.inaudible !== true &&
+      line.endSec > line.startSec + 0.001,
+  );
+}
+
+function lyricLinesEqual(
+  a: readonly AlignedLyricLine[],
+  b: readonly AlignedLyricLine[],
+): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((line, index) => {
+    const other = b[index];
+    if (!other) return false;
+    return (
+      line.line === other.line &&
+      line.startSec === other.startSec &&
+      line.endSec === other.endSec &&
+      line.inaudible === other.inaudible
+    );
+  });
+}
+
 export function normalizeLyricAlignment(value: unknown): LyricAlignment | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
@@ -426,7 +455,11 @@ export function normalizeLyricAlignment(value: unknown): LyricAlignment | null {
   const lines = row.lines
     .map(normalizeAlignedLyricLine)
     .filter((line): line is AlignedLyricLine => line !== null);
-  const reconciled = reconcileAlignedLinesFromScript(row.lyricsText, lines);
+  const durationSec = Math.max(0, ...lines.map((line) => line.endSec), 0);
+  let finalLines = enforceNonOverlappingAlignedLines(lines, durationSec);
+  if (needsLegacyLyricReconcile(finalLines)) {
+    finalLines = reconcileAlignedLinesFromScript(row.lyricsText, finalLines);
+  }
   const transcript =
     row.transcript === undefined || row.transcript === null
       ? null
@@ -436,7 +469,7 @@ export function normalizeLyricAlignment(value: unknown): LyricAlignment | null {
     lyricsText: row.lyricsText,
     alignedAt: row.alignedAt.trim(),
     transcribeEngine,
-    lines: reconciled,
+    lines: finalLines,
     transcript,
   };
 }
@@ -913,9 +946,25 @@ export function setStoredProjectLyricAlignment(
   project: StoredProject,
   alignment: LyricAlignment | null,
 ): StoredProject {
-  const next = alignment ? normalizeLyricAlignment(alignment) : null;
+  if (!alignment) {
+    if (!project.lyricAlignment) return project;
+    return {
+      ...project,
+      lyricAlignment: null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  const next = normalizeLyricAlignment(alignment);
+  if (!next) return project;
   const prev = normalizeLyricAlignment(project.lyricAlignment);
-  if (JSON.stringify(prev) === JSON.stringify(next)) return project;
+  if (
+    prev &&
+    prev.alignedAt === next.alignedAt &&
+    prev.lyricsText === next.lyricsText &&
+    lyricLinesEqual(prev.lines, next.lines)
+  ) {
+    return project;
+  }
   return {
     ...project,
     lyricAlignment: next,

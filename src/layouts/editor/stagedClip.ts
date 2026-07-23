@@ -16,6 +16,28 @@ export type StagedClipFraming = "fit" | "fill" | "stretch";
 export type { SlideshowMode, SlideshowRecipe };
 
 export const DEFAULT_IMAGE_DURATION_SEC = 10;
+/** Fixed preview/timeline length for the add-asset placeholder clip. */
+export const ADD_ASSET_TIMELINE_DURATION_SEC = 9;
+/** Staged draft dragged from the add-asset slot onto the timeline. */
+export const ADD_ASSET_DRAG_DRAFT: StagedClipDraft = {
+  assetId: "",
+  label: "New asset",
+  kind: "image",
+  inSec: 0,
+  outSec: ADD_ASSET_TIMELINE_DURATION_SEC,
+  includeAudio: false,
+  reverse: false,
+  transform: "hold",
+  framing: "fit",
+  thumbUrl: null,
+  isAddAssetPlaceholder: true,
+};
+
+export function isAddAssetPlaceholderClip(clip: {
+  isAddAssetPlaceholder?: boolean;
+}): boolean {
+  return clip.isAddAssetPlaceholder === true;
+}
 /** Used only until source media duration is known; then Out becomes the real length. */
 export const PROVISIONAL_VIDEO_OUT_SEC = 10;
 export const PROVISIONAL_AUDIO_OUT_SEC = 30;
@@ -131,6 +153,8 @@ export type StagedClipDraft = {
   slideshow?: SlideshowRecipe;
   bakeKey?: string | null;
   bakePath?: string | null;
+  /** Placeholder clip staged from the add-asset slot (no library asset yet). */
+  isAddAssetPlaceholder?: boolean;
 };
 
 export function normalizeSlideshowRecipe(
@@ -281,6 +305,7 @@ export function applyDraftToTimelineClip(
     slideshow?: SlideshowRecipe;
     bakeKey?: string | null;
     bakePath?: string | null;
+    isAddAssetPlaceholder?: boolean;
   },
   draft: StagedClipDraft,
 ): typeof clip {
@@ -311,6 +336,10 @@ export function applyDraftToTimelineClip(
     slideshow: draft.kind === "slideshow" ? draft.slideshow : undefined,
     bakeKey: recipeChanged ? null : (draft.bakeKey ?? clip.bakeKey ?? null),
     bakePath: recipeChanged ? null : (draft.bakePath ?? clip.bakePath ?? null),
+    isAddAssetPlaceholder:
+      draft.isAddAssetPlaceholder === true
+        ? true
+        : clip.isAddAssetPlaceholder,
   };
 }
 
@@ -389,7 +418,28 @@ export function timelineClipToStagedDraft(clip: {
   slideshow?: SlideshowRecipe;
   bakeKey?: string | null;
   bakePath?: string | null;
+  isAddAssetPlaceholder?: boolean;
 }): StagedClipDraft | null {
+  if (clip.isAddAssetPlaceholder) {
+    const timelineDur = Math.max(0.1, clip.endSec - clip.startSec);
+    const inSec = Number.isFinite(clip.inSec)
+      ? Math.max(0, Number(clip.inSec))
+      : 0;
+    let outSec = Number.isFinite(clip.outSec)
+      ? Number(clip.outSec)
+      : inSec + timelineDur;
+    if (!(outSec > inSec)) outSec = inSec + timelineDur;
+    return {
+      ...ADD_ASSET_DRAG_DRAFT,
+      inSec,
+      outSec,
+      transform: clip.transform === "kenBurns" ? "kenBurns" : "hold",
+      framing: normalizeFraming(clip.framing),
+      thumbUrl: typeof clip.thumbUrl === "string" ? clip.thumbUrl : null,
+      isAddAssetPlaceholder: true,
+    };
+  }
+
   const slideshow =
     clip.kind === "slideshow"
       ? normalizeSlideshowRecipe(clip.slideshow)

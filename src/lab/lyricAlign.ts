@@ -530,6 +530,13 @@ export function mergeAlignedLyricsWithTags(
   return enforceNonOverlappingAlignedLines(out, durationSec);
 }
 
+/** Canonical lyrics script text for a stored alignment (tags + lines). */
+export function lyricsTextFromAlignedLines(
+  lines: readonly AlignedLyricLine[],
+): string {
+  return lines.map((line) => line.line).join("\n");
+}
+
 /** Fix stored alignments where Suno tags were timed as singable segments. */
 export function reconcileAlignedLinesFromScript(
   lyricsText: string,

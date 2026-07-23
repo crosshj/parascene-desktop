@@ -13,6 +13,8 @@ type FolderCardProps = {
   collageMemberIds?: readonly string[];
   /** Prefer these rows for preview URLs (avoids extra getCreation traffic). */
   creationsById?: ReadonlyMap<string, Creation>;
+  /** When filtering, show matching members instead of folder.memberCount. */
+  displayMemberCount?: number;
   onOpen: (folder: LibraryFolder) => void;
   onToggleSelect?: (folder: LibraryFolder) => void;
   onContextMenu?: (
@@ -96,12 +98,14 @@ export const FolderCard = memo(function FolderCard({
   variant = "default",
   collageMemberIds,
   creationsById,
+  displayMemberCount,
   onOpen,
   onToggleSelect,
   onContextMenu,
 }: FolderCardProps) {
   const isBoard = variant === "board";
   const thumbIds = collageMemberIds ?? folder.memberIds;
+  const memberCount = displayMemberCount ?? folder.memberCount;
   return (
     <button
       type="button"
@@ -129,7 +133,7 @@ export const FolderCard = memo(function FolderCard({
       </div>
       <span className="folder-card-title">{folder.title}</span>
       <span className="folder-card-meta muted">
-        {folder.memberCount} {folder.memberCount === 1 ? "item" : "items"}
+        {memberCount} {memberCount === 1 ? "item" : "items"}
       </span>
     </button>
   );

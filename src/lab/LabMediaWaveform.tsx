@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { audioWaveformPeaks } from "./audioTools";
+import {
+  drawScrubberWaveform,
+  prepareOverlaidWaveformPeaks,
+} from "./waveformPeakDraw";
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -21,68 +25,6 @@ function effectiveDuration(
     return decodedDuration;
   }
   return 0;
-}
-
-function drawPeaks(
-  canvas: HTMLCanvasElement,
-  peaks: number[],
-  progress: number,
-  range?: { start: number; end: number } | null,
-): void {
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || 320;
-  const cssH = canvas.clientHeight || 48;
-  if (cssW <= 0 || cssH <= 0) return;
-  canvas.width = Math.floor(cssW * dpr);
-  canvas.height = Math.floor(cssH * dpr);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cssW, cssH);
-
-  if (range && range.end > range.start) {
-    const x0 = clamp(range.start, 0, 1) * cssW;
-    const x1 = clamp(range.end, 0, 1) * cssW;
-    ctx.fillStyle = "rgba(168, 85, 247, 0.18)";
-    ctx.fillRect(x0, 0, Math.max(1, x1 - x0), cssH);
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.9)";
-    ctx.lineWidth = 1.5;
-    for (const x of [x0, x1]) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, cssH);
-      ctx.stroke();
-    }
-  }
-
-  const mid = cssH / 2;
-  const gap = 1;
-  const barW = Math.max(1, (cssW - gap * (peaks.length - 1)) / peaks.length);
-  const playedBars = Math.floor(progress * peaks.length);
-
-  peaks.forEach((p, i) => {
-    const h = Math.max(2, p * (cssH * 0.9));
-    const x = i * (barW + gap);
-    const y = mid - h / 2;
-    ctx.fillStyle =
-      i <= playedBars
-        ? "rgba(168, 85, 247, 0.95)"
-        : "rgba(138, 180, 255, 0.55)";
-    ctx.fillRect(x, y, barW, h);
-  });
-
-  const headX = clamp(progress, 0, 1) * cssW;
-  ctx.strokeStyle = "#e9d5ff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(headX, 0);
-  ctx.lineTo(headX, cssH);
-  ctx.stroke();
-
-  ctx.fillStyle = "#e9d5ff";
-  ctx.beginPath();
-  ctx.arc(headX, 4, 4, 0, Math.PI * 2);
-  ctx.fill();
 }
 
 export function PlayPauseIcon({ playing }: { playing: boolean }) {
@@ -175,7 +117,7 @@ export function LabWaveformPlayer({
     const canvas = canvasRef.current;
     const currentPeaks = peaksRef.current;
     if (!canvas || !currentPeaks?.length) return;
-    drawPeaks(canvas, currentPeaks, progressRef.current, rangeRatio);
+    drawScrubberWaveform(canvas, currentPeaks, progressRef.current, rangeRatio);
   }, [rangeRatio]);
 
   useEffect(() => {
@@ -403,20 +345,25 @@ export function LabAudioTrack({
 /** Synchronized waveform lane — no audio element; shares a parent playhead. */
 export function LabWaveformStrip({
   path,
+  overlayPath = null,
   currentSec,
   durationSec,
   onSeek,
 }: {
   path: string;
+  /** Optional vocals (or other stem) path drawn on top at a shared amplitude scale. */
+  overlayPath?: string | null;
   currentSec: number;
   durationSec: number;
   onSeek?: (sec: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const peaksRef = useRef<number[] | null>(null);
+  const overlayPeaksRef = useRef<number[] | null>(null);
   const dragRef = useRef(false);
 
   const [peaks, setPeaks] = useState<number[] | null>(null);
+  const [overlayPeaks, setOverlayPeaks] = useState<number[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const progress =
@@ -427,36 +374,61 @@ export function LabWaveformStrip({
   }, [peaks]);
 
   useEffect(() => {
+    overlayPeaksRef.current = overlayPeaks;
+  }, [overlayPeaks]);
+
+  useEffect(() => {
     let cancelled = false;
     // Intentional: reset peaks while loading a new path.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPeaks(null);
+    setOverlayPeaks(null);
     setError(null);
-    void audioWaveformPeaks(path, 160)
-      .then((next) => {
+    void (async () => {
+      try {
+        const mix = await audioWaveformPeaks(path, 160);
         if (cancelled) return;
-        setPeaks(next.peaks);
-      })
-      .catch((err) => {
+        if (overlayPath) {
+          try {
+            const overlay = await audioWaveformPeaks(overlayPath, 160);
+            if (cancelled) return;
+            const layers = prepareOverlaidWaveformPeaks(mix, overlay);
+            setPeaks(layers.mix);
+            setOverlayPeaks(layers.overlay);
+            return;
+          } catch {
+            /* overlay is optional — fall back to mix-only */
+          }
+        }
+        setPeaks(mix.peaks);
+        setOverlayPeaks(null);
+      } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
         }
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, overlayPath]);
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     const currentPeaks = peaksRef.current;
     if (!canvas || !currentPeaks?.length) return;
-    drawPeaks(canvas, currentPeaks, progress, null);
+    drawScrubberWaveform(
+      canvas,
+      currentPeaks,
+      progress,
+      null,
+      overlayPeaksRef.current,
+    );
   }, [progress]);
 
   useEffect(() => {
     redraw();
-  }, [peaks, progress, redraw]);
+  }, [peaks, overlayPeaks, progress, redraw]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -464,7 +436,7 @@ export function LabWaveformStrip({
     const ro = new ResizeObserver(() => redraw());
     ro.observe(canvas);
     return () => ro.disconnect();
-  }, [peaks, redraw]);
+  }, [peaks, overlayPeaks, redraw]);
 
   const seekFromClientX = useCallback(
     (clientX: number) => {

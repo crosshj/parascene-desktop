@@ -5,6 +5,12 @@ import type { Creation } from "./types";
 /** Match Parascene explore/create dense board (~6px gutters). */
 export const MASONRY_GAP_PX = 6;
 
+export type BoardColumnLayoutOpts = {
+  targetColumnWidthPx?: number;
+  maxColumns?: number;
+  minColumns?: number;
+};
+
 export type MasonryLayout = {
   columnCount: number;
   columnWidth: number;
@@ -62,17 +68,40 @@ export const TARGET_COLUMN_WIDTH_PX = 220;
 const MIN_COLUMNS = 2;
 const MAX_COLUMNS = 14;
 
-/** Column count from container width — scales past the old hard cap of 6. */
-export function columnCountForWidth(width: number): number {
-  if (width <= 0) return MIN_COLUMNS;
-  const count = Math.floor(
-    (width + MASONRY_GAP_PX) / (TARGET_COLUMN_WIDTH_PX + MASONRY_GAP_PX),
+/** Column count and width for a board scroller (matches VirtualCreationsGrid). */
+export function masonryBoardMetrics(
+  width: number,
+  columnLayout?: BoardColumnLayoutOpts,
+): {
+  columnCount: number;
+  columnWidth: number;
+} {
+  const columnCount = columnCountForWidth(width, columnLayout);
+  const columnWidth = Math.max(
+    1,
+    (width - MASONRY_GAP_PX * (columnCount - 1)) / columnCount,
   );
-  return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, count));
+  return { columnCount, columnWidth };
+}
+
+/** Column count from container width — scales past the old hard cap of 6. */
+export function columnCountForWidth(
+  width: number,
+  columnLayout?: BoardColumnLayoutOpts,
+): number {
+  const target = columnLayout?.targetColumnWidthPx ?? TARGET_COLUMN_WIDTH_PX;
+  const maxColumns = columnLayout?.maxColumns ?? MAX_COLUMNS;
+  const minColumns = columnLayout?.minColumns ?? MIN_COLUMNS;
+  if (width <= 0) return minColumns;
+  const count = Math.floor(
+    (width + MASONRY_GAP_PX) / (target + MASONRY_GAP_PX),
+  );
+  return Math.min(maxColumns, Math.max(minColumns, count));
 }
 
 export function useMasonryLayout(
   containerRef: RefObject<HTMLElement | null>,
+  columnLayout?: BoardColumnLayoutOpts,
 ): MasonryLayout {
   const [layout, setLayout] = useState<MasonryLayout>({
     columnCount: 5,
@@ -86,7 +115,7 @@ export function useMasonryLayout(
     const update = () => {
       const width = el.clientWidth;
       if (width <= 0) return;
-      const columnCount = columnCountForWidth(width);
+      const columnCount = columnCountForWidth(width, columnLayout);
       const columnWidth = Math.max(
         1,
         (width - MASONRY_GAP_PX * (columnCount - 1)) / columnCount,
@@ -106,7 +135,7 @@ export function useMasonryLayout(
     const observer = new ResizeObserver(update);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [containerRef]);
+  }, [columnLayout, containerRef]);
 
   return layout;
 }

@@ -6,7 +6,9 @@ import {
   filterCreations,
   filterCreationsVisible,
   folderBoardAspect,
+  boardColumnLayoutForFilter,
   folderCollageMemberIds,
+  folderFilteredMemberCount,
   folderMatchesFilters,
   isLocalOnlyCreation,
   mergeFilterCounts,
@@ -488,6 +490,41 @@ describe("folderMatchesFilters", () => {
       ),
     ).toEqual(["v1", "i1"]);
   });
+
+  it("counts only members that match the active filter", () => {
+    const largeFolder = {
+      id: "f2",
+      memberIds: ["v1", "i1", "i2", "i3"],
+      memberCount: 4,
+    };
+    expect(
+      folderFilteredMemberCount(
+        largeFolder,
+        { ...EMPTY_FILTER_TOGGLES, localOnly: true },
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        new Map([
+          ["v1", makeCreation({ id: "v1", remoteUrl: "https://x" })],
+          ["i1", makeCreation({ id: "i1", remoteUrl: null, remoteJson: null })],
+          ["i2", makeCreation({ id: "i2", remoteUrl: "https://y" })],
+          ["i3", makeCreation({ id: "i3", remoteUrl: null, remoteJson: null })],
+        ]),
+      ),
+    ).toBe(2);
+    expect(
+      folderFilteredMemberCount(
+        largeFolder,
+        EMPTY_FILTER_TOGGLES,
+        new Set(),
+        new Set(),
+        new Set(),
+        new Set(),
+        new Map(),
+      ),
+    ).toBe(4);
+  });
 });
 
 describe("folderBoardAspect", () => {
@@ -508,5 +545,15 @@ describe("folderBoardAspect", () => {
       packHeight: 9 / 16,
       aspectCss: "16 / 9",
     });
+  });
+});
+
+describe("boardColumnLayoutForFilter", () => {
+  it("widens cinema tiles with fewer columns", () => {
+    const cinema = boardColumnLayoutForFilter("aspect169");
+    expect(cinema).not.toBeNull();
+    expect(cinema!.targetColumnWidthPx).toBeGreaterThan(250);
+    expect(cinema!.maxColumns).toBe(5);
+    expect(boardColumnLayoutForFilter("all")).toBeNull();
   });
 });

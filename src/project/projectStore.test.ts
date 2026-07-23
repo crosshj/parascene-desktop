@@ -529,6 +529,34 @@ describe("projectStore", () => {
     ).toBe("draft");
   });
 
+  it("preserves updated block timings when re-saving alignment", () => {
+    let a = createStoredProject("Demo", ["audio-1"]);
+    a = setStoredProjectLyricAlignment(a, {
+      sourceAudioCreationId: "audio-1",
+      lyricsText: "Line one",
+      alignedAt: "2026-07-21T12:00:00.000Z",
+      transcribeEngine: "openai",
+      lines: [{ line: "Line one", startSec: 1, endSec: 2 }],
+    });
+    a = setStoredProjectLyricAlignment(a, {
+      sourceAudioCreationId: "audio-1",
+      lyricsText: "Line one",
+      alignedAt: "2026-07-21T12:01:00.000Z",
+      transcribeEngine: "openai",
+      lines: [{ line: "Line one", startSec: 8.5, endSec: 11.25 }],
+    });
+    expect(a.lyricAlignment?.lines[0]).toMatchObject({
+      line: "Line one",
+      startSec: 8.5,
+      endSec: 11.25,
+    });
+    saveStoredProjects([a]);
+    expect(loadStoredProjects()[0].lyricAlignment?.lines[0]).toMatchObject({
+      startSec: 8.5,
+      endSec: 11.25,
+    });
+  });
+
   it("persists Whisper transcript with lyric alignment", () => {
     let a = createStoredProject("Demo", ["audio-1"]);
     a = setStoredProjectLyricAlignment(a, {

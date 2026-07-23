@@ -349,11 +349,30 @@ export function LabLyricCaptionEditor(props: {
 
       <div className="lab-timeline-stack">
         <div className="lab-timeline-lane">
-          <LaneHead label="Full mix" controls={fullMixControls} />
+          <LaneHead
+            label="Full mix"
+            controls={
+              <>
+                {fullMixControls}
+                {vocalsPath ? (
+                  <span
+                    className="lab-waveform-overlay-legend muted"
+                    title="Light purple overlay is the vocals stem on the same amplitude scale as the full mix"
+                  >
+                    <span className="lab-waveform-overlay-swatch is-mix" aria-hidden />
+                    mix
+                    <span className="lab-waveform-overlay-swatch is-vocals" aria-hidden />
+                    vocals
+                  </span>
+                ) : null}
+              </>
+            }
+          />
           <div className="lab-timeline-lane-body">
             {audioPath ? (
               <LabWaveformStrip
                 path={audioPath}
+                overlayPath={vocalsPath}
                 currentSec={currentSec}
                 durationSec={effectiveDurationSec}
                 onSeek={seek}
@@ -370,12 +389,9 @@ export function LabLyricCaptionEditor(props: {
           <LaneHead label="Vocals stem" controls={vocalsControls} />
           <div className="lab-timeline-lane-body">
             {vocalsPath ? (
-              <LabWaveformStrip
-                path={vocalsPath}
-                currentSec={currentSec}
-                durationSec={effectiveDurationSec}
-                onSeek={seek}
-              />
+              <div className="lab-timeline-lane-empty muted">
+                Vocals waveform is overlaid on the full mix lane above (light purple).
+              </div>
             ) : (
               <div className="lab-timeline-lane-empty muted">
                 Generate a vocals stem to preview isolated vocals.

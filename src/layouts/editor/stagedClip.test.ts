@@ -148,6 +148,25 @@ describe("stagedClip", () => {
     expect(timelineClipToStagedDraft({ label: "x", startSec: 0, endSec: 1 })).toBeNull();
   });
 
+  it("maps add-asset placeholder timeline clips into a staged draft", () => {
+    const draft = timelineClipToStagedDraft({
+      label: "9.0s",
+      kind: "image",
+      startSec: 4,
+      endSec: 13,
+      inSec: 0,
+      outSec: 9,
+      isAddAssetPlaceholder: true,
+    });
+    expect(draft).toMatchObject({
+      assetId: "",
+      kind: "image",
+      inSec: 0,
+      outSec: 9,
+      isAddAssetPlaceholder: true,
+    });
+  });
+
   it("treats audio-lane clips as audio (no include-audio)", () => {
     const draft = timelineClipToStagedDraft({
       assetId: "a1",

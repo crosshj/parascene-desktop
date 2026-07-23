@@ -114,6 +114,8 @@ export async function deleteAudioClip(clipId: string): Promise<void> {
 export type WaveformPeaks = {
   peaks: number[];
   durationSec: number;
+  /** Peak bucket max before per-file normalization (for shared-scale overlays). */
+  amplitudeMax: number;
 };
 
 export async function audioWaveformPeaks(
