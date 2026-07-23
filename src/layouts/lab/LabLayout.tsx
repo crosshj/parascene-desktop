@@ -3455,6 +3455,7 @@ function AlignModule(
     return () => {
       flushScheduledAlignmentSave();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- unmount flush only
   }, []);
 
   const handleAudioChange = (nextId: string) => {

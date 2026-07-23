@@ -25,6 +25,7 @@ export type SkeletonTileLayout = {
 };
 
 /** Enough tiles to cover the visible grid plus generous overscroll. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function skeletonTileCount(
   width: number,
   height: number,
@@ -45,6 +46,7 @@ export function skeletonTileCount(
 }
 
 /** Pack skeleton tiles with the same column math as VirtualCreationsGrid. */
+// eslint-disable-next-line react-refresh/only-export-components
 export function layoutSkeletonBoard(
   tileCount: number,
   width: number,

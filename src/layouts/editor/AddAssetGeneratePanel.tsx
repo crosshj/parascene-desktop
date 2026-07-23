@@ -147,7 +147,7 @@ export function AddAssetGeneratePanel({
       ? resolveLyricsForTimeRange(aligned, range.startSec, range.endSec)
       : "";
     return { songRange: range, lyricsText: text };
-  }, [timeline, timelineKey, clip, mainAudioCreationId, lyricAlignment, pullEpoch]);
+  }, [timeline, clip, mainAudioCreationId, lyricAlignment]);
 
   const [prompt, setPrompt] = useState(LAB_A2V_PROMPT);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(() =>
