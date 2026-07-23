@@ -269,6 +269,66 @@ export type StoryboardBudget = {
   }>;
 };
 
+/** One executable generation step in the MV Build plan. */
+export type GenerationStepKind =
+  | "create_still"
+  | "create_video"
+  | "a2v"
+  | "pull_frame"
+  | "place_clip"
+  | "noop";
+
+export type GenerationStepStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "failed"
+  | "skipped";
+
+export type VideoStillSourceMode =
+  | "prompt_only"
+  | "previous_video_frame"
+  | "group_still"
+  | "project_image";
+
+/** Which image seeds a generation step (still, a2v, or i2v). */
+export type VideoStillSource = {
+  mode: VideoStillSourceMode;
+  /** For group_still — plan step id (defaults to the group's master still). */
+  stillStepId?: string;
+  /** For project_image — Parascene image creation id. */
+  creationId?: string;
+};
+
+export type StoryboardGenerationStep = {
+  id: string;
+  kind: GenerationStepKind;
+  label: string;
+  sceneId?: string;
+  visualGroupId?: string;
+  status: GenerationStepStatus;
+  /** Parascene creation id when the step produced or was linked to an asset. */
+  creationId?: string;
+  dependsOn: string[];
+  prompt?: string;
+  vocalSlice?: { inSec: number; outSec: number };
+  /** For a2v / i2v: the shared still step id. */
+  stillStepId?: string;
+  /** For place_clip: the video or still step that supplies the asset. */
+  sourceStepId?: string;
+  /** How this step resolves its reference still/frame (video gen or image mutate). */
+  stillSource?: VideoStillSource;
+  error?: string;
+  completedAt?: string;
+};
+
+export type StoryboardGenerationPlan = {
+  builtAt: string;
+  /** Changes when scenes or visual groups change — triggers plan refresh. */
+  proposalFingerprint: string;
+  steps: StoryboardGenerationStep[];
+};
+
 export type StoryboardProposal = {
   sourceAudioCreationId: string;
   durationSec: number;
@@ -283,6 +343,8 @@ export type StoryboardProposal = {
   notes?: string;
   uniqueStillCount?: number;
   uniqueVideoMasterCount?: number;
+  /** MV Build — resolved generation steps + user progress. */
+  generationPlan?: StoryboardGenerationPlan;
 };
 
 export type { ProjectAspectRatio };

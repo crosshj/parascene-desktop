@@ -142,6 +142,13 @@ export async function bakeClipExtend(opts: {
   return { path, mediaUrl: mediaUrlFor(path) };
 }
 
+/** Pull the last readable frame from a local video (time clamped in Rust). */
+export async function extractVideoLastFrame(
+  sourcePath: string,
+): Promise<{ path: string; mediaUrl: string; timeSec: number }> {
+  return extractVideoFrame({ sourcePath, timeSec: 1e9 });
+}
+
 /** Full-resolution JPEG still from a local video at `timeSec` (Lab → Pull frame). */
 export async function extractVideoFrame(opts: {
   sourcePath: string;

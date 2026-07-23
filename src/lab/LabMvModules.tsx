@@ -292,26 +292,35 @@ export function MvConceptModule(
             />
           </label>
 
-          <div className="lab-mv-tabs" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "explore"}
-              className={tab === "explore" ? "is-active" : ""}
-              onClick={() => setTab("explore")}
-            >
-              Explore with AI
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "manual"}
-              className={tab === "manual" ? "is-active" : ""}
-              onClick={() => setTab("manual")}
-            >
-              I have my direction
-            </button>
-          </div>
+          <fieldset className="lab-mv-mode">
+            <legend>Concept approach</legend>
+            <div className="lab-mv-tabs" role="radiogroup" aria-label="Concept approach">
+              <label
+                className={tab === "explore" ? "is-active" : ""}
+              >
+                <input
+                  type="radio"
+                  name="mv-concept-mode"
+                  className="sr-only"
+                  checked={tab === "explore"}
+                  onChange={() => setTab("explore")}
+                />
+                Explore with AI
+              </label>
+              <label
+                className={tab === "manual" ? "is-active" : ""}
+              >
+                <input
+                  type="radio"
+                  name="mv-concept-mode"
+                  className="sr-only"
+                  checked={tab === "manual"}
+                  onChange={() => setTab("manual")}
+                />
+                I have my direction
+              </label>
+            </div>
+          </fieldset>
 
           {tab === "explore" ? (
             <>
@@ -816,6 +825,7 @@ export function MvScenesModule(
     labStillPrompt: string | null;
     labAnimatePrompt: string | null;
     onStoryboardProposalChange: (proposal: StoryboardProposal) => void;
+    onContinue?: () => void;
   } & MvModuleChrome,
 ) {
   const alignment = matchingAlignment(props.lyricAlignment, props.mainAudioId);
@@ -941,6 +951,15 @@ export function MvScenesModule(
             >
               Export production manifest
             </button>
+            {props.onContinue ? (
+              <button
+                type="button"
+                className="lab-secondary-btn"
+                onClick={() => props.onContinue?.()}
+              >
+                Continue to MV Build
+              </button>
+            ) : null}
           </div>
         </>
       ) : null}

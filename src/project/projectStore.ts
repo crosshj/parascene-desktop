@@ -7,6 +7,7 @@ import {
   type Project,
   type ProjectAsset,
   type SlideshowRecipe,
+  type StoryboardGenerationPlan,
   type StoryboardProposal,
   type TimelineClip,
 } from "./types";
@@ -984,6 +985,22 @@ export function setStoredProjectStoryboardProposal(
     storyboardProposal: next,
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** Apply a generation-plan update against the latest stored storyboard proposal. */
+export function patchStoredProjectStoryboardGenerationPlan(
+  project: StoredProject,
+  mutate: (
+    plan: StoryboardGenerationPlan | undefined,
+    proposal: StoryboardProposal,
+  ) => StoryboardGenerationPlan,
+): StoredProject {
+  const proposal = normalizeStoryboardProposal(project.storyboardProposal);
+  if (!proposal) return project;
+  return setStoredProjectStoryboardProposal(project, {
+    ...proposal,
+    generationPlan: mutate(proposal.generationPlan, proposal),
+  });
 }
 
 export function setStoredProjectLabStoryboardDirection(

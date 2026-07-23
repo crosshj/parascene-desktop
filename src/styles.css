@@ -5835,7 +5835,8 @@ body.is-timeline-clip-moving * {
 
 .lab-form.lab-isolate,
 .lab-form.lab-align,
-.lab-form.lab-mv-scenes {
+.lab-form.lab-mv-scenes,
+.lab-form.lab-mv-build {
   max-width: none;
   width: 100%;
 }
@@ -7001,25 +7002,63 @@ body.is-timeline-clip-moving * {
 }
 
 /* MV storyboard Lab modules */
-.lab-mv-tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin: 0.75rem 0;
+.lab-mv-mode {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
 }
 
-.lab-mv-tabs button {
+.lab-mv-mode legend {
+  padding: 0;
+  margin-bottom: 0.45rem;
+  font-size: 0.85rem;
+  color: var(--muted, #9aa3b5);
+}
+
+.lab-mv-tabs {
+  display: inline-flex;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid #2a2f3a;
+  background: #0a0c10;
+  overflow: hidden;
+}
+
+.lab-mv-tabs label {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
   padding: 0.45rem 0.75rem;
-  border-radius: 6px;
-  border: 1px solid var(--border, #333);
+  border: 0;
+  border-radius: 0;
   background: transparent;
-  color: inherit;
+  color: #9aa3b5;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  text-align: center;
   cursor: pointer;
 }
 
-.lab-mv-tabs button.is-active {
-  background: rgba(96, 165, 250, 0.2);
-  border-color: rgba(96, 165, 250, 0.65);
+.lab-mv-tabs label + label {
+  border-left: 1px solid #2a2f3a;
+}
+
+.lab-mv-tabs label.is-active {
+  background: rgba(96, 165, 250, 0.18);
+  color: #dbeafe;
+}
+
+.lab-mv-tabs label:hover {
+  color: #e2e8f0;
+}
+
+.lab-mv-tabs label:has(:focus-visible) {
+  outline: 2px solid rgba(96, 165, 250, 0.65);
+  outline-offset: -2px;
+  z-index: 1;
 }
 
 .lab-mv-feasibility {
@@ -7119,6 +7158,159 @@ body.is-timeline-clip-moving * {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.75rem;
+}
+
+.lab-form.lab-mv-build {
+  display: grid;
+  gap: 0.75rem;
+  box-sizing: border-box;
+}
+
+.lab-mv-build-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.lab-mv-build-summary {
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #2a2f3a;
+  background: #0a0c10;
+}
+
+.lab-mv-build-summary p {
+  margin: 0;
+}
+
+.lab-mv-build-still-cell {
+  min-width: 12rem;
+  width: 22%;
+}
+
+.lab-mv-build-still-pick {
+  width: 100%;
+  max-width: none;
+  font-size: 0.78rem;
+}
+
+.lab-mv-build-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.lab-mv-build-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.lab-mv-build-table th:nth-child(1),
+.lab-mv-build-table td:nth-child(1) {
+  width: 44%;
+}
+
+.lab-mv-build-table th:nth-child(2),
+.lab-mv-build-table td:nth-child(2) {
+  width: 5rem;
+}
+
+.lab-mv-build-table th:nth-child(3),
+.lab-mv-build-table td:nth-child(3) {
+  width: 22%;
+}
+
+.lab-mv-build-table th:nth-child(4),
+.lab-mv-build-table td:nth-child(4) {
+  width: 6.5rem;
+}
+
+.lab-mv-build-table th:nth-child(5),
+.lab-mv-build-table td:nth-child(5) {
+  width: auto;
+}
+
+.lab-mv-build-table th,
+.lab-mv-build-table td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid #2a2f3a;
+  text-align: left;
+  vertical-align: top;
+}
+
+.lab-mv-build-table tr.is-done {
+  opacity: 0.75;
+}
+
+.lab-mv-build-table tr.is-blocked {
+  opacity: 0.55;
+}
+
+.lab-mv-build-step-label {
+  font-weight: 500;
+}
+
+.lab-mv-build-step-meta {
+  font-size: 0.78rem;
+  margin-top: 0.15rem;
+}
+
+.lab-mv-build-step-error {
+  color: #f87171;
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.lab-mv-build-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.lab-mv-build-btn-sm {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.78rem;
+}
+
+.lab-mv-build-asset-pick {
+  max-width: 12rem;
+  font-size: 0.78rem;
+}
+
+.lab-mv-build-status {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.lab-mv-build-status-pending {
+  background: #2a2f3a;
+  color: #9ca3af;
+}
+
+.lab-mv-build-status-running {
+  background: #1e3a5f;
+  color: #93c5fd;
+}
+
+.lab-mv-build-status-done {
+  background: #14532d;
+  color: #86efac;
+}
+
+.lab-mv-build-status-failed {
+  background: #450a0a;
+  color: #fca5a5;
+}
+
+.lab-mv-build-status-skipped {
+  background: #1f2937;
+  color: #9ca3af;
 }
 
 .lab-storyboard-editor {

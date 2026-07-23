@@ -15,6 +15,7 @@ const ready: LabGateContext = {
   hasAlignedSungLines: true,
   hasLockedStoryboardConcept: true,
   hasStoryboardBudget: true,
+  hasStoryboardScenes: true,
 };
 
 describe("labModuleGate", () => {
@@ -41,6 +42,18 @@ describe("labModuleGate", () => {
       hasStoryboardBudget: false,
     });
     expect(gate?.navBlurb).toMatch(/MV Budget/i);
+  });
+
+  it("blocks mvBuild when scenes are missing", () => {
+    const gate = labModuleGate("mvBuild", {
+      ...ready,
+      hasStoryboardScenes: false,
+    });
+    expect(gate?.navBlurb).toMatch(/MV Scenes/i);
+  });
+
+  it("allows mvBuild when prerequisites are met", () => {
+    expect(labModuleGate("mvBuild", ready)).toBeNull();
   });
   it("blocks a2v when demucs is missing", () => {
     const gate = labModuleGate("a2v", { ...ready, demucsReady: false });

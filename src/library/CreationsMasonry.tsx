@@ -155,16 +155,9 @@ export function usePackedColumns(
     });
   }
 
-  const aspectKey = items
-    .map(
-      (c) =>
-        `${c.id}:${c.aspectRatio ?? ""}:${c.width ?? ""}:${c.height ?? ""}`,
-    )
-    .join("|");
-
   return useMemo(
     () => packByAspectStable(items, layout, packState.assignment),
-    // assignment map is mutated in place; columnCount/items/aspect drive recompute
-    [items, layout, packState.assignment, aspectKey],
+    // assignment map is mutated in place; columnCount/items drive recompute
+    [items, layout, packState.assignment],
   );
 }
