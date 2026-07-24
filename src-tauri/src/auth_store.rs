@@ -1,6 +1,7 @@
 //! Session secret storage + single-flight OAuth refresh.
 //!
-//! - **Release builds**: macOS Keychain (`keyring`).
+//! - **Release builds**: OS secure store via `keyring` (macOS Keychain / Windows
+//!   Credential Manager).
 //! - **Debug builds** (`tauri dev` / debug profile): SQLite `sync_meta` in the local
 //!   catalog DB — avoids repeated Keychain unlock prompts during development.
 //!

@@ -1,13 +1,13 @@
 # Parascene Desktop
 
-macOS shell for Parascene (Tauri 2 + React + TypeScript). This pass scaffolds the product shell — not video editing.
+Desktop shell for Parascene (Tauri 2 + React + TypeScript) on **macOS** and **Windows**.
 
 ## Prerequisites
 
-- macOS
-- Xcode Command Line Tools (`xcode-select --install`)
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`)
+- **Windows:** [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the “Desktop development with C++” workload (for local builds). The NSIS installer installs WebView2 automatically if missing.
 - Node.js 20+
-- Rust via **rustup** (stable): https://rustup.rs — Homebrew’s older `rust` formula is often too old for Tauri 2
+- Rust via **rustup** (stable): https://rustup.rs — put `~/.cargo/bin` (or `%USERPROFILE%\.cargo\bin`) ahead of Homebrew’s older `rust` formula when both are installed
 - **Local media tools** (FFmpeg, Demucs for Lab vocals/a2v): see [LOCAL_TOOLS.md](LOCAL_TOOLS.md) — also **Settings → Local tools** in the app
 
 ## Install
@@ -27,8 +27,8 @@ http://127.0.0.1:17423/oauth/callback
 
 | Script | Purpose |
 |--------|---------|
-| `npm run dev` | Run the macOS app (needs Rust — see Prerequisites) |
-| `npm run build` | Production macOS bundle (DMG) |
+| `npm run dev` | Run the desktop app (needs Rust — see Prerequisites) |
+| `npm run build` | Production bundle (DMG on macOS, NSIS `.exe` on Windows) |
 | `npm run test` | Vitest |
 | `npm run lint` / `npm run typecheck` | Quality gates |
 
@@ -42,31 +42,43 @@ Matches [Log in with Parascene](https://www.parascene.com/help/developer/login-w
 2. System browser opens **Parascene** `/oauth/authorize` (consent / trust this app)
 3. After approve, browser returns to the app via loopback `http://127.0.0.1:17423/oauth/callback`
 4. App exchanges the auth code with Parascene `/oauth/token` using PKCE only (no developer API key)
-5. Access/refresh tokens + userinfo are stored in the **macOS Keychain** (release builds). In **debug** (`tauri dev`), they live in `~/Movies/Parascene/Library/catalog.sqlite` so Keychain does not prompt on every restart.
+5. Access/refresh tokens + userinfo are stored in the OS secure store in **release** builds (macOS Keychain / Windows Credential Manager). In **debug** (`tauri dev`), they live in the local catalog SQLite (`…/Parascene/Library/catalog.sqlite`) so the secure store does not prompt on every restart.
 6. Further Parascene API calls go through `src/sdk/parascene.ts`
 
-## Download & install (Release DMG)
+## Download & install
 
-1. Open the repo **Releases** page and download the DMG from **Desktop — latest main** (or a `desktop-v*` release).
-2. Open the DMG and drag **Parascene** into **Applications**.
-3. Clear Gatekeeper quarantine (unsigned builds look “damaged” otherwise):
+Open the repo **Releases** page and download from **Desktop — latest main** (or a `desktop-v*` release).
+
+### macOS (Apple Silicon DMG)
+
+1. Open the DMG and drag **Parascene** into **Applications**.
+2. Clear Gatekeeper quarantine (unsigned builds look “damaged” otherwise):
 
 ```bash
 xattr -cr /Applications/Parascene.app
 ```
 
-4. Open Parascene from Applications (or Spotlight).
+3. Open Parascene from Applications (or Spotlight).
 
-Alternative to step 3: Right-click the app → **Open** → **Open**.
+Alternative to step 2: Right-click the app → **Open** → **Open**.
+
+### Windows (x64 NSIS)
+
+1. Run the `.exe` installer.
+2. If SmartScreen warns (unsigned builds), choose **More info** → **Run anyway**.
+3. WebView2 is installed automatically when missing.
 
 ## Releases / CI
 
-GitHub Actions workflow: `.github/workflows/macos-desktop.yml`
+GitHub Actions:
 
-- Pushes to `main` update prerelease **Desktop — latest main** (`desktop-latest`) with the DMG.
-- Push a `desktop-v*` tag for a versioned release.
-- PRs also upload workflow **Artifacts**; prefer the Releases DMG for sharing.
-- Builds are unsigned Apple Silicon (`macos-14`). Codesign + notarization come later.
+- `.github/workflows/macos-desktop.yml` — Apple Silicon DMG
+- `.github/workflows/windows-desktop.yml` — Windows x64 NSIS
+
+- Pushes to `main` update prerelease **Desktop — latest main** (`desktop-latest`) with both platform installers.
+- Push a `desktop-v*` tag for a versioned release (both workflows attach artifacts).
+- PRs also upload workflow **Artifacts**; prefer the Releases page for sharing.
+- Builds are **unsigned**. Codesign / Authenticode come later.
 
 ## Chrome & layouts
 
@@ -82,10 +94,10 @@ Fixtures under `src/fixtures/` still back the Project workspace mock. The Librar
 
 ## Local data root
 
-On first Library open the app creates:
+On first Library open the app creates (under the OS videos folder — `~/Movies` on macOS, `Videos` on Windows):
 
 ```text
-~/Movies/Parascene/
+…/Parascene/
   Library/          # durable media + catalog.sqlite
   Projects/
   Exports/

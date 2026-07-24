@@ -4,13 +4,18 @@ use std::path::PathBuf;
 use std::process::Command;
 
 pub fn resolve_ffmpeg() -> Option<PathBuf> {
-    let candidates = [
-        "ffmpeg",
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-    ];
-    for c in candidates {
-        let path = PathBuf::from(c);
+    let mut candidates: Vec<PathBuf> = vec![PathBuf::from("ffmpeg")];
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(PathBuf::from("ffmpeg.exe"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+        candidates.push(PathBuf::from("/usr/local/bin/ffmpeg"));
+    }
+
+    for path in candidates {
         let ok = Command::new(&path)
             .arg("-version")
             .stdout(std::process::Stdio::null())
@@ -19,11 +24,7 @@ pub fn resolve_ffmpeg() -> Option<PathBuf> {
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            return Some(if c == "ffmpeg" {
-                PathBuf::from("ffmpeg")
-            } else {
-                path
-            });
+            return Some(path);
         }
     }
     None

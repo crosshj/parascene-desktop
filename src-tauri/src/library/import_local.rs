@@ -234,53 +234,10 @@ pub async fn library_import_from_disk(app: AppHandle) -> Result<ImportLocalResul
 }
 
 fn pick_media_files() -> Result<Option<Vec<PathBuf>>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        pick_media_files_macos()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Add from disk is currently only supported on macOS".into())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn pick_media_files_macos() -> Result<Option<Vec<PathBuf>>, String> {
-    // Native picker via osascript (avoids dialog crates that need newer Cargo).
     // Extension filtering happens in `media_type_for_path` after selection.
-    let script = r#"
-try
-  set theFiles to choose file with prompt "Add files to Library" with multiple selections allowed
-  set out to ""
-  repeat with aFile in theFiles
-    set out to out & (POSIX path of aFile) & linefeed
-  end repeat
-  return out
-on error number -128
-  return ""
-end try
-"#;
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Could not open file picker: {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("File picker failed: {err}"));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let paths: Vec<PathBuf> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect();
-    if paths.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(paths))
-    }
+    Ok(rfd::FileDialog::new()
+        .set_title("Add files to Library")
+        .pick_files())
 }
 
 /// Import explicit filesystem paths (useful for tests / automation).

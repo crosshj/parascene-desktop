@@ -1027,6 +1027,8 @@ function CreationsPanel({
     useState(() =>
       folderNeedsMemberCreations(togglesFromFilterId(creationsFilterId)),
     );
+  /** Membership snapshot last successfully loaded for the home folder filter. */
+  const [folderFilterFetchedKey, setFolderFilterFetchedKey] = useState("");
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [pickFolderOpen, setPickFolderOpen] = useState(false);
   const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
@@ -1154,19 +1156,20 @@ function CreationsPanel({
   );
   const needsFolderMemberFilter = folderNeedsMemberCreations(gridFilters);
   const folderFilterCacheRef = useRef<Map<string, Creation>>(new Map());
-  const folderFilterFetchKeyRef = useRef<string>("");
 
   if (folderView || !needsFolderMemberFilter) {
     if (folderFilterMembersLoading) setFolderFilterMembersLoading(false);
+    if (folderFilterFetchedKey !== "") setFolderFilterFetchedKey("");
   } else if (folders.length === 0 && !foldersLoading) {
     if (folderFilterMembersById.size > 0) {
       setFolderFilterMembersById(new Map());
     }
     if (folderFilterMembersLoading) setFolderFilterMembersLoading(false);
+    if (folderFilterFetchedKey !== "") setFolderFilterFetchedKey("");
   } else if (
     needsFolderMemberFilter &&
     folders.length > 0 &&
-    folderFilterFetchKeyRef.current !== homeFolderMemberIdsKey &&
+    folderFilterFetchedKey !== homeFolderMemberIdsKey &&
     !folderFilterMembersLoading
   ) {
     // Folders arrived / changed before the effect — hold filtered board.
@@ -1176,7 +1179,6 @@ function CreationsPanel({
   useEffect(() => {
     if (folderView || !needsFolderMemberFilter) return;
     if (folders.length === 0) {
-      folderFilterFetchKeyRef.current = "";
       return;
     }
 
@@ -1190,17 +1192,17 @@ function CreationsPanel({
         if (row) next.set(id, row);
       }
       setFolderFilterMembersById(next);
+      setFolderFilterFetchedKey(fetchKey);
       setFolderFilterMembersLoading(false);
     };
 
     // Same membership snapshot already loaded — avoid setState churn / loops.
-    if (folderFilterFetchKeyRef.current === fetchKey) {
+    if (folderFilterFetchedKey === fetchKey) {
       return;
     }
 
     const missing = ids.filter((id) => !cache.has(id));
     if (missing.length === 0) {
-      folderFilterFetchKeyRef.current = fetchKey;
       publishFromCache();
       return;
     }
@@ -1215,13 +1217,12 @@ function CreationsPanel({
       .then((rows) => {
         if (cancelled) return;
         for (const row of rows) cache.set(row.id, row);
-        folderFilterFetchKeyRef.current = fetchKey;
         publishFromCache();
       })
       .catch((error) => {
         console.error("Failed to load folder members for filter", error);
         if (cancelled) return;
-        folderFilterFetchKeyRef.current = "";
+        setFolderFilterFetchedKey("");
         setFolderFilterMembersLoading(false);
       });
 
@@ -1229,6 +1230,7 @@ function CreationsPanel({
       cancelled = true;
     };
   }, [
+    folderFilterFetchedKey,
     folderView,
     folders,
     homeFolderMemberIdsKey,

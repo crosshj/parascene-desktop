@@ -1440,45 +1440,14 @@ fn default_export_name(project_title: &str, render: &TimelineRender) -> String {
 }
 
 fn pick_export_destination(default_name: &str) -> Result<Option<PathBuf>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        pick_export_destination_macos(default_name)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = default_name;
-        Err("Save to disk is currently only supported on macOS".into())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn pick_export_destination_macos(default_name: &str) -> Result<Option<PathBuf>, String> {
-    // Native save panel via osascript (same approach as library import picker).
-    let escaped = default_name.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        r#"
-try
-  set theFile to choose file name with prompt "Save render" default name "{escaped}"
-  return POSIX path of theFile
-on error number -128
-  return ""
-end try
-"#
-    );
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Could not open save dialog: {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Save dialog failed: {err}"));
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
+    let Some(mut path) = rfd::FileDialog::new()
+        .set_title("Save render")
+        .set_file_name(default_name)
+        .add_filter("MP4 video", &["mp4"])
+        .save_file()
+    else {
         return Ok(None);
-    }
-    let mut path = PathBuf::from(text);
+    };
     if path
         .extension()
         .and_then(|ext| ext.to_str())

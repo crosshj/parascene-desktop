@@ -54,11 +54,44 @@ fn tool(
     }
 }
 
-/// Resolve `demucs` for Lab vocals — PATH plus common user/Homebrew bins.
+fn ffmpeg_install_hint() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "winget install ffmpeg"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "brew install ffmpeg"
+    }
+}
+
+fn ffmpeg_missing_detail() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "Not found on PATH"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "Not found on PATH or Homebrew locations"
+    }
+}
+
+fn pip_install_hint(package: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!("python -m pip install --user {package}")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("python3 -m pip install --user {package}")
+    }
+}
+
+/// Resolve `demucs` for Lab vocals — PATH plus common user bins.
 pub(crate) fn resolve_demucs() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    if let Some(p) = which_on_augmented_path("demucs") {
+    if let Some(p) = probe_on_augmented_path("demucs") {
         candidates.push(p);
     }
 
@@ -67,32 +100,51 @@ pub(crate) fn resolve_demucs() -> Option<PathBuf> {
         candidates.push(home.join(".local/bin/demucs"));
         // Dedicated Parascene / agent venv (pipx-style install on PEP 668 Homebrew Python).
         candidates.push(home.join(".local/share/demucs-venv/bin/demucs"));
-        // ~/Library/Python/3.x/bin/demucs
-        let py_root = home.join("Library/Python");
-        if let Ok(entries) = std::fs::read_dir(&py_root) {
-            for entry in entries.flatten() {
-                let bin = entry.path().join("bin/demucs");
-                candidates.push(bin);
+        #[cfg(target_os = "macos")]
+        {
+            // ~/Library/Python/3.x/bin/demucs
+            let py_root = home.join("Library/Python");
+            if let Ok(entries) = std::fs::read_dir(&py_root) {
+                for entry in entries.flatten() {
+                    candidates.push(entry.path().join("bin/demucs"));
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // %APPDATA%\Python\Python3x\Scripts\demucs.exe
+            if let Some(data) = dirs::data_dir() {
+                let py_root = data.join("Python");
+                if let Ok(entries) = std::fs::read_dir(&py_root) {
+                    for entry in entries.flatten() {
+                        let scripts = entry.path().join("Scripts");
+                        candidates.push(scripts.join("demucs.exe"));
+                        candidates.push(scripts.join("demucs"));
+                    }
+                }
             }
         }
     }
 
-    candidates.push(PathBuf::from("/opt/homebrew/bin/demucs"));
-    candidates.push(PathBuf::from("/usr/local/bin/demucs"));
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/demucs"));
+        candidates.push(PathBuf::from("/usr/local/bin/demucs"));
+    }
 
     for path in candidates {
-        if demucs_runs(&path) {
+        if cli_runs(&path) {
             return Some(path);
         }
     }
     None
 }
 
-fn demucs_runs(path: &Path) -> bool {
+fn cli_runs(path: &Path) -> bool {
     if path.as_os_str().is_empty() {
         return false;
     }
-    // `demucs` with no args often exits non-zero; --help is enough to prove the CLI.
+    // Many CLIs exit non-zero with no args; --help is enough to prove the binary.
     Command::new(path)
         .arg("--help")
         .stdout(std::process::Stdio::null())
@@ -102,91 +154,115 @@ fn demucs_runs(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn whisper_runs(path: &Path) -> bool {
-    if path.as_os_str().is_empty() {
-        return false;
-    }
-    Command::new(path)
-        .arg("--help")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Resolve `whisper` for Lab lyric align — PATH plus common user/Homebrew bins.
+/// Resolve `whisper` for Lab lyric align — PATH plus common user bins.
 pub(crate) fn resolve_whisper() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    if let Some(p) = which_on_augmented_path("whisper") {
+    if let Some(p) = probe_on_augmented_path("whisper") {
         candidates.push(p);
     }
 
     if let Some(home) = dirs_home() {
         candidates.push(home.join(".local/bin/whisper"));
-        let py_root = home.join("Library/Python");
-        if let Ok(entries) = std::fs::read_dir(&py_root) {
-            for entry in entries.flatten() {
-                candidates.push(entry.path().join("bin/whisper"));
+        #[cfg(target_os = "macos")]
+        {
+            let py_root = home.join("Library/Python");
+            if let Ok(entries) = std::fs::read_dir(&py_root) {
+                for entry in entries.flatten() {
+                    candidates.push(entry.path().join("bin/whisper"));
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(data) = dirs::data_dir() {
+                let py_root = data.join("Python");
+                if let Ok(entries) = std::fs::read_dir(&py_root) {
+                    for entry in entries.flatten() {
+                        let scripts = entry.path().join("Scripts");
+                        candidates.push(scripts.join("whisper.exe"));
+                        candidates.push(scripts.join("whisper"));
+                    }
+                }
             }
         }
     }
 
-    candidates.push(PathBuf::from("/opt/homebrew/bin/whisper"));
-    candidates.push(PathBuf::from("/usr/local/bin/whisper"));
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/whisper"));
+        candidates.push(PathBuf::from("/usr/local/bin/whisper"));
+    }
 
     for path in candidates {
-        if whisper_runs(&path) {
+        if cli_runs(&path) {
             return Some(path);
         }
     }
     None
 }
 
-fn which_on_augmented_path(name: &str) -> Option<PathBuf> {
-    let mut path_env = std::env::var_os("PATH").unwrap_or_default();
-    let extras = augmented_path_dirs();
-    if !extras.is_empty() {
-        let mut parts: Vec<PathBuf> = std::env::split_paths(&path_env).collect();
-        for extra in extras {
-            if !parts.iter().any(|p| p == &extra) {
-                parts.push(extra);
-            }
-        }
-        if let Ok(joined) = std::env::join_paths(parts) {
-            path_env = joined;
-        }
-    }
-
-    let output = Command::new("which")
-        .arg(name)
-        .env("PATH", path_env)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() {
-        None
+/// Probe a CLI name on PATH (plus augmented dirs) the same way ffmpeg does.
+fn probe_on_augmented_path(name: &str) -> Option<PathBuf> {
+    let path_env = augmented_path_env();
+    let ok = Command::new(name)
+        .arg("--help")
+        .env("PATH", &path_env)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        Some(PathBuf::from(name))
     } else {
-        Some(PathBuf::from(s))
+        None
     }
 }
 
+fn augmented_path_env() -> std::ffi::OsString {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let extras = augmented_path_dirs();
+    if extras.is_empty() {
+        return path_env;
+    }
+    let mut parts: Vec<PathBuf> = std::env::split_paths(&path_env).collect();
+    for extra in extras {
+        if !parts.iter().any(|p| p == &extra) {
+            parts.push(extra);
+        }
+    }
+    std::env::join_paths(parts).unwrap_or(path_env)
+}
+
 fn augmented_path_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/bin"),
-    ];
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+        dirs.push(PathBuf::from("/usr/bin"));
+    }
     if let Some(home) = dirs_home() {
         dirs.push(home.join(".local/bin"));
-        let py_root = home.join("Library/Python");
-        if let Ok(entries) = std::fs::read_dir(py_root) {
-            for entry in entries.flatten() {
-                dirs.push(entry.path().join("bin"));
+        #[cfg(target_os = "macos")]
+        {
+            let py_root = home.join("Library/Python");
+            if let Ok(entries) = std::fs::read_dir(py_root) {
+                for entry in entries.flatten() {
+                    dirs.push(entry.path().join("bin"));
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(data) = dirs::data_dir() {
+                let py_root = data.join("Python");
+                if let Ok(entries) = std::fs::read_dir(py_root) {
+                    for entry in entries.flatten() {
+                        dirs.push(entry.path().join("Scripts"));
+                    }
+                }
             }
         }
     }
@@ -194,7 +270,7 @@ fn augmented_path_dirs() -> Vec<PathBuf> {
 }
 
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    dirs::home_dir()
 }
 
 pub(crate) fn local_tools_doc_path() -> Option<PathBuf> {
@@ -223,22 +299,22 @@ pub fn lab_deps_status_now() -> LabDepsStatus {
             "ffmpeg",
             "FFmpeg",
             ffmpeg_path,
-            "Not found on PATH or Homebrew locations",
-            "brew install ffmpeg",
+            ffmpeg_missing_detail(),
+            ffmpeg_install_hint(),
         ),
         demucs: tool(
             "demucs",
             "Demucs",
             demucs_path,
             "Not found — required for vocals isolate / a2v stems",
-            "python3 -m pip install --user demucs",
+            &pip_install_hint("demucs"),
         ),
         whisper: tool(
             "whisper",
             "Whisper",
             whisper_path,
             "Not found — optional for local lyric transcription",
-            "python3 -m pip install --user openai-whisper",
+            &pip_install_hint("openai-whisper"),
         ),
         doc_path: local_tools_doc_path().map(|p| p.display().to_string()),
     }
@@ -249,11 +325,11 @@ pub fn library_lab_deps_status() -> LabDepsStatus {
     lab_deps_status_now()
 }
 
-/// Run `python3 -m pip install --user demucs` (downloads torch; may take several minutes).
+/// Run `python -m pip install --user demucs` (downloads torch; may take several minutes).
 #[tauri::command]
 pub async fn library_install_demucs() -> Result<LabDepsStatus, String> {
-    let python = resolve_python3().ok_or_else(|| {
-        "python3 not found — install Python 3, then retry (see LOCAL_TOOLS.md)".to_string()
+    let python = resolve_python().ok_or_else(|| {
+        "Python 3 not found — install Python 3, then retry (see LOCAL_TOOLS.md)".to_string()
     })?;
 
     let python_for_thread = python.clone();
@@ -279,22 +355,42 @@ pub async fn library_install_demucs() -> Result<LabDepsStatus, String> {
 
     let status = lab_deps_status_now();
     if !status.demucs.ready {
-        return Err(
-            "pip reported success but demucs still not found — add ~/Library/Python/*/bin or ~/.local/bin to PATH, or reopen the app (see LOCAL_TOOLS.md)"
-                .into(),
-        );
+        #[cfg(target_os = "windows")]
+        {
+            return Err(
+                "pip reported success but demucs still not found — add %APPDATA%\\Python\\Python3x\\Scripts to PATH, or reopen the app (see LOCAL_TOOLS.md)"
+                    .into(),
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            return Err(
+                "pip reported success but demucs still not found — add ~/Library/Python/*/bin or ~/.local/bin to PATH, or reopen the app (see LOCAL_TOOLS.md)"
+                    .into(),
+            );
+        }
     }
     Ok(status)
 }
 
-fn resolve_python3() -> Option<PathBuf> {
-    for c in [
-        "python3",
-        "/opt/homebrew/bin/python3",
-        "/usr/local/bin/python3",
-        "/usr/bin/python3",
-    ] {
-        let path = PathBuf::from(c);
+fn resolve_python() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from("python3"),
+        PathBuf::from("python"),
+    ];
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(PathBuf::from("python.exe"));
+        candidates.push(PathBuf::from("python3.exe"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/python3"));
+        candidates.push(PathBuf::from("/usr/local/bin/python3"));
+        candidates.push(PathBuf::from("/usr/bin/python3"));
+    }
+
+    for path in candidates {
         let ok = Command::new(&path)
             .arg("--version")
             .stdout(std::process::Stdio::null())
@@ -303,11 +399,7 @@ fn resolve_python3() -> Option<PathBuf> {
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            return Some(if c == "python3" {
-                PathBuf::from("python3")
-            } else {
-                path
-            });
+            return Some(path);
         }
     }
     None

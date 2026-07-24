@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "env PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
-    "build": "env PATH=\"$HOME/.cargo/bin:$PATH\" tauri build && bash scripts/clean-dmg.sh",
+    "dev": "tauri dev",
+    "build": "tauri build",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
