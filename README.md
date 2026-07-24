@@ -76,9 +76,10 @@ GitHub Actions:
 - `.github/workflows/windows-desktop.yml` — Windows x64 NSIS
 
 - Pushes to `main` update prerelease **Desktop — latest main** (`desktop-latest`) with both platform installers.
-- Push a `desktop-v*` tag for a versioned release (both workflows attach artifacts).
+- Push a `desktop-v*` tag for a versioned release (both workflows attach artifacts + updater `latest.json`).
 - PRs also upload workflow **Artifacts**; prefer the Releases page for sharing.
-- Builds are **unsigned**. Codesign / Authenticode come later.
+- **Updater signing** (Tauri keypair) is required for CI builds — see [docs/PLAN-desktop-updater.md](docs/PLAN-desktop-updater.md). Set `TAURI_SIGNING_PRIVATE_KEY` in repo secrets.
+- **OS codesign** (Apple Developer ID / Windows Authenticode) is still optional — [docs/PLAN-os-codesign.md](docs/PLAN-os-codesign.md). Until then, use the install workarounds below for first install; later versions can update in-app via **Help → Check for Updates…**.
 
 ## Chrome & layouts
 
@@ -117,7 +118,9 @@ No timeline editing, FFmpeg, rendering, generation, or real Hook publishing.
 - [docs/PLAN-from-chatgpt.md](docs/PLAN-from-chatgpt.md) — where the product plan stands (shell done → Library next)
 - [docs/PLAN-architecture-principles.md](docs/PLAN-architecture-principles.md) — local-first; ease web/DB load; gens without Creation rows (maybe)
 - [docs/PLAN-library-sync.md](docs/PLAN-library-sync.md) — local Library + sync design
-- [docs/PLAN-macos-desktop-shell.md](docs/PLAN-macos-desktop-shell.md) — shell leftovers (About / updates)
+- [docs/PLAN-macos-desktop-shell.md](docs/PLAN-macos-desktop-shell.md) — shell leftovers
+- [docs/PLAN-desktop-updater.md](docs/PLAN-desktop-updater.md) — in-app updates (Tauri updater)
+- [docs/PLAN-os-codesign.md](docs/PLAN-os-codesign.md) — Apple / Windows OS signing (optional)
 - [docs/PLAN-ffmpeg.md](docs/PLAN-ffmpeg.md) — FFmpeg detect + install assist
 - [LOCAL_TOOLS.md](LOCAL_TOOLS.md) — FFmpeg, Demucs, and other local installs for Lab/Editor
 - [docs/PLAN-parascene-generation.md](docs/PLAN-parascene-generation.md) — generation API deps (first–last frame, short duration, prompt relay)

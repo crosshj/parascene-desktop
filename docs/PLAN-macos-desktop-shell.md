@@ -8,5 +8,5 @@ Next product work is **Library + sync**, not more shell chrome: [PLAN-library-sy
 
 - ~~**Launch white flash:**~~ Fixed — window starts `visible: false`, shows after first page load, and macOS WKWebView uses dark `backgroundColor` via `macOSPrivateApi` / wry `drawsBackground`.
 - **FFmpeg readiness (before media pipelines):** Detect whether FFmpeg is installed and usable; if not, assist the user (install guidance + re-check). See [PLAN-ffmpeg.md](./PLAN-ffmpeg.md). Not full editing/render yet — but do not assume FFmpeg is present.
-- **Updates (near-term):** In an **About this app** modal — check for a newer GitHub Release and, if so, show “New version available” with a link to the release page. Manual DMG install until signed auto-update exists.
-- **Auto-updates (later):** GitHub Releases + Tauri updater plugin (download/apply in-app). Needs Apple codesign + notarization. Ship DMGs via `desktop-v*` tags in the meantime.
+- **Updates:** In-app via Tauri updater — **Help → Check for Updates…**. See [PLAN-desktop-updater.md](./PLAN-desktop-updater.md). First install may still need Gatekeeper / SmartScreen workarounds until OS codesign — [PLAN-os-codesign.md](./PLAN-os-codesign.md).
+- ~~**Auto-updates (later):**~~ Implemented (updater plugin + CI `latest.json`). OS codesign remains optional polish.

@@ -2187,6 +2187,32 @@ input[type="checkbox"].control,
   flex-direction: column;
 }
 
+.update-check-dialog {
+  max-width: 420px;
+}
+
+.update-check-notes {
+  white-space: pre-wrap;
+  max-height: 10rem;
+  overflow: auto;
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
+.update-check-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.update-check-progress-bar {
+  height: 100%;
+  background: var(--accent, #6ea8fe);
+  transition: width 0.15s ease-out;
+}
+
 .ui-diagnostics-lead {
   margin: 0 0 0.75rem;
 }

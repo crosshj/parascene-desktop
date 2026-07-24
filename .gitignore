@@ -28,6 +28,9 @@ dist-ssr
 .env.*
 !.env.example
 
+# Tauri updater private key (never commit)
+.tauri-signing/
+
 # Vite
 .vite/
 vite.config.js.timestamp-*

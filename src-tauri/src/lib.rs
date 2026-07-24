@@ -43,6 +43,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("media", |_ctx, request, responder| {
             match media_stream::media_response(request) {
                 Ok(response) => responder.respond(response),
@@ -74,17 +76,22 @@ pub fn run() {
                 use tauri::menu::{Menu, MenuItem, Submenu};
                 use tauri_plugin_deep_link::DeepLinkExt;
 
+                let check_updates =
+                    MenuItem::with_id(app, "check_updates", "Check for Updates…", true, None::<&str>)?;
                 let diagnose =
                     MenuItem::with_id(app, "diagnose_ui", "Diagnose UI Freeze…", true, Some("CmdOrCtrl+Shift+D"))?;
                 let unlock =
                     MenuItem::with_id(app, "unlock_ui", "Unlock UI", true, Some("CmdOrCtrl+Shift+U"))?;
-                let help = Submenu::with_items(app, "Help", true, &[&diagnose, &unlock])?;
+                let help = Submenu::with_items(app, "Help", true, &[&check_updates, &diagnose, &unlock])?;
                 let menu = Menu::with_items(app, &[&help])?;
                 app.set_menu(menu)?;
 
                 let handle = app.handle().clone();
                 app.on_menu_event(move |_app, event| {
                     match event.id().as_ref() {
+                        "check_updates" => {
+                            let _ = handle.emit("parascene:check-updates", ());
+                        }
                         "diagnose_ui" => {
                             let _ = handle.emit("parascene:ui-diagnose", ());
                         }

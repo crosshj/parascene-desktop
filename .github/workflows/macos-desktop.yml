@@ -12,6 +12,7 @@ on:
       - "src-tauri/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/**"
       - ".github/workflows/macos-desktop.yml"
   pull_request:
     branches:
@@ -21,6 +22,7 @@ on:
       - "src-tauri/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/**"
       - ".github/workflows/macos-desktop.yml"
 
 permissions:
@@ -55,7 +57,17 @@ jobs:
         run: npm run test
 
       - name: Build desktop (aarch64)
-        run: npm run build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY secret is required to build updater artifacts."
+            echo "Generate with: npx tauri signer generate -w .tauri-signing/updater.key --password '' --ci"
+            echo "Then: gh secret set TAURI_SIGNING_PRIVATE_KEY < .tauri-signing/updater.key"
+            exit 1
+          fi
+          npm run build
 
       - name: Clean DMG volume icons
         run: bash scripts/clean-dmg.sh
@@ -67,6 +79,8 @@ jobs:
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
 
       # Rolling prerelease on main — always downloadable from the Releases page
       - name: Publish continuous prerelease
@@ -91,9 +105,20 @@ jobs:
             WebView2 is installed automatically if missing.
           files: |
             src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish updater manifest (desktop-latest)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          VERSION="$(bash scripts/app-version.sh)"
+          python3 scripts/publish-updater-manifest.py desktop-latest "$VERSION" "Continuous build from main"
 
       # Versioned release when tagging desktop-v*
       - name: Publish versioned release
@@ -103,6 +128,17 @@ jobs:
           generate_release_notes: true
           files: |
             src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish updater manifest (versioned)
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          VERSION="$(bash scripts/app-version.sh)"
+          python3 scripts/publish-updater-manifest.py "${GITHUB_REF_NAME}" "$VERSION"

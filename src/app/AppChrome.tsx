@@ -14,8 +14,10 @@ import {
   requestOpenUiDiagnostics,
   requestUnlockUi,
 } from "./diagnosticsEvents";
+import { CHECK_UPDATES_EVENT, requestCheckUpdates } from "./updateEvents";
 import { SettingsModal } from "../settings/SettingsModal";
 import { UiDiagnosticsModal } from "./UiDiagnosticsModal";
+import { UpdateCheckModal } from "./UpdateCheckModal";
 import { installPointerCaptureSpy, unlockUi } from "./uiDiagnostics";
 import {
   useShell,
@@ -74,6 +76,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [updateCheckOpen, setUpdateCheckOpen] = useState(false);
   const accountRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
@@ -144,6 +147,11 @@ export function AppChrome({ children }: { children: ReactNode }) {
     setDiagnosticsOpen(true);
   };
 
+  const openUpdateCheck = () => {
+    setMenuOpen(false);
+    setUpdateCheckOpen(true);
+  };
+
   const runUnlockUi = () => {
     setMenuOpen(false);
     unlockUi();
@@ -164,11 +172,14 @@ export function AppChrome({ children }: { children: ReactNode }) {
     const onUnlock = () => {
       unlockUi();
     };
+    const onCheckUpdates = () => setUpdateCheckOpen(true);
     window.addEventListener(OPEN_UI_DIAGNOSTICS_EVENT, onOpen);
     window.addEventListener(UNLOCK_UI_EVENT, onUnlock);
+    window.addEventListener(CHECK_UPDATES_EVENT, onCheckUpdates);
     return () => {
       window.removeEventListener(OPEN_UI_DIAGNOSTICS_EVENT, onOpen);
       window.removeEventListener(UNLOCK_UI_EVENT, onUnlock);
+      window.removeEventListener(CHECK_UPDATES_EVENT, onCheckUpdates);
     };
   }, []);
 
@@ -187,6 +198,11 @@ export function AppChrome({ children }: { children: ReactNode }) {
         unsubs.push(
           await listen("parascene:ui-unlock", () => {
             requestUnlockUi();
+          }),
+        );
+        unsubs.push(
+          await listen("parascene:check-updates", () => {
+            requestCheckUpdates();
           }),
         );
       } catch {
@@ -337,6 +353,14 @@ export function AppChrome({ children }: { children: ReactNode }) {
                         type="button"
                         className="auth-account-menu-item"
                         role="menuitem"
+                        onClick={openUpdateCheck}
+                      >
+                        Check for Updates…
+                      </button>
+                      <button
+                        type="button"
+                        className="auth-account-menu-item"
+                        role="menuitem"
                         onClick={openDiagnostics}
                       >
                         Diagnose UI…
@@ -383,6 +407,10 @@ export function AppChrome({ children }: { children: ReactNode }) {
       <UiDiagnosticsModal
         open={diagnosticsOpen}
         onClose={() => setDiagnosticsOpen(false)}
+      />
+      <UpdateCheckModal
+        open={updateCheckOpen}
+        onClose={() => setUpdateCheckOpen(false)}
       />
     </div>
   );
