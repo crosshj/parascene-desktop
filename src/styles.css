@@ -244,6 +244,18 @@ input[type="checkbox"].control,
   overflow: hidden;
 }
 
+.library-surface {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.library-surface.is-hidden {
+  display: none;
+}
+
 .stub-panel {
   padding: 1.5rem 1.25rem;
   flex: 1;

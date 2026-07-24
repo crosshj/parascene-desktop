@@ -974,6 +974,8 @@ function CreationsPanel({
   onLoadMore,
   onImportFromDisk,
   importing,
+  seedFolders = [],
+  surfaceActive = true,
 }: {
   creations: Creation[] | null;
   total: number;
@@ -985,6 +987,10 @@ function CreationsPanel({
   onLoadMore: () => void;
   onImportFromDisk: () => void;
   importing: boolean;
+  /** Cached folder rows (e.g. from sync state) for placeholders while listFolders runs. */
+  seedFolders?: LibraryFolder[];
+  /** False while Sync is focused — keep mounted but don't drive chrome status. */
+  surfaceActive?: boolean;
 }) {
   const {
     setChromeStatus,
@@ -1001,7 +1007,9 @@ function CreationsPanel({
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [folders, setFolders] = useState<LibraryFolder[]>([]);
+  // Prefer sync-cached folders so remount/first paint can reserve folder slots.
+  const [folders, setFolders] = useState<LibraryFolder[]>(() => seedFolders);
+  const [foldersLoading, setFoldersLoading] = useState(true);
   const [filedIds, setFiledIds] = useState<Set<string>>(() => new Set());
   const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(
     () => new Set(),
@@ -1014,8 +1022,11 @@ function CreationsPanel({
   const [folderFilterMembersById, setFolderFilterMembersById] = useState<
     Map<string, Creation>
   >(() => new Map());
+  // Honor the stored filter immediately — don't paint unfiltered folders first.
   const [folderFilterMembersLoading, setFolderFilterMembersLoading] =
-    useState(false);
+    useState(() =>
+      folderNeedsMemberCreations(togglesFromFilterId(creationsFilterId)),
+    );
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [pickFolderOpen, setPickFolderOpen] = useState(false);
   const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
@@ -1051,7 +1062,17 @@ function CreationsPanel({
   const [deferredKeepIds, setDeferredKeepIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const empty = creations !== null && creations.length === 0 && folders.length === 0;
+  const empty =
+    creations !== null &&
+    creations.length === 0 &&
+    folders.length === 0 &&
+    seedFolders.length === 0 &&
+    !foldersLoading;
+
+  // While the first folder fetch is in flight, adopt sync-cached rows for placeholders.
+  if (foldersLoading && folders.length === 0 && seedFolders.length > 0) {
+    setFolders(seedFolders);
+  }
 
   const refreshFolders = useCallback(async () => {
     try {
@@ -1071,6 +1092,8 @@ function CreationsPanel({
       });
     } catch (error) {
       console.error("Failed to load folders", error);
+    } finally {
+      setFoldersLoading(false);
     }
   }, []);
 
@@ -1095,6 +1118,8 @@ function CreationsPanel({
         });
       } catch (error) {
         console.error("Failed to load folders", error);
+      } finally {
+        if (!cancelled) setFoldersLoading(false);
       }
     })();
     return () => {
@@ -1133,11 +1158,19 @@ function CreationsPanel({
 
   if (folderView || !needsFolderMemberFilter) {
     if (folderFilterMembersLoading) setFolderFilterMembersLoading(false);
-  } else if (folders.length === 0) {
+  } else if (folders.length === 0 && !foldersLoading) {
     if (folderFilterMembersById.size > 0) {
       setFolderFilterMembersById(new Map());
     }
     if (folderFilterMembersLoading) setFolderFilterMembersLoading(false);
+  } else if (
+    needsFolderMemberFilter &&
+    folders.length > 0 &&
+    folderFilterFetchKeyRef.current !== homeFolderMemberIdsKey &&
+    !folderFilterMembersLoading
+  ) {
+    // Folders arrived / changed before the effect — hold filtered board.
+    setFolderFilterMembersLoading(true);
   }
 
   useEffect(() => {
@@ -1173,10 +1206,10 @@ function CreationsPanel({
     }
 
     let cancelled = false;
-    // Keep showing previous matches while we fill gaps — only blank on cold start.
-    void Promise.resolve().then(() => {
-      if (!cancelled && cache.size === 0) setFolderFilterMembersLoading(true);
-    });
+    // Mark loading before the network round-trip so we never paint unfiltered folders.
+    if (cache.size === 0 || missing.length > 0) {
+      setFolderFilterMembersLoading(true);
+    }
 
     void getCreations(missing)
       .then((rows) => {
@@ -1404,22 +1437,27 @@ function CreationsPanel({
     selectedIds,
   ]);
 
+  const folderPlaceholders = folders.length > 0 ? folders : seedFolders;
+
+  // Don't paint finished folder cards until list + (when needed) filter members are ready.
+  const foldersPending =
+    foldersLoading ||
+    (needsFolderMemberFilter && folderFilterMembersLoading);
+
   const showFolderSkeletons =
     !folderView &&
     !gridBlank &&
-    folders.length > 0 &&
-    folderFilterMembersLoading &&
-    needsFolderMemberFilter &&
-    homeFolders.length === 0;
+    folderPlaceholders.length > 0 &&
+    foldersPending;
 
-  const boardFolders = showFolderSkeletons ? folders : homeFolders;
+  const boardFolders = showFolderSkeletons ? folderPlaceholders : homeFolders;
 
   const loadingFolderIds = useMemo(
     () =>
       showFolderSkeletons
-        ? new Set(folders.map((folder) => folder.id))
+        ? new Set(folderPlaceholders.map((folder) => folder.id))
         : undefined,
-    [folders, showFolderSkeletons],
+    [folderPlaceholders, showFolderSkeletons],
   );
 
   const folderCollageIdsByFolderId = useMemo(() => {
@@ -1700,6 +1738,9 @@ function CreationsPanel({
   }, []);
 
   useEffect(() => {
+    if (!surfaceActive) {
+      return () => {};
+    }
     if (gridBlank) {
       setChromeStatus(null);
       return () => setChromeStatus(null);
@@ -1717,6 +1758,7 @@ function CreationsPanel({
     );
     return () => setChromeStatus(null);
   }, [
+    surfaceActive,
     creations,
     gridBlank,
     gridFilterKey,
@@ -1766,7 +1808,7 @@ function CreationsPanel({
             selectedFolderCount={selectedFolderIds.size}
             hasOpenProject={Boolean(openProjectId)}
             inFolderView={Boolean(folderView)}
-            hasFolders={folders.length > 0}
+            hasFolders={folders.length > 0 || seedFolders.length > 0}
             onNewProject={onNewProjectFromSelection}
             onAddToProject={onAddSelectionToProject}
             onNewFolder={() => setCreateFolderOpen(true)}
@@ -2593,6 +2635,11 @@ export function LibraryView() {
     importing,
   } = useCatalog(librarySurface);
 
+  useEffect(() => {
+    if (librarySurface === "sync") return;
+    void refreshFolderSync();
+  }, [librarySurface, refreshFolderSync]);
+
   return (
     <div className="library-view">
       {librarySurface === "sync" ? (
@@ -2636,7 +2683,15 @@ export function LibraryView() {
             void refreshFolderSync();
           }}
         />
-      ) : (
+      ) : null}
+      <div
+        className={
+          librarySurface === "creations"
+            ? "library-surface"
+            : "library-surface is-hidden"
+        }
+        aria-hidden={librarySurface !== "creations"}
+      >
         <CreationsPanel
           creations={creations}
           total={total}
@@ -2648,8 +2703,10 @@ export function LibraryView() {
           onLoadMore={loadMore}
           onImportFromDisk={runImportFromDisk}
           importing={importing}
+          seedFolders={folderSync?.folders ?? []}
+          surfaceActive={librarySurface === "creations"}
         />
-      )}
+      </div>
     </div>
   );
 }
