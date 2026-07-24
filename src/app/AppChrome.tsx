@@ -28,6 +28,7 @@ import {
 import type { LayoutMode } from "../project/types";
 import { WindowControls } from "./WindowControls";
 import { isWindowsDesktop } from "./windowPlatform";
+import { ParasceneMark } from "../ui/ParasceneMark";
 
 const PRIMARY_TABS: { id: PrimaryTab; label: string }[] = [
   { id: "library", label: "Library" },
@@ -261,11 +262,9 @@ export function AppChrome({ children }: { children: ReactNode }) {
         data-tauri-drag-region={isWindows ? true : undefined}
         onDoubleClick={onHeaderDoubleClick}
       >
-        {isWindows ? (
-          <span className="app-title" data-tauri-drag-region>
-            Parascene Desktop
-          </span>
-        ) : null}
+        <span className="app-brand-mark" role="img" aria-label="Parascene Desktop">
+          <ParasceneMark />
+        </span>
         <div className="chrome-nav">
           <nav className="primary-tabs" aria-label="Primary">
             {PRIMARY_TABS.map((t) => (

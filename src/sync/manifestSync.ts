@@ -8,6 +8,7 @@ import {
   downloadPending,
   existingCreationIds,
   getSyncStatus,
+  listCreations,
 } from "../library/catalogClient";
 import {
   groupEmbeddedSourceCreations,
@@ -22,7 +23,7 @@ import {
 
 /** Page size for newest-first catalog sync (`created_at DESC`). Match website-ish pages. */
 export const NEWEST_SYNC_PAGE_SIZE = 50;
-/** Hard cap — "newest" must not walk the whole catalog (use Full sync for that). */
+/** Hard cap — "newest" must not walk the whole catalog (use Sync full catalog for that). */
 export const NEWEST_SYNC_MAX_PAGES = 2;
 /** Only prune local rows that fall inside this recent window (and the fetched newest pages). */
 export const NEWEST_PRUNE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -166,8 +167,9 @@ export function mapGroupSourceCreations(
  * did not return as standalone creations. Existing standalone rows win — real
  * API records are richer than the denormalized `source_creations` snapshot.
  *
- * Used on demand when opening a group (lightbox / editor). Full library sync
- * does **not** expand members onto the Creations board.
+ * Used on demand when opening a group (lightbox / editor), and by
+ * {@link syncGroupMembersManifest}. Sync full catalog does **not** expand
+ * members on its own.
  */
 export function withEmbeddedGroupMembers(
   creations: CreationUpsert[],
@@ -189,6 +191,45 @@ export function withEmbeddedGroupMembers(
     }
   }
   return additions.length > 0 ? [...creations, ...additions] : creations;
+}
+
+export type GroupMembersSyncResult = {
+  status: SyncStatus;
+  /** Local group cover rows inspected. */
+  groups: number;
+  /** Member rows newly upserted into the catalog. */
+  added: number;
+};
+
+/**
+ * Upsert group members from embedded `source_creations` on local group covers.
+ * Covers must already be in the catalog (run Sync full catalog first).
+ * Does not call Parascene — members come from cover JSON already synced locally.
+ */
+export async function syncGroupMembersManifest(): Promise<GroupMembersSyncResult> {
+  const all = await listCreations();
+  const groups = all.filter((c) => isGroupCreation(c));
+  const existing = new Set(all.map((c) => c.id));
+  const additions: CreationUpsert[] = [];
+  const addedIds = new Set<string>();
+  for (const group of groups) {
+    const members = mapGroupSourceCreations(groupEmbeddedSourceCreations(group));
+    for (const member of members) {
+      if (existing.has(member.id) || addedIds.has(member.id)) continue;
+      addedIds.add(member.id);
+      additions.push(member);
+    }
+  }
+  if (additions.length === 0) {
+    return {
+      status: await getSyncStatus(),
+      groups: groups.length,
+      added: 0,
+    };
+  }
+  const status = await applyManifest(additions);
+  kickWarmAheadPreviews();
+  return { status, groups: groups.length, added: additions.length };
 }
 
 /**
@@ -320,7 +361,7 @@ export async function syncCreationsMetadata(): Promise<SyncStatus> {
  * apply only unknown ids, stop early once a page is already fully local.
  * Also drops local rows that should have appeared in that recent window but
  * are gone on Parascene (verified with getCreation) — capped to the last
- * {@link NEWEST_PRUNE_MAX_AGE_MS}. Older removals still need Full sync.
+ * {@link NEWEST_PRUNE_MAX_AGE_MS}. Older removals still need Sync full catalog.
  */
 export async function syncNewestCreationsManifest(opts?: {
   onProgress?: (progress: NewestSyncProgress) => void;

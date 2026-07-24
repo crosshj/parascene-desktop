@@ -8,6 +8,7 @@ import {
   remoteFromGroupSource,
   syncCreationsManifest,
   syncFullCreationsManifest,
+  syncGroupMembersManifest,
   syncNewestCreationsManifest,
   withEmbeddedGroupMembers,
 } from "./manifestSync";
@@ -100,6 +101,9 @@ function mockDownloadPending() {
     }
     if (cmd === "library_sync_status") {
       return emptyStatus;
+    }
+    if (cmd === "library_list_creations") {
+      return [];
     }
     throw new Error(`unexpected invoke: ${cmd}`);
   });
@@ -263,6 +267,98 @@ describe("manifestSync", () => {
     expect(ids.filter((id) => id === "17804")).toHaveLength(1);
     expect(ids).toContain("17805");
     expect(expanded.find((c) => c.id === "17804")?.title).toBe("Already local");
+  });
+
+  it("syncGroupMembersManifest upserts missing embedded members from local covers", async () => {
+    const cover = mapRemoteCreation({
+      id: 200,
+      filename: "group/cover.json",
+      url: "https://cdn.example/cover.png",
+      media_type: "image",
+      created_at: "2026-02-01T00:00:00Z",
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creations: [
+            {
+              id: 201,
+              file_path: "/api/images/created/26_201_x.png",
+              media_type: "image",
+            },
+            {
+              id: 202,
+              file_path: "/api/images/created/26_202_x.png",
+              media_type: "image",
+            },
+          ],
+        },
+      },
+    });
+    invoke.mockImplementation(async (cmd: string, args?: { creations?: unknown[] }) => {
+      if (cmd === "library_list_creations") {
+        return [
+          {
+            id: cover.id,
+            title: cover.title,
+            mediaType: cover.mediaType,
+            remoteUrl: cover.remoteUrl,
+            thumbnailUrl: cover.thumbnailUrl,
+            fitThumbnailUrl: cover.fitThumbnailUrl,
+            videoUrl: cover.videoUrl,
+            localPath: null,
+            localThumbPath: null,
+            published: false,
+            publishedAt: null,
+            createdAt: cover.createdAt,
+            syncedAt: cover.createdAt,
+            downloadState: "remote",
+            prompt: null,
+            filename: cover.filename,
+            description: null,
+            color: null,
+            status: "completed",
+            width: null,
+            height: null,
+            aspectRatio: null,
+            nsfw: false,
+            isModeratedError: false,
+            remoteJson: cover.remoteJson,
+          },
+        ];
+      }
+      if (cmd === "library_apply_manifest") {
+        return {
+          ...emptyStatus,
+          total: 1 + (Array.isArray(args?.creations) ? args.creations.length : 0),
+          remote: 1 + (Array.isArray(args?.creations) ? args.creations.length : 0),
+        };
+      }
+      if (cmd === "library_download_pending") {
+        return {
+          downloaded: 0,
+          failed: 0,
+          skipped: 0,
+          status: emptyStatus,
+        };
+      }
+      if (cmd === "library_sync_status") {
+        return emptyStatus;
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const result = await syncGroupMembersManifest();
+    expect(result.groups).toBe(1);
+    expect(result.added).toBe(2);
+    expect(invoke).toHaveBeenCalledWith(
+      "library_apply_manifest",
+      expect.objectContaining({
+        creations: expect.arrayContaining([
+          expect.objectContaining({ id: "201" }),
+          expect.objectContaining({ id: "202" }),
+        ]),
+      }),
+    );
   });
 
   it("full sync paginates creations and applies the manifest", async () => {

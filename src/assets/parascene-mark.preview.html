@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<title>Parascene mark — Windows header preview</title>
+<style>
+  :root {
+    --bg: #0d0d12;
+    --surface: #16161e;
+    --border: #2a2a36;
+    --text: #f0f0f5;
+    --muted: #8b8b9a;
+  }
+
+  html,
+  body {
+    margin: 0;
+    min-height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font:
+      14px/1.4 "IBM Plex Sans",
+      "Segoe UI",
+      system-ui,
+      sans-serif;
+  }
+
+  .app-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.45rem 0 0.45rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    user-select: none;
+  }
+
+  .app-brand-mark {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin: 0 0.7rem 0 0;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .app-brand-mark svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .chrome-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .primary-tabs,
+  .context-tabs {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .chrome-spacer {
+    flex: 0 0 3rem;
+    width: 3rem;
+    min-width: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+  }
+
+  .chrome-divider {
+    width: 1px;
+    height: 1.15rem;
+    background: var(--border);
+  }
+
+  .mode-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 0.35rem 0.7rem;
+    border-radius: 6px;
+    color: var(--muted);
+    font: inherit;
+  }
+
+  .mode-btn.active {
+    color: var(--text);
+    border-color: var(--border);
+    background: var(--bg);
+  }
+
+  .chrome-drag-fill {
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-width: 1.5rem;
+  }
+
+  .window-controls {
+    display: flex;
+    align-items: stretch;
+    flex: 0 0 auto;
+    align-self: stretch;
+    margin-left: 0.25rem;
+  }
+
+  .window-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .note {
+    margin: 1.25rem 1rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+<body>
+  <header class="app-header" aria-label="Windows chrome preview">
+    <span class="app-brand-mark" role="img" aria-label="Parascene Desktop">
+      <!-- Same as ParasceneMark: plate --muted, glyph --surface -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="14" style="fill: var(--muted)" />
+        <path
+          class="parascene-mark-glyph"
+          style="fill: var(--surface)"
+          d="M 22.859 16.293 L 31.248 16.293 L 30.538 19.664 C 32.328 18.182 34.003 17.119 35.565 16.478 C 37.129 15.839 38.805 15.519 40.593 15.519 C 44.027 15.519 46.787 16.706 48.874 19.076 C 50.962 21.448 52.006 24.984 52.006 29.685 C 52.006 35.604 50.207 40.605 46.608 44.688 C 43.525 48.173 39.874 49.915 35.659 49.915 C 31.319 49.915 28.039 48.152 25.819 44.625 L 22.272 61.668 L 13.419 61.668 L 22.859 16.293 Z M 28.194 35.129 C 28.194 37.687 28.816 39.67 30.059 41.084 C 31.304 42.498 32.768 43.203 34.454 43.203 C 35.915 43.203 37.324 42.671 38.681 41.609 C 40.039 40.548 41.164 38.785 42.058 36.321 C 42.954 33.857 43.401 31.572 43.401 29.47 C 43.401 27.016 42.815 25.134 41.642 23.824 C 40.47 22.516 38.98 21.86 37.17 21.86 C 35.484 21.86 33.946 22.464 32.558 23.671 C 31.171 24.876 30.096 26.65 29.335 28.99 C 28.575 31.331 28.194 33.377 28.194 35.129 Z"
+        />
+      </svg>
+    </span>
+
+    <div class="chrome-nav">
+      <nav class="primary-tabs" aria-label="Primary">
+        <button type="button" class="mode-btn">Library</button>
+        <button type="button" class="mode-btn active">Project</button>
+      </nav>
+      <span class="chrome-spacer" aria-hidden="true">
+        <span class="chrome-divider"></span>
+      </span>
+      <nav class="context-tabs" aria-label="Layout mode">
+        <button type="button" class="mode-btn">Director</button>
+        <button type="button" class="mode-btn">Editor</button>
+        <button type="button" class="mode-btn active">Publisher</button>
+        <button type="button" class="mode-btn">Lab</button>
+      </nav>
+    </div>
+
+    <div class="chrome-drag-fill" aria-hidden="true"></div>
+
+    <div class="window-controls" aria-hidden="true">
+      <span class="window-control">─</span>
+      <span class="window-control">□</span>
+      <span class="window-control">✕</span>
+    </div>
+  </header>
+
+  <p class="note">
+    Same mark as the app: plate <code>style="fill: var(--muted)"</code>, “p”
+    <code>style="fill: var(--surface)"</code>.
+  </p>
+</body>
+</html>

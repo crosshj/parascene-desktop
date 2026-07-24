@@ -44,6 +44,16 @@ def download_asset(asset: dict, token: str, dest: Path) -> None:
     dest.write_bytes(data)
 
 
+def asset_updated_at(asset: dict) -> str:
+    return asset.get("updated_at") or asset.get("created_at") or ""
+
+
+def pick_newest(candidates: list[dict]) -> dict | None:
+    if not candidates:
+        return None
+    return max(candidates, key=asset_updated_at)
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(
@@ -66,38 +76,50 @@ def main() -> int:
     download_base = f"https://github.com/{repo}/releases/download/{tag}"
 
     release = json.loads(api_request(f"{api}/releases/tags/{tag}", token))
-    assets = {a["name"]: a for a in release.get("assets", [])}
+    assets = list(release.get("assets", []))
+    by_name = {a["name"]: a for a in assets}
 
     platforms: dict[str, dict[str, str]] = {}
 
-    # macOS: Parascene Desktop.app.tar.gz + .sig (Apple Silicon CI)
-    for name, asset in assets.items():
-        if name.endswith(".app.tar.gz"):
-            sig_name = f"{name}.sig"
-            if sig_name in assets:
-                platforms["darwin-aarch64"] = {
-                    "url": f"{download_base}/{urllib.parse.quote(name)}",
-                    "_sig": sig_name,
-                }
-            break
+    # Prefer current productName artifacts ("Parascene Desktop" / Parascene.Desktop /
+    # Parascene_Desktop). Fall back to any match, always taking the newest upload so
+    # a product rename does not leave the manifest pointed at stale installers.
+    mac_candidates = [a for a in assets if a["name"].endswith(".app.tar.gz")]
+    mac_preferred = [
+        a
+        for a in mac_candidates
+        if "Desktop" in a["name"] or "desktop" in a["name"].lower()
+    ]
+    mac = pick_newest(mac_preferred) or pick_newest(mac_candidates)
+    if mac:
+        sig_name = f"{mac['name']}.sig"
+        if sig_name in by_name:
+            platforms["darwin-aarch64"] = {
+                "url": f"{download_base}/{urllib.parse.quote(mac['name'])}",
+                "_sig": sig_name,
+            }
 
-    # Windows NSIS: *-setup.exe + .sig
-    for name, asset in assets.items():
-        if name.endswith("-setup.exe"):
-            sig_name = f"{name}.sig"
-            if sig_name in assets:
-                platforms["windows-x86_64"] = {
-                    "url": f"{download_base}/{urllib.parse.quote(name)}",
-                    "_sig": sig_name,
-                }
-            break
+    win_candidates = [a for a in assets if a["name"].endswith("-setup.exe")]
+    win_preferred = [
+        a
+        for a in win_candidates
+        if "Desktop" in a["name"] or "desktop" in a["name"].lower()
+    ]
+    win = pick_newest(win_preferred) or pick_newest(win_candidates)
+    if win:
+        sig_name = f"{win['name']}.sig"
+        if sig_name in by_name:
+            platforms["windows-x86_64"] = {
+                "url": f"{download_base}/{urllib.parse.quote(win['name'])}",
+                "_sig": sig_name,
+            }
 
     # Merge prior latest.json so a single-platform run does not wipe the other.
-    if "latest.json" in assets:
+    if "latest.json" in by_name:
         with tempfile.TemporaryDirectory() as tmp:
             old_path = Path(tmp) / "latest.json.old"
             try:
-                download_asset(assets["latest.json"], token, old_path)
+                download_asset(by_name["latest.json"], token, old_path)
                 old = json.loads(old_path.read_text(encoding="utf-8"))
                 for key, value in (old.get("platforms") or {}).items():
                     if key in platforms:
@@ -121,7 +143,7 @@ def main() -> int:
             if not sig_name:
                 continue
             sig_path = tmp_path / sig_name
-            download_asset(assets[sig_name], token, sig_path)
+            download_asset(by_name[sig_name], token, sig_path)
             entry["signature"] = sig_path.read_text(encoding="utf-8").strip()
 
         manifest = {

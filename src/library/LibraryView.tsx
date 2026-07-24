@@ -28,6 +28,7 @@ import {
 import {
   syncCreationsMetadata,
   syncFullCreationsManifest,
+  syncGroupMembersManifest,
   syncNewestCreationsManifest,
   NEWEST_SYNC_MAX_PAGES,
   NEWEST_SYNC_PAGE_SIZE,
@@ -123,7 +124,7 @@ function catalogSyncLabel(
   active: boolean,
   progress: DownloadProgress | null,
 ): string {
-  const idle = mode === "newest" ? "Sync newest" : "Full sync";
+  const idle = mode === "newest" ? "Sync newest" : "Sync full catalog";
   if (!active) return idle;
   if (progress?.phase === "catalog") {
     return mode === "newest" ? "Syncing newest…" : "Updating catalog…";
@@ -201,8 +202,8 @@ function CatalogSyncButton({
       disabled={disabled ?? active}
       title={
         mode === "newest"
-          ? "Fetch the newest creations (up to ~100) and clear recent remote deletions from local. Use Full sync to rebuild the whole catalog."
-          : "Refresh the full creations catalog (edits, removals, recovery)"
+          ? "Fetch the newest creations (up to ~100) and clear recent remote deletions from local. Use Sync full catalog to rebuild the whole catalog."
+          : "Refresh every creation in your Parascene catalog (metadata only — not group members or media files)"
       }
     >
       {catalogSyncLabel(mode, active, progress)}
@@ -368,6 +369,16 @@ function useCatalog(librarySurface: LibrarySurface) {
 
     void listen<DownloadProgress>("library-download-progress", (event) => {
       setProgress(event.payload);
+      if (
+        event.payload.total > 0 &&
+        event.payload.done >= event.payload.total
+      ) {
+        setCachingKind((prev) => {
+          if (prev === "thumbs" && event.payload.phase === "thumbs") return null;
+          if (prev === "media" && event.payload.phase === "media") return null;
+          return prev;
+        });
+      }
       // Sync tab doesn't need per-tick SQLite status; settle once downloads quiet.
       if (surfaceRef.current !== "sync") {
         refreshStatus();
@@ -479,6 +490,10 @@ function useCatalog(librarySurface: LibrarySurface) {
   const [catalogSyncMode, setCatalogSyncMode] =
     useState<CatalogSyncMode | null>(null);
   const [syncHeadline, setSyncHeadline] = useState<string | null>(null);
+  const [cachingKind, setCachingKind] = useState<"thumbs" | "media" | null>(
+    null,
+  );
+  const [syncingGroups, setSyncingGroups] = useState(false);
 
   const pushActivity = useCallback((event: SyncItemEvent) => {
     setActivity((prev) => applySyncItemEvent(prev, event));
@@ -487,7 +502,7 @@ function useCatalog(librarySurface: LibrarySurface) {
   const runCatalogSync = useCallback(
     async (mode: CatalogSyncMode) => {
       const jobId = `${mode}-${Date.now()}`;
-      const title = mode === "newest" ? "Sync newest" : "Full sync";
+      const title = mode === "newest" ? "Sync newest" : "Sync full catalog";
       const newestTarget = NEWEST_SYNC_PAGE_SIZE * NEWEST_SYNC_MAX_PAGES;
       lastCatalogModeRef.current = mode;
       lastProgressUiAt.current = 0;
@@ -497,13 +512,17 @@ function useCatalog(librarySurface: LibrarySurface) {
       setFolderSyncResult(null);
       // Paint immediately — don't wait for the first network round-trip.
       setSyncHeadline(
-        mode === "newest" ? "Starting Sync newest…" : "Starting Full sync…",
+        mode === "newest"
+          ? "Starting Sync newest…"
+          : "Starting Sync full catalog…",
       );
       setProgress({
         done: 0,
         total: mode === "newest" ? newestTarget : 0,
         currentId:
-          mode === "newest" ? "Starting Sync newest…" : "Starting Full sync…",
+          mode === "newest"
+            ? "Starting Sync newest…"
+            : "Starting Sync full catalog…",
         failed: 0,
         phase: "catalog",
       });
@@ -740,44 +759,189 @@ function useCatalog(librarySurface: LibrarySurface) {
   ]);
 
   const runCacheThumbs = useCallback(async () => {
+    const expected = status?.missingThumbCacheable ?? 0;
+    const jobId = `cache-thumbs-${Date.now()}`;
     setError(null);
+    setCachingKind("thumbs");
     setProgress({
       done: 0,
-      total: 0,
+      total: expected,
       currentId: null,
       failed: 0,
       phase: "thumbs",
     });
+    pushActivity({
+      id: jobId,
+      kind: "cache",
+      state: "active",
+      title: "Cache previews",
+      detail:
+        expected > 0
+          ? `Queuing ${expected.toLocaleString()} preview(s)…`
+          : "Checking…",
+    });
     try {
       const summary = await cacheMissingThumbs();
       setStatus(summary.status);
-      if (summary.skipped === 0 && summary.downloaded === 0) {
+      const queued = summary.skipped;
+      if (queued === 0 && summary.downloaded === 0) {
         setProgress(null);
+        setCachingKind(null);
+        pushActivity({
+          id: jobId,
+          kind: "cache",
+          state: "done",
+          title: "Cache previews",
+          detail: "Nothing to cache",
+        });
+        return;
       }
+      setProgress({
+        done: 0,
+        total: queued,
+        currentId: null,
+        failed: 0,
+        phase: "thumbs",
+      });
+      pushActivity({
+        id: jobId,
+        kind: "cache",
+        state: "done",
+        title: "Cache previews",
+        detail: `Queued ${queued.toLocaleString()} preview(s)`,
+      });
     } catch (e: unknown) {
+      setCachingKind(null);
+      setProgress(null);
       setError(e instanceof Error ? e.message : String(e));
+      pushActivity({
+        id: jobId,
+        kind: "cache",
+        state: "failed",
+        title: "Cache previews",
+        detail: e instanceof Error ? e.message : String(e),
+      });
     }
-  }, []);
+  }, [pushActivity, status?.missingThumbCacheable]);
 
   const runCacheMedia = useCallback(async () => {
+    const expected = status?.missingMediaCacheable ?? 0;
+    const jobId = `cache-media-${Date.now()}`;
     setError(null);
+    setCachingKind("media");
     setProgress({
       done: 0,
-      total: 0,
+      total: expected,
       currentId: null,
       failed: 0,
       phase: "media",
     });
+    pushActivity({
+      id: jobId,
+      kind: "cache",
+      state: "active",
+      title: "Cache media",
+      detail:
+        expected > 0
+          ? `Queuing ${expected.toLocaleString()} file(s)…`
+          : "Checking…",
+    });
     try {
       const summary = await cacheMissingMedia();
       setStatus(summary.status);
-      if (summary.skipped === 0 && summary.downloaded === 0) {
+      const queued = summary.skipped;
+      if (queued === 0 && summary.downloaded === 0) {
         setProgress(null);
+        setCachingKind(null);
+        pushActivity({
+          id: jobId,
+          kind: "cache",
+          state: "done",
+          title: "Cache media",
+          detail: "Nothing to cache",
+        });
+        return;
       }
+      setProgress({
+        done: 0,
+        total: queued,
+        currentId: null,
+        failed: 0,
+        phase: "media",
+      });
+      pushActivity({
+        id: jobId,
+        kind: "cache",
+        state: "done",
+        title: "Cache media",
+        detail: `Queued ${queued.toLocaleString()} file(s)`,
+      });
     } catch (e: unknown) {
+      setCachingKind(null);
+      setProgress(null);
       setError(e instanceof Error ? e.message : String(e));
+      pushActivity({
+        id: jobId,
+        kind: "cache",
+        state: "failed",
+        title: "Cache media",
+        detail: e instanceof Error ? e.message : String(e),
+      });
     }
-  }, []);
+  }, [pushActivity, status?.missingMediaCacheable]);
+
+  const runGroupMembersSync = useCallback(async () => {
+    const jobId = `groups-${Date.now()}`;
+    setSyncingGroups(true);
+    setError(null);
+    setSyncHeadline("Syncing group members…");
+    setProgress({
+      done: 0,
+      total: 0,
+      currentId: "Expanding group members…",
+      failed: 0,
+      phase: "catalog",
+    });
+    pushActivity({
+      id: jobId,
+      kind: "catalog",
+      state: "active",
+      title: "Sync group members",
+      detail: "Reading local group covers…",
+    });
+    try {
+      const result = await syncGroupMembersManifest();
+      setStatus(result.status);
+      const detail =
+        result.added > 0
+          ? `Added ${result.added.toLocaleString()} member(s) from ${result.groups.toLocaleString()} group(s)`
+          : result.groups > 0
+            ? `No new members (${result.groups.toLocaleString()} group(s) already complete)`
+            : "No local groups to expand";
+      pushActivity({
+        id: jobId,
+        kind: "catalog",
+        state: "done",
+        title: "Sync group members",
+        detail,
+      });
+      void loadInitial().catch(() => {});
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      pushActivity({
+        id: jobId,
+        kind: "catalog",
+        state: "failed",
+        title: "Sync group members",
+        detail: message,
+      });
+    } finally {
+      setSyncingGroups(false);
+      setSyncHeadline(null);
+      setProgress(null);
+    }
+  }, [loadInitial, pushActivity]);
 
   const runCloudRepair = useCallback(async () => {
     setRepairing(true);
@@ -902,6 +1066,8 @@ function useCatalog(librarySurface: LibrarySurface) {
     progress,
     activity,
     syncHeadline,
+    cachingKind,
+    syncingGroups,
     folderSync,
     folderSyncResult,
     folderConflicts,
@@ -912,6 +1078,7 @@ function useCatalog(librarySurface: LibrarySurface) {
     runSync,
     runNewestSync,
     runFullSync,
+    runGroupMembersSync,
     retryLastCatalogSync,
     runFolderOnlySync,
     runResolveFolderConflicts,
@@ -1987,6 +2154,8 @@ function SyncPanel({
   progress,
   activity,
   syncHeadline,
+  cachingKind,
+  syncingGroups,
   folderSync,
   folderSyncResult,
   folderConflicts,
@@ -1997,6 +2166,7 @@ function SyncPanel({
   resolvingFolders,
   onNewestSync,
   onFullSync,
+  onGroupMembersSync,
   onRetryAfterReauth,
   onFolderSync,
   onCacheThumbs,
@@ -2015,6 +2185,8 @@ function SyncPanel({
   progress: DownloadProgress | null;
   activity: SyncActivityItem[];
   syncHeadline: string | null;
+  cachingKind: "thumbs" | "media" | null;
+  syncingGroups: boolean;
   folderSync: FolderSyncState | null;
   folderSyncResult: FolderSyncResult | null;
   folderConflicts: FolderConflict[];
@@ -2025,6 +2197,7 @@ function SyncPanel({
   resolvingFolders: boolean;
   onNewestSync: () => void;
   onFullSync: () => void;
+  onGroupMembersSync: () => void;
   onRetryAfterReauth: () => void;
   onFolderSync: () => void;
   onCacheThumbs: () => void;
@@ -2046,12 +2219,14 @@ function SyncPanel({
     onRefreshStatus();
     onRefreshFolderSync();
     // Idle Sync tab: slow poll. Active work: moderate — status is SQLite + cached disk size.
-    const ms = syncing || folderSyncing || repairing ? 5_000 : 30_000;
+    const busy =
+      syncing || folderSyncing || repairing || syncingGroups || cachingKind != null;
+    const ms = busy ? 5_000 : 30_000;
     const id = window.setInterval(() => {
       onRefreshStatus();
       // Folders change rarely — refresh every other tick while idle.
       folderPollTick.current += 1;
-      if (syncing || folderSyncing || repairing || folderPollTick.current % 2 === 0) {
+      if (busy || folderPollTick.current % 2 === 0) {
         onRefreshFolderSync();
       }
     }, ms);
@@ -2062,6 +2237,8 @@ function SyncPanel({
     onRefreshStatus,
     repairing,
     syncing,
+    syncingGroups,
+    cachingKind,
   ]);
 
   useEffect(() => {
@@ -2092,16 +2269,8 @@ function SyncPanel({
   const missingMedia = status?.missingMediaCacheable ?? 0;
   const unsyncableThumbs = status ? unsyncableThumbCount(status) : 0;
   const unsyncableMedia = status ? unsyncableMediaCount(status) : 0;
-  const cachingThumbs =
-    Boolean(progress) &&
-    progress!.phase === "thumbs" &&
-    progress!.total > 0 &&
-    progress!.done < progress!.total;
-  const cachingMedia =
-    Boolean(progress) &&
-    progress!.phase === "media" &&
-    progress!.total > 0 &&
-    progress!.done < progress!.total;
+  const cachingThumbs = cachingKind === "thumbs";
+  const cachingMedia = cachingKind === "media";
   const { jobs: jobItems, downloads: downloadItems } =
     partitionSyncActivity(activity);
   const liveDownloads = downloadItems.filter(
@@ -2118,7 +2287,7 @@ function SyncPanel({
     folderConflicts.length > 0 &&
     folderConflicts.every((conflict) => folderResolutions[conflict.id]);
 
-  const catalogLocked = syncing || repairing;
+  const catalogLocked = syncing || repairing || syncingGroups;
   const foldersLocked = folderSyncing || resolvingFolders || syncing;
   const cacheLocked =
     catalogLocked ||
@@ -2134,9 +2303,9 @@ function SyncPanel({
         ? progress.currentId
         : "Repairing library…"
       : cachingThumbs
-        ? `Caching previews ${progress!.done}/${progress!.total}`
+        ? `Caching previews ${progress?.done ?? 0}/${progress?.total ?? 0}`
         : cachingMedia
-          ? `Caching media ${progress!.done}/${progress!.total}`
+          ? `Caching media ${progress?.done ?? 0}/${progress?.total ?? 0}`
           : liveDownloads.length > 0
             ? `Warming ${liveDownloads.length.toLocaleString()} file(s)…`
             : null);
@@ -2244,8 +2413,10 @@ function SyncPanel({
             <section className="sync-section" aria-label="Catalog">
               <h3 className="sync-section-title">Catalog</h3>
               <p className="muted sync-section-help">
-                Newest pulls ~100 latest creations and clears local copies of
-                recent Parascene deletions. Full rebuilds the whole library.
+                Newest pulls ~100 latest creations and clears recent remote
+                deletions. Sync full catalog refreshes every creation cover.
+                Group members are separate — expand them after the catalog is
+                current.
               </p>
               <div className="sync-section-actions">
                 <CatalogSyncButton
@@ -2263,6 +2434,15 @@ function SyncPanel({
                   onSync={onFullSync}
                   progress={progress}
                 />
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onGroupMembersSync}
+                  disabled={catalogLocked}
+                  title="Upsert members embedded in local group covers that are not standalone catalog rows yet"
+                >
+                  {syncingGroups ? "Syncing group members…" : "Sync group members"}
+                </button>
               </div>
             </section>
 
@@ -2286,34 +2466,56 @@ function SyncPanel({
                       ? `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`
                       : "Sync folders"}
                 </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={onCacheThumbs}
-                  disabled={cacheLocked || missingThumbs === 0}
-                >
-                  {cachingThumbs
-                    ? `Previews ${progress!.done}/${progress!.total}`
-                    : missingThumbs === 0
-                      ? unsyncableThumbs > 0
-                        ? "No cacheable previews"
-                        : "Previews cached"
+                {cachingThumbs || missingThumbs > 0 ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={onCacheThumbs}
+                    disabled={cacheLocked || (!cachingThumbs && missingThumbs === 0)}
+                  >
+                    {cachingThumbs
+                      ? `Previews ${progress?.done ?? 0}/${progress?.total ?? 0}`
                       : `Cache ${missingThumbs.toLocaleString()} previews`}
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={onCacheMedia}
-                  disabled={cacheLocked || missingMedia === 0}
-                >
-                  {cachingMedia
-                    ? `Media ${progress!.done}/${progress!.total}`
-                    : missingMedia === 0
-                      ? unsyncableMedia > 0
-                        ? "No cacheable media"
-                        : "Media cached"
+                  </button>
+                ) : (
+                  <span
+                    className="muted sync-cache-status"
+                    title={
+                      unsyncableThumbs > 0
+                        ? "No downloadable preview URLs for the remaining items"
+                        : "All cacheable previews are on disk"
+                    }
+                  >
+                    {unsyncableThumbs > 0
+                      ? "No cacheable previews"
+                      : "Previews cached"}
+                  </span>
+                )}
+                {cachingMedia || missingMedia > 0 ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={onCacheMedia}
+                    disabled={cacheLocked || (!cachingMedia && missingMedia === 0)}
+                  >
+                    {cachingMedia
+                      ? `Media ${progress?.done ?? 0}/${progress?.total ?? 0}`
                       : `Cache ${missingMedia.toLocaleString()} media`}
-                </button>
+                  </button>
+                ) : (
+                  <span
+                    className="muted sync-cache-status"
+                    title={
+                      unsyncableMedia > 0
+                        ? "No downloadable media URLs for the remaining items"
+                        : "All cacheable media is on disk"
+                    }
+                  >
+                    {unsyncableMedia > 0
+                      ? "No cacheable media"
+                      : "Media cached"}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="btn ghost"
@@ -2610,9 +2812,21 @@ export function LibraryView() {
     repairing,
     loadingMore,
     progress,
+    activity,
+    syncHeadline,
+    cachingKind,
+    syncingGroups,
+    folderSync,
+    folderSyncResult,
+    folderConflicts,
+    folderResolutions,
+    setFolderResolutions,
+    folderSyncing,
+    resolvingFolders,
     runSync,
     runNewestSync,
     runFullSync,
+    runGroupMembersSync,
     retryLastCatalogSync,
     runFolderOnlySync,
     runResolveFolderConflicts,
@@ -2622,15 +2836,6 @@ export function LibraryView() {
     runImportFromDisk,
     clearFinishedActivity,
     clearError,
-    activity,
-    syncHeadline,
-    folderSync,
-    folderSyncResult,
-    folderConflicts,
-    folderResolutions,
-    setFolderResolutions,
-    folderSyncing,
-    resolvingFolders,
     loadMore,
     refreshStatus,
     refreshFolderSync,
@@ -2654,6 +2859,8 @@ export function LibraryView() {
           progress={progress}
           activity={activity}
           syncHeadline={syncHeadline}
+          cachingKind={cachingKind}
+          syncingGroups={syncingGroups}
           folderSync={folderSync}
           folderSyncResult={folderSyncResult}
           folderConflicts={folderConflicts}
@@ -2671,9 +2878,8 @@ export function LibraryView() {
           resolvingFolders={resolvingFolders}
           onNewestSync={runNewestSync}
           onFullSync={runFullSync}
-          onRetryAfterReauth={() => {
-            void retryLastCatalogSync();
-          }}
+          onGroupMembersSync={runGroupMembersSync}
+          onRetryAfterReauth={retryLastCatalogSync}
           onFolderSync={runFolderOnlySync}
           onCacheThumbs={runCacheThumbs}
           onCacheMedia={runCacheMedia}
@@ -2681,9 +2887,7 @@ export function LibraryView() {
           onClearFinished={clearFinishedActivity}
           onClearError={clearError}
           onRefreshStatus={refreshStatus}
-          onRefreshFolderSync={() => {
-            void refreshFolderSync();
-          }}
+          onRefreshFolderSync={refreshFolderSync}
         />
       ) : null}
       <div

@@ -1,4 +1,10 @@
-export type SyncItemKind = "thumb" | "media" | "repair" | "catalog" | "folders";
+export type SyncItemKind =
+  | "thumb"
+  | "media"
+  | "repair"
+  | "catalog"
+  | "folders"
+  | "cache";
 export type SyncItemState =
   | "queued"
   | "active"
@@ -43,6 +49,7 @@ export function normalizeSyncKind(kind: string): SyncItemKind {
   if (kind === "repair") return "repair";
   if (kind === "catalog") return "catalog";
   if (kind === "folders") return "folders";
+  if (kind === "cache") return "cache";
   return "thumb";
 }
 
@@ -59,7 +66,12 @@ export function normalizeSyncState(state: string): SyncItemState {
 }
 
 export function isSyncJobKind(kind: SyncItemKind): boolean {
-  return kind === "catalog" || kind === "folders" || kind === "repair";
+  return (
+    kind === "catalog" ||
+    kind === "folders" ||
+    kind === "repair" ||
+    kind === "cache"
+  );
 }
 
 export function isSyncDownloadKind(kind: SyncItemKind): boolean {
@@ -182,6 +194,7 @@ export function syncItemStateLabel(
     if (kind === "repair") return "Repairing";
     if (kind === "catalog") return "Syncing";
     if (kind === "folders") return "Syncing";
+    if (kind === "cache") return "Caching";
     return "Downloading";
   }
   if (state === "done") return "Done";
@@ -195,5 +208,6 @@ export function syncItemKindLabel(kind: SyncItemKind): string {
   if (kind === "repair") return "Repair";
   if (kind === "catalog") return "Catalog";
   if (kind === "folders") return "Folders";
+  if (kind === "cache") return "Cache";
   return "Preview";
 }

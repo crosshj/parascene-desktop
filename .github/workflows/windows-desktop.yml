@@ -80,15 +80,16 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.exe.sig
 
-      # Rolling prerelease on main — always downloadable from the Releases page
-      - name: Publish continuous prerelease
+      # Rolling release on main — must be non-prerelease so /releases/latest
+      # resolves (existing installs still use that URL) and in-app updates work.
+      - name: Publish continuous release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v3.0.2
         with:
           tag_name: desktop-latest
           name: Desktop — latest main
-          prerelease: true
-          make_latest: false
+          prerelease: false
+          make_latest: true
           body: |
             Unsigned desktop builds from `main` (updated on each qualifying push).
 
@@ -107,6 +108,14 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prune stale release assets (desktop-latest)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: python3 scripts/prune-release-assets.py desktop-latest
 
       - name: Publish updater manifest (desktop-latest)
         if: github.ref == 'refs/heads/main'

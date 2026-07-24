@@ -33,12 +33,12 @@ npm run build
 
 ## Release flow
 
-- Tag `desktop-v*` (version in `tauri.conf.json` / `package.json` should match).
+- Continuous builds on `main` publish to the rolling tag `desktop-latest` (non-prerelease, `make_latest: true`) so GitHub’s `/releases/latest` resolves.
+- Tag `desktop-v*` for versioned releases (version in `tauri.conf.json` / `package.json` should match).
 - CI builds signed updater artifacts (`.app.tar.gz` + `.sig` on macOS, NSIS `.exe` + `.sig` on Windows).
-- [`scripts/publish-updater-manifest.py`](../scripts/publish-updater-manifest.py) uploads / merges `latest.json` on the release.
-- The app checks `https://github.com/crosshj/parascene-desktop/releases/latest/download/latest.json` (latest **non-prerelease**).
-
-`desktop-latest` also gets updater assets + `latest.json` for continuous main builds, but the in-app endpoint follows GitHub’s “latest” stable release.
+- [`scripts/prune-release-assets.py`](../scripts/prune-release-assets.py) drops stale installers left over after a `productName` rename.
+- [`scripts/publish-updater-manifest.py`](../scripts/publish-updater-manifest.py) uploads / merges `latest.json` on the release (prefers newest “Desktop” assets).
+- The app checks `https://github.com/crosshj/parascene-desktop/releases/download/desktop-latest/latest.json` (explicit tag; does not depend on GitHub “latest” semantics).
 
 ## OS codesign
 

@@ -381,16 +381,21 @@ describe("auth shell", () => {
       screen.getByRole("button", { name: "Sync newest" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Full sync" }),
+      screen.getByRole("button", { name: "Sync full catalog" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Sync group members" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Sync from cloud" }),
     ).not.toBeInTheDocument();
+    expect(screen.getByText("Previews cached")).toBeInTheDocument();
+    expect(screen.getByText("Media cached")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Previews cached" }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: "Previews cached" }),
+    ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Media cached" }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: "Media cached" }),
+    ).not.toBeInTheDocument();
   });
 });

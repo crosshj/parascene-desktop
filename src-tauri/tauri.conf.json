@@ -72,7 +72,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdEMDlCNzVFRUZGNUZBOUUKUldTZSt2WHZYcmNKZlR1SnFURTU2RFlCODVRa3BSLzg5b1JySmRRek1TMERST29kekFJWHdTT1UK",
       "endpoints": [
-        "https://github.com/crosshj/parascene-desktop/releases/latest/download/latest.json"
+        "https://github.com/crosshj/parascene-desktop/releases/download/desktop-latest/latest.json"
       ],
       "windows": {
         "installMode": "passive"

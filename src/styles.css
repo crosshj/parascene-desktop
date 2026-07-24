@@ -193,18 +193,26 @@ input[type="checkbox"].control,
 
 .app-shell.is-windows .app-header {
   gap: 0.75rem;
-  padding: 0.45rem 0 0.45rem 0.85rem;
+  padding: 0.45rem 0 0.45rem 0.75rem;
   user-select: none;
 }
 
-.app-title {
+.app-brand-mark {
   flex: 0 0 auto;
-  margin: 0 0.35rem 0 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: color-mix(in srgb, var(--muted) 85%, var(--text));
-  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: 0 0.7rem 0 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.app-brand-mark svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .chrome-nav {
@@ -1167,6 +1175,15 @@ input[type="checkbox"].control,
   flex-wrap: wrap;
   gap: 0.45rem;
   margin-top: 0.25rem;
+  align-items: center;
+}
+
+.sync-cache-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0 0.65rem;
+  font-size: 0.85rem;
 }
 
 .sync-metrics {
