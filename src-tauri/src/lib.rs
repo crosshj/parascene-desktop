@@ -70,25 +70,55 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(windows)]
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_decorations(false);
+            }
+
             // Deep link (parascene://…) just focuses the window after browser return.
             #[cfg(desktop)]
             {
-                use tauri::menu::{Menu, MenuItem, Submenu};
                 use tauri_plugin_deep_link::DeepLinkExt;
 
-                let check_updates =
-                    MenuItem::with_id(app, "check_updates", "Check for Updates…", true, None::<&str>)?;
-                let diagnose =
-                    MenuItem::with_id(app, "diagnose_ui", "Diagnose UI Freeze…", true, Some("CmdOrCtrl+Shift+D"))?;
-                let unlock =
-                    MenuItem::with_id(app, "unlock_ui", "Unlock UI", true, Some("CmdOrCtrl+Shift+U"))?;
-                let help = Submenu::with_items(app, "Help", true, &[&check_updates, &diagnose, &unlock])?;
-                let menu = Menu::with_items(app, &[&help])?;
-                app.set_menu(menu)?;
+                // Native Help menu is macOS-only (system menu bar). On Windows it
+                // paints an ugly classic menu strip; those actions live in the
+                // account menu + keyboard shortcuts instead.
+                #[cfg(target_os = "macos")]
+                {
+                    use tauri::menu::{Menu, MenuItem, Submenu};
 
-                let handle = app.handle().clone();
-                app.on_menu_event(move |_app, event| {
-                    match event.id().as_ref() {
+                    let check_updates = MenuItem::with_id(
+                        app,
+                        "check_updates",
+                        "Check for Updates…",
+                        true,
+                        None::<&str>,
+                    )?;
+                    let diagnose = MenuItem::with_id(
+                        app,
+                        "diagnose_ui",
+                        "Diagnose UI Freeze…",
+                        true,
+                        Some("CmdOrCtrl+Shift+D"),
+                    )?;
+                    let unlock = MenuItem::with_id(
+                        app,
+                        "unlock_ui",
+                        "Unlock UI",
+                        true,
+                        Some("CmdOrCtrl+Shift+U"),
+                    )?;
+                    let help = Submenu::with_items(
+                        app,
+                        "Help",
+                        true,
+                        &[&check_updates, &diagnose, &unlock],
+                    )?;
+                    let menu = Menu::with_items(app, &[&help])?;
+                    app.set_menu(menu)?;
+
+                    let handle = app.handle().clone();
+                    app.on_menu_event(move |_app, event| match event.id().as_ref() {
                         "check_updates" => {
                             let _ = handle.emit("parascene:check-updates", ());
                         }
@@ -99,8 +129,8 @@ pub fn run() {
                             let _ = handle.emit("parascene:ui-unlock", ());
                         }
                         _ => {}
-                    }
-                });
+                    });
+                }
 
                 let handle = app.handle().clone();
                 let _ = app.deep_link().on_open_url(move |_event| {

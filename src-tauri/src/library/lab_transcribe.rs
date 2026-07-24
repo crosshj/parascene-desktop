@@ -1,9 +1,9 @@
 //! Local Whisper CLI transcription for Lab lyric align.
 
+use super::ffmpeg;
 use super::lab_deps::resolve_whisper;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,7 +53,7 @@ pub fn library_transcribe_local(audio_path: String) -> Result<LocalTranscriptRes
 
     let _ = fs::remove_file(&json_path);
 
-    let output = Command::new(&whisper)
+    let output = ffmpeg::command(&whisper)
         .arg(audio.as_os_str())
         .args([
             "--model",

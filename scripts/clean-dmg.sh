@@ -6,9 +6,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DMG_DIR="$ROOT/src-tauri/target/release/bundle/dmg"
 
 shopt -s nullglob
-DMGS=("$DMG_DIR"/Parascene_*.dmg)
+# productName "Parascene Desktop" → Parascene_Desktop_*.dmg (spaces → underscores)
+DMGS=("$DMG_DIR"/Parascene_Desktop_*.dmg)
 if [[ ${#DMGS[@]} -eq 0 ]]; then
-  echo "No Parascene DMG found in $DMG_DIR" >&2
+  # Older builds / alternate spacing
+  DMGS=("$DMG_DIR"/Parascene*.dmg)
+fi
+if [[ ${#DMGS[@]} -eq 0 ]]; then
+  echo "No Parascene Desktop DMG found in $DMG_DIR" >&2
   exit 1
 fi
 

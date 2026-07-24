@@ -1,14 +1,14 @@
 //! Lab audio/video helpers: full-track vocals separate, time-slice, extend clips.
 
 use super::catalog::default_paths;
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::lab_deps::resolve_demucs;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::UNIX_EPOCH;
 
 #[derive(serde::Serialize)]
@@ -28,7 +28,7 @@ fn cache_dir(kind: &str) -> Result<PathBuf, String> {
 }
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args(args)
         .output()
         .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
@@ -144,7 +144,7 @@ pub async fn library_separate_vocals(source_path: String) -> Result<String, Stri
     let _ = fs::remove_dir_all(&out_dir);
     fs::create_dir_all(&out_dir).map_err(|e| format!("demucs out dir: {e}"))?;
 
-    let status = Command::new(&demucs_bin)
+    let status = ffmpeg::command(&demucs_bin)
         .args([
             "-n",
             "htdemucs",
@@ -254,7 +254,7 @@ fn decode_peak_buckets(
     src: &Path,
     buckets: usize,
 ) -> Result<WaveformPeaksResult, String> {
-    let mut child = Command::new(ffmpeg)
+    let mut child = ffmpeg::command(ffmpeg)
         .args([
             "-v",
             "error",
@@ -403,7 +403,7 @@ pub fn extend_clip_on_disk(
         fs::rename(&tmp, &segment).map_err(|e| format!("segment rename: {e}"))?;
     }
 
-    let probe = Command::new(&ffmpeg)
+    let probe = ffmpeg::command(&ffmpeg)
         .args(["-i", segment.to_str().unwrap_or(""), "-f", "null", "-"])
         .output()
         .map_err(|e| format!("probe failed: {e}"))?;
@@ -676,7 +676,7 @@ pub async fn library_extract_video_frame(
 
 fn probe_media_duration_sec(ffmpeg: &Path, source: &Path) -> Result<f64, String> {
     // `-i` alone exits non-zero after printing metadata — no full decode.
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args(["-hide_banner", "-i", source.to_str().ok_or("bad source path")?])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -690,7 +690,7 @@ fn probe_media_duration_sec(ffmpeg: &Path, source: &Path) -> Result<f64, String>
 
 /// Like `run_ffmpeg`, but surfaces the useful tail of stderr (not the version banner).
 fn run_ffmpeg_frame(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args(args)
         .output()
         .map_err(|e| format!("Could not run ffmpeg: {e}"))?;

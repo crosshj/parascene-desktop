@@ -7,13 +7,12 @@
 
 use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
 use super::clip_thumb::delete_clip_thumbs_for_asset;
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::paths::ParascenePaths;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -147,7 +146,7 @@ fn partial_path(dest: &Path) -> PathBuf {
 }
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -449,6 +448,32 @@ pub(crate) fn ensure_reversed_media(
         .map(|p| p.display().to_string());
 
     Ok(ReversedMedia {
+        path: dest.display().to_string(),
+        thumb_path,
+    })
+}
+
+/// Return reversed media paths if already on disk. Does **not** encode.
+///
+/// Clip thumbnails and other light UI paths must use this instead of
+/// [`ensure_reversed_media`] so scrubbing In/Out never triggers a reverse bake.
+pub(crate) fn existing_reversed_media(
+    paths: &ParascenePaths,
+    creation: &Creation,
+) -> Option<ReversedMedia> {
+    let local = creation.local_path.as_deref().filter(|p| !p.is_empty())?;
+    let src = path_under_root(&paths.root, local).ok()?;
+    let dest = reversed_dest(paths, creation, &src);
+    if !file_nonempty(&dest) {
+        return None;
+    }
+    let thumb_path = if is_video_creation(creation, &src) {
+        let thumb = reversed_thumb_dest(paths, creation);
+        file_nonempty(&thumb).then(|| thumb.display().to_string())
+    } else {
+        None
+    };
+    Some(ReversedMedia {
         path: dest.display().to_string(),
         thumb_path,
     })

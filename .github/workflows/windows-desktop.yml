@@ -93,7 +93,7 @@ jobs:
             ### macOS (Apple Silicon)
             Open the DMG → drag to Applications, then:
             ```bash
-            xattr -cr /Applications/Parascene.app
+            xattr -cr "/Applications/Parascene Desktop.app"
             ```
 
             ### Windows (x64)

@@ -1,7 +1,7 @@
 //! Onset / beat detection for local audio assets via FFmpeg + spectral flux.
 
 use super::catalog::{default_paths, get_creation_by_id, ready_connection};
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::paths::ParascenePaths;
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 
 const ALGO_VERSION: &str = "v4";
@@ -157,7 +157,7 @@ impl BeatCache {
 }
 
 fn decode_mono_f32(ffmpeg: &Path, src: &Path) -> Result<Vec<f32>, String> {
-    let mut child = Command::new(ffmpeg)
+    let mut child = ffmpeg::command(ffmpeg)
         .args([
             "-v",
             "error",

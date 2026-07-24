@@ -372,7 +372,9 @@ export function StagingFields({
                 onChange={(e) =>
                   onDraftChange({
                     ...draft,
-                    timelineLocked: e.target.checked ? true : undefined,
+                    // Explicit false so applyDraftToTimelineClip unlocks
+                    // (undefined preserves the previous locked clip).
+                    timelineLocked: e.target.checked ? true : false,
                   })
                 }
               />

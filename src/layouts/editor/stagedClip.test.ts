@@ -382,6 +382,62 @@ describe("stagedClip", () => {
     expect(next.outSec).toBe(4);
   });
 
+  it("unlocks when Sync to timeline is turned off", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 20,
+    });
+    draft.inSec = 0;
+    draft.outSec = 5;
+    draft.timelineLocked = false;
+    const next = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "5.0s",
+        startSec: 10,
+        endSec: 15,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 5,
+        timelineLocked: true,
+      },
+      draft,
+    );
+    expect(next.timelineLocked).toBeUndefined();
+    expect(clipTimelineMoveEnabled(next)).toBe(true);
+  });
+
+  it("keeps lock when draft omits timelineLocked", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 20,
+    });
+    draft.inSec = 1;
+    draft.outSec = 5;
+    // undefined = "not changing lock" (e.g. unrelated field edit)
+    draft.timelineLocked = undefined;
+    const next = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "5.0s",
+        startSec: 10,
+        endSec: 15,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 5,
+        timelineLocked: true,
+      },
+      draft,
+    );
+    expect(next.timelineLocked).toBe(true);
+  });
+
   it("extends video timeline duration without changing source trim", () => {
     const draft = defaultStagedClipDraft({
       assetId: "v1",

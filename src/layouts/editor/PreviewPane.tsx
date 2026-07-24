@@ -653,11 +653,15 @@ export function PreviewPane({
     stagingSeedKey && stagedDraft?.kind === "video" && assetId
       ? clipThumbnailKey(
           assetId,
-          Boolean(stagedDraft.reverse),
+          // Only request reversed thumbs when reverse media is already baked.
+          Boolean(stagedDraft.reverse) &&
+            Boolean(getCachedReversedMedia(assetId)),
           stagedDraft.inSec,
         )
       : null;
-  const clipFrameReverse = Boolean(stagedDraft?.reverse);
+  const clipFrameReverse =
+    Boolean(stagedDraft?.reverse) &&
+    Boolean(assetId && getCachedReversedMedia(assetId));
   const clipFrameInSec = Math.max(0, stagedDraft?.inSec ?? 0);
   const activeClipFrameThumb =
     clipFrameKey && clipFrameThumb?.key === clipFrameKey
@@ -750,7 +754,12 @@ export function PreviewPane({
       void Promise.resolve().then(() => {
         if (!cancelled) setClipFrameThumb({ key: clipFrameKey, url: cached });
       });
-    } else {
+      return () => {
+        cancelled = true;
+      };
+    }
+    // Debounce ffmpeg frame extracts while In/Out scrubbers move.
+    const timer = window.setTimeout(() => {
       void ensureClipThumbnail(assetId, clipFrameReverse, clipFrameInSec)
         .then((url) => {
           if (!cancelled) setClipFrameThumb({ key: clipFrameKey, url });
@@ -759,9 +768,10 @@ export function PreviewPane({
           // The media element still seeks to the exact in-point; keep the asset
           // thumbnail as a loading fallback if extraction fails.
         });
-    }
+    }, 280);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [
     assetId,

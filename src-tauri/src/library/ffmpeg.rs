@@ -1,7 +1,27 @@
 //! Shared FFmpeg binary resolution for local media tools.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Command;
+
+/// Build a `Command` that does not flash a console window on Windows.
+///
+/// GUI apps (`windows_subsystem = "windows"`) still spawn a visible terminal for
+/// console-subsystem tools like `ffmpeg.exe` unless `CREATE_NO_WINDOW` is set.
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = Command::new(program);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
+}
 
 pub fn resolve_ffmpeg() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = vec![PathBuf::from("ffmpeg")];
@@ -16,7 +36,7 @@ pub fn resolve_ffmpeg() -> Option<PathBuf> {
     }
 
     for path in candidates {
-        let ok = Command::new(&path)
+        let ok = command(&path)
             .arg("-version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

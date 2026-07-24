@@ -51,20 +51,20 @@ Open the repo **Releases** page and download from **Desktop — latest main** (o
 
 ### macOS (Apple Silicon DMG)
 
-1. Open the DMG and drag **Parascene** into **Applications**.
+1. Open the DMG and drag **Parascene Desktop** into **Applications**.
 2. Clear Gatekeeper quarantine (unsigned builds look “damaged” otherwise):
 
 ```bash
-xattr -cr /Applications/Parascene.app
+xattr -cr "/Applications/Parascene Desktop.app"
 ```
 
-3. Open Parascene from Applications (or Spotlight).
+3. Open Parascene Desktop from Applications (or Spotlight).
 
 Alternative to step 2: Right-click the app → **Open** → **Open**.
 
 ### Windows (x64 NSIS)
 
-1. Run the `.exe` installer.
+1. Run the **Parascene Desktop** `.exe` installer (filename starts with `Parascene Desktop` / `Parascene_Desktop`).
 2. If SmartScreen warns (unsigned builds), choose **More info** → **Run anyway**.
 3. WebView2 is installed automatically when missing.
 

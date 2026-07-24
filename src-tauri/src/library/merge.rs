@@ -1,7 +1,7 @@
 use super::catalog::{
     default_paths, get_creation_by_id, ready_connection, Creation,
 };
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::import_local::insert_local_creation;
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
@@ -9,7 +9,6 @@ use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -103,7 +102,7 @@ fn new_merge_id() -> String {
 }
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())

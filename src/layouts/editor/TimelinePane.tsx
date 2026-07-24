@@ -919,9 +919,14 @@ export function TimelinePane({
       if (!cancelled) setClipThumbByKey(next);
     };
 
-    void load();
+    // Live In/Out drags rewrite clipThumbRequestsKey every ms; wait until
+    // scrubbing settles before spawning ffmpeg frame extracts.
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 280);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [clipThumbRequestsKey]);
 

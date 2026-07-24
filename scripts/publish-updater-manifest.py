@@ -70,7 +70,7 @@ def main() -> int:
 
     platforms: dict[str, dict[str, str]] = {}
 
-    # macOS: Parascene.app.tar.gz + .sig (Apple Silicon CI)
+    # macOS: Parascene Desktop.app.tar.gz + .sig (Apple Silicon CI)
     for name, asset in assets.items():
         if name.endswith(".app.tar.gz"):
             sig_name = f"{name}.sig"

@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -25,6 +26,8 @@ import {
   type PrimaryTab,
 } from "./ShellProvider";
 import type { LayoutMode } from "../project/types";
+import { WindowControls } from "./WindowControls";
+import { isWindowsDesktop } from "./windowPlatform";
 
 const PRIMARY_TABS: { id: PrimaryTab; label: string }[] = [
   { id: "library", label: "Library" },
@@ -77,6 +80,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [updateCheckOpen, setUpdateCheckOpen] = useState(false);
+  const [isWindows] = useState(() => isWindowsDesktop());
   const accountRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
@@ -238,9 +242,30 @@ export function AppChrome({ children }: { children: ReactNode }) {
     void logout();
   };
 
+  const onHeaderDoubleClick = (event: MouseEvent) => {
+    if (!isWindows) return;
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest("button, a, input, select, textarea, [role='menu']")) {
+      return;
+    }
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().toggleMaximize())
+      .catch(() => {});
+  };
+
   return (
-    <div className="app-shell">
-      <header className="app-header">
+    <div className={`app-shell${isWindows ? " is-windows" : ""}`}>
+      <header
+        className="app-header"
+        data-tauri-drag-region={isWindows ? true : undefined}
+        onDoubleClick={onHeaderDoubleClick}
+      >
+        {isWindows ? (
+          <span className="app-title" data-tauri-drag-region>
+            Parascene Desktop
+          </span>
+        ) : null}
         <div className="chrome-nav">
           <nav className="primary-tabs" aria-label="Primary">
             {PRIMARY_TABS.map((t) => (
@@ -298,6 +323,9 @@ export function AppChrome({ children }: { children: ReactNode }) {
             </nav>
           ) : null}
         </div>
+        {isWindows ? (
+          <div className="chrome-drag-fill" data-tauri-drag-region aria-hidden />
+        ) : null}
         {showChromeStatus ? (
           <p className="chrome-status" title={chromeStatus ?? undefined}>
             {chromeStatus}
@@ -398,6 +426,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
             </>
           ) : null}
         </div>
+        {isWindows ? <WindowControls /> : null}
       </header>
       <main className="app-main">{children}</main>
       <SettingsModal

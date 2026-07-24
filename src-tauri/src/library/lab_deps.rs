@@ -1,9 +1,8 @@
 //! Local tool readiness for Lab (FFmpeg, Demucs) — status + guided install.
 
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri_plugin_opener::OpenerExt;
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,7 +144,7 @@ fn cli_runs(path: &Path) -> bool {
         return false;
     }
     // Many CLIs exit non-zero with no args; --help is enough to prove the binary.
-    Command::new(path)
+    ffmpeg::command(path)
         .arg("--help")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -205,7 +204,7 @@ pub(crate) fn resolve_whisper() -> Option<PathBuf> {
 /// Probe a CLI name on PATH (plus augmented dirs) the same way ffmpeg does.
 fn probe_on_augmented_path(name: &str) -> Option<PathBuf> {
     let path_env = augmented_path_env();
-    let ok = Command::new(name)
+    let ok = ffmpeg::command(name)
         .arg("--help")
         .env("PATH", &path_env)
         .stdout(std::process::Stdio::null())
@@ -334,7 +333,7 @@ pub async fn library_install_demucs() -> Result<LabDepsStatus, String> {
 
     let python_for_thread = python.clone();
     let output = tokio::task::spawn_blocking(move || {
-        Command::new(&python_for_thread)
+        ffmpeg::command(&python_for_thread)
             .args(["-m", "pip", "install", "--user", "demucs"])
             .output()
     })
@@ -391,7 +390,7 @@ fn resolve_python() -> Option<PathBuf> {
     }
 
     for path in candidates {
-        let ok = Command::new(&path)
+        let ok = ffmpeg::command(&path)
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

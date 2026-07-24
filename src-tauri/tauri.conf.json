@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Parascene",
+  "productName": "Parascene Desktop",
   "version": "0.1.0",
   "identifier": "com.parascene.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "",
+        "title": "Parascene Desktop",
         "width": 1600,
         "height": 1000,
         "minWidth": 1100,

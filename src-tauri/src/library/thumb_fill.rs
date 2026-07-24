@@ -7,14 +7,13 @@ use super::catalog::{
     default_paths, get_creation_by_id, ready_connection, set_creation_geometry,
     set_local_thumb_path, Creation,
 };
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::paths::ParascenePaths;
 use image::imageops::FilterType;
 use image::DynamicImage;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
 const LONG_EDGE: u32 = 720;
@@ -72,7 +71,7 @@ fn path_under_root(root: &Path, stored: &str) -> Result<PathBuf, String> {
 
 fn extract_video_frame(ffmpeg: &Path, video: &Path, dest: &Path) -> Result<(), String> {
     // Decode from the start (no -ss) so we get the exact first video frame.
-    let status = Command::new(ffmpeg)
+    let status = ffmpeg::command(ffmpeg)
         .args([
             "-y",
             "-i",
@@ -96,7 +95,7 @@ fn extract_video_frame(ffmpeg: &Path, video: &Path, dest: &Path) -> Result<(), S
 
 /// Pull embedded album art (ID3 APIC / mjpeg cover stream) from an audio file.
 fn extract_embedded_cover(ffmpeg: &Path, audio: &Path, dest: &Path) -> Result<(), String> {
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args([
             "-y",
             "-i",
@@ -492,7 +491,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         // Minimal silent WAV — no video/cover stream.
         let src = root.join("silent.wav");
-        let status = Command::new(&ffmpeg)
+        let status = ffmpeg::command(&ffmpeg)
             .args([
                 "-y",
                 "-f",

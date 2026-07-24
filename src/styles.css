@@ -47,8 +47,21 @@
   background: var(--bg);
 }
 
+/**
+ * Overlay-style scrolling (macOS-like). Chromium/WebView2 on Windows otherwise
+ * paints classic always-on bars that reserve layout space — often forcing a
+ * horizontal scrollbar whenever a vertical one appears (timeline, library grid).
+ * Scroll still works via wheel/trackpad/touch; bars stay out of the layout.
+ */
 * {
   box-sizing: border-box;
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 html,
@@ -178,12 +191,71 @@ input[type="checkbox"].control,
   background: var(--surface);
 }
 
+.app-shell.is-windows .app-header {
+  gap: 0.75rem;
+  padding: 0.45rem 0 0.45rem 0.85rem;
+  user-select: none;
+}
+
+.app-title {
+  flex: 0 0 auto;
+  margin: 0 0.35rem 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--muted) 85%, var(--text));
+  white-space: nowrap;
+}
+
 .chrome-nav {
   display: flex;
   align-items: center;
   gap: 0.35rem;
   flex: 1;
   min-width: 0;
+}
+
+.app-shell.is-windows .chrome-nav {
+  flex: 0 1 auto;
+}
+
+.chrome-drag-fill {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 1.5rem;
+}
+
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  align-self: stretch;
+  margin-left: 0.25rem;
+}
+
+.window-control {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.window-control:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+.window-control.is-close:hover {
+  background: #e81123;
+  color: #fff;
 }
 
 .primary-tabs,
@@ -2288,6 +2360,11 @@ input[type="checkbox"].control,
   gap: 0.55rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.app-shell.is-windows .auth-strip {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 .auth-account {

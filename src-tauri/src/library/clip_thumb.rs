@@ -1,12 +1,11 @@
 //! Cached first-frame thumbnails for trimmed timeline clips.
 
 use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::paths::ParascenePaths;
-use super::reverse::ensure_reversed_media;
+use super::reverse::existing_reversed_media;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn safe_id(id: &str) -> String {
     id.chars()
@@ -58,7 +57,11 @@ fn source_path(
     reverse: bool,
 ) -> Result<PathBuf, String> {
     if reverse {
-        return Ok(PathBuf::from(ensure_reversed_media(paths, creation)?.path));
+        // Never bake reverse from a thumbnail request — wait for the Bake button.
+        let reversed = existing_reversed_media(paths, creation).ok_or_else(|| {
+            "Reversed media is not baked yet — hit Bake, then retry".to_string()
+        })?;
+        return Ok(PathBuf::from(reversed.path));
     }
     let local = creation
         .local_path
@@ -73,7 +76,7 @@ fn extract_frame(source: &Path, time_sec: f64, dest: &Path) -> Result<(), String
         "FFmpeg is required to create clip thumbnails. Install with: brew install ffmpeg"
             .to_string()
     })?;
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args([
             "-y",
             "-i",

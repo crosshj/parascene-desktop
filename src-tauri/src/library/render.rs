@@ -1,5 +1,5 @@
 use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
-use super::ffmpeg::resolve_ffmpeg;
+use super::ffmpeg::{self, resolve_ffmpeg};
 use super::lab_audio::extend_clip_on_disk;
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 
@@ -434,7 +433,7 @@ fn write_manifest(
 }
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg::command(ffmpeg)
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
