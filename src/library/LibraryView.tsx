@@ -231,6 +231,13 @@ function useCatalog(librarySurface: LibrarySurface) {
   >({});
   const [folderSyncing, setFolderSyncing] = useState(false);
   const [resolvingFolders, setResolvingFolders] = useState(false);
+  const [catalogSyncMode, setCatalogSyncMode] =
+    useState<CatalogSyncMode | null>(null);
+  const [syncHeadline, setSyncHeadline] = useState<string | null>(null);
+  const [cachingKind, setCachingKind] = useState<"thumbs" | "media" | null>(
+    null,
+  );
+  const [syncingGroups, setSyncingGroups] = useState(false);
   const offsetRef = useRef(0);
   const creationsRef = useRef<Creation[]>([]);
   const aspectBackfillStarted = useRef(false);
@@ -486,14 +493,6 @@ function useCatalog(librarySurface: LibrarySurface) {
     },
     [refreshFolderSync],
   );
-
-  const [catalogSyncMode, setCatalogSyncMode] =
-    useState<CatalogSyncMode | null>(null);
-  const [syncHeadline, setSyncHeadline] = useState<string | null>(null);
-  const [cachingKind, setCachingKind] = useState<"thumbs" | "media" | null>(
-    null,
-  );
-  const [syncingGroups, setSyncingGroups] = useState(false);
 
   const pushActivity = useCallback((event: SyncItemEvent) => {
     setActivity((prev) => applySyncItemEvent(prev, event));
@@ -822,7 +821,7 @@ function useCatalog(librarySurface: LibrarySurface) {
         detail: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [pushActivity, status?.missingThumbCacheable]);
+  }, [pushActivity, setCachingKind, status?.missingThumbCacheable]);
 
   const runCacheMedia = useCallback(async () => {
     const expected = status?.missingMediaCacheable ?? 0;
@@ -888,7 +887,7 @@ function useCatalog(librarySurface: LibrarySurface) {
         detail: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [pushActivity, status?.missingMediaCacheable]);
+  }, [pushActivity, setCachingKind, status?.missingMediaCacheable]);
 
   const runGroupMembersSync = useCallback(async () => {
     const jobId = `groups-${Date.now()}`;

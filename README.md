@@ -47,7 +47,14 @@ Matches [Log in with Parascene](https://www.parascene.com/help/developer/login-w
 
 ## Download & install
 
-Open the repo **Releases** page and download from **Desktop — latest main** (or a `desktop-v*` release).
+Open the repo **Releases** page → **Desktop — latest main**.
+
+| Platform | Download this file |
+| --- | --- |
+| macOS (Apple Silicon) | `Parascene Desktop_<version>_aarch64.dmg` |
+| Windows (x64) | `Parascene Desktop_<version>_x64-setup.exe` |
+
+Skip `.sig`, `.app.tar.gz`, and `latest.json` (those are for in-app updates).
 
 ### macOS (Apple Silicon DMG)
 
@@ -64,7 +71,7 @@ Alternative to step 2: Right-click the app → **Open** → **Open**.
 
 ### Windows (x64 NSIS)
 
-1. Run the **Parascene Desktop** `.exe` installer (filename starts with `Parascene Desktop` / `Parascene_Desktop`).
+1. Run the **`…_x64-setup.exe`** installer.
 2. If SmartScreen warns (unsigned builds), choose **More info** → **Run anyway**.
 3. WebView2 is installed automatically when missing.
 
