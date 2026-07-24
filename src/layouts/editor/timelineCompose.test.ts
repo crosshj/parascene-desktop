@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { TimelineClip } from "../../project/types";
 import {
   clipSourceSec,
+  clipSourceSpanSec,
+  clipIsTimelineExtended,
+  clipExtendDivitFraction,
   peekNextVisualClip,
   resolveTimelineFrame,
   timelineSequenceDuration,
@@ -52,6 +55,72 @@ describe("clipSourceSec", () => {
   it("defaults in/out from timeline span for images", () => {
     const c = clip({ id: "img", startSec: 0, endSec: 30, kind: "image" });
     expect(clipSourceSec(c, 12)).toBe(12);
+  });
+
+  it("loops extended video past the source trim", () => {
+    const c = clip({
+      id: "v",
+      startSec: 0,
+      endSec: 8,
+      inSec: 0,
+      outSec: 5,
+      kind: "video",
+    });
+    expect(clipSourceSpanSec(c)).toBe(5);
+    expect(clipSourceSec(c, 6)).toBe(1);
+    expect(clipSourceSec(c, 7)).toBe(2);
+  });
+
+  it("ping-pongs extended video past the source trim", () => {
+    const c = clip({
+      id: "v",
+      startSec: 0,
+      endSec: 10,
+      inSec: 0,
+      outSec: 4,
+      kind: "video",
+      extendPingPong: true,
+    });
+    expect(clipSourceSec(c, 4)).toBe(4);
+    expect(clipSourceSec(c, 4.5)).toBeCloseTo(3.5);
+    expect(clipSourceSec(c, 8)).toBeCloseTo(0);
+    expect(clipSourceSec(c, 8.5)).toBeCloseTo(0.5);
+    expect(clipSourceSec(c, 12)).toBeCloseTo(4);
+    expect(clipSourceSec(c, 12.5)).toBeCloseTo(3.5);
+  });
+
+  it("detects timeline extend and divit position", () => {
+    const c = clip({
+      id: "v",
+      startSec: 0,
+      endSec: 9.5,
+      inSec: 0,
+      outSec: 9,
+      kind: "video",
+    });
+    expect(clipIsTimelineExtended(c)).toBe(true);
+    expect(clipExtendDivitFraction(c)).toBeCloseTo(9 / 9.5);
+    const flat = clip({
+      id: "v2",
+      startSec: 0,
+      endSec: 9,
+      inSec: 0,
+      outSec: 9,
+      kind: "video",
+    });
+    expect(clipIsTimelineExtended(flat)).toBe(false);
+
+    const frozen = clip({
+      id: "v3",
+      startSec: 0,
+      endSec: 10,
+      inSec: 0,
+      outSec: 10,
+      kind: "video",
+      extendSourceSpanSec: 9,
+    });
+    expect(clipIsTimelineExtended(frozen)).toBe(true);
+    expect(clipExtendDivitFraction(frozen)).toBeCloseTo(0.9);
   });
 });
 

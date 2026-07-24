@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { LayoutMode, LyricAlignment, Project, StoryboardGenerationPlan, StoryboardProposal, TimelineClip } from "../project/types";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
+import { ConfirmProvider } from "../ui/ConfirmDialog";
 import {
   createStoredProject,
   emptyUiProject,
@@ -569,7 +570,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ShellContext.Provider value={value}>{children}</ShellContext.Provider>
+    <ShellContext.Provider value={value}>
+      <ConfirmProvider>{children}</ConfirmProvider>
+    </ShellContext.Provider>
   );
 }
 

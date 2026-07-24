@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useMemo,
   useEffect,
   useRef,
@@ -25,6 +26,8 @@ import {
   slideshowEnsureInputFromRecipe,
   type BakeInfo,
 } from "../../library/slideshowMedia";
+import { bakeClipExtend, deleteExtendCacheFile } from "../../lab/audioTools";
+import { getCreation } from "../../library/catalogClient";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
 import { AssistantPane } from "./AssistantPane";
 import {
@@ -42,7 +45,6 @@ import {
   selectionFromProject,
   pendingDraftMatchesSelection,
 } from "./editorSelection";
-import type { Creation } from "../../library/types";
 import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import {
   createRunningAddAssetGenerationSession,
@@ -58,8 +60,24 @@ import {
   timelineClipToStagedDraft,
   type StagedClipDraft,
 } from "./stagedClip";
+import {
+  installEditorGestureSafetyNet,
+  releasePointerCaptureSafe,
+  subscribeGestureAbort,
+} from "./gestureCleanup";
+import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 import { TimelinePane } from "./TimelinePane";
-import { timelineSequenceDuration } from "./timelineCompose";
+import {
+  clipInSec,
+  clipOutSec,
+  timelineSequenceDuration,
+} from "./timelineCompose";
+import {
+  clipHasFreshExtendBake,
+  clipNeedsExtendBake,
+  computeExtendBakeKey,
+  computeExtendBakeTargetSec,
+} from "./clipExtendBake";
 import { getMergeableTimelineSelection } from "./timelineMerge";
 import {
   TimelineMergeModal,
@@ -180,10 +198,6 @@ export function EditorLayout() {
   const [addAssetGenerationSession, setAddAssetGenerationSession] =
     useState<AddAssetGenerationSession | null>(null);
   const addAssetGenerationInflightRef = useRef(false);
-  const [loadedGenerateImageAssets, setLoadedGenerateImageAssets] = useState<{
-    key: string;
-    rows: Creation[];
-  } | null>(null);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
   const [assetsDrawerOpen, setAssetsDrawerOpen] = useState(false);
   const [assistantDrawerOpen, setAssistantDrawerOpen] = useState(false);
@@ -191,6 +205,10 @@ export function EditorLayout() {
 
   const workspaceRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const splitterCaptureRef = useRef<{
+    target: HTMLElement;
+    pointerId: number;
+  } | null>(null);
   const prefsRef = useRef(prefs);
   useEffect(() => {
     prefsRef.current = prefs;
@@ -232,7 +250,9 @@ export function EditorLayout() {
   const monitorMode: "source" | "timeline" = project.timelineMonitorActive
     ? "timeline"
     : "source";
-  const sequenceDurationSec = timelineSequenceDuration(project.timeline);
+  const [liveTimeline, setLiveTimeline] = useState<TimelineClip[] | null>(null);
+  const displayTimeline = liveTimeline ?? project.timeline;
+  const sequenceDurationSec = timelineSequenceDuration(displayTimeline);
   /**
    * While playing, playhead is local (avoids localStorage writes every frame).
    * When paused, the persisted project playhead is the source of truth.
@@ -244,6 +264,7 @@ export function EditorLayout() {
   /** Bumped on scrub-while-playing / loop so media re-primes without pausing. */
   const [mediaSeekEpoch, setMediaSeekEpoch] = useState(0);
   const livePlayheadRef = useRef(project.timelinePlayheadSec);
+  const toggleTimelinePlayingRef = useRef<() => void>(() => {});
   const displayPlayheadSec = timelinePlaying
     ? livePlayheadSec
     : project.timelinePlayheadSec;
@@ -386,6 +407,9 @@ export function EditorLayout() {
     }
     setTimelinePlaying(true);
   };
+  // Keep the latest toggle in a ref so the Space handler stays stable.
+  // eslint-disable-next-line react-hooks/refs -- intentional latest-handler mirror
+  toggleTimelinePlayingRef.current = toggleTimelinePlaying;
 
   // Space toggles play/pause while the program monitor owns the preview.
   useEffect(() => {
@@ -396,13 +420,11 @@ export function EditorLayout() {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isEditableKeyboardTarget(event.target)) return;
       event.preventDefault();
-      toggleTimelinePlaying();
+      toggleTimelinePlayingRef.current();
     };
 
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // Handlers are intentionally fresh each render; monitorMode gates subscription.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [monitorMode]);
 
   // Delete / Backspace removes selected timeline clips after confirm.
@@ -640,7 +662,33 @@ export function EditorLayout() {
     setAssistantDrawerOpen(false);
   }
 
+  useEffect(() => installEditorGestureSafetyNet(), []);
+
+  useEffect(
+    () =>
+      registerGestureStatusProvider("editorLayout", () => ({
+        splitterDrag: dragRef.current?.kind ?? null,
+        workspaceResizing: dragging,
+      })),
+    [dragging],
+  );
+
   useEffect(() => {
+    const releaseSplitterCapture = () => {
+      const capture = splitterCaptureRef.current;
+      if (!capture) return;
+      releasePointerCaptureSafe(capture.target, capture.pointerId);
+      splitterCaptureRef.current = null;
+    };
+
+    const endSplitterDrag = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      setDragging(null);
+      releaseSplitterCapture();
+      saveEditorLayoutPrefs(prefsRef.current);
+    };
+
     const onMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag) return;
@@ -676,17 +724,19 @@ export function EditorLayout() {
     };
 
     const onUp = () => {
-      if (!dragRef.current) return;
-      dragRef.current = null;
-      setDragging(null);
-      saveEditorLayoutPrefs(prefsRef.current);
+      endSplitterDrag();
     };
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    const unsubscribeAbort = subscribeGestureAbort(endSplitterDrag);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      unsubscribeAbort();
+      endSplitterDrag();
     };
   }, []);
 
@@ -695,7 +745,13 @@ export function EditorLayout() {
     event: ReactPointerEvent<HTMLButtonElement>,
   ) => {
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    const target = event.currentTarget;
+    try {
+      target.setPointerCapture(event.pointerId);
+      splitterCaptureRef.current = { target, pointerId: event.pointerId };
+    } catch {
+      splitterCaptureRef.current = null;
+    }
     const reservedRight = !rightCollapsed
       ? prefs.assistantWidth
       : ASSISTANT_COLLAPSED_STRIP;
@@ -846,9 +902,15 @@ export function EditorLayout() {
   const selectedClipIdsRef = useRef(selectedClipIds);
 
   useEffect(() => {
-    timelineRef.current = project.timeline;
+    timelineRef.current = displayTimeline;
     aspectRatioRef.current = project.aspectRatio;
-  }, [project.timeline, project.aspectRatio]);
+  }, [displayTimeline, project.aspectRatio]);
+
+  useEffect(() => {
+    // Drop live (in-gesture) timeline when the selection changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLiveTimeline(null);
+  }, [selectedClipId]);
 
   useEffect(() => {
     selectedClipIdsRef.current = selectedClipIds;
@@ -929,6 +991,88 @@ export function EditorLayout() {
         bakeInflightRef.current.delete(clip.id);
         const message = formatBakeError(error);
         console.error("Slideshow bake failed", message);
+        setBakeInfoByClipId((prev) => {
+          const next = new Map(prev);
+          next.set(clip.id, { status: "failed", error: message });
+          return next;
+        });
+      });
+  };
+
+  const ensureClipExtendBake = (clip: TimelineClip) => {
+    if (!clipNeedsExtendBake(clip)) return;
+    if (bakeInflightRef.current.has(clip.id)) return;
+    const assetId = clip.assetId?.trim();
+    const bakeKey = computeExtendBakeKey(clip);
+    const targetSec = computeExtendBakeTargetSec(clip);
+    if (!assetId || !bakeKey || targetSec == null) return;
+
+    const previousBakePath = clip.extendBakePath?.trim() || null;
+
+    bakeInflightRef.current.add(clip.id);
+    setBakeInfoByClipId((prev) => {
+      const next = new Map(prev);
+      next.set(clip.id, { status: "generating", error: null });
+      return next;
+    });
+
+    void getCreation(assetId)
+      .then(async (creation) => {
+        const sourcePath = creation.localPath?.trim();
+        if (!sourcePath) {
+          throw new Error("Video has no local path — sync it to the library first");
+        }
+        const inSec = clipInSec(clip);
+        const outSec = clipOutSec(clip);
+        const baked = await bakeClipExtend({
+          sourcePath,
+          pingPong: clip.extendPingPong === true,
+          targetSec,
+          inSec,
+          outSec,
+        });
+        return { bakeKey, path: baked.path, coverSec: targetSec };
+      })
+      .then((result) => {
+        bakeInflightRef.current.delete(clip.id);
+        if (previousBakePath && previousBakePath !== result.path.trim()) {
+          void deleteExtendCacheFile(previousBakePath).catch((error: unknown) => {
+            console.warn("Could not delete previous extend bake", error);
+          });
+        }
+        setBakeInfoByClipId((prev) => {
+          const next = new Map(prev);
+          next.set(clip.id, { status: "ready", error: null });
+          return next;
+        });
+        setOpenProjectTimeline(
+          timelineRef.current.map((row) =>
+            row.id === clip.id
+              ? {
+                  ...row,
+                  extendBakeKey: result.bakeKey,
+                  extendBakePath: result.path,
+                  extendBakeCoverSec: result.coverSec,
+                }
+              : row,
+          ),
+        );
+        setClipStagingSeed((prev) => {
+          if (!prev || prev.clipId !== clip.id) return prev;
+          return {
+            ...prev,
+            draft: {
+              ...prev.draft,
+              extendBakeKey: result.bakeKey,
+              extendBakePath: result.path,
+            },
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        bakeInflightRef.current.delete(clip.id);
+        const message = formatBakeError(error);
+        console.error("Extend bake failed", message);
         setBakeInfoByClipId((prev) => {
           const next = new Map(prev);
           next.set(clip.id, { status: "failed", error: message });
@@ -1032,14 +1176,23 @@ export function EditorLayout() {
     }
 
     for (const clip of project.timeline) {
-      if (clip.kind !== "slideshow" || !clip.slideshow) continue;
-      if (!clip.bakePath?.trim()) continue;
-      setBakeInfoByClipId((prev) => {
-        if (prev.get(clip.id)?.status === "ready") return prev;
-        const next = new Map(prev);
-        next.set(clip.id, { status: "ready", error: null });
-        return next;
-      });
+      if (clip.kind === "slideshow" && clip.slideshow && clip.bakePath?.trim()) {
+        setBakeInfoByClipId((prev) => {
+          if (prev.get(clip.id)?.status === "ready") return prev;
+          const next = new Map(prev);
+          next.set(clip.id, { status: "ready", error: null });
+          return next;
+        });
+        continue;
+      }
+      if (clipHasFreshExtendBake(clip)) {
+        setBakeInfoByClipId((prev) => {
+          if (prev.get(clip.id)?.status === "ready") return prev;
+          const next = new Map(prev);
+          next.set(clip.id, { status: "ready", error: null });
+          return next;
+        });
+      }
     }
   }, [
     project.id,
@@ -1050,19 +1203,34 @@ export function EditorLayout() {
     audioClipTimelineKey,
   ]);
 
-  const onClipDraftChange = (clipId: string, draft: StagedClipDraft) => {
+  const onClipDraftChange = (
+    clipId: string,
+    draft: StagedClipDraft,
+    options?: { live?: boolean },
+  ) => {
     if (
       addAssetGenerationSession?.phase === "running" &&
       addAssetGenerationSession.clipId === clipId
     ) {
       return;
     }
-    setClipStagingSeed({ clipId, draft });
-    const next = project.timeline.map((clip) =>
+    const next = timelineRef.current.map((clip) =>
       clip.id === clipId ? applyDraftToTimelineClip(clip, draft) : clip,
     );
-    setOpenProjectTimeline(next);
     const updated = next.find((clip) => clip.id === clipId);
+    if (options?.live) {
+      timelineRef.current = next;
+      setLiveTimeline(next);
+      return;
+    }
+    timelineRef.current = next;
+    setLiveTimeline(null);
+    const syncedDraft =
+      updated && (updated.kind === "image" || updated.kind === "video")
+        ? (timelineClipToStagedDraft(updated) ?? draft)
+        : draft;
+    setClipStagingSeed({ clipId, draft: syncedDraft });
+    setOpenProjectTimeline(next);
     if (updated?.kind === "slideshow" && !updated.bakePath) {
       bakeInflightRef.current.delete(clipId);
       setBakeInfoByClipId((prev) => {
@@ -1071,7 +1239,59 @@ export function EditorLayout() {
         return map;
       });
     }
+    if (updated?.kind === "video" && clipNeedsExtendBake(updated)) {
+      bakeInflightRef.current.delete(clipId);
+      setBakeInfoByClipId((prev) => {
+        const map = new Map(prev);
+        map.delete(clipId);
+        return map;
+      });
+    }
   };
+
+  const syncClipStagingFromTimeline = useCallback((timeline: TimelineClip[]) => {
+    setClipStagingSeed((prev) => {
+      if (!prev) return prev;
+      const clip = timeline.find((row) => row.id === prev.clipId);
+      if (!clip || (clip.kind !== "image" && clip.kind !== "video")) {
+        return prev;
+      }
+      const draft = timelineClipToStagedDraft(clip);
+      if (!draft) return prev;
+      if (clip.kind === "image") {
+        if (
+          prev.draft.inSec === draft.inSec &&
+          prev.draft.outSec === draft.outSec
+        ) {
+          return prev;
+        }
+      } else if (
+        prev.draft.inSec === draft.inSec &&
+        prev.draft.outSec === draft.outSec &&
+        prev.draft.timelineDurationSec === draft.timelineDurationSec &&
+        prev.draft.extendPingPong === draft.extendPingPong &&
+        prev.draft.extendBakeKey === draft.extendBakeKey &&
+        prev.draft.extendBakePath === draft.extendBakePath
+      ) {
+        return prev;
+      }
+      return { clipId: prev.clipId, draft };
+    });
+  }, []);
+
+  const onTimelineClipsChange = useCallback(
+    (next: TimelineClip[], options?: { live?: boolean }) => {
+      if (options?.live) {
+        setLiveTimeline(next);
+        syncClipStagingFromTimeline(next);
+        return;
+      }
+      setLiveTimeline(null);
+      setOpenProjectTimeline(next);
+      syncClipStagingFromTimeline(next);
+    },
+    [setLiveTimeline, setOpenProjectTimeline, syncClipStagingFromTimeline],
+  );
 
   const onSlideshowRender = () => {
     const clipId = clipStagingSeed?.clipId;
@@ -1101,6 +1321,14 @@ export function EditorLayout() {
       });
     }
     ensureSlideshowBake(target);
+  };
+
+  const onExtendBake = () => {
+    const clipId = clipStagingSeed?.clipId;
+    if (!clipId) return;
+    const clip = timelineRef.current.find((row) => row.id === clipId);
+    if (!clip || !clipNeedsExtendBake(clip)) return;
+    ensureClipExtendBake(clip);
   };
 
   const selectedBakeInfo =
@@ -1449,9 +1677,22 @@ export function EditorLayout() {
   const clipDraftAssetId = clipStagingSeed?.draft.assetId?.trim() || null;
 
   const selectedTimelineClip = useMemo(
-    () => project.timeline.find((clip) => clip.id === selectedClipId) ?? null,
-    [project.timeline, selectedClipId],
+    () => displayTimeline.find((clip) => clip.id === selectedClipId) ?? null,
+    [displayTimeline, selectedClipId],
   );
+
+  const selectedNeedsExtendBake = useMemo(() => {
+    if (!selectedTimelineClip) return false;
+    if (
+      clipStagingSeed?.clipId === selectedTimelineClip.id &&
+      clipStagingSeed.draft.kind === "video"
+    ) {
+      return clipNeedsExtendBake(
+        applyDraftToTimelineClip(selectedTimelineClip, clipStagingSeed.draft),
+      );
+    }
+    return clipNeedsExtendBake(selectedTimelineClip);
+  }, [selectedTimelineClip, clipStagingSeed]);
 
   const addAssetMode =
     monitorMode === "source" &&
@@ -1466,35 +1707,6 @@ export function EditorLayout() {
     }
     return project.timeline.find(isAddAssetPlaceholderClip) ?? null;
   }, [project.timeline, selectedClipId]);
-
-  const generateImageAssetIds = useMemo(() => {
-    if (!generateTargetClip) return null;
-    const imageIds = project.assets
-      .filter((asset) => asset.kind === "image")
-      .map((asset) => asset.id);
-    return imageIds.length > 0 ? imageIds : [];
-  }, [generateTargetClip, project.assets]);
-
-  const generateImageAssetKey = generateImageAssetIds?.join("\0") ?? null;
-  const generateImageAssets =
-    !generateImageAssetIds || generateImageAssetIds.length === 0
-      ? []
-      : loadedGenerateImageAssets?.key === generateImageAssetKey
-        ? loadedGenerateImageAssets.rows
-        : [];
-
-  useEffect(() => {
-    if (!generateImageAssetIds || generateImageAssetIds.length === 0) return;
-    let cancelled = false;
-    void getCreations(generateImageAssetIds).then((rows) => {
-      if (!cancelled && generateImageAssetKey) {
-        setLoadedGenerateImageAssets({ key: generateImageAssetKey, rows });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [generateImageAssetIds, generateImageAssetKey]);
 
   useEffect(() => {
     if (!addAssetGenerationSession) return;
@@ -1552,8 +1764,8 @@ export function EditorLayout() {
       prompt: request.prompt,
       lyricsText: request.lyricsText,
       audioMode: request.audioMode,
+      songRange: request.songRange,
       startFrame: request.startFrame,
-      imageAssets: generateImageAssets,
       onSteps: (steps) => {
         setAddAssetGenerationSession((prev) =>
           prev?.clipId === clipId ? { ...prev, steps } : prev,
@@ -1571,6 +1783,9 @@ export function EditorLayout() {
           clipId,
           projectCreationIds: result.projectCreationIds,
           videosGroupId: result.videosGroupId,
+          prompt: request.prompt,
+          lyricsText: request.lyricsText,
+          audioMode: request.audioMode,
         });
       })
       .catch((error) => {
@@ -1598,6 +1813,9 @@ export function EditorLayout() {
     clipId: string;
     projectCreationIds: string[];
     videosGroupId?: string | null;
+    prompt: string;
+    lyricsText: string;
+    audioMode: import("./addAssetGenerate").AddAssetAudioMode;
   }) => {
     addCreationsToOpenProject(result.projectCreationIds);
     if (result.videosGroupId) {
@@ -1607,6 +1825,15 @@ export function EditorLayout() {
       timelineRef.current,
       result.clipId,
       result.creationId,
+      {
+        addAssetGeneration: {
+          prompt: result.prompt,
+          audioMode: result.audioMode,
+          lyricsText: result.lyricsText.trim() || undefined,
+          generatedAt: new Date().toISOString(),
+          creationId: result.creationId,
+        },
+      },
     );
     const hadClip = timelineRef.current.some((clip) => clip.id === result.clipId);
     if (hadClip) {
@@ -1707,7 +1934,7 @@ export function EditorLayout() {
         }}
         aspectRatio={project.aspectRatio}
         monitorMode={monitorMode}
-        timelineClips={project.timeline}
+        timelineClips={displayTimeline}
         timelinePlayheadSec={displayPlayheadSec}
         timelinePlaying={timelinePlaying && monitorMode === "timeline"}
         mediaSeekEpoch={mediaSeekEpoch}
@@ -1716,6 +1943,9 @@ export function EditorLayout() {
         }
         stagingSeedKey={
           monitorMode === "source" ? (clipStagingSeed?.clipId ?? null) : null
+        }
+        selectedClipAddAssetGeneration={
+          selectedTimelineClip?.addAssetGeneration ?? null
         }
         onClipDraftChange={onClipDraftChange}
         restoredSourceDraft={
@@ -1735,6 +1965,19 @@ export function EditorLayout() {
             ? onSlideshowRender
             : null
         }
+        onExtendBake={
+          clipStagingSeed?.draft.kind === "video" && selectedNeedsExtendBake
+            ? onExtendBake
+            : null
+        }
+        needsExtendBake={selectedNeedsExtendBake}
+        onClipBakeInfoChange={(clipId, info) => {
+          setBakeInfoByClipId((prev) => {
+            const next = new Map(prev);
+            next.set(clipId, info);
+            return next;
+          });
+        }}
         showAssetsExpand={!showAssetsPane}
         onExpandAssets={expandAssets}
         volume={previewVolume}
@@ -1785,10 +2028,10 @@ export function EditorLayout() {
       />
 
       <TimelinePane
-        clips={project.timeline}
+        clips={displayTimeline}
         projectId={project.id}
         aspectRatio={project.aspectRatio}
-        onClipsChange={setOpenProjectTimeline}
+        onClipsChange={onTimelineClipsChange}
         bakeInfoByClipId={bakeInfoByClipId}
         addAssetGenerationByClipId={addAssetGenerationByClipId}
         lyricAlignment={project.lyricAlignment}

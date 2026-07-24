@@ -33,6 +33,10 @@ export type RenderTimelineClipInput = {
   slideshow?: RenderSlideshowRecipe;
   bakeKey?: string | null;
   bakePath?: string | null;
+  extendPingPong?: boolean;
+  extendSourceSpanSec?: number;
+  extendBakePath?: string | null;
+  extendBakeCoverSec?: number;
 };
 
 export type TimelineRender = {
@@ -93,6 +97,10 @@ export function timelineClipsToRenderInput(
       : undefined,
     bakeKey: clip.bakeKey,
     bakePath: clip.bakePath,
+    extendPingPong: clip.extendPingPong,
+    extendSourceSpanSec: clip.extendSourceSpanSec,
+    extendBakePath: clip.extendBakePath,
+    extendBakeCoverSec: clip.extendBakeCoverSec,
   }));
 }
 

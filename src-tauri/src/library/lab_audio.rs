@@ -340,22 +340,20 @@ fn find_vocals_wav(root: &Path) -> Result<PathBuf, String> {
 }
 
 /// Extend a short clip to `target_sec` by looping the trimmed region (optional ping-pong).
-#[tauri::command]
-pub async fn library_extend_clip(
-    source_path: String,
+pub fn extend_clip_on_disk(
+    source_path: &Path,
     ping_pong: bool,
     target_sec: f64,
     in_sec: Option<f64>,
     out_sec: Option<f64>,
-) -> Result<String, String> {
-    let src = PathBuf::from(&source_path);
-    if !src.is_file() {
+) -> Result<PathBuf, String> {
+    if !source_path.is_file() {
         return Err("Source media file not found".into());
     }
     if !(target_sec > 0.1) {
         return Err("targetSec must be > 0.1".into());
     }
-    let mode = if ping_pong { "pingpong" } else { "loop" };
+    let mode = if ping_pong { "pingpong_v4" } else { "loop" };
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
         "FFmpeg is required. Install with: brew install ffmpeg".to_string()
     })?;
@@ -363,7 +361,7 @@ pub async fn library_extend_clip(
     let in_s = in_sec.unwrap_or(0.0).max(0.0);
     let out_s = out_sec;
     let key = hash_key(&[
-        &source_path,
+        &source_path.to_string_lossy(),
         &mode,
         &format!("{target_sec:.3}"),
         &format!("{in_s:.3}"),
@@ -372,7 +370,7 @@ pub async fn library_extend_clip(
     let dir = cache_dir("extend")?;
     let dest = dir.join(format!("{key}.mp4"));
     if dest.is_file() {
-        return Ok(dest.to_string_lossy().to_string());
+        return Ok(dest);
     }
 
     let segment = dir.join(format!("{key}.seg.mp4"));
@@ -385,7 +383,7 @@ pub async fn library_extend_clip(
             args.push(format!("{in_s:.3}"));
         }
         args.push("-i".into());
-        args.push(src.to_string_lossy().to_string());
+        args.push(source_path.to_string_lossy().to_string());
         if let Some(o) = out_s {
             if o > in_s {
                 args.push("-t".into());
@@ -436,21 +434,31 @@ pub async fn library_extend_clip(
         fs::rename(&tmp, &reverse).map_err(|e| format!("reverse rename: {e}"))?;
     }
 
-    let unit = if ping_pong { seg_dur * 2.0 } else { seg_dur };
-    let loops = ((target_sec / unit).ceil() as usize).max(1);
-
     let list = dir.join(format!("{key}.txt"));
     {
         let mut body = String::new();
-        for _ in 0..loops {
+        if ping_pong {
             body.push_str(&format!(
                 "file '{}'\n",
                 segment.to_string_lossy().replace('\'', "'\\''")
             ));
-            if ping_pong {
+            let mut covered = seg_dur;
+            let mut reversed = true;
+            while covered < target_sec - 1e-6 {
+                let piece = if reversed { &reverse } else { &segment };
                 body.push_str(&format!(
                     "file '{}'\n",
-                    reverse.to_string_lossy().replace('\'', "'\\''")
+                    piece.to_string_lossy().replace('\'', "'\\''")
+                ));
+                reversed = !reversed;
+                covered += seg_dur;
+            }
+        } else {
+            let loops = ((target_sec / seg_dur).ceil() as usize).max(1);
+            for _ in 0..loops {
+                body.push_str(&format!(
+                    "file '{}'\n",
+                    segment.to_string_lossy().replace('\'', "'\\''")
                 ));
             }
         }
@@ -480,7 +488,46 @@ pub async fn library_extend_clip(
         ],
     )?;
     fs::rename(&tmp, &dest).map_err(|e| format!("extend rename: {e}"))?;
-    Ok(dest.to_string_lossy().to_string())
+    Ok(dest)
+}
+
+/// Extend a short clip to `target_sec` by looping the trimmed region (optional ping-pong).
+#[tauri::command]
+pub async fn library_extend_clip(
+    source_path: String,
+    ping_pong: bool,
+    target_sec: f64,
+    in_sec: Option<f64>,
+    out_sec: Option<f64>,
+) -> Result<String, String> {
+    extend_clip_on_disk(
+        &PathBuf::from(&source_path),
+        ping_pong,
+        target_sec,
+        in_sec,
+        out_sec,
+    )
+    .map(|path| path.to_string_lossy().to_string())
+}
+
+/// Delete a cached extend bake file (only paths under the lab extend cache).
+#[tauri::command]
+pub async fn library_delete_extend_cache_file(path: String) -> Result<(), String> {
+    let file = PathBuf::from(path.trim());
+    if file.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let cache_root = cache_dir("extend")?;
+    let cache_root = fs::canonicalize(&cache_root)
+        .map_err(|e| format!("Could not resolve extend cache: {e}"))?;
+    let file = fs::canonicalize(&file).map_err(|e| format!("Bake file not found: {e}"))?;
+    if !file.starts_with(&cache_root) {
+        return Err("Refusing to delete a file outside the extend cache".into());
+    }
+    if file.is_file() {
+        fs::remove_file(&file).map_err(|e| format!("Could not delete extend bake: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Read a local file as base64 (Lab uploads, e.g. vocals slice for a2v).

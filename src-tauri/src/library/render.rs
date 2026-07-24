@@ -1,10 +1,12 @@
 use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
 use super::ffmpeg::resolve_ffmpeg;
+use super::lab_audio::extend_clip_on_disk;
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
 use super::slideshow::{ensure_slideshow, SlideshowEnsureInput};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,6 +61,14 @@ pub struct RenderTimelineClipInput {
     pub bake_key: Option<String>,
     #[serde(default)]
     pub bake_path: Option<String>,
+    #[serde(default)]
+    pub extend_ping_pong: Option<bool>,
+    #[serde(default)]
+    pub extend_source_span_sec: Option<f64>,
+    #[serde(default)]
+    pub extend_bake_path: Option<String>,
+    #[serde(default)]
+    pub extend_bake_cover_sec: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,6 +137,8 @@ struct VideoSource {
     out_sec: f64,
     is_image: bool,
     framing: Framing,
+    /// Play the trimmed span backwards (ping-pong pong segments).
+    reverse_trim: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +154,7 @@ struct AudioSegment {
     in_sec: f64,
     out_sec: f64,
     delay_ms: u64,
+    reverse_trim: bool,
 }
 
 fn safe_id(id: &str) -> String {
@@ -235,6 +248,148 @@ fn clip_out_sec(in_sec: f64, out_sec: Option<f64>, timeline_dur: f64) -> f64 {
         }
     }
     in_sec + timeline_dur.max(0.1)
+}
+
+fn clip_trim_out_sec(clip: &RenderTimelineClipInput) -> f64 {
+    let in_sec = clip_in_sec(clip.in_sec);
+    clip_out_sec(in_sec, clip.out_sec, clip_timeline_duration(clip))
+}
+
+fn clip_source_trim_span(clip: &RenderTimelineClipInput) -> f64 {
+    (clip_trim_out_sec(clip) - clip_in_sec(clip.in_sec)).max(0.1)
+}
+
+fn clip_extend_source_span(clip: &RenderTimelineClipInput) -> f64 {
+    if let Some(span) = clip.extend_source_span_sec.filter(|v| v.is_finite() && *v > 0.0) {
+        return span.max(0.1);
+    }
+    clip_source_trim_span(clip)
+}
+
+fn clip_timeline_duration(clip: &RenderTimelineClipInput) -> f64 {
+    (clip.end_sec - clip.start_sec).max(0.1)
+}
+
+fn clip_is_video_kind(clip: &RenderTimelineClipInput) -> bool {
+    !clip
+        .kind
+        .as_deref()
+        .map(|k| {
+            k.eq_ignore_ascii_case("image")
+                || k.eq_ignore_ascii_case("slideshow")
+                || k.eq_ignore_ascii_case("audio")
+        })
+        .unwrap_or(false)
+}
+
+fn clip_is_video_extended(clip: &RenderTimelineClipInput) -> bool {
+    if !clip_is_video_kind(clip) {
+        return false;
+    }
+    clip_timeline_duration(clip) > clip_extend_source_span(clip) + 1e-3
+}
+
+fn compute_extend_target_sec(timeline_dur: f64, source_span: f64) -> f64 {
+    let spans = (timeline_dur / source_span).ceil().max(1.0);
+    (spans * source_span * 1000.0).round() / 1000.0
+}
+
+/// Match editor `clipSourceSec` for extended video clips.
+fn clip_source_sec_at_local(clip: &RenderTimelineClipInput, local: f64) -> f64 {
+    let in_sec = clip_in_sec(clip.in_sec);
+    let out_sec = clip_trim_out_sec(clip);
+    let source_span = clip_extend_source_span(clip);
+    let timeline_dur = clip_timeline_duration(clip);
+    let local = local.max(0.0);
+
+    if local <= source_span + 1e-6 || timeline_dur <= source_span + 1e-6 {
+        return (in_sec + local).min(out_sec).max(in_sec);
+    }
+
+    let extend_local = local - source_span;
+    if clip.extend_ping_pong != Some(true) {
+        return in_sec + (extend_local % source_span);
+    }
+
+    let segment = (extend_local / source_span).floor();
+    let phase = extend_local % source_span;
+    if (segment as i64).rem_euclid(2) == 0 {
+        out_sec - phase
+    } else {
+        in_sec + phase
+    }
+}
+
+fn extend_split_points(clip: &RenderTimelineClipInput) -> Vec<f64> {
+    let timeline_dur = clip_timeline_duration(clip);
+    let source_span = clip_extend_source_span(clip);
+    let mut points = vec![0.0];
+    let mut t = source_span;
+    while t < timeline_dur - 1e-6 {
+        points.push(t);
+        t += source_span;
+    }
+    points.push(timeline_dur);
+    points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    points.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    points
+}
+
+fn resolve_extend_bake_path(
+    clip: &RenderTimelineClipInput,
+    paths: &ParascenePaths,
+) -> Result<Option<PathBuf>, String> {
+    if !clip_is_video_extended(clip) || clip.reverse {
+        return Ok(None);
+    }
+
+    let timeline_dur = clip_timeline_duration(clip);
+    if let Some(stored) = clip
+        .extend_bake_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let path = PathBuf::from(stored);
+        if path.is_file() {
+            if let Some(cover) = clip.extend_bake_cover_sec.filter(|v| v.is_finite() && *v > 0.0)
+            {
+                if timeline_dur <= cover + 0.001 {
+                    return Ok(Some(path));
+                }
+            } else {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    let asset_id = clip
+        .asset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Extended video clip is missing an asset id".to_string())?;
+    let source_path = resolve_media_path(paths, asset_id, false)?;
+    let in_sec = clip_in_sec(clip.in_sec);
+    let out_sec = clip_trim_out_sec(clip);
+    let source_span = clip_extend_source_span(clip);
+    let target = compute_extend_target_sec(timeline_dur, source_span);
+    let ping_pong = clip.extend_ping_pong == Some(true);
+    let baked = extend_clip_on_disk(&source_path, ping_pong, target, Some(in_sec), Some(out_sec))?;
+    Ok(Some(baked))
+}
+
+fn prepare_extend_bakes(
+    lane_clips: &[&RenderTimelineClipInput],
+    paths: &ParascenePaths,
+) -> Result<HashMap<usize, PathBuf>, String> {
+    let mut map = HashMap::new();
+    for (index, clip) in lane_clips.iter().enumerate() {
+        if let Some(path) = resolve_extend_bake_path(clip, paths)? {
+            map.insert(index, path);
+        }
+    }
+    Ok(map)
 }
 
 fn sequence_duration(clips: &[RenderTimelineClipInput]) -> f64 {
@@ -516,6 +671,7 @@ fn build_video_segments(
         });
     }
 
+    let extend_bakes = prepare_extend_bakes(&lane_clips, paths)?;
     let prepare_total = ranges.len().max(1) as u32;
     emit_progress(
         app,
@@ -547,10 +703,35 @@ fn build_video_segments(
             continue;
         };
         let clip = lane_clips[clip_index];
-        let timeline_dur = (clip.end_sec - clip.start_sec).max(0.1);
         let in_sec = clip_in_sec(clip.in_sec);
-        let out_sec = clip_out_sec(in_sec, clip.out_sec, timeline_dur);
+        let out_sec = clip_trim_out_sec(clip);
         let local_offset = (range.start - clip.start_sec).max(0.0);
+        let local_end = (range.end - clip.start_sec).max(0.0);
+
+        if let Some(bake_path) = extend_bakes.get(&clip_index) {
+            segments.push(VideoSegment {
+                duration_sec,
+                source: Some(VideoSource {
+                    path: bake_path.clone(),
+                    in_sec: local_offset,
+                    out_sec: local_end.max(local_offset + 0.001),
+                    is_image: false,
+                    framing: clip_framing(clip),
+                    reverse_trim: false,
+                }),
+            });
+            emit_progress(
+                app,
+                paths,
+                project_id,
+                render_id,
+                "prepare",
+                (index + 1) as u32,
+                prepare_total,
+            );
+            continue;
+        }
+
         let source_in = (in_sec + local_offset).min(out_sec);
         let source_out = (source_in + duration_sec).min(out_sec);
 
@@ -582,7 +763,7 @@ fn build_video_segments(
                     mode: recipe.mode.clone(),
                     random: recipe.random,
                     seed: recipe.seed,
-                    duration_sec: out_sec.max(timeline_dur),
+                    duration_sec: out_sec.max(clip_timeline_duration(clip)),
                     framing: clip.framing.clone(),
                     aspect_ratio: aspect_ratio.into(),
                     clip_start_sec: clip.start_sec - in_sec,
@@ -604,6 +785,7 @@ fn build_video_segments(
                     is_image: false,
                     // Bake already framed; stretch into the segment frame.
                     framing: Framing::Stretch,
+                    reverse_trim: false,
                 }),
             });
         } else {
@@ -624,6 +806,7 @@ fn build_video_segments(
                     },
                     is_image,
                     framing: clip_framing(clip),
+                    reverse_trim: false,
                 }),
             });
         }
@@ -648,6 +831,20 @@ fn build_video_segments(
     Ok(segments)
 }
 
+fn audio_segment_reverse_trim(clip: &RenderTimelineClipInput, local_start: f64, local_end: f64) -> bool {
+    let source_span = clip_extend_source_span(clip);
+    if clip.extend_ping_pong != Some(true) || local_end <= source_span + 1e-6 {
+        return false;
+    }
+    let mid = (local_start + local_end) * 0.5;
+    let extend_local = mid - source_span;
+    if extend_local <= 1e-6 {
+        return false;
+    }
+    let segment = (extend_local / source_span).floor() as i64;
+    segment.rem_euclid(2) == 0
+}
+
 fn collect_audio_segments(
     clips: &[RenderTimelineClipInput],
     paths: &ParascenePaths,
@@ -665,17 +862,48 @@ fn collect_audio_segments(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "Audio clip is missing an asset id".to_string())?;
-        let timeline_dur = (clip.end_sec - clip.start_sec).max(0.1);
-        let in_sec = clip_in_sec(clip.in_sec);
-        let out_sec = clip_out_sec(in_sec, clip.out_sec, timeline_dur);
-        let source_dur = (out_sec - in_sec).min(timeline_dur);
         let path = resolve_media_path(paths, asset_id, clip.reverse)?;
-        let delay_ms = (clip.start_sec.max(0.0) * 1000.0).round() as u64;
+        let delay_base = clip.start_sec.max(0.0);
+
+        if include_from_video && clip_is_video_extended(clip) && !clip.reverse {
+            for window in extend_split_points(clip).windows(2) {
+                let local_start = window[0];
+                let local_end = window[1];
+                if local_end - local_start < 1e-6 {
+                    continue;
+                }
+                let src_start = clip_source_sec_at_local(clip, local_start);
+                let src_end = clip_source_sec_at_local(clip, local_end);
+                let reverse_trim = audio_segment_reverse_trim(clip, local_start, local_end);
+                let (in_sec, out_sec) = if reverse_trim {
+                    (src_end.min(src_start), src_start.max(src_end))
+                } else {
+                    (src_start.min(src_end), src_start.max(src_end))
+                };
+                if out_sec - in_sec < 1e-6 {
+                    continue;
+                }
+                out.push(AudioSegment {
+                    path: path.clone(),
+                    in_sec,
+                    out_sec,
+                    delay_ms: ((delay_base + local_start) * 1000.0).round() as u64,
+                    reverse_trim,
+                });
+            }
+            continue;
+        }
+
+        let timeline_dur = clip_timeline_duration(clip);
+        let in_sec = clip_in_sec(clip.in_sec);
+        let out_sec = clip_trim_out_sec(clip);
+        let source_dur = (out_sec - in_sec).min(timeline_dur);
         out.push(AudioSegment {
             path,
             in_sec,
             out_sec: in_sec + source_dur,
-            delay_ms,
+            delay_ms: (delay_base * 1000.0).round() as u64,
+            reverse_trim: false,
         });
     }
     Ok(out)
@@ -848,10 +1076,16 @@ fn render_timeline_file(
                 args.push("-i".into());
                 args.push(source.path.display().to_string());
                 args.push("-vf".into());
-                args.push(format!(
-                    "trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS,{frame}",
+                let trim = format!(
+                    "trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS",
                     source.in_sec, source.out_sec
-                ));
+                );
+                let vf = if source.reverse_trim {
+                    format!("{trim},reverse,{frame}")
+                } else {
+                    format!("{trim},{frame}")
+                };
+                args.push(vf);
             }
         } else {
             args.push("-f".into());
@@ -919,10 +1153,16 @@ fn render_timeline_file(
         args.push(segment.path.display().to_string());
         let idx = offset + 1; // 0 is the concat video input
         let delay = segment.delay_ms;
-        filter_parts.push(format!(
-            "[{idx}:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS,adelay={delay}|{delay}[a{idx}]",
+        let trim = format!(
+            "[{idx}:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS",
             segment.in_sec, segment.out_sec
-        ));
+        );
+        let chain = if segment.reverse_trim {
+            format!("{trim},areverse,adelay={delay}|{delay}[a{idx}]")
+        } else {
+            format!("{trim},adelay={delay}|{delay}[a{idx}]")
+        };
+        filter_parts.push(chain);
         audio_labels.push(format!("[a{idx}]"));
     }
 

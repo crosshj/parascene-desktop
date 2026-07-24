@@ -44,6 +44,7 @@ import {
 } from "./selectionClassify";
 import {
   ClipDragHandle,
+  ExtendBakeHandle,
   SlideshowRenderHandle,
   StagingFields,
 } from "./PreviewStaging";
@@ -85,6 +86,7 @@ import {
 } from "./AddAssetGeneratePanel";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import { isAddAssetPlaceholderClip } from "./stagedClip";
+import type { AddAssetGeneration } from "../../project/types";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -122,8 +124,14 @@ type PreviewPaneProps = {
   stagingSeed?: StagedClipDraft | null;
   /** Clip id (or other key) so re-selecting refreshes seed even for same asset. */
   stagingSeedKey?: string | null;
+  /** Add-asset generation metadata for the selected timeline clip. */
+  selectedClipAddAssetGeneration?: AddAssetGeneration | null;
   /** Persist staging edits onto the selected timeline clip. */
-  onClipDraftChange?: (clipId: string, draft: StagedClipDraft) => void;
+  onClipDraftChange?: (
+    clipId: string,
+    draft: StagedClipDraft,
+    options?: { live?: boolean },
+  ) => void;
   /**
    * Source-only staging restored from the project (pre-drop). Used when no
    * timeline clip is selected so Mode/sensitivity/etc. survive page switches.
@@ -137,6 +145,11 @@ type PreviewPaneProps = {
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
   /** Explicit slideshow bake (timeline clips only). */
   onSlideshowRender?: (() => void) | null;
+  /** Bake an extended video clip when settings are stale. */
+  onExtendBake?: (() => void) | null;
+  needsExtendBake?: boolean;
+  /** Report reverse/extend bake progress for the selected timeline clip spinner. */
+  onClipBakeInfoChange?: ((clipId: string, info: BakeInfo) => void) | null;
   /** Show a left-edge control to reopen the assets pane. */
   showAssetsExpand?: boolean;
   onExpandAssets?: () => void;
@@ -270,12 +283,16 @@ export function PreviewPane({
   mediaSeekEpoch = 0,
   stagingSeed = null,
   stagingSeedKey = null,
+  selectedClipAddAssetGeneration = null,
   onClipDraftChange,
   restoredSourceDraft = null,
   onSourceDraftChange,
   bakeInfo = null,
   bakeInfoByClipId,
   onSlideshowRender = null,
+  onExtendBake = null,
+  needsExtendBake = false,
+  onClipBakeInfoChange = null,
   showAssetsExpand = false,
   onExpandAssets,
   volume: volumeProp,
@@ -309,6 +326,7 @@ export function PreviewPane({
   const appliedSeedKeyRef = useRef<string | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playingRef = useRef(false);
   const frameRef = useRef<HTMLDivElement>(null);
   const onClipDraftChangeRef = useRef(onClipDraftChange);
   useEffect(() => {
@@ -670,29 +688,31 @@ export function PreviewPane({
     }
   }
 
-  useEffect(() => {
-    if (!wantsReverse || !assetId || !detail) return;
+  const needsReverseBake =
+    Boolean(wantsReverse && assetId && detail) &&
+    !getCachedReversedMedia(assetId ?? "") &&
+    !reversedDetail;
+
+  const onReverseBake = () => {
+    if (!assetId || reverseBusy) return;
     if (getCachedReversedMedia(assetId)) return;
-
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
-      setReverseBusy(true);
-      setReverseError(null);
-      setReversedDetail(null);
-      setReversedThumb(null);
-    });
-
+    const clipId = stagingSeedKey;
+    setReverseBusy(true);
+    setReverseError(null);
+    if (clipId) {
+      onClipBakeInfoChange?.(clipId, { status: "generating", error: null });
+    }
     void ensureReversedMedia(assetId)
       .then((urls) => {
-        if (cancelled) return;
         setReversedDetail(urls.mediaUrl);
         setReversedThumb(urls.thumbUrl);
         setReverseBusy(false);
         setReverseError(null);
+        if (clipId) {
+          onClipBakeInfoChange?.(clipId, { status: "ready", error: null });
+        }
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
         const message =
           err instanceof Error
             ? err.message
@@ -703,12 +723,14 @@ export function PreviewPane({
         setReverseBusy(false);
         setReversedDetail(null);
         setReversedThumb(null);
+        if (clipId) {
+          onClipBakeInfoChange?.(clipId, {
+            status: "failed",
+            error: message,
+          });
+        }
       });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [wantsReverse, assetId, detail, stagingSeedKey]);
+  };
 
   useEffect(() => {
     if (
@@ -768,6 +790,43 @@ export function PreviewPane({
       setStagedDraft(stagingSeed);
     });
   }, [stagingSeedKey, stagingSeed]);
+
+  useEffect(() => {
+    if (!stagingSeedKey || !stagingSeed) return;
+    // Mirror timeline-driven trim/extend fields into the local staging draft.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setStagedDraft((prev) => {
+      if (!prev) return prev;
+      if (
+        prev.inSec === stagingSeed.inSec &&
+        prev.outSec === stagingSeed.outSec &&
+        prev.timelineDurationSec === stagingSeed.timelineDurationSec &&
+        prev.extendPingPong === stagingSeed.extendPingPong &&
+        prev.extendBakeKey === stagingSeed.extendBakeKey &&
+        prev.extendBakePath === stagingSeed.extendBakePath
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        inSec: stagingSeed.inSec,
+        outSec: stagingSeed.outSec,
+        timelineDurationSec: stagingSeed.timelineDurationSec,
+        extendPingPong: stagingSeed.extendPingPong,
+        extendBakeKey: stagingSeed.extendBakeKey,
+        extendBakePath: stagingSeed.extendBakePath,
+      };
+    });
+  }, [
+    stagingSeedKey,
+    stagingSeed?.inSec,
+    stagingSeed?.outSec,
+    stagingSeed?.timelineDurationSec,
+    stagingSeed?.extendPingPong,
+    stagingSeed?.extendBakeKey,
+    stagingSeed?.extendBakePath,
+    stagingSeed,
+  ]);
 
   useEffect(() => {
     if (!assetId || !creation || catalogError) {
@@ -1048,6 +1107,9 @@ export function PreviewPane({
     ? Math.max(clipLoopInSec + 0.1, stagedDraft.outSec)
     : 0;
 
+  // eslint-disable-next-line react-hooks/refs -- read in media event handlers
+  playingRef.current = playing;
+
   // Persistent source-ownership badge for the preview (Timeline / Asset / Clip).
   const assetDisplayName = (() => {
     if (creationMatchesAsset && creation) {
@@ -1127,6 +1189,41 @@ export function PreviewPane({
     }
   };
 
+  // Heal In/Out that landed past the real source length (e.g. reverse remap
+  // previously used a placeholder 120s max instead of media duration).
+  useEffect(() => {
+    if (!stagedDraft || !(durationSec > 0)) return;
+    if (stagedDraft.kind === "image" || stagedDraft.kind === "slideshow") return;
+
+    const outOfRange =
+      stagedDraft.inSec > durationSec + 0.05 ||
+      stagedDraft.outSec > durationSec + 0.05;
+    if (!outOfRange) return;
+
+    const span = Math.min(
+      Math.max(0.1, stagedDraft.outSec - stagedDraft.inSec),
+      durationSec,
+    );
+    // Keep the trim length; for reverse, place it at the end of the source
+    // (matches remapping a leading trim). Otherwise keep it at the start.
+    const next = stagedDraft.reverse
+      ? clampInOutDraft(
+          stagedDraft,
+          { inSec: Math.max(0, durationSec - span), outSec: durationSec },
+          durationSec,
+        )
+      : clampInOutDraft(stagedDraft, { inSec: 0, outSec: span }, durationSec);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- heal when duration/trim diverge
+    onStagingDraftChange(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional heal when duration/trim diverge
+  }, [
+    durationSec,
+    stagedDraft?.inSec,
+    stagedDraft?.outSec,
+    stagedDraft?.kind,
+    stagedDraft?.reverse,
+  ]);
+
   const playbackResetTarget =
     stagingSeedKey && stagingSeed && stagingSeed.kind !== "image"
       ? Math.max(0, stagingSeed.inSec)
@@ -1177,22 +1274,32 @@ export function PreviewPane({
     }
   };
 
-  const seekTo = (sec: number) => {
+  const seekTo = (sec: number, options?: { trim?: boolean }) => {
+    void options;
     const el = mediaRef.current;
     if (!el || !canPlay) return;
+    const wasPaused = el.paused;
     const next = Math.max(0, Math.min(el.duration || durationSec, sec));
     el.currentTime = next;
     setCurrentSec(next);
+    if (wasPaused) {
+      el.pause();
+      setPlaying(false);
+    }
   };
 
   const onTimeUpdate = (
     event: SyntheticEvent<HTMLVideoElement | HTMLAudioElement>,
   ) => {
     const el = event.currentTarget;
-    if (clipLoopEnabled && el.currentTime >= clipLoopOutSec - 0.03) {
+    if (
+      clipLoopEnabled &&
+      !el.paused &&
+      el.currentTime >= clipLoopOutSec - 0.03
+    ) {
       el.currentTime = clipLoopInSec;
       setCurrentSec(clipLoopInSec);
-      if (!el.paused) void el.play().catch(() => {});
+      void el.play().catch(() => {});
       return;
     }
     setCurrentSec(el.currentTime);
@@ -1205,17 +1312,21 @@ export function PreviewPane({
     if (clipLoopEnabled) {
       el.currentTime = clipLoopInSec;
       setCurrentSec(clipLoopInSec);
-      void el.play().catch(() => {
-        setPlaying(false);
-      });
+      if (playingRef.current) {
+        void el.play().catch(() => {
+          setPlaying(false);
+        });
+      }
       return;
     }
     if (sourcePreviewLoops) {
       el.currentTime = 0;
       setCurrentSec(0);
-      void el.play().catch(() => {
-        setPlaying(false);
-      });
+      if (playingRef.current) {
+        void el.play().catch(() => {
+          setPlaying(false);
+        });
+      }
       return;
     }
     setPlaying(false);
@@ -1315,9 +1426,9 @@ export function PreviewPane({
   else if (!creationMatchesAsset && !thumb && !holdThumb)
     status = "Loading…";
   else if (!creationMatchesAsset) status = null;
-  else if (wantsReverse && reverseBusy) status = "Reversing…";
+  else if (wantsReverse && reverseBusy) status = "Baking reverse…";
   else if (wantsReverse && reverseError) status = reverseError;
-  else if (wantsReverse && !reversedDetail && detail) status = "Reversing…";
+  else if (wantsReverse && needsReverseBake) status = "Hit Bake to reverse";
   else if (!useDetail && !thumb && waitingLocal) status = "Saving locally…";
   else if (!useDetail && !thumb) status = "No local media";
 
@@ -1495,7 +1606,10 @@ export function PreviewPane({
                   </span>
                 ) : null}
                 {!useDetail && wantsReverse && reverseBusy ? (
-                  <span className="editor-preview-wait muted">Reversing…</span>
+                  <span className="editor-preview-wait muted">Baking reverse…</span>
+                ) : null}
+                {!useDetail && wantsReverse && needsReverseBake && !reverseBusy ? (
+                  <span className="editor-preview-wait muted">Hit Bake to reverse</span>
                 ) : null}
               </>
             )}
@@ -1529,7 +1643,17 @@ export function PreviewPane({
                 ? {
                     inSec: stagedDraft.inSec,
                     outSec: stagedDraft.outSec,
-                    onChange: ({ inSec, outSec }) => {
+                    onLiveChange: ({ inSec, outSec }) => {
+                      if (!stagedDraft || !stagingSeedKey) return;
+                      const next = clampInOutDraft(
+                        stagedDraft,
+                        { inSec, outSec },
+                        scrubMax,
+                      );
+                      setStagedDraft(next);
+                      onClipDraftChange?.(stagingSeedKey, next, { live: true });
+                    },
+                    onCommit: ({ inSec, outSec }) => {
                       onStagingDraftChange(
                         clampInOutDraft(
                           stagedDraft,
@@ -1657,8 +1781,15 @@ export function PreviewPane({
                   sourceDurationSec={durationSec}
                   onDraftChange={onStagingDraftChange}
                   bakeInfo={
-                    stagedDraft.kind === "slideshow" ? bakeInfo : null
+                    stagedDraft.kind === "slideshow" ||
+                    (stagedDraft.kind === "video" &&
+                      (needsExtendBake ||
+                        bakeInfo?.status === "generating" ||
+                        bakeInfo?.status === "failed"))
+                      ? bakeInfo
+                      : null
                   }
+                  addAssetGeneration={selectedClipAddAssetGeneration}
                 />
               ) : assetId ? (
                 <div
@@ -1691,6 +1822,41 @@ export function PreviewPane({
                 <SlideshowRenderHandle
                   onRender={onSlideshowRender}
                   rendering={bakeInfo?.status === "generating"}
+                />
+              ) : null}
+              {canStage &&
+              stagedDraft?.kind === "video" &&
+              editingClip &&
+              needsExtendBake &&
+              onExtendBake &&
+              !needsReverseBake &&
+              !reverseBusy &&
+              !unsupportedMessage ? (
+                <ExtendBakeHandle
+                  onBake={onExtendBake}
+                  baking={bakeInfo?.status === "generating"}
+                  title={
+                    bakeInfo?.status === "generating"
+                      ? "Baking extend…"
+                      : "Bake extended clip"
+                  }
+                />
+              ) : null}
+              {canStage &&
+              stagedDraft &&
+              (stagedDraft.kind === "video" || stagedDraft.kind === "audio") &&
+              (needsReverseBake || reverseBusy) &&
+              !unsupportedMessage ? (
+                <ExtendBakeHandle
+                  onBake={onReverseBake}
+                  baking={reverseBusy}
+                  label="Bake"
+                  bakingLabel="Baking…"
+                  title={
+                    reverseBusy
+                      ? "Baking reversed media…"
+                      : "Bake reversed media"
+                  }
                 />
               ) : null}
             </div>

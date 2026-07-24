@@ -51,11 +51,93 @@ export function clipOutSec(clip: TimelineClip): number {
   return inSec + timelineDur;
 }
 
+/** Trimmed source span from explicit in/out only (ignores timeline fallback). */
+export function clipSourceTrimSpanSec(clip: TimelineClip): number | null {
+  const inSec = clipInSec(clip);
+  if (!Number.isFinite(clip.outSec) || Number(clip.outSec) <= inSec) {
+    return null;
+  }
+  return Math.max(0.1, Number(clip.outSec) - inSec);
+}
+
+/** Source trim span used for extend UI and playback looping. */
+export function clipExtendSourceSpanSec(clip: TimelineClip): number | null {
+  if (
+    Number.isFinite(clip.extendSourceSpanSec) &&
+    Number(clip.extendSourceSpanSec) > 0
+  ) {
+    return Math.max(0.1, Number(clip.extendSourceSpanSec));
+  }
+  return clipSourceTrimSpanSec(clip);
+}
+
+/** True when timeline placement is longer than the trimmed source region. */
+export function clipIsTimelineExtended(clip: TimelineClip): boolean {
+  if (
+    clip.kind === "image" ||
+    clip.kind === "slideshow" ||
+    clip.kind === "audio" ||
+    clip.lane === "audio"
+  ) {
+    return false;
+  }
+  const trimSpan = clipExtendSourceSpanSec(clip);
+  if (trimSpan == null) return false;
+  return clipTimelineDurationSec(clip) > trimSpan + 0.001;
+}
+
+/** 0..1 position along the clip where the source trim ends (extend divit). */
+export function clipExtendDivitFraction(clip: TimelineClip): number | null {
+  if (!clipIsTimelineExtended(clip)) return null;
+  const trimSpan = clipExtendSourceSpanSec(clip);
+  if (trimSpan == null) return null;
+  return trimSpan / clipTimelineDurationSec(clip);
+}
+
+/** Trimmed source media span (out − in). */
+export function clipSourceSpanSec(clip: TimelineClip): number {
+  const trimSpan = clipExtendSourceSpanSec(clip);
+  if (trimSpan != null) return trimSpan;
+  return clipTimelineDurationSec(clip);
+}
+
+export function clipVideoMinTimelineDurationSec(clip: TimelineClip): number {
+  const frozen = clipExtendSourceSpanSec(clip);
+  if (frozen != null) return frozen;
+  return clipTimelineDurationSec(clip);
+}
+
+/** Timeline placement span (end − start). */
+export function clipTimelineDurationSec(clip: TimelineClip): number {
+  return Math.max(0.1, clip.endSec - clip.startSec);
+}
+
 export function clipSourceSec(clip: TimelineClip, timelineSec: number): number {
   const inSec = clipInSec(clip);
   const outSec = clipOutSec(clip);
+  const sourceSpan = clipSourceSpanSec(clip);
   const local = Math.max(0, timelineSec - clip.startSec);
-  return Math.min(outSec, Math.max(inSec, inSec + local));
+  const timelineDur = clipTimelineDurationSec(clip);
+
+  if (
+    clip.kind !== "video" ||
+    local <= sourceSpan + 1e-6 ||
+    timelineDur <= sourceSpan + 1e-6
+  ) {
+    return Math.min(outSec, Math.max(inSec, inSec + local));
+  }
+
+  const extendLocal = local - sourceSpan;
+  if (clip.extendPingPong !== true) {
+    return inSec + (extendLocal % sourceSpan);
+  }
+
+  const segment = Math.floor(extendLocal / sourceSpan);
+  const phase = extendLocal % sourceSpan;
+  if (segment % 2 === 0) {
+    return outSec - phase;
+  }
+  return inSec + phase;
 }
 
 function toLayer(clip: TimelineClip, timelineSec: number): TimelineLayer {

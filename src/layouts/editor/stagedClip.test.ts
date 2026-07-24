@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { clipNeedsExtendBake } from "./clipExtendBake";
 import {
   applyDraftToTimelineClip,
+  clipTimelineMoveEnabled,
   defaultSlideshowDraft,
   defaultStagedClipDraft,
   formatStagedDuration,
@@ -12,6 +14,7 @@ import {
   normalizeSlideshowRecipe,
   parseStagedClipPayload,
   remapTrimForReverse,
+  resolveExtendPingPong,
   serializeStagedClip,
   slideshowOrderIndices,
   slideshowRecipesEqual,
@@ -250,6 +253,27 @@ describe("stagedClip", () => {
     expect(remapTrimForReverse(draft, 10)).toEqual({ inSec: 5, outSec: 8 });
   });
 
+  it("mirrors in/out against the real source duration, not a placeholder max", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 8.17,
+    });
+    draft.inSec = 0;
+    draft.outSec = 4.7;
+    // Using the media duration keeps the flipped region on the scrubber.
+    expect(remapTrimForReverse(draft, 8.17)).toEqual({
+      inSec: expect.closeTo(3.47, 2),
+      outSec: expect.closeTo(8.17, 2),
+    });
+    // A placeholder 120s max (old staging bug) sends the region off-screen.
+    expect(remapTrimForReverse(draft, 120)).toEqual({
+      inSec: expect.closeTo(115.3, 2),
+      outSec: 120,
+    });
+  });
+
   it("builds and round-trips slideshow drafts", () => {
     const draft = defaultSlideshowDraft({
       imageAssetIds: ["i1", "i2", "i3"],
@@ -299,6 +323,151 @@ describe("stagedClip", () => {
     const restored = timelineClipToStagedDraft(clip);
     expect(restored?.kind).toBe("slideshow");
     expect(restored?.slideshow?.imageAssetIds).toEqual(["i1", "i2", "i3"]);
+  });
+
+  it("shifts startSec when trimming In on a locked clip", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 20,
+    });
+    draft.inSec = 1;
+    draft.outSec = 5;
+    const next = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "5.0s",
+        startSec: 10,
+        endSec: 15,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 5,
+        timelineLocked: true,
+      },
+      draft,
+    );
+    expect(next.startSec).toBe(11);
+    expect(next.endSec).toBe(15);
+    expect(next.inSec).toBe(1);
+    expect(next.outSec).toBe(5);
+  });
+
+  it("keeps startSec when trimming Out on a locked clip", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 20,
+    });
+    draft.inSec = 0;
+    draft.outSec = 4;
+    const next = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "5.0s",
+        startSec: 10,
+        endSec: 15,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 5,
+        timelineLocked: true,
+      },
+      draft,
+    );
+    expect(next.startSec).toBe(10);
+    expect(next.endSec).toBe(14);
+    expect(next.outSec).toBe(4);
+  });
+
+  it("extends video timeline duration without changing source trim", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 10,
+    });
+    draft.inSec = 0;
+    draft.outSec = 5;
+    draft.timelineDurationSec = 8;
+    const next = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "5.0s",
+        startSec: 10,
+        endSec: 15,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 5,
+      },
+      draft,
+    );
+    expect(next.endSec).toBe(18);
+    expect(next.outSec).toBe(5);
+    expect(next.inSec).toBe(0);
+    expect(next.label).toBe("8.0s");
+  });
+
+  it("defaults ping-pong when a video clip first enters extend mode", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 10,
+    });
+    draft.inSec = 0;
+    draft.outSec = 3;
+    draft.timelineDurationSec = 5;
+    const clip = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "3.0s",
+        startSec: 0,
+        endSec: 3,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 3,
+      },
+      draft,
+    );
+    expect(clip.extendPingPong).toBe(true);
+    expect(resolveExtendPingPong(5, 3, false, {}, undefined)).toBe(true);
+    expect(resolveExtendPingPong(5, 3, true, { extendPingPong: true }, false)).toBe(
+      undefined,
+    );
+  });
+
+  it("persists ping-pong on extended video clips", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 10,
+    });
+    draft.inSec = 1;
+    draft.outSec = 4;
+    draft.timelineDurationSec = 7;
+    draft.extendPingPong = true;
+    const clip = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "3.0s",
+        startSec: 0,
+        endSec: 3,
+        assetId: "v1",
+        kind: "video",
+        inSec: 1,
+        outSec: 4,
+      },
+      draft,
+    );
+    expect(clip.extendPingPong).toBe(true);
+    expect(timelineClipToStagedDraft(clip)?.extendPingPong).toBe(true);
+    expect(timelineClipToStagedDraft(clip)?.timelineDurationSec).toBe(7);
   });
 
   it("keeps a rendered slideshow bake when trimming its source range", () => {
@@ -408,5 +577,83 @@ describe("stagedClip", () => {
         mode: "beat_classic",
       })?.sensitivity,
     ).toBeUndefined();
+  });
+
+  it("needs rebake when ping-pong toggles on but keeps bake metadata", () => {
+    const clip = {
+      id: "c1",
+      label: "6.0s",
+      startSec: 0,
+      endSec: 6,
+      assetId: "v1",
+      kind: "video" as const,
+      inSec: 0,
+      outSec: 3,
+      extendSourceSpanSec: 3,
+      extendBakeKey: '{"v":5,"assetId":"v1","inSec":0,"outSec":3,"pingPong":false,"reverse":false}',
+      extendBakePath: "/tmp/extend.mp4",
+      extendBakeCoverSec: 6,
+    };
+    const draft = timelineClipToStagedDraft(clip)!;
+    draft.extendPingPong = true;
+    const next = applyDraftToTimelineClip(clip, draft);
+    expect(next.extendBakePath).toBe("/tmp/extend.mp4");
+    expect(clipNeedsExtendBake(next)).toBe(true);
+  });
+
+  it("needs rebake when ping-pong toggles off but keeps bake metadata", () => {
+    const clip = {
+      id: "c1",
+      label: "6.0s",
+      startSec: 0,
+      endSec: 6,
+      assetId: "v1",
+      kind: "video" as const,
+      inSec: 0,
+      outSec: 3,
+      extendSourceSpanSec: 3,
+      extendPingPong: true,
+      extendBakeKey: '{"v":5,"assetId":"v1","inSec":0,"outSec":3,"pingPong":true,"reverse":false}',
+      extendBakePath: "/tmp/extend-ping.mp4",
+      extendBakeCoverSec: 6,
+    };
+    const draft = timelineClipToStagedDraft(clip)!;
+    draft.extendPingPong = false;
+    const next = applyDraftToTimelineClip(clip, draft);
+    expect(next.extendPingPong).toBeUndefined();
+    expect(next.extendBakePath).toBe("/tmp/extend-ping.mp4");
+    expect(clipNeedsExtendBake(next)).toBe(true);
+  });
+
+  it("reuses bake after settings return to the baked recipe", () => {
+    const clip = {
+      id: "c1",
+      label: "6.0s",
+      startSec: 0,
+      endSec: 6,
+      assetId: "v1",
+      kind: "video" as const,
+      inSec: 0,
+      outSec: 3,
+      extendSourceSpanSec: 3,
+      extendBakeKey: '{"v":5,"assetId":"v1","inSec":0,"outSec":3,"pingPong":false,"reverse":false}',
+      extendBakePath: "/tmp/extend.mp4",
+      extendBakeCoverSec: 6,
+    };
+    const draft = timelineClipToStagedDraft(clip)!;
+    draft.extendPingPong = true;
+    const toggled = applyDraftToTimelineClip(clip, draft);
+    expect(clipNeedsExtendBake(toggled)).toBe(true);
+    const restored = applyDraftToTimelineClip(toggled, {
+      ...draft,
+      extendPingPong: false,
+    });
+    expect(clipNeedsExtendBake(restored)).toBe(false);
+  });
+
+  it("clipTimelineMoveEnabled is false when synced to timeline", () => {
+    expect(clipTimelineMoveEnabled({ timelineLocked: true })).toBe(false);
+    expect(clipTimelineMoveEnabled({ timelineLocked: undefined })).toBe(true);
+    expect(clipTimelineMoveEnabled({})).toBe(true);
   });
 });

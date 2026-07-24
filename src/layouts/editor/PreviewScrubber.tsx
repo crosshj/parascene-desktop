@@ -5,28 +5,33 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  clearEditorBodyDragClasses,
+  releasePointerCaptureSafe,
+  subscribeGestureAbort,
+} from "./gestureCleanup";
+import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
+
+export type PreviewScrubberTrim = {
+  inSec: number;
+  outSec: number;
+  /** Live preview while dragging — seek only, no timeline commit. */
+  onLiveChange: (next: { inSec: number; outSec: number }) => void;
+  /** Final values when the handle is released. */
+  onCommit: (next: { inSec: number; outSec: number }) => void;
+};
 
 export type PreviewScrubberProps = {
-  /** Current playhead time (seconds). */
   currentSec: number;
-  /** Full media duration (seconds). */
   durationSec: number;
-  /** Seek the playhead. */
-  onSeek: (sec: number) => void;
-  /** Disable seeking (no playable media). */
+  onSeek: (sec: number, options?: { trim?: boolean }) => void;
   disabled?: boolean;
-  /**
-   * When set, show draggable In/Out handles and highlight the trim range.
-   * Only used for modes that offer In/Out (video / audio).
-   */
-  trim?: {
-    inSec: number;
-    outSec: number;
-    onChange: (next: { inSec: number; outSec: number }) => void;
-  } | null;
+  trim?: PreviewScrubberTrim | null;
 };
 
 const MIN_TRIM_SEC = 0.1;
+/** Pointer slop (px) — cursor within this distance of a handle drags the handle. */
+const HANDLE_HIT_PX = 12;
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -43,10 +48,8 @@ function secFromClientX(
   return clamp(t, 0, 1) * durationSec;
 }
 
-/** Build a short list of major/minor tick fractions across the duration. */
 function tickMarks(durationSec: number): Array<{ t: number; major: boolean }> {
   if (!(durationSec > 0)) return [];
-  // Aim for ~8–12 major ticks.
   const rough = durationSec / 10;
   const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
   let majorStep = steps[steps.length - 1];
@@ -60,16 +63,50 @@ function tickMarks(durationSec: number): Array<{ t: number; major: boolean }> {
   const out: Array<{ t: number; major: boolean }> = [];
   for (let t = 0; t <= durationSec + 1e-6; t += minorStep) {
     const clamped = Math.min(t, durationSec);
-    const isMajor = Math.abs(clamped / majorStep - Math.round(clamped / majorStep)) < 1e-6;
-    out.push({ t: clamped, major: isMajor || clamped === 0 || clamped === durationSec });
+    const isMajor =
+      Math.abs(clamped / majorStep - Math.round(clamped / majorStep)) < 1e-6;
+    out.push({
+      t: clamped,
+      major: isMajor || clamped === 0 || clamped === durationSec,
+    });
   }
   return out;
 }
 
-/**
- * Premiere-style preview scrubber: ruler ticks, track, playhead, and optional
- * hollow In/Out handles for trim modes.
- */
+function pickTrimDragTarget(
+  clientX: number,
+  trackEl: HTMLElement,
+  inPct: number,
+  outPct: number,
+): "in" | "out" | "playhead" {
+  const rect = trackEl.getBoundingClientRect();
+  if (rect.width <= 0) return "playhead";
+  const x = clientX - rect.left;
+  const inX = (inPct / 100) * rect.width;
+  const outX = (outPct / 100) * rect.width;
+  const inDist = Math.abs(x - inX);
+  const outDist = Math.abs(x - outX);
+  if (inDist <= HANDLE_HIT_PX && inDist <= outDist) return "in";
+  if (outDist <= HANDLE_HIT_PX) return "out";
+  return "playhead";
+}
+
+function handlesOverlapPlayhead(
+  playheadPct: number,
+  inPct: number,
+  outPct: number,
+  trackWidthPx: number,
+): { in: boolean; out: boolean } {
+  if (trackWidthPx <= 0) return { in: false, out: false };
+  const playheadPx = (playheadPct / 100) * trackWidthPx;
+  const inPx = (inPct / 100) * trackWidthPx;
+  const outPx = (outPct / 100) * trackWidthPx;
+  return {
+    in: Math.abs(playheadPx - inPx) <= HANDLE_HIT_PX,
+    out: Math.abs(playheadPx - outPx) <= HANDLE_HIT_PX,
+  };
+}
+
 export function PreviewScrubber({
   currentSec,
   durationSec,
@@ -78,28 +115,113 @@ export function PreviewScrubber({
   trim = null,
 }: PreviewScrubberProps) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const captureTargetRef = useRef<HTMLElement | null>(null);
+  const capturePointerIdRef = useRef<number | null>(null);
   const dragRef = useRef<"playhead" | "in" | "out" | null>(null);
   const liveTrimRef = useRef<{ inSec: number; outSec: number } | null>(
     trim ? { inSec: trim.inSec, outSec: trim.outSec } : null,
   );
-  const onChangeRef = useRef(trim?.onChange);
+  const trimRef = useRef(trim);
+  const onSeekRef = useRef(onSeek);
+  const applyDragRef = useRef<
+    (clientX: number, kind: "playhead" | "in" | "out") => void
+  >(() => {});
+  const endDragRef = useRef<() => void>(() => {});
+  const pointerListenersCleanupRef = useRef<(() => void) | null>(null);
   const [dragging, setDragging] = useState<"playhead" | "in" | "out" | null>(
     null,
   );
+  const [liveTrim, setLiveTrim] = useState<{ inSec: number; outSec: number } | null>(
+    trim ? { inSec: trim.inSec, outSec: trim.outSec } : null,
+  );
+  const [trackWidthPx, setTrackWidthPx] = useState(0);
+
   useEffect(() => {
-    onChangeRef.current = trim?.onChange;
+    const el = trackRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const sync = () => {
+      const width = Math.max(0, Math.floor(el.getBoundingClientRect().width));
+      setTrackWidthPx((prev) => (prev === width ? prev : width));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    trimRef.current = trim;
+    onSeekRef.current = onSeek;
     if (!dragging) {
       liveTrimRef.current = trim
         ? { inSec: trim.inSec, outSec: trim.outSec }
         : null;
+      // Sync committed trim into live state when not dragging.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLiveTrim(trim ? { inSec: trim.inSec, outSec: trim.outSec } : null);
     }
-  }, [trim, dragging]);
+  }, [trim, onSeek, dragging]);
 
   const duration = Math.max(durationSec, 0.1);
+  const displayTrim = liveTrim ?? trim;
   const playheadPct = clamp((currentSec / duration) * 100, 0, 100);
-  const inPct = trim ? clamp((trim.inSec / duration) * 100, 0, 100) : 0;
-  const outPct = trim ? clamp((trim.outSec / duration) * 100, 0, 100) : 100;
+  const inPct = displayTrim
+    ? clamp((displayTrim.inSec / duration) * 100, 0, 100)
+    : 0;
+  const outPct = displayTrim
+    ? clamp((displayTrim.outSec / duration) * 100, 0, 100)
+    : 100;
   const ticks = tickMarks(duration);
+  const handleOverlap = displayTrim
+    ? handlesOverlapPlayhead(playheadPct, inPct, outPct, trackWidthPx)
+    : { in: false, out: false };
+  const hidePlayheadGrip =
+    dragging === "in" ||
+    dragging === "out" ||
+    (Boolean(displayTrim) && (handleOverlap.in || handleOverlap.out));
+
+  const clearPointerListeners = useCallback(() => {
+    pointerListenersCleanupRef.current?.();
+    pointerListenersCleanupRef.current = null;
+  }, []);
+
+  const releaseCapture = useCallback(() => {
+    releasePointerCaptureSafe(
+      captureTargetRef.current,
+      capturePointerIdRef.current,
+    );
+    captureTargetRef.current = null;
+    capturePointerIdRef.current = null;
+  }, []);
+
+  const abortDrag = useCallback(
+    (commit: boolean) => {
+      clearPointerListeners();
+      const kind = dragRef.current;
+      if (commit && (kind === "in" || kind === "out")) {
+        const live = liveTrimRef.current;
+        const trimHandlers = trimRef.current;
+        if (live && trimHandlers) {
+          trimHandlers.onCommit(live);
+        }
+      }
+      dragRef.current = null;
+      setDragging(null);
+      releaseCapture();
+      clearEditorBodyDragClasses();
+    },
+    [clearPointerListeners, releaseCapture],
+  );
+
+  useEffect(() => subscribeGestureAbort(() => abortDrag(false)), [abortDrag]);
+
+  useEffect(
+    () =>
+      registerGestureStatusProvider("previewScrubber", () => ({
+        dragging: dragRef.current,
+      })),
+    [],
+  );
 
   const applyDrag = useCallback(
     (clientX: number, kind: "playhead" | "in" | "out") => {
@@ -107,68 +229,120 @@ export function PreviewScrubber({
       if (!el) return;
       const sec = secFromClientX(clientX, el, duration);
       if (kind === "playhead") {
-        onSeek(sec);
+        onSeekRef.current(sec);
         return;
       }
       const live = liveTrimRef.current;
-      const onChange = onChangeRef.current;
-      if (!live || !onChange) return;
+      const trimHandlers = trimRef.current;
+      if (!live || !trimHandlers) return;
       if (kind === "in") {
         const inSec = clamp(sec, 0, live.outSec - MIN_TRIM_SEC);
+        const next = { inSec, outSec: live.outSec };
         live.inSec = inSec;
-        onChange({ inSec, outSec: live.outSec });
-        onSeek(inSec);
+        liveTrimRef.current = next;
+        setLiveTrim(next);
+        trimHandlers.onLiveChange(next);
+        onSeekRef.current(inSec, { trim: true });
         return;
       }
       const outSec = clamp(sec, live.inSec + MIN_TRIM_SEC, duration);
+      const next = { inSec: live.inSec, outSec };
       live.outSec = outSec;
-      onChange({ inSec: live.inSec, outSec });
-      onSeek(outSec);
+      liveTrimRef.current = next;
+      setLiveTrim(next);
+      trimHandlers.onLiveChange(next);
+      onSeekRef.current(outSec, { trim: true });
     },
-    [duration, onSeek],
+    [duration],
   );
 
   useEffect(() => {
-    if (!dragging) return;
+    applyDragRef.current = applyDrag;
+  }, [applyDrag]);
+
+  const endDrag = useCallback(() => {
+    abortDrag(true);
+  }, [abortDrag]);
+
+  useEffect(() => {
+    endDragRef.current = endDrag;
+  }, [endDrag]);
+
+  useEffect(() => () => abortDrag(false), [abortDrag]);
+
+  const armPointerListeners = (pointerId: number) => {
+    clearPointerListeners();
     const onMove = (event: PointerEvent) => {
-      applyDrag(event.clientX, dragging);
+      if (event.pointerId !== pointerId) return;
+      const kind = dragRef.current;
+      if (!kind) return;
+      applyDragRef.current(event.clientX, kind);
     };
-    const onUp = () => {
-      dragRef.current = null;
-      setDragging(null);
+    const onUp = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+      clearPointerListeners();
+      endDragRef.current();
     };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    return () => {
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [dragging, applyDrag]);
+    pointerListenersCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
 
   const beginDrag = (
     kind: "playhead" | "in" | "out",
-    event: ReactPointerEvent,
+    event: ReactPointerEvent<HTMLElement>,
   ) => {
     if (disabled) return;
     event.preventDefault();
     event.stopPropagation();
+    const target = event.currentTarget;
+    captureTargetRef.current = target;
+    capturePointerIdRef.current = event.pointerId;
+    try {
+      target.setPointerCapture(event.pointerId);
+    } catch {
+      /* ignore */
+    }
     dragRef.current = kind;
     setDragging(kind);
-    applyDrag(event.clientX, kind);
+    if (kind === "in" || kind === "out") {
+      document.body.classList.add("is-preview-trim-dragging");
+    }
+    armPointerListeners(event.pointerId);
+    applyDragRef.current(event.clientX, kind);
+  };
+
+  const beginDragFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
+    const trackEl = trackRef.current;
+    if (displayTrim && trackEl) {
+      beginDrag(pickTrimDragTarget(event.clientX, trackEl, inPct, outPct), event);
+      return;
+    }
+    beginDrag("playhead", event);
   };
 
   const onTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (disabled || event.button !== 0) return;
-    // Don't steal handle presses (they stopPropagation); track click seeks.
-    beginDrag("playhead", event);
+    if (dragging === "in" || dragging === "out") return;
+    if ((event.target as HTMLElement | null)?.closest(".editor-preview-scrubber-handle")) {
+      return;
+    }
+    if ((event.target as HTMLElement | null)?.closest(".editor-preview-scrubber-playhead-grip")) {
+      return;
+    }
+    beginDragFromPointer(event);
   };
 
   return (
     <div
       className={`editor-preview-scrubber${disabled ? " is-disabled" : ""}${
-        trim ? " has-trim" : ""
+        displayTrim ? " has-trim" : ""
       }${dragging ? ` is-dragging-${dragging}` : ""}`}
       role="group"
       aria-label="Preview scrubber"
@@ -192,7 +366,7 @@ export function PreviewScrubber({
         className="editor-preview-scrubber-track"
         onPointerDown={onTrackPointerDown}
       >
-        {trim ? (
+        {displayTrim ? (
           <>
             <div
               className="editor-preview-scrubber-shade is-before"
@@ -200,7 +374,10 @@ export function PreviewScrubber({
             />
             <div
               className="editor-preview-scrubber-range"
-              style={{ left: `${inPct}%`, width: `${Math.max(0, outPct - inPct)}%` }}
+              style={{
+                left: `${inPct}%`,
+                width: `${Math.max(0, outPct - inPct)}%`,
+              }}
             />
             <div
               className="editor-preview-scrubber-shade is-after"
@@ -214,14 +391,14 @@ export function PreviewScrubber({
           />
         )}
 
-        {trim ? (
+        {displayTrim ? (
           <>
             <button
               type="button"
               className="editor-preview-scrubber-handle is-in"
               style={{ left: `${inPct}%` }}
               aria-label="Set In point"
-              title={`In ${trim.inSec.toFixed(1)}s`}
+              title={`In ${displayTrim.inSec.toFixed(1)}s`}
               disabled={disabled}
               onPointerDown={(e) => beginDrag("in", e)}
             />
@@ -230,26 +407,28 @@ export function PreviewScrubber({
               className="editor-preview-scrubber-handle is-out"
               style={{ left: `${outPct}%` }}
               aria-label="Set Out point"
-              title={`Out ${trim.outSec.toFixed(1)}s`}
+              title={`Out ${displayTrim.outSec.toFixed(1)}s`}
               disabled={disabled}
               onPointerDown={(e) => beginDrag("out", e)}
             />
           </>
         ) : null}
 
-        <div
-          className="editor-preview-scrubber-playhead"
-          style={{ left: `${playheadPct}%` }}
-          aria-hidden
-        >
-          <button
-            type="button"
-            className="editor-preview-scrubber-playhead-grip"
-            aria-label="Playhead"
-            disabled={disabled}
-            onPointerDown={(e) => beginDrag("playhead", e)}
-          />
-        </div>
+        {!hidePlayheadGrip ? (
+          <div
+            className="editor-preview-scrubber-playhead"
+            style={{ left: `${playheadPct}%` }}
+            aria-hidden
+          >
+            <button
+              type="button"
+              className="editor-preview-scrubber-playhead-grip"
+              aria-label="Playhead"
+              disabled={disabled}
+              onPointerDown={(e) => beginDrag("playhead", e)}
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   );

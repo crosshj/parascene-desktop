@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { registerGestureStatusProvider } from "../app/uiDiagnostics";
 
 export type ConfirmActivity = {
   setMessage: (message: string) => void;
@@ -126,6 +127,16 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       setPending(failed);
     }
   }, [close]);
+
+  useEffect(
+    () =>
+      registerGestureStatusProvider("confirmDialog", () => ({
+        open: pendingRef.current != null,
+        busy: pendingRef.current?.busy ?? false,
+        title: pendingRef.current?.displayTitle ?? null,
+      })),
+    [],
+  );
 
   useEffect(() => {
     if (!pending) return;

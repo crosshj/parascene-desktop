@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import {
   clearStagedClipDrag,
   getActiveStagedClipDrag,
@@ -7,6 +7,9 @@ import {
   setActiveStagedClipDrag,
   setStagedClipPointer,
   stagedClipDuration,
+  stagedClipSourceSpan,
+  stagedClipTimelineDuration,
+  stagedClipTimelineExtended,
   targetLaneForDraft,
   type SlideshowMode,
   type StagedClipDraft,
@@ -17,7 +20,11 @@ import type { BakeInfo } from "../../library/slideshowMedia";
 import {
   DEFAULT_SLIDESHOW_SENSITIVITY,
   isBeatSlideshowMode,
+  type AddAssetGeneration,
 } from "../../project/types";
+import { GeneratedClipBadge } from "./GeneratedClipBadge";
+import { subscribeGestureAbort } from "./gestureCleanup";
+import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 
 /** Per-mode label + endpoint hints for the sensitivity dial. */
 const SENSITIVITY_LABELS: Record<
@@ -56,6 +63,8 @@ type StagingFieldsProps = {
   onDraftChange: (draft: StagedClipDraft) => void;
   /** Runtime slideshow bake status when editing a timeline clip. */
   bakeInfo?: BakeInfo | null;
+  /** Persisted add-asset generation metadata on the selected timeline clip. */
+  addAssetGeneration?: AddAssetGeneration | null;
 };
 
 type ClipDragHandleProps = {
@@ -77,19 +86,38 @@ export function StagingFields({
   sourceDurationSec,
   onDraftChange,
   bakeInfo = null,
+  addAssetGeneration = null,
 }: StagingFieldsProps) {
-  const duration = stagedClipDuration(draft);
-  const maxSec =
+  const sourceSpan = stagedClipSourceSpan(draft);
+  const duration =
+    draft.kind === "video"
+      ? stagedClipTimelineDuration(draft)
+      : stagedClipDuration(draft);
+  /** Upper bound for the Duration number field (timeline placement). */
+  const durationMaxSec =
     draft.kind === "image" || draft.kind === "slideshow"
       ? Math.max(60, draft.outSec)
-      : sourceDurationSec > 0
-        ? sourceDurationSec
-        : draft.outSec;
+      : draft.kind === "video"
+        ? 120
+        : sourceDurationSec > 0
+          ? sourceDurationSec
+          : draft.outSec;
+  /** Source media length — required for reverse In/Out remapping. */
+  const sourceMaxSec =
+    sourceDurationSec > 0
+      ? sourceDurationSec
+      : Math.max(draft.outSec, draft.inSec + 0.1);
+  const syncLocked = draft.kind === "video" && draft.timelineLocked === true;
   const slideshowMode: SlideshowMode = draft.slideshow?.mode ?? "even";
   const slideshowRandom = draft.slideshow?.random === true;
 
   return (
     <div className="editor-staging-controls">
+      {addAssetGeneration ? (
+        <div className="editor-staging-generated">
+          <GeneratedClipBadge generation={addAssetGeneration} />
+        </div>
+      ) : null}
       {draft.kind === "slideshow" ? (
         <>
           <label className="editor-staging-field">
@@ -283,8 +311,73 @@ export function StagingFields({
         </label>
       ) : null}
 
+      {draft.kind === "video" ? (
+        <>
+          <label className="editor-staging-field">
+            <span>Duration</span>
+            <input
+              type="number"
+              min={sourceSpan}
+              max={durationMaxSec}
+              step={0.5}
+              value={formatDurationInput(duration)}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (!Number.isFinite(next) || next <= 0) return;
+                const nextDur = Math.max(sourceSpan, next);
+                const enteringExtend =
+                  !stagedClipTimelineExtended(draft) &&
+                  nextDur > sourceSpan + 0.001;
+                onDraftChange({
+                  ...draft,
+                  timelineDurationSec: nextDur,
+                  ...(enteringExtend ? { extendPingPong: true } : {}),
+                });
+              }}
+            />
+            <span className="muted">sec</span>
+          </label>
+          {stagedClipTimelineExtended(draft) ? (
+            <label className="editor-staging-field editor-staging-field-check">
+              <span>Ping-pong</span>
+              <input
+                type="checkbox"
+                checked={draft.extendPingPong === true}
+                onChange={(e) =>
+                  onDraftChange({
+                    ...draft,
+                    extendPingPong: e.target.checked ? true : false,
+                  })
+                }
+              />
+            </label>
+          ) : null}
+        </>
+      ) : null}
+
+      {draft.kind === "video" && bakeInfo?.status === "failed" ? (
+        <p className="editor-staging-error" role="alert">
+          {bakeInfo.error?.trim() || "Extend bake failed"}
+        </p>
+      ) : null}
+
       {draft.kind === "video" || draft.kind === "audio" ? (
         <>
+          {draft.kind === "video" ? (
+            <label className="editor-staging-field editor-staging-field-check">
+              <span>Sync to timeline</span>
+              <input
+                type="checkbox"
+                checked={draft.timelineLocked === true}
+                onChange={(e) =>
+                  onDraftChange({
+                    ...draft,
+                    timelineLocked: e.target.checked ? true : undefined,
+                  })
+                }
+              />
+            </label>
+          ) : null}
           {draft.kind === "video" ? (
             <label className="editor-staging-field editor-staging-field-check">
               <span>Audio</span>
@@ -301,14 +394,29 @@ export function StagingFields({
               <span className="muted">Include</span>
             </label>
           ) : null}
-          <label className="editor-staging-field editor-staging-field-check">
+          <label
+            className={`editor-staging-field editor-staging-field-check${
+              syncLocked ? " is-frozen" : ""
+            }`}
+            title={
+              syncLocked
+                ? "Reverse is frozen while Sync to timeline is on — turn Sync off to change it"
+                : undefined
+            }
+          >
             <span>Reverse</span>
             <input
               type="checkbox"
               checked={draft.reverse}
+              aria-disabled={syncLocked || undefined}
+              onClick={(e) => {
+                // Avoid native disabled styling (browsers wash out checked).
+                if (syncLocked) e.preventDefault();
+              }}
               onChange={(e) => {
+                if (syncLocked) return;
                 const reverse = e.target.checked;
-                const trim = remapTrimForReverse(draft, maxSec);
+                const trim = remapTrimForReverse(draft, sourceMaxSec);
                 onDraftChange({
                   ...draft,
                   ...trim,
@@ -320,6 +428,41 @@ export function StagingFields({
         </>
       ) : null}
     </div>
+  );
+}
+
+type ExtendBakeHandleProps = {
+  onBake: () => void;
+  baking?: boolean;
+  label?: string;
+  bakingLabel?: string;
+  title?: string;
+};
+
+/** Far-right deck action — same shell as ClipDragHandle, for bake jobs. */
+export function ExtendBakeHandle({
+  onBake,
+  baking = false,
+  label = "Bake",
+  bakingLabel = "Baking…",
+  title,
+}: ExtendBakeHandleProps) {
+  return (
+    <button
+      type="button"
+      className="editor-cartridge-grip is-action"
+      disabled={baking}
+      onClick={onBake}
+      title={
+        title ??
+        (baking ? "Baking…" : "Bake")
+      }
+      aria-label={baking ? bakingLabel : label}
+    >
+      <span className="editor-cartridge-grip-label">
+        {baking ? bakingLabel : label}
+      </span>
+    </button>
   );
 }
 
@@ -352,12 +495,18 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
   const draggingRef = useRef(false);
   const originRef = useRef<{ x: number; y: number } | null>(null);
   const pointerIdRef = useRef<number | null>(null);
+  const gestureCleanupRef = useRef<(() => void) | null>(null);
+  const lastPointerRef = useRef({ x: 0, y: 0 });
   const draftRef = useRef(draft);
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
 
-  const endDrag = (clientX: number, clientY: number, drop: boolean) => {
+  const endDrag = useCallback((clientX: number, clientY: number, drop: boolean) => {
+    const cleanup = gestureCleanupRef.current;
+    gestureCleanupRef.current = null;
+    cleanup?.();
+
     const wasDragging = draggingRef.current;
     document.body.classList.remove("is-staged-clip-dragging");
     if (drop && wasDragging) {
@@ -375,7 +524,25 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     originRef.current = null;
     pointerIdRef.current = null;
     clearStagedClipDrag();
-  };
+  }, []);
+
+  const abortDrag = useCallback(() => {
+    if (!originRef.current && !draggingRef.current) return;
+    endDrag(lastPointerRef.current.x, lastPointerRef.current.y, false);
+  }, [endDrag]);
+
+  useEffect(() => subscribeGestureAbort(abortDrag), [abortDrag]);
+  useEffect(() => () => abortDrag(), [abortDrag]);
+
+  useEffect(
+    () =>
+      registerGestureStatusProvider("stagedClipHandle", () => ({
+        pressing: originRef.current != null,
+        dragging: draggingRef.current,
+        pointerId: pointerIdRef.current,
+      })),
+    [],
+  );
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -386,10 +553,12 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     const pointerId = event.pointerId;
     pointerIdRef.current = pointerId;
     originRef.current = { x: event.clientX, y: event.clientY };
+    lastPointerRef.current = { x: event.clientX, y: event.clientY };
     draggingRef.current = false;
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId || !originRef.current) return;
+      lastPointerRef.current = { x: ev.clientX, y: ev.clientY };
       const dx = ev.clientX - originRef.current.x;
       const dy = ev.clientY - originRef.current.y;
       if (!draggingRef.current && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) {
@@ -403,14 +572,18 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
       setStagedClipPointer({ x: ev.clientX, y: ev.clientY });
     };
 
-    const onUp = (ev: PointerEvent) => {
-      if (ev.pointerId !== pointerId) return;
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
       endDrag(ev.clientX, ev.clientY, true);
     };
 
+    gestureCleanupRef.current = cleanup;
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);

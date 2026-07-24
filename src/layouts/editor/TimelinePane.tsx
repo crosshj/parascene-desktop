@@ -16,6 +16,10 @@ import {
   getCachedClipThumbnail,
 } from "../../library/clipThumbnail";
 import { creationPreviewUrl } from "../../library/previewUrl";
+import {
+  getCachedReversedMedia,
+  subscribeReversedMediaCache,
+} from "../../library/reversedMedia";
 import type { Creation } from "../../library/types";
 import type { BakeInfo, BakeStatus } from "../../library/slideshowMedia";
 import {
@@ -24,10 +28,23 @@ import {
 } from "../../project/aspectRatios";
 import {
   isBeatSlideshowMode,
+  type AddAssetGeneration,
   type LyricAlignment,
   type TimelineClip,
 } from "../../project/types";
+import { GeneratedClipBadge } from "./GeneratedClipBadge";
+import {
+  formatClipDurationCompact,
+  lyricBlockLabel,
+  timelineClipLayoutTier,
+} from "./timelineClipDisplay";
 import { findOverlappingAudioClip } from "./audioOverlap";
+import {
+  clearEditorBodyDragClasses,
+  releasePointerCaptureSafe,
+  subscribeGestureAbort,
+} from "./gestureCleanup";
+import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 import {
   getActiveStagedClipDrag,
   parseStagedClipPayload,
@@ -40,6 +57,7 @@ import {
   TIMELINE_PX_PER_SEC,
   normalizeFraming,
   isAddAssetPlaceholderClip,
+  clipTimelineMoveEnabled,
   type StagedClipDraft,
   type StagedClipFraming,
   type TimelineGhostClip,
@@ -47,8 +65,14 @@ import {
 import {
   clipInSec,
   clipOutSec,
+  clipExtendDivitFraction,
+  clipIsTimelineExtended,
+  clipVideoMinTimelineDurationSec,
   timelineSequenceDuration,
 } from "./timelineCompose";
+import { clipExtendLoopLineFractions, clipExtendPongSegmentFractions, mergeExtendBakeFields } from "./clipExtendBake";
+import type { ExtendSegmentRange } from "./clipExtendBake";
+import { resolveExtendPingPong } from "./stagedClip";
 import { timelineLyricBlocks } from "./timelineLyricBlocks";
 import { resolveMainAudioClip } from "./addAssetStartFrame";
 import { EditorClipAudioWaveform } from "./EditorClipAudioWaveform";
@@ -61,7 +85,10 @@ type TimelinePaneProps = {
   /** Reset local drops when the open project changes. */
   projectId?: string;
   /** Persist timeline clips on the open project. */
-  onClipsChange?: (clips: TimelineClip[]) => void;
+  onClipsChange?: (
+    clips: TimelineClip[],
+    options?: { live?: boolean },
+  ) => void;
   /** Runtime bake status for slideshow clips (not persisted). */
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
   /** Runtime A2V generation status for add-asset placeholder clips. */
@@ -226,6 +253,12 @@ function draftToClip(
     bakePath: draft.bakePath ?? null,
     isAddAssetPlaceholder:
       draft.isAddAssetPlaceholder === true ? true : undefined,
+    timelineLocked:
+      lane === "audio"
+        ? true
+        : draft.timelineLocked === true
+          ? true
+          : undefined,
   };
 }
 
@@ -309,7 +342,15 @@ function MiniClip({
   audioVocalsPath,
   clipInSec = 0,
   clipOutSec,
+  extendDivitFrac = null,
+  extendLoopLineFracs = [],
+  extendPongSegments = [],
+  addAssetGeneration,
+  resizeEnabled = false,
+  resizing = false,
+  moveEnabled = true,
   onPointerDown,
+  onResizePointerDown,
 }: {
   startSec: number;
   durationSec: number;
@@ -333,19 +374,49 @@ function MiniClip({
   audioVocalsPath?: string | null;
   clipInSec?: number;
   clipOutSec?: number;
+  /** Source-trim end as a fraction of timeline duration (0..1) when extended. */
+  extendDivitFrac?: number | null;
+  extendLoopLineFracs?: number[];
+  extendPongSegments?: ExtendSegmentRange[];
+  addAssetGeneration?: AddAssetGeneration;
+  resizeEnabled?: boolean;
+  resizing?: boolean;
+  /** False when synced to timeline — clip can be selected but not dragged. */
+  moveEnabled?: boolean;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const safeDuration =
     Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 1;
   const resolvedClipOutSec =
     clipOutSec ?? clipInSec + safeDuration;
   const widthPx = Math.max(4, Math.round(safeDuration * pxPerSec));
+  const layoutTier = timelineClipLayoutTier(widthPx);
   const isGhost = className.includes("ghost");
-  const movable = Boolean(onPointerDown) && !isGhost;
+  const movable = Boolean(onPointerDown) && moveEnabled && !isGhost;
+  const durationText =
+    formatClipDurationCompact(safeDuration, widthPx) ??
+    (layoutTier !== "sliver" && widthPx >= 28
+      ? (label ?? formatClipDuration(safeDuration))
+      : null);
+  const showGeneratedBadge = Boolean(addAssetGeneration) && widthPx >= 36;
+  const showExtendDivit =
+    extendDivitFrac != null &&
+    Number.isFinite(extendDivitFrac) &&
+    extendDivitFrac > 0 &&
+    extendDivitFrac < 1 - 0.001;
+  const sourceFrac = showExtendDivit ? extendDivitFrac : 1;
+  const divitLeftPct = `${sourceFrac * 100}%`;
+  const tailWidthPct = `${(1 - sourceFrac) * 100}%`;
+  const minLoopLinePx = 6;
+  const visibleLoopLines = extendLoopLineFracs.filter(
+    (frac) => frac * widthPx - sourceFrac * widthPx >= minLoopLinePx,
+  );
 
   const classNames = [
     className,
     moving ? "is-moving" : "",
+    resizing ? "is-resizing" : "",
     selected ? "is-selected" : "",
     audio ? "is-audio" : "",
     reversed ? "is-reversed" : "",
@@ -370,9 +441,6 @@ function MiniClip({
     border = "1.5px solid #a78bfa";
   }
 
-  // One project-aspect start-frame thumb; hide when too narrow to read.
-  const showThumb = !audio && widthPx >= 48;
-
   return (
     <div
       className={classNames}
@@ -396,10 +464,8 @@ function MiniClip({
         minWidth: 0,
       }}
     >
-      {widthPx >= 36 ? (
-        <span className="editor-timeline-clip-dur">
-          {label ?? formatClipDuration(safeDuration)}
-        </span>
+      {durationText ? (
+        <span className="editor-timeline-clip-dur">{durationText}</span>
       ) : null}
       {reversed ? (
         <span className="editor-timeline-clip-reverse" aria-hidden title="Reversed">
@@ -423,6 +489,69 @@ function MiniClip({
           !
         </span>
       ) : null}
+      {showGeneratedBadge ? (
+        <GeneratedClipBadge
+          generation={addAssetGeneration!}
+          className="editor-timeline-clip-generated"
+          compact={widthPx < 56}
+        />
+      ) : null}
+      {showExtendDivit ? (
+        <>
+          <div
+            className="editor-timeline-clip-extend-tail"
+            style={{ left: divitLeftPct, width: tailWidthPct }}
+            aria-hidden
+          />
+          <div
+            className="editor-timeline-clip-extend-line is-source-end"
+            style={{ left: divitLeftPct }}
+            aria-hidden
+          />
+          {visibleLoopLines.map((frac) => (
+            <div
+              key={frac.toFixed(6)}
+              className="editor-timeline-clip-extend-line is-loop"
+              style={{ left: `${frac * 100}%` }}
+              aria-hidden
+            />
+          ))}
+          {extendPongSegments.map((segment) => {
+            const segWidthPx = segment.width * widthPx;
+            if (segWidthPx < 4) return null;
+            return (
+              <div
+                key={`${segment.left.toFixed(6)}-${segment.width.toFixed(6)}`}
+                className="editor-timeline-clip-extend-pong"
+                style={{
+                  left: `${segment.left * 100}%`,
+                  width: `${segment.width * 100}%`,
+                }}
+                aria-hidden
+                title="Reversed"
+              >
+                {segWidthPx >= 12 ? (
+                  <span className="editor-timeline-clip-reverse" aria-hidden title="Reversed">
+                    <svg viewBox="0 0 8 8" width="7" height="7">
+                      <path fill="currentColor" d="M7 1v6L1.5 4z" />
+                    </svg>
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
+        </>
+      ) : null}
+      {resizeEnabled ? (
+        <div
+          className="editor-timeline-clip-resize-edge"
+          aria-hidden
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            onResizePointerDown?.(event);
+          }}
+        />
+      ) : null}
       {audio ? (
         audioMixPath ? (
           <EditorClipAudioWaveform
@@ -440,25 +569,27 @@ function MiniClip({
             seed={waveSeed ?? label ?? "audio"}
           />
         )
-      ) : showThumb && thumbUrl ? (
-        <img
-          className={`editor-timeline-clip-thumb${
-            framing === "fit"
-              ? " is-fit"
-              : framing === "stretch"
-                ? " is-stretch"
-                : ""
-          }`}
-          src={thumbUrl}
-          alt=""
-          draggable={false}
-          style={{ aspectRatio: thumbAspectRatio }}
-        />
-      ) : showThumb ? (
-        <span
-          className="editor-timeline-clip-thumb is-empty"
-          style={{ aspectRatio: thumbAspectRatio }}
-        />
+      ) : !audio ? (
+        thumbUrl ? (
+          <img
+            className={`editor-timeline-clip-thumb${
+              framing === "fit"
+                ? " is-fit"
+                : framing === "stretch"
+                  ? " is-stretch"
+                  : ""
+            }`}
+            src={thumbUrl}
+            alt=""
+            draggable={false}
+            style={{ aspectRatio: thumbAspectRatio }}
+          />
+        ) : (
+          <span
+            className="editor-timeline-clip-thumb is-empty"
+            style={{ aspectRatio: thumbAspectRatio }}
+          />
+        )
       ) : null}
     </div>
   );
@@ -495,6 +626,7 @@ export function TimelinePane({
   const [ghost, setGhost] = useState<TimelineGhostClip | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [movingClipIds, setMovingClipIds] = useState<string[]>([]);
+  const [resizingClipIds, setResizingClipIds] = useState<string[]>([]);
   const [magnetic, setMagnetic] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [thumbByAssetId, setThumbByAssetId] = useState<Record<string, string>>(
@@ -522,6 +654,10 @@ export function TimelinePane({
     grabOffsetSec: number;
     pointerId: number;
   } | null>(null);
+  const resizeRef = useRef<{
+    clipId: string;
+    pointerId: number;
+  } | null>(null);
   const pressRef = useRef<{
     clip: TimelineClip;
     pointerId: number;
@@ -539,6 +675,57 @@ export function TimelinePane({
   const magneticRef = useRef(magnetic);
   const pxPerSecRef = useRef(TIMELINE_PX_PER_SEC * zoom);
   const seekRef = useRef<{ pointerId: number } | null>(null);
+  const pointerCaptureRef = useRef<{
+    target: HTMLElement;
+    pointerId: number;
+  } | null>(null);
+
+  const releasePointerCapture = useCallback(() => {
+    const capture = pointerCaptureRef.current;
+    if (!capture) return;
+    releasePointerCaptureSafe(capture.target, capture.pointerId);
+    pointerCaptureRef.current = null;
+  }, []);
+
+  const abortTimelineGestures = useCallback(() => {
+    moveRef.current = null;
+    pressRef.current = null;
+    resizeRef.current = null;
+    seekRef.current = null;
+    setMovingClipIds([]);
+    setResizingClipIds([]);
+    releasePointerCapture();
+    clearEditorBodyDragClasses();
+  }, [releasePointerCapture]);
+
+  useEffect(() => subscribeGestureAbort(abortTimelineGestures), [abortTimelineGestures]);
+
+  useEffect(() => () => abortTimelineGestures(), [abortTimelineGestures]);
+
+  useEffect(
+    () =>
+      registerGestureStatusProvider("timelinePane", () => ({
+        clipPress: pressRef.current?.clip.id ?? null,
+        clipMove: moveRef.current?.movingIds ?? null,
+        clipResize: resizeRef.current?.clipId ?? null,
+        rulerSeek: seekRef.current != null,
+        pointerCapture: pointerCaptureRef.current != null,
+      })),
+    [],
+  );
+
+  const armPointerCapture = useCallback(
+    (target: HTMLElement, pointerId: number) => {
+      releasePointerCapture();
+      pointerCaptureRef.current = { target, pointerId };
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {
+        pointerCaptureRef.current = null;
+      }
+    },
+    [releasePointerCapture],
+  );
 
   const addAssetGenerationByClipIdRef = useRef(addAssetGenerationByClipId);
   const isClipGenerating = useCallback((clipId: string) => {
@@ -547,6 +734,15 @@ export function TimelinePane({
       "generating"
     );
   }, []);
+
+  const canClipMove = useCallback(
+    (clipId: string) => {
+      if (isClipGenerating(clipId)) return false;
+      const clip = clipsRef.current.find((c) => c.id === clipId);
+      return clip ? clipTimelineMoveEnabled(clip) : false;
+    },
+    [isClipGenerating],
+  );
 
   useEffect(() => {
     clipsRef.current = clips;
@@ -574,8 +770,15 @@ export function TimelinePane({
     onClipsChangeRef.current?.(next);
   }, []);
 
+  const notifyClipsChange = useCallback(
+    (next: TimelineClip[], options?: { live?: boolean }) => {
+      onClipsChangeRef.current?.(next, options);
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (moveRef.current) return;
+    if (moveRef.current || resizeRef.current) return;
     setClips(seedClips);
     clipsRef.current = seedClips;
   }, [projectId, seedClips]);
@@ -587,6 +790,12 @@ export function TimelinePane({
     }
     return [...ids].sort().join("\0");
   }, [clips]);
+
+  const [reverseCacheEpoch, setReverseCacheEpoch] = useState(0);
+  useEffect(
+    () => subscribeReversedMediaCache(() => setReverseCacheEpoch((n) => n + 1)),
+    [],
+  );
 
   const clipThumbRequestsKey = useMemo(() => {
     const requests = new Map<
@@ -604,7 +813,11 @@ export function TimelinePane({
       ) {
         continue;
       }
-      const reverse = Boolean(clip.reverse);
+      const wantsReverse = Boolean(clip.reverse);
+      // Reversed thumbs require reverse media on disk; don't auto-bake just to
+      // paint a timeline thumbnail — wait until Bake fills the cache.
+      const reverse =
+        wantsReverse && Boolean(getCachedReversedMedia(assetId));
       const inSec = Math.max(0, Number(clip.inSec) || 0);
       const key = clipThumbnailKey(assetId, reverse, inSec);
       requests.set(key, { assetId, reverse, inSec });
@@ -614,7 +827,9 @@ export function TimelinePane({
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([, request]) => request),
     );
-  }, [clips]);
+    // reverseCacheEpoch invalidates when reversed media lands on disk.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external reverse cache
+  }, [clips, reverseCacheEpoch]);
 
   const [thumbKey, setThumbKey] = useState(clipAssetIdsKey);
   if (clipAssetIdsKey !== thumbKey) {
@@ -790,13 +1005,9 @@ export function TimelinePane({
       seekRef.current = { pointerId: event.pointerId };
       onActivateMonitorRef.current?.();
       seekPlayhead(event.clientX);
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // window listeners still handle move/up
-      }
+      armPointerCapture(event.currentTarget, event.pointerId);
     },
-    [seekPlayhead],
+    [armPointerCapture, seekPlayhead],
   );
 
   const applyClipMove = useCallback(
@@ -854,10 +1065,115 @@ export function TimelinePane({
       const next = clipsRef.current;
       moveRef.current = null;
       setMovingClipIds([]);
-      document.body.classList.remove("is-timeline-clip-moving");
+      clearEditorBodyDragClasses();
+      releasePointerCapture();
       onClipsChangeRef.current?.(next);
     },
-    [applyClipMove],
+    [applyClipMove, releasePointerCapture],
+  );
+
+  const applyClipEdgeResize = useCallback(
+    (clientX: number, finalize: boolean) => {
+      const resize = resizeRef.current;
+      if (!resize) return;
+      const clip = clipsRef.current.find((c) => c.id === resize.clipId);
+      if (!clip) return;
+      if (clip.kind !== "image" && clip.kind !== "video") return;
+      if (isAddAssetPlaceholderClip(clip)) return;
+
+      const inSec = Number.isFinite(clip.inSec)
+        ? Math.max(0, Number(clip.inSec))
+        : 0;
+      const trimSpan = clipVideoMinTimelineDurationSec(clip);
+      const minDuration = clip.kind === "video" ? trimSpan : 0.1;
+
+      let endSec = Math.max(clip.startSec + minDuration, pointToStartSec(clientX));
+      if (finalize) {
+        const exclude = new Set([clip.id]);
+        const laneClips = clipsRef.current.filter(
+          (c) =>
+            (c.lane ?? "video") === "video" &&
+            c.lane !== "audio" &&
+            c.kind !== "audio",
+        );
+        endSec = snapStartSec(
+          endSec,
+          laneClips,
+          magneticRef.current,
+          exclude,
+        );
+        endSec = Math.max(clip.startSec + minDuration, endSec);
+      }
+
+      const duration = endSec - clip.startSec;
+
+      setClips((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== clip.id) return c;
+          if (c.kind === "image") {
+            return {
+              ...c,
+              endSec,
+              outSec: inSec + duration,
+              label: formatClipDuration(duration),
+            };
+          }
+          const prevDuration = c.endSec - c.startSec;
+          const wasExtended = prevDuration > trimSpan + 0.001;
+          const nowExtended = duration > trimSpan + 0.001;
+          const nextClip = {
+            ...c,
+            endSec,
+            label: formatClipDuration(duration),
+            extendSourceSpanSec: nowExtended ? c.extendSourceSpanSec ?? trimSpan : undefined,
+            extendPingPong: resolveExtendPingPong(
+              duration,
+              trimSpan,
+              wasExtended,
+              c,
+            ),
+          };
+          return {
+            ...nextClip,
+            ...mergeExtendBakeFields(c, nextClip),
+          };
+        });
+        clipsRef.current = next;
+        return next;
+      });
+      notifyClipsChange(clipsRef.current, { live: !finalize });
+    },
+    [notifyClipsChange, pointToStartSec],
+  );
+
+  const endClipResize = useCallback(
+    (clientX: number) => {
+      if (!resizeRef.current) return;
+      applyClipEdgeResize(clientX, true);
+      resizeRef.current = null;
+      setResizingClipIds([]);
+      clearEditorBodyDragClasses();
+      releasePointerCapture();
+      onClipsChangeRef.current?.(clipsRef.current);
+    },
+    [applyClipEdgeResize, releasePointerCapture],
+  );
+
+  const armClipResize = useCallback(
+    (clip: TimelineClip, event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      if (getActiveStagedClipDrag()) return;
+      if (clip.kind !== "image" && clip.kind !== "video") return;
+      if (isAddAssetPlaceholderClip(clip)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      resizeRef.current = { clipId: clip.id, pointerId: event.pointerId };
+      setResizingClipIds([clip.id]);
+      onSelectClipRef.current?.(clip);
+      document.body.classList.add("is-timeline-clip-resizing");
+      armPointerCapture(event.currentTarget, event.pointerId);
+    },
+    [armPointerCapture],
   );
 
   const armClipMove = useCallback(
@@ -867,7 +1183,7 @@ export function TimelinePane({
         selected.includes(clip.id) && selected.length > 0
           ? [...selected]
           : [clip.id];
-      const unlocked = movingIds.filter((id) => !isClipGenerating(id));
+      const unlocked = movingIds.filter((id) => canClipMove(id));
       if (unlocked.length === 0 || !unlocked.includes(clip.id)) return;
       // Dragging an unselected clip adopts it as the sole selection.
       if (!selected.includes(clip.id)) {
@@ -892,7 +1208,7 @@ export function TimelinePane({
       setMovingClipIds(unlocked);
       document.body.classList.add("is-timeline-clip-moving");
     },
-    [isClipGenerating, pointToStartSec],
+    [canClipMove, pointToStartSec],
   );
 
   useEffect(() => {
@@ -904,11 +1220,21 @@ export function TimelinePane({
         return;
       }
 
+      const resize = resizeRef.current;
+      if (resize && event.pointerId === resize.pointerId) {
+        event.preventDefault();
+        applyClipEdgeResize(event.clientX, false);
+        return;
+      }
+
       const press = pressRef.current;
       if (press && event.pointerId === press.pointerId && !press.armed) {
         const dx = event.clientX - press.startX;
         const dy = event.clientY - press.startY;
-        if (Math.hypot(dx, dy) >= CLIP_MOVE_THRESHOLD_PX) {
+        if (
+          Math.hypot(dx, dy) >= CLIP_MOVE_THRESHOLD_PX &&
+          canClipMove(press.clip.id)
+        ) {
           press.armed = true;
           armClipMove(press.clip, press.startX, press.pointerId);
         }
@@ -922,6 +1248,12 @@ export function TimelinePane({
     const onUp = (event: PointerEvent) => {
       if (seekRef.current && event.pointerId === seekRef.current.pointerId) {
         seekRef.current = null;
+        releasePointerCapture();
+        return;
+      }
+
+      if (resizeRef.current && event.pointerId === resizeRef.current.pointerId) {
+        endClipResize(event.clientX);
         return;
       }
 
@@ -929,6 +1261,7 @@ export function TimelinePane({
       if (press && event.pointerId === press.pointerId) {
         pressRef.current = null;
         if (!press.armed && !moveRef.current) {
+          releasePointerCapture();
           onSelectClipRef.current?.(press.clip, {
             additive: press.additive,
           });
@@ -937,8 +1270,19 @@ export function TimelinePane({
       }
 
       const move = moveRef.current;
-      if (!move || event.pointerId !== move.pointerId) return;
-      endClipMove(event.clientX);
+      if (move && event.pointerId === move.pointerId) {
+        endClipMove(event.clientX);
+        return;
+      }
+
+      if (
+        pressRef.current ||
+        moveRef.current ||
+        resizeRef.current ||
+        seekRef.current
+      ) {
+        abortTimelineGestures();
+      }
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -948,7 +1292,17 @@ export function TimelinePane({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [applyClipMove, armClipMove, endClipMove, seekPlayhead]);
+  }, [
+    applyClipMove,
+    applyClipEdgeResize,
+    abortTimelineGestures,
+    armClipMove,
+    canClipMove,
+    endClipMove,
+    endClipResize,
+    releasePointerCapture,
+    seekPlayhead,
+  ]);
 
   const beginClipPress = useCallback(
     (clip: TimelineClip, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -964,13 +1318,9 @@ export function TimelinePane({
         armed: false,
         additive: event.shiftKey,
       };
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // window listeners still handle move/up
-      }
+      armPointerCapture(event.currentTarget, event.pointerId);
     },
-    [],
+    [armPointerCapture],
   );
 
   const isOverTracks = useCallback((clientX: number, clientY: number) => {
@@ -1470,6 +1820,7 @@ export function TimelinePane({
                     }
                     pxPerSec={pxPerSec}
                     moving={movingClipIds.includes(clip.id)}
+                    resizing={resizingClipIds.includes(clip.id)}
                     selected={selectedClipIds.includes(clip.id)}
                     reversed={Boolean(clip.reverse)}
                     framing={normalizeFraming(clip.framing)}
@@ -1478,18 +1829,38 @@ export function TimelinePane({
                       isAddAssetPlaceholderClip(clip)
                         ? addAssetGenerationByClipId?.get(clip.id)?.status
                         : clip.kind === "slideshow"
-                        ? bakeInfoByClipId?.get(clip.id)?.status ??
-                          (clip.bakePath ? "ready" : "idle")
-                        : undefined
+                          ? bakeInfoByClipId?.get(clip.id)?.status ??
+                            (clip.bakePath ? "ready" : "idle")
+                          : bakeInfoByClipId?.get(clip.id)?.status
                     }
                     bakeError={
                       isAddAssetPlaceholderClip(clip)
                         ? addAssetGenerationByClipId?.get(clip.id)?.error
-                        : clip.kind === "slideshow"
-                        ? bakeInfoByClipId?.get(clip.id)?.error
-                        : undefined
+                        : bakeInfoByClipId?.get(clip.id)?.error
                     }
+                    addAssetGeneration={clip.addAssetGeneration}
+                    extendDivitFrac={
+                      clipIsTimelineExtended(clip)
+                        ? clipExtendDivitFraction(clip)
+                        : null
+                    }
+                    extendLoopLineFracs={
+                      clipIsTimelineExtended(clip)
+                        ? clipExtendLoopLineFractions(clip)
+                        : []
+                    }
+                    extendPongSegments={
+                      clipIsTimelineExtended(clip) && clip.extendPingPong === true
+                        ? clipExtendPongSegmentFractions(clip)
+                        : []
+                    }
+                    resizeEnabled={
+                      (clip.kind === "image" || clip.kind === "video") &&
+                      !isAddAssetPlaceholderClip(clip)
+                    }
+                    moveEnabled={clipTimelineMoveEnabled(clip)}
                     onPointerDown={(event) => beginClipPress(clip, event)}
+                    onResizePointerDown={(event) => armClipResize(clip, event)}
                   />
                 ))
               )}
@@ -1540,7 +1911,7 @@ export function TimelinePane({
                       onPointerDown={(event) => event.stopPropagation()}
                     >
                       <span className="editor-timeline-lyric-block-label">
-                        {block.line}
+                        {lyricBlockLabel(block.line, widthPx)}
                       </span>
                     </button>
                   );
@@ -1584,6 +1955,9 @@ export function TimelinePane({
                     }
                     clipInSec={clipInSec(clip)}
                     clipOutSec={clipOutSec(clip)}
+                    bakeStatus={bakeInfoByClipId?.get(clip.id)?.status}
+                    bakeError={bakeInfoByClipId?.get(clip.id)?.error}
+                    moveEnabled={clipTimelineMoveEnabled(clip)}
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />
                   );

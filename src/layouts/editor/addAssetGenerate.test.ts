@@ -36,6 +36,16 @@ describe("initialAddAssetGenerationSteps", () => {
 });
 
 describe("replaceAddAssetPlaceholderWithVideo", () => {
+  const meta = {
+    addAssetGeneration: {
+      prompt: "Lip sync close-up",
+      audioMode: "vocals" as const,
+      lyricsText: "Hello",
+      generatedAt: "2026-07-22T12:00:00.000Z",
+      creationId: "gen-1",
+    },
+  };
+
   it("keeps the clip on the timeline where the user left it", () => {
     const timeline = [
       {
@@ -61,6 +71,7 @@ describe("replaceAddAssetPlaceholderWithVideo", () => {
       timeline,
       "placeholder",
       "new-video",
+      { addAssetGeneration: meta.addAssetGeneration },
     );
     expect(next[1]).toMatchObject({
       id: "placeholder",
@@ -68,8 +79,31 @@ describe("replaceAddAssetPlaceholderWithVideo", () => {
       endSec: 21,
       assetId: "new-video",
       isAddAssetPlaceholder: undefined,
+      timelineLocked: true,
+      addAssetGeneration: meta.addAssetGeneration,
     });
     expect(next[0]).toEqual(timeline[0]);
+  });
+
+  it("leaves generation metadata unset when meta is omitted", () => {
+    const timeline = [
+      {
+        id: "placeholder",
+        lane: "video" as const,
+        kind: "video" as const,
+        label: "0:09",
+        startSec: 0,
+        endSec: 9,
+        isAddAssetPlaceholder: true,
+      },
+    ];
+    const next = replaceAddAssetPlaceholderWithVideo(
+      timeline,
+      "placeholder",
+      "new-video",
+    );
+    expect(next[0]?.addAssetGeneration).toBeUndefined();
+    expect(next[0]?.timelineLocked).toBe(true);
   });
 });
 

@@ -10,7 +10,6 @@ import { LabLayout } from "./layouts/lab/LabLayout";
 import { LibraryView } from "./library/LibraryView";
 import { ProjectWelcome } from "./project/ProjectWelcome";
 import { AppErrorBoundary } from "./ui/AppErrorBoundary";
-import { ConfirmProvider } from "./ui/ConfirmDialog";
 import "./styles.css";
 
 function LayoutRouter() {
@@ -58,11 +57,9 @@ function Root() {
 export default function App() {
   return (
     <AppErrorBoundary>
-      <ConfirmProvider>
-        <AuthProvider>
-          <Root />
-        </AuthProvider>
-      </ConfirmProvider>
+      <AuthProvider>
+        <Root />
+      </AuthProvider>
     </AppErrorBoundary>
   );
 }

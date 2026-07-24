@@ -22,7 +22,7 @@ use library::{
     library_local_fit_plan,
     library_merge_timeline_clips, library_folder_sync_state, library_folders_ack_ops,
     library_folders_apply_snapshot, library_folders_set_pending_ops,
-    library_extend_clip, library_extract_video_frame, library_slice_audio, library_separate_vocals,
+    library_extend_clip, library_delete_extend_cache_file, library_extract_video_frame, library_slice_audio, library_separate_vocals,
     library_cached_full_vocals,
     library_audio_waveform_peaks,
     library_prepare_openai_whisper_audio, library_read_file_base64,
@@ -34,6 +34,7 @@ use library::{
     publisher_list_renders, publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::webview::PageLoadEvent;
 
@@ -70,7 +71,30 @@ pub fn run() {
             // Deep link (parascene://…) just focuses the window after browser return.
             #[cfg(desktop)]
             {
+                use tauri::menu::{Menu, MenuItem, Submenu};
                 use tauri_plugin_deep_link::DeepLinkExt;
+
+                let diagnose =
+                    MenuItem::with_id(app, "diagnose_ui", "Diagnose UI Freeze…", true, Some("CmdOrCtrl+Shift+D"))?;
+                let unlock =
+                    MenuItem::with_id(app, "unlock_ui", "Unlock UI", true, Some("CmdOrCtrl+Shift+U"))?;
+                let help = Submenu::with_items(app, "Help", true, &[&diagnose, &unlock])?;
+                let menu = Menu::with_items(app, &[&help])?;
+                app.set_menu(menu)?;
+
+                let handle = app.handle().clone();
+                app.on_menu_event(move |_app, event| {
+                    match event.id().as_ref() {
+                        "diagnose_ui" => {
+                            let _ = handle.emit("parascene:ui-diagnose", ());
+                        }
+                        "unlock_ui" => {
+                            let _ = handle.emit("parascene:ui-unlock", ());
+                        }
+                        _ => {}
+                    }
+                });
+
                 let handle = app.handle().clone();
                 let _ = app.deep_link().on_open_url(move |_event| {
                     if let Some(window) = handle.get_webview_window("main") {
@@ -131,6 +155,7 @@ pub fn run() {
             library_audio_waveform_peaks,
             library_prepare_openai_whisper_audio, library_read_file_base64,
             library_extend_clip,
+            library_delete_extend_cache_file,
             library_extract_video_frame,
             library_lab_deps_status,
             library_install_demucs,

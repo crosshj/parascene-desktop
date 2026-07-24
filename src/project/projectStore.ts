@@ -1,6 +1,7 @@
 import {
   clampSensitivity,
   normalizeSlideshowMode,
+  type AddAssetGeneration,
   type AlignedLyricLine,
   type LyricAlignment,
   type LyricTranscript,
@@ -174,6 +175,51 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     bakePath,
     isAddAssetPlaceholder:
       c.isAddAssetPlaceholder === true ? true : undefined,
+    timelineLocked: c.timelineLocked === true ? true : undefined,
+    extendPingPong: c.extendPingPong === true ? true : undefined,
+    extendSourceSpanSec:
+      Number.isFinite(Number(c.extendSourceSpanSec)) &&
+      Number(c.extendSourceSpanSec) > 0
+        ? Math.max(0.1, Number(c.extendSourceSpanSec))
+        : undefined,
+    extendBakeKey:
+      typeof c.extendBakeKey === "string" && c.extendBakeKey.trim()
+        ? c.extendBakeKey.trim()
+        : null,
+    extendBakePath:
+      typeof c.extendBakePath === "string" && c.extendBakePath.trim()
+        ? c.extendBakePath.trim()
+        : null,
+    extendBakeCoverSec:
+      Number.isFinite(Number(c.extendBakeCoverSec)) &&
+      Number(c.extendBakeCoverSec) > 0
+        ? Math.max(0.1, Number(c.extendBakeCoverSec))
+        : undefined,
+    addAssetGeneration: normalizeAddAssetGeneration(c.addAssetGeneration),
+  };
+}
+
+function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.prompt !== "string") return undefined;
+  if (typeof row.generatedAt !== "string" || !row.generatedAt.trim()) {
+    return undefined;
+  }
+  if (typeof row.creationId !== "string" || !row.creationId.trim()) {
+    return undefined;
+  }
+  const audioMode = row.audioMode === "full_mix" ? "full_mix" : "vocals";
+  const lyricsText =
+    typeof row.lyricsText === "string" && row.lyricsText.trim()
+      ? row.lyricsText.trim()
+      : undefined;
+  return {
+    prompt: row.prompt,
+    audioMode,
+    lyricsText,
+    generatedAt: row.generatedAt.trim(),
+    creationId: row.creationId.trim(),
   };
 }
 

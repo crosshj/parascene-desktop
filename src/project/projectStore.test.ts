@@ -21,6 +21,7 @@ import {
   setStoredProjectLabPrompts,
   setStoredProjectLyricAlignment,
   normalizeLyricAlignment,
+  normalizeTimelineClip,
 } from "./projectStore";
 
 describe("projectStore", () => {
@@ -180,6 +181,32 @@ describe("projectStore", () => {
     expect(loaded[0].timeline?.[0].startSec).toBe(1);
     expect(loaded[0].timeline?.[0].assetId).toBe("c1");
     expect(storedProjectToUi(loaded[0]).timeline[0].endSec).toBe(4);
+  });
+
+  it("round-trips addAssetGeneration and timelineLocked on timeline clips", () => {
+    const clip = normalizeTimelineClip({
+      id: "clip-gen",
+      label: "0:09",
+      startSec: 0,
+      endSec: 9,
+      assetId: "v1",
+      timelineLocked: true,
+      addAssetGeneration: {
+        prompt: "Wave at camera",
+        audioMode: "full_mix",
+        lyricsText: "Hello world",
+        generatedAt: "2026-07-22T12:00:00.000Z",
+        creationId: "gen-99",
+      },
+    });
+    expect(clip?.timelineLocked).toBe(true);
+    expect(clip?.addAssetGeneration).toEqual({
+      prompt: "Wave at camera",
+      audioMode: "full_mix",
+      lyricsText: "Hello world",
+      generatedAt: "2026-07-22T12:00:00.000Z",
+      creationId: "gen-99",
+    });
   });
 
   it("persists slideshow recipe and bake metadata", () => {

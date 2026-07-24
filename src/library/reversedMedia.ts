@@ -9,6 +9,23 @@ export type ReversedMediaUrls = {
 const inflight = new Map<string, Promise<ReversedMediaUrls>>();
 const resolved = new Map<string, ReversedMediaUrls>();
 
+type ReversedMediaListener = (assetId: string) => void;
+const listeners = new Set<ReversedMediaListener>();
+
+function notifyReversedMedia(assetId: string): void {
+  for (const listener of listeners) listener(assetId);
+}
+
+/** Notify when the in-memory reverse cache gains or loses an entry. */
+export function subscribeReversedMediaCache(
+  listener: ReversedMediaListener,
+): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 function toUrls(media: ReversedMedia): ReversedMediaUrls {
   // Playback needs Range (`media`); thumbs stay on `asset`.
   const mediaUrl = convertFileSrc(media.path, "media");
@@ -49,6 +66,7 @@ export async function ensureReversedMedia(
         const urls = toUrls(media);
         resolved.set(id, urls);
         inflight.delete(id);
+        notifyReversedMedia(id);
         return urls;
       })
       .catch((err) => {
@@ -72,13 +90,16 @@ export async function ensureReversedMediaUrl(assetId: string): Promise<string> {
  */
 export function invalidateReversedMedia(assetIds?: readonly string[]): void {
   if (!assetIds) {
+    const ids = [...resolved.keys()];
     resolved.clear();
     inflight.clear();
+    for (const id of ids) notifyReversedMedia(id);
     return;
   }
   for (const raw of assetIds) {
     const id = raw.trim();
     resolved.delete(id);
     inflight.delete(id);
+    notifyReversedMedia(id);
   }
 }

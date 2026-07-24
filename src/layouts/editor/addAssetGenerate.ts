@@ -7,25 +7,9 @@ import {
 import { runA2vGeneration } from "../../lab/a2vGeneration";
 import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
 import { getCreations } from "../../library/catalogClient";
-import type { Creation } from "../../library/types";
-import type { TimelineClip } from "../../project/types";
+import type { AddAssetGeneration, TimelineClip } from "../../project/types";
 import type { StartFramePreview } from "./addAssetStartFrame";
 import { ADD_ASSET_TIMELINE_DURATION_SEC } from "./stagedClip";
-
-function remoteMediaUrl(c: Creation): string | null {
-  if (c.remoteUrl?.trim()) return c.remoteUrl.trim();
-  if (c.videoUrl?.trim()) return c.videoUrl.trim();
-  if (!c.remoteJson) return null;
-  try {
-    const raw = JSON.parse(c.remoteJson) as {
-      url?: string;
-      video_url?: string;
-    };
-    return raw.url || raw.video_url || null;
-  } catch {
-    return null;
-  }
-}
 
 export type AddAssetGenerationStepId =
   | "vocals"
@@ -162,11 +146,16 @@ function formatClipDuration(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+export type ReplaceAddAssetPlaceholderMeta = {
+  addAssetGeneration: AddAssetGeneration;
+};
+
 /** Swap a placeholder for a generated video without disturbing other timeline edits. */
 export function replaceAddAssetPlaceholderWithVideo(
   timeline: readonly TimelineClip[],
   clipId: string,
   creationId: string,
+  meta?: ReplaceAddAssetPlaceholderMeta,
 ): TimelineClip[] {
   return timeline.map((clip) => {
     if (clip.id !== clipId) return clip;
@@ -183,6 +172,8 @@ export function replaceAddAssetPlaceholderWithVideo(
       outSec: duration,
       includeAudio: false,
       isAddAssetPlaceholder: undefined,
+      timelineLocked: true,
+      addAssetGeneration: meta?.addAssetGeneration,
       thumbUrl: null,
     };
   });
@@ -199,8 +190,8 @@ export type RunAddAssetGenerationOpts = {
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
+  songRange: { startSec: number; endSec: number };
   startFrame: StartFramePreview;
-  imageAssets: Creation[];
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
 };
@@ -219,8 +210,11 @@ export async function runAddAssetGeneration(
     opts.onSteps(steps);
   };
 
-  const inSec = opts.placeholder.startSec;
-  const outSec = inSec + ADD_ASSET_TIMELINE_DURATION_SEC;
+  const inSec = opts.songRange.startSec;
+  const outSec = opts.songRange.endSec;
+  if (!(outSec > inSec)) {
+    throw new Error("Invalid song time range for this clip.");
+  }
   const audioId = opts.mainAudioCreationId?.trim();
   if (!audioId) {
     throw new Error("Set the project main audio in Lab before generating.");
@@ -264,22 +258,16 @@ export async function runAddAssetGeneration(
 
   pushSteps(advanceStep(steps, "still"));
   opts.onProgress("Preparing start frame…");
-  let imageUrl: string | null = null;
-  if (opts.startFrame.framePath) {
-    const uploaded = await uploadLocalImageFile(opts.startFrame.framePath, {
-      filename: "editor-a2v-start-frame.jpg",
-      contentType: "image/jpeg",
-    });
-    imageUrl = uploaded.url;
-  } else {
-    const fallback = opts.imageAssets.find((row) => remoteMediaUrl(row));
-    imageUrl = fallback ? remoteMediaUrl(fallback) : null;
-  }
-  if (!imageUrl) {
+  if (!opts.startFrame.framePath?.trim()) {
     throw new Error(
-      "No start frame — add a video clip before this slot, or add a synced image to the project.",
+      "Place this clip after another clip on the timeline.",
     );
   }
+  const uploaded = await uploadLocalImageFile(opts.startFrame.framePath, {
+    filename: "editor-a2v-start-frame.jpg",
+    contentType: "image/jpeg",
+  });
+  const imageUrl = uploaded.url;
   pushSteps(completeStep(steps, "still"));
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);

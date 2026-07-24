@@ -2168,6 +2168,49 @@ input[type="checkbox"].control,
   }
 }
 
+.ui-diagnostics-dialog {
+  width: min(42rem, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-diagnostics-lead {
+  margin: 0 0 0.75rem;
+}
+
+.ui-diagnostics-notes {
+  margin: 0 0 0.75rem;
+  padding-left: 1.1rem;
+  font-size: 0.92rem;
+}
+
+.ui-diagnostics-unlock-note {
+  margin: 0 0 0.75rem;
+  color: var(--accent);
+  font-size: 0.92rem;
+}
+
+.ui-diagnostics-report {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 88%, #000);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 12rem;
+  max-height: 50vh;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ui-diagnostics-actions {
+  flex-wrap: wrap;
+}
+
 .project-welcome-heading {
   margin: 0 0 0.65rem;
   font-size: 0.8rem;
@@ -3770,6 +3813,182 @@ input[type="checkbox"].control,
   animation: editor-bake-spin 0.7s linear infinite;
 }
 
+.editor-timeline-clip-generated {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  z-index: 2;
+  max-width: calc(100% - 8px);
+}
+
+.editor-generated-clip-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.editor-generated-clip-pill {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(30, 58, 95, 0.92);
+  border: 1px solid rgba(147, 197, 253, 0.45);
+  color: #dbeafe;
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-generated-clip-info {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(30, 58, 95, 0.92);
+  color: #bfdbfe;
+  font-size: 0.62rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.editor-generated-clip-info:hover {
+  background: rgba(37, 99, 235, 0.85);
+}
+
+.editor-generated-clip-badge.is-compact .editor-generated-clip-info {
+  width: 12px;
+  height: 12px;
+  font-size: 0.55rem;
+}
+
+.editor-generated-clip-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  width: min(240px, 70vw);
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid rgba(147, 197, 253, 0.35);
+  background: rgba(15, 23, 42, 0.98);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.editor-generated-clip-popover p {
+  margin: 0 0 0.35rem;
+}
+
+.editor-generated-clip-popover p:last-child {
+  margin-bottom: 0;
+}
+
+.editor-staging-generated {
+  flex: 1 1 100%;
+}
+
+.editor-timeline-clip-resize-edge {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  bottom: 0;
+  width: 8px;
+  z-index: 3;
+  cursor: ew-resize;
+  touch-action: none;
+  opacity: 0;
+  background: transparent;
+}
+
+.editor-timeline-clip:hover .editor-timeline-clip-resize-edge,
+.editor-timeline-clip.is-selected .editor-timeline-clip-resize-edge {
+  opacity: 1;
+}
+
+.editor-timeline-clip.is-resizing {
+  z-index: 4;
+}
+
+.editor-timeline-clip.is-resizing .editor-timeline-clip-resize-edge {
+  opacity: 1;
+}
+
+body.is-preview-trim-dragging,
+body.is-timeline-clip-resizing {
+  user-select: none;
+}
+
+body.is-timeline-clip-resizing .editor-timeline-clip-resize-edge {
+  opacity: 0;
+}
+
+body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timeline-clip-resize-edge {
+  opacity: 1;
+  background: rgba(147, 197, 253, 0.25);
+}
+
+.editor-timeline-clip-extend-tail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.editor-timeline-clip-extend-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.editor-timeline-clip-extend-line.is-source-end {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.editor-timeline-clip-extend-line.is-loop {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.editor-timeline-clip-extend-pong {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.14);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.editor-timeline-clip-extend-pong .editor-timeline-clip-reverse {
+  color: rgba(0, 0, 0, 0.45);
+  filter: none;
+}
+
+.editor-timeline-clip.is-selected .editor-timeline-clip-extend-pong .editor-timeline-clip-reverse {
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.editor-timeline-clip.is-selected .editor-timeline-clip-extend-line.is-source-end {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.editor-timeline-clip.is-selected .editor-timeline-clip-extend-line.is-loop {
+  background: rgba(0, 0, 0, 0.38);
+}
+
 .editor-timeline-clip-bake.is-failed {
   display: grid;
   place-items: center;
@@ -3993,7 +4212,7 @@ input[type="checkbox"].control,
 .editor-preview-scrubber-handle {
   position: absolute;
   top: 50%;
-  z-index: 3;
+  z-index: 5;
   width: 0.85rem;
   height: 0.85rem;
   margin: 0;
@@ -4005,6 +4224,12 @@ input[type="checkbox"].control,
   transform: translate(-50%, -50%);
   cursor: ew-resize;
   touch-action: none;
+}
+
+.editor-preview-scrubber-handle::before {
+  content: "";
+  position: absolute;
+  inset: -0.45rem;
 }
 
 .editor-preview-scrubber-handle:hover,
@@ -4352,6 +4577,30 @@ input[type="checkbox"].control,
   width: 0.95rem;
   height: 0.95rem;
   margin: 0;
+  accent-color: var(--accent);
+}
+
+.editor-staging-field.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.editor-staging-field.is-disabled input {
+  cursor: not-allowed;
+}
+
+/* Frozen = checked but not editable. Don't use opacity/disabled — browsers
+   wash out checked accent so it looks unchecked. */
+.editor-staging-field.is-frozen {
+  cursor: not-allowed;
+}
+
+.editor-staging-field.is-frozen > span:first-child {
+  opacity: 0.72;
+}
+
+.editor-staging-field.is-frozen input[type="checkbox"] {
+  cursor: not-allowed;
   accent-color: var(--accent);
 }
 
@@ -5253,13 +5502,15 @@ body.is-timeline-clip-moving * {
 .editor-timeline-lane {
   position: relative;
   min-height: 72px;
+  --timeline-lane-bg: color-mix(in srgb, var(--bg) 40%, var(--surface));
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 40%, var(--surface));
+  background: var(--timeline-lane-bg);
   overflow: hidden;
 }
 
 .editor-timeline-lane.is-audio {
-  background: color-mix(in srgb, #1a2a24 35%, var(--surface));
+  --timeline-lane-bg: color-mix(in srgb, #1a2a24 35%, var(--surface));
+  background: var(--timeline-lane-bg);
 }
 
 .editor-timeline-lane.is-lyrics {
@@ -5290,6 +5541,8 @@ body.is-timeline-clip-moving * {
 }
 
 .editor-timeline-lyric-block-label {
+  width: 100%;
+  min-width: 0;
   padding: 0 0.35rem;
   font-size: 0.65rem;
   line-height: 1.2;
@@ -5297,6 +5550,7 @@ body.is-timeline-clip-moving * {
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
+  text-align: center;
 }
 
 .editor-timeline-lane-empty {
@@ -5335,10 +5589,9 @@ body.is-timeline-clip-moving * {
   bottom: 4px;
   z-index: 1;
   display: block;
-  height: calc(100% - 1.2rem);
+  height: calc(100% - 1.1rem - 4px);
   width: auto;
   aspect-ratio: 16 / 9;
-  max-width: calc(100% - 8px);
   border-radius: 1px;
   object-fit: cover;
   background: #0a0a0e;
@@ -5348,7 +5601,7 @@ body.is-timeline-clip-moving * {
 }
 
 .editor-timeline-clip-thumb.is-fit {
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .editor-timeline-clip-thumb.is-stretch {
@@ -5364,7 +5617,7 @@ body.is-timeline-clip-moving * {
   top: 3px;
   left: 6px;
   right: 18px;
-  z-index: 2;
+  z-index: 3;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -5373,9 +5626,12 @@ body.is-timeline-clip-moving * {
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.01em;
+  line-height: 1.1;
   color: rgba(245, 245, 250, 0.95);
   pointer-events: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.85),
+    0 0 6px rgba(0, 0, 0, 0.55);
 }
 
 .editor-timeline-clip.is-audio .editor-timeline-clip-dur {

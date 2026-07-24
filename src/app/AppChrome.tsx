@@ -8,7 +8,15 @@ import {
 import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { OPEN_SETTINGS_EVENT } from "../settings/events";
+import {
+  OPEN_UI_DIAGNOSTICS_EVENT,
+  UNLOCK_UI_EVENT,
+  requestOpenUiDiagnostics,
+  requestUnlockUi,
+} from "./diagnosticsEvents";
 import { SettingsModal } from "../settings/SettingsModal";
+import { UiDiagnosticsModal } from "./UiDiagnosticsModal";
+import { installPointerCaptureSpy, unlockUi } from "./uiDiagnostics";
 import {
   useShell,
   type LibrarySurface,
@@ -65,6 +73,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
   const profileUrl = session ? profilePageUrl(session) : null;
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const accountRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
@@ -130,10 +139,82 @@ export function AppChrome({ children }: { children: ReactNode }) {
     setSettingsOpen(true);
   };
 
+  const openDiagnostics = () => {
+    setMenuOpen(false);
+    setDiagnosticsOpen(true);
+  };
+
+  const runUnlockUi = () => {
+    setMenuOpen(false);
+    unlockUi();
+  };
+
+  useEffect(() => {
+    installPointerCaptureSpy();
+  }, []);
+
   useEffect(() => {
     const onOpen = () => setSettingsOpen(true);
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_SETTINGS_EVENT, onOpen);
+  }, []);
+
+  useEffect(() => {
+    const onOpen = () => setDiagnosticsOpen(true);
+    const onUnlock = () => {
+      unlockUi();
+    };
+    window.addEventListener(OPEN_UI_DIAGNOSTICS_EVENT, onOpen);
+    window.addEventListener(UNLOCK_UI_EVENT, onUnlock);
+    return () => {
+      window.removeEventListener(OPEN_UI_DIAGNOSTICS_EVENT, onOpen);
+      window.removeEventListener(UNLOCK_UI_EVENT, onUnlock);
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const unsubs: Array<() => void> = [];
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        if (disposed) return;
+        unsubs.push(
+          await listen("parascene:ui-diagnose", () => {
+            requestOpenUiDiagnostics();
+          }),
+        );
+        unsubs.push(
+          await listen("parascene:ui-unlock", () => {
+            requestUnlockUi();
+          }),
+        );
+      } catch {
+        // Browser tests / non-Tauri runtime.
+      }
+    })();
+    return () => {
+      disposed = true;
+      for (const unsub of unsubs) unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "d") {
+        event.preventDefault();
+        requestOpenUiDiagnostics();
+        return;
+      }
+      if (key === "u") {
+        event.preventDefault();
+        requestUnlockUi();
+      }
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
   const doLogout = () => {
@@ -252,6 +333,22 @@ export function AppChrome({ children }: { children: ReactNode }) {
                       >
                         Settings
                       </button>
+                      <button
+                        type="button"
+                        className="auth-account-menu-item"
+                        role="menuitem"
+                        onClick={openDiagnostics}
+                      >
+                        Diagnose UI…
+                      </button>
+                      <button
+                        type="button"
+                        className="auth-account-menu-item"
+                        role="menuitem"
+                        onClick={runUnlockUi}
+                      >
+                        Unlock UI
+                      </button>
                       {profileUrl ? (
                         <button
                           type="button"
@@ -282,6 +379,10 @@ export function AppChrome({ children }: { children: ReactNode }) {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+      <UiDiagnosticsModal
+        open={diagnosticsOpen}
+        onClose={() => setDiagnosticsOpen(false)}
       />
     </div>
   );

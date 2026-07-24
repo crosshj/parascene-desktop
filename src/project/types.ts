@@ -99,6 +99,32 @@ export type TimelineClip = {
   bakePath?: string | null;
   /** Placeholder clip staged from the add-asset slot (no library asset yet). */
   isAddAssetPlaceholder?: boolean;
+  /**
+   * When true, trimming In in source preview shifts timeline startSec to stay
+   * synced. Audio clips are always locked; image clips are never locked.
+   */
+  timelineLocked?: boolean;
+  /** When timeline duration exceeds source trim, ping-pong the extension (else loop). */
+  extendPingPong?: boolean;
+  /** Source trim span captured when the clip was first extended on the timeline. */
+  extendSourceSpanSec?: number;
+  /** Content key for the cached extend bake matching current settings. */
+  extendBakeKey?: string | null;
+  /** Absolute path to the cached extend bake MP4 when ready. */
+  extendBakePath?: string | null;
+  /** Timeline seconds covered by the cached repeat-unit bake on disk. */
+  extendBakeCoverSec?: number;
+  /** Metadata when this clip was produced by add-asset A2V generation. */
+  addAssetGeneration?: AddAssetGeneration;
+};
+
+/** Persisted provenance for add-asset generated timeline clips. */
+export type AddAssetGeneration = {
+  prompt: string;
+  audioMode: "vocals" | "full_mix";
+  lyricsText?: string;
+  generatedAt: string;
+  creationId: string;
 };
 
 export type HookSuggestion = {

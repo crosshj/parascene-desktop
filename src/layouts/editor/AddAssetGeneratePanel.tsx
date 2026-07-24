@@ -24,6 +24,7 @@ export type StartAddAssetGenerationRequest = {
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
+  songRange: { startSec: number; endSec: number };
   startFrame: StartFramePreview;
 };
 
@@ -195,17 +196,31 @@ export function AddAssetGeneratePanel({
   };
 
   const handleGenerate = () => {
-    if (phase !== "form" || !startFrame || !prompt.trim()) return;
+    if (
+      phase !== "form" ||
+      !startFrame?.framePath?.trim() ||
+      !prompt.trim()
+    ) {
+      return;
+    }
     void resolveAddAssetStartFrame(timeline, clip).then((freshStartFrame) => {
+      if (!freshStartFrame.framePath?.trim()) return;
       onStartGeneration({
         clip,
         prompt,
         lyricsText,
         audioMode: resolvedAudioMode,
+        songRange,
         startFrame: freshStartFrame,
       });
     });
   };
+
+  const canGenerate =
+    phase === "form" &&
+    Boolean(startFrame?.framePath?.trim()) &&
+    Boolean(prompt.trim()) &&
+    !startFrameLoading;
 
   if (phase === "running" && activeSession) {
     return (
@@ -372,7 +387,7 @@ export function AddAssetGeneratePanel({
         onRefresh={handleRefresh}
         onGenerate={handleGenerate}
         refreshDisabled={startFrameLoading}
-        generateDisabled={startFrameLoading || !prompt.trim()}
+        generateDisabled={!canGenerate}
       />
     </div>
   );

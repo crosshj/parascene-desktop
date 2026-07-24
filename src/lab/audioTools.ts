@@ -142,6 +142,13 @@ export async function bakeClipExtend(opts: {
   return { path, mediaUrl: mediaUrlFor(path) };
 }
 
+/** Remove a superseded extend bake from the lab cache. */
+export async function deleteExtendCacheFile(path: string): Promise<void> {
+  const trimmed = path.trim();
+  if (!trimmed) return;
+  await invoke("library_delete_extend_cache_file", { path: trimmed });
+}
+
 /** Pull the last readable frame from a local video (time clamped in Rust). */
 export async function extractVideoLastFrame(
   sourcePath: string,

@@ -8,8 +8,8 @@ import {
   isParasceneUnavailable,
 } from "../../library/previewUrl";
 import {
-  ensureReversedMedia,
   getCachedReversedMedia,
+  subscribeReversedMediaCache,
 } from "../../library/reversedMedia";
 import { mediaUrlForBakePath, type BakeInfo } from "../../library/slideshowMedia";
 import type { Creation } from "../../library/types";
@@ -20,6 +20,9 @@ import {
   normalizeFraming,
   type StagedClipFraming,
 } from "./stagedClip";
+import {
+  clipHasFreshExtendBake,
+} from "./clipExtendBake";
 import {
   clipInSec,
   peekNextVisualClip,
@@ -59,6 +62,10 @@ export function assetDecoderKey(clip: TimelineClip): AssetDecoderKey {
     const bake = clip.bakeKey?.trim() || clip.bakePath?.trim() || "pending";
     return `slideshow:${clip.id}:${bake}`;
   }
+  if (clip.kind === "video" && clipHasFreshExtendBake(clip)) {
+    const bake = clip.extendBakeKey?.trim() || clip.extendBakePath?.trim() || "pending";
+    return `extend:${clip.id}:${bake}`;
+  }
   const assetId = clip.assetId?.trim() || clip.id;
   return `${assetId}:${clip.reverse ? "r" : "f"}`;
 }
@@ -82,6 +89,8 @@ type VisualDecoderMeta = {
   key: AssetDecoderKey;
   kind: "video" | "image" | "slideshow";
   bakePath?: string | null;
+  extendBakePath?: string | null;
+  clipId?: string;
 };
 
 /** Every unique video/image backing asset on the video lane. */
@@ -102,6 +111,16 @@ function listVisualDecoders(
       continue;
     }
     if (!clip.assetId?.trim()) continue;
+    if (clip.kind === "video" && clipHasFreshExtendBake(clip)) {
+      const key = assetDecoderKey(clip);
+      byKey.set(key, {
+        key,
+        kind: "video",
+        extendBakePath: clip.extendBakePath ?? null,
+        clipId: clip.id,
+      });
+      continue;
+    }
     const kind = clip.kind === "image" ? "image" : "video";
     const key = assetDecoderKey(clip);
     // Prefer video if the same key ever appears as both (shouldn't).
@@ -197,61 +216,27 @@ function useReversedDetail(
   assetId: string,
   enabled: boolean,
   sourceReady: boolean,
-): { detail: string | null; busy: boolean; error: string | null } {
-  const cached = enabled && sourceReady ? getCachedReversedMedia(assetId) : null;
-  const [detail, setDetail] = useState<string | null>(
-    () => cached?.mediaUrl ?? null,
-  );
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+): { detail: string | null; busy: boolean; error: string | null; needsBake: boolean } {
+  const [cacheEpoch, setCacheEpoch] = useState(0);
+  useEffect(() => subscribeReversedMediaCache(() => setCacheEpoch((n) => n + 1)), []);
+
+  const cached =
+    enabled && sourceReady ? getCachedReversedMedia(assetId) : null;
+  // cacheEpoch keeps this hook reactive after an explicit Bake fills the cache.
+  void cacheEpoch;
 
   if (!enabled || !sourceReady) {
-    if (detail !== null) setDetail(null);
-    if (busy) setBusy(false);
-    if (error !== null) setError(null);
-  } else if (cached && detail !== cached.mediaUrl) {
-    setDetail(cached.mediaUrl);
-    if (busy) setBusy(false);
-    if (error !== null) setError(null);
+    return { detail: null, busy: false, error: null, needsBake: false };
   }
-
-  useEffect(() => {
-    if (!enabled || !sourceReady) return;
-    if (getCachedReversedMedia(assetId)) return;
-
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
-      setBusy(true);
-      setError(null);
-      setDetail(null);
-    });
-
-    void ensureReversedMedia(assetId)
-      .then((urls) => {
-        if (cancelled) return;
-        setDetail(urls.mediaUrl);
-        setBusy(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        const message =
-          err instanceof Error
-            ? err.message
-            : typeof err === "string"
-              ? err
-              : "Could not reverse media";
-        setError(message);
-        setBusy(false);
-        setDetail(null);
-      });
-
-    return () => {
-      cancelled = true;
+  if (cached) {
+    return {
+      detail: cached.mediaUrl,
+      busy: false,
+      error: null,
+      needsBake: false,
     };
-  }, [assetId, enabled, sourceReady]);
-
-  return { detail, busy, error };
+  }
+  return { detail: null, busy: false, error: null, needsBake: true };
 }
 
 /** Resolves true when a seek was issued, false when already at the target. */
@@ -416,7 +401,7 @@ export function TimelineMonitor({
 
   return (
     <>
-      {decoders.map(({ key, kind, bakePath }) => {
+      {decoders.map(({ key, kind, bakePath, extendBakePath, clipId: decoderClipId }) => {
         const isActive = key === activeKey;
         const isVisible = key === visibleKey;
         const parkSec = prepByKey.get(key) ?? 0;
@@ -424,6 +409,32 @@ export function TimelineMonitor({
           isActive && visual?.clip
             ? normalizeFraming(visual.clip.framing)
             : "fit";
+        if (extendBakePath) {
+          const bakeInfo =
+            decoderClipId && bakeInfoByClipId
+              ? bakeInfoByClipId.get(decoderClipId)
+              : undefined;
+          return (
+            <ExtendBakeDecoder
+              key={key}
+              decoderKey={key}
+              bakePath={extendBakePath}
+              bakeInfo={bakeInfo ?? null}
+              active={isActive}
+              visible={isVisible}
+              framing={framing}
+              stageW={stageW}
+              stageH={stageH}
+              matteW={matteW}
+              matteH={matteH}
+              liveLayer={isActive ? visual : null}
+              prepSourceSec={isActive ? null : parkSec}
+              playing={isActive && playing}
+              mediaSeekEpoch={mediaSeekEpoch}
+              onReady={onDecoderReady}
+            />
+          );
+        }
         if (kind === "slideshow") {
           const clipId = isActive ? visual?.clip.id : null;
           const bakeInfo =
@@ -485,6 +496,95 @@ export function TimelineMonitor({
         <span className="editor-preview-status muted">Timeline</span>
       ) : null}
     </>
+  );
+}
+
+function ExtendBakeDecoder({
+  decoderKey,
+  bakePath,
+  bakeInfo,
+  active,
+  visible,
+  framing,
+  stageW,
+  stageH,
+  matteW,
+  matteH,
+  liveLayer,
+  prepSourceSec,
+  playing,
+  mediaSeekEpoch,
+  onReady,
+}: {
+  decoderKey: AssetDecoderKey;
+  bakePath: string | null;
+  bakeInfo?: BakeInfo | null;
+  active: boolean;
+  visible: boolean;
+  framing: StagedClipFraming;
+  stageW: number;
+  stageH: number;
+  matteW: number;
+  matteH: number;
+  liveLayer: TimelineLayer | null;
+  prepSourceSec: number | null;
+  playing: boolean;
+  mediaSeekEpoch: number;
+  onReady: (key: AssetDecoderKey) => void;
+}) {
+  const [paintedFraming, setPaintedFraming] =
+    useState<StagedClipFraming>(framing);
+  if (active && paintedFraming !== framing) {
+    setPaintedFraming(framing);
+  }
+  const effectiveFraming = active ? framing : paintedFraming;
+
+  if (active && !bakePath) {
+    const status =
+      bakeInfo?.status === "generating"
+        ? "Baking extend…"
+        : bakeInfo?.status === "failed"
+          ? bakeInfo.error?.trim() || "Extend bake failed"
+          : "Hit Bake to render this extended clip";
+    return <span className="editor-preview-status muted">{status}</span>;
+  }
+  if (!bakePath) return null;
+
+  let videoSrc: string | null = null;
+  try {
+    videoSrc = mediaUrlForBakePath(bakePath);
+  } catch {
+    videoSrc = null;
+  }
+  if (!videoSrc) {
+    if (active) {
+      return (
+        <span className="editor-preview-status muted">
+          Extend bake unavailable
+        </span>
+      );
+    }
+    return null;
+  }
+
+  return (
+    <PersistentVideo
+      decoderKey={decoderKey}
+      src={videoSrc}
+      active={active}
+      visible={visible}
+      framing={effectiveFraming}
+      stageW={stageW}
+      stageH={stageH}
+      matteW={matteW}
+      matteH={matteH}
+      sourceSec={active ? (liveLayer?.localSec ?? 0) : (prepSourceSec ?? 0)}
+      playing={playing}
+      mediaSeekEpoch={mediaSeekEpoch}
+      clipId={liveLayer?.clip.id ?? null}
+      clockSync
+      onReady={onReady}
+    />
   );
 }
 
@@ -639,8 +739,10 @@ function AssetDecoder({
   const imageSrc =
     kind === "image" ? media.detail ?? media.thumb : null;
 
-  if (active && wantsReverse && reversed.busy) {
-    return <span className="editor-preview-wait muted">Reversing…</span>;
+  if (active && wantsReverse && reversed.needsBake) {
+    return (
+      <span className="editor-preview-wait muted">Hit Bake to reverse</span>
+    );
   }
   if (active && wantsReverse && reversed.error) {
     return (
@@ -1075,7 +1177,7 @@ function AudioLayer({
     };
   }, [src, playing, layer.clip.id, mediaSeekEpoch]);
 
-  if (wantsReverse && reversed.busy) return null;
+  if (wantsReverse && reversed.needsBake) return null;
   if (!src) return null;
 
   return (
