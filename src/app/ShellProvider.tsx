@@ -39,6 +39,11 @@ import {
   type StoredProject,
 } from "../project/projectStore";
 import {
+  bindAddAssetGenerationApplier,
+  type AddAssetGenerationSuccess,
+} from "../layouts/editor/addAssetGenerationStore";
+import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
+import {
   loadShellSession,
   saveShellSession,
   type LibrarySurface,
@@ -244,6 +249,59 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  // Keep add-asset generation able to commit results after Editor unmounts
+  // (e.g. user browses Library while a job is running).
+  useEffect(() => {
+    bindAddAssetGenerationApplier({
+      applySuccess: (result: AddAssetGenerationSuccess) => {
+        updateStoredProjects((prev) =>
+          prev.map((project) => {
+            if (project.id !== result.projectId) return project;
+            let next = mergeCreationIds(project, result.projectCreationIds);
+            if (result.videosGroupId || result.imagesGroupId) {
+              next = setStoredProjectGroupIds(next, {
+                ...(result.videosGroupId
+                  ? { videosGroupId: result.videosGroupId }
+                  : {}),
+                ...(result.imagesGroupId
+                  ? { imagesGroupId: result.imagesGroupId }
+                  : {}),
+              });
+            }
+            const timeline = storedProjectToUi(next).timeline;
+            if (!timeline.some((clip) => clip.id === result.clipId)) {
+              return next;
+            }
+            const nextTimeline = replaceAddAssetPlaceholderWithVideo(
+              timeline,
+              result.clipId,
+              result.creationId,
+              {
+                addAssetGeneration: {
+                  prompt: result.prompt,
+                  audioMode:
+                    result.mode === "first_last"
+                      ? undefined
+                      : result.audioMode,
+                  lyricsText:
+                    result.mode === "first_last"
+                      ? undefined
+                      : result.lyricsText.trim() || undefined,
+                  generatedAt: new Date().toISOString(),
+                  creationId: result.creationId,
+                  mode: result.mode,
+                  model: result.model,
+                },
+              },
+            );
+            return setStoredProjectTimeline(next, nextTimeline);
+          }),
+        );
+      },
+    });
+    return () => bindAddAssetGenerationApplier(null);
+  }, [updateStoredProjects]);
 
   const patchOpenProject = useCallback(
     (patch: (project: StoredProject) => StoredProject) => {

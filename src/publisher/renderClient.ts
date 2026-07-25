@@ -37,6 +37,7 @@ export type RenderTimelineClipInput = {
   extendSourceSpanSec?: number;
   extendBakePath?: string | null;
   extendBakeCoverSec?: number;
+  speed?: number;
 };
 
 export type TimelineRender = {
@@ -101,6 +102,7 @@ export function timelineClipsToRenderInput(
     extendSourceSpanSec: clip.extendSourceSpanSec,
     extendBakePath: clip.extendBakePath,
     extendBakeCoverSec: clip.extendBakeCoverSec,
+    speed: clip.speed,
   }));
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ADD_ASSET_FIRST_LAST_AUDIO_NOTE,
   ADD_ASSET_NO_LYRICS_AUDIO_NOTE,
   buildAddAssetGenerationPrompt,
   addAssetGenerationExpectedMs,
@@ -50,6 +51,18 @@ describe("initialAddAssetGenerationSteps", () => {
     expect(steps[0]?.label).toBe("Prepare audio slice");
     expect(steps[1]?.label).toBe("Upload audio clip");
   });
+
+  it("uses still-only steps for first_last mode", () => {
+    const steps = initialAddAssetGenerationSteps("vocals", "first_last");
+    expect(steps.map((s) => s.id)).toEqual([
+      "still",
+      "end-still",
+      "generate",
+      "file",
+    ]);
+    expect(steps[0]?.label).toMatch(/first frame/i);
+    expect(steps[1]?.label).toMatch(/last frame/i);
+  });
 });
 
 describe("replaceAddAssetPlaceholderWithVideo", () => {
@@ -60,6 +73,8 @@ describe("replaceAddAssetPlaceholderWithVideo", () => {
       lyricsText: "Hello",
       generatedAt: "2026-07-22T12:00:00.000Z",
       creationId: "gen-1",
+      mode: "start_frame" as const,
+      model: "ltx_a2v",
     },
   };
 
@@ -152,5 +167,11 @@ describe("addAssetGenerationProgress", () => {
 describe("ADD_ASSET_NO_LYRICS_AUDIO_NOTE", () => {
   it("mentions full mix", () => {
     expect(ADD_ASSET_NO_LYRICS_AUDIO_NOTE).toMatch(/full mix/i);
+  });
+});
+
+describe("ADD_ASSET_FIRST_LAST_AUDIO_NOTE", () => {
+  it("mentions that audio is unused", () => {
+    expect(ADD_ASSET_FIRST_LAST_AUDIO_NOTE).toMatch(/does not use audio/i);
   });
 });

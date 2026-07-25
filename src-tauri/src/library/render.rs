@@ -68,6 +68,8 @@ pub struct RenderTimelineClipInput {
     pub extend_bake_path: Option<String>,
     #[serde(default)]
     pub extend_bake_cover_sec: Option<f64>,
+    #[serde(default)]
+    pub speed: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -138,6 +140,8 @@ struct VideoSource {
     framing: Framing,
     /// Play the trimmed span backwards (ping-pong pong segments).
     reverse_trim: bool,
+    /// Playback rate applied after trim (1 = realtime). Extend bakes are already retimed.
+    speed: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +158,8 @@ struct AudioSegment {
     out_sec: f64,
     delay_ms: u64,
     reverse_trim: bool,
+    /// Playback rate applied after atrim (1 = realtime).
+    speed: f64,
 }
 
 fn safe_id(id: &str) -> String {
@@ -265,6 +271,17 @@ fn clip_extend_source_span(clip: &RenderTimelineClipInput) -> f64 {
     clip_source_trim_span(clip)
 }
 
+fn clip_speed(clip: &RenderTimelineClipInput) -> f64 {
+    clip.speed
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| v.clamp(0.25, 4.0))
+        .unwrap_or(1.0)
+}
+
+fn clip_playthrough_unit(clip: &RenderTimelineClipInput) -> f64 {
+    (clip_extend_source_span(clip) / clip_speed(clip)).max(0.1)
+}
+
 fn clip_timeline_duration(clip: &RenderTimelineClipInput) -> f64 {
     (clip.end_sec - clip.start_sec).max(0.1)
 }
@@ -285,33 +302,36 @@ fn clip_is_video_extended(clip: &RenderTimelineClipInput) -> bool {
     if !clip_is_video_kind(clip) {
         return false;
     }
-    clip_timeline_duration(clip) > clip_extend_source_span(clip) + 1e-3
+    clip_timeline_duration(clip) > clip_playthrough_unit(clip) + 1e-3
 }
 
-fn compute_extend_target_sec(timeline_dur: f64, source_span: f64) -> f64 {
-    let spans = (timeline_dur / source_span).ceil().max(1.0);
-    (spans * source_span * 1000.0).round() / 1000.0
+fn compute_extend_target_sec(timeline_dur: f64, playthrough: f64) -> f64 {
+    let spans = (timeline_dur / playthrough).ceil().max(1.0);
+    (spans * playthrough * 1000.0).round() / 1000.0
 }
 
-/// Match editor `clipSourceSec` for extended video clips.
+/// Match editor `clipSourceSec` for video clips (rate-aware loop/pong).
 fn clip_source_sec_at_local(clip: &RenderTimelineClipInput, local: f64) -> f64 {
     let in_sec = clip_in_sec(clip.in_sec);
     let out_sec = clip_trim_out_sec(clip);
     let source_span = clip_extend_source_span(clip);
+    let speed = clip_speed(clip);
     let timeline_dur = clip_timeline_duration(clip);
+    let playthrough = source_span / speed;
     let local = local.max(0.0);
+    let media_local = local * speed;
 
-    if local <= source_span + 1e-6 || timeline_dur <= source_span + 1e-6 {
-        return (in_sec + local).min(out_sec).max(in_sec);
+    if media_local <= source_span + 1e-6 || timeline_dur <= playthrough + 1e-6 {
+        return (in_sec + media_local).min(out_sec).max(in_sec);
     }
 
-    let extend_local = local - source_span;
+    let extend_media = media_local - source_span;
     if clip.extend_ping_pong != Some(true) {
-        return in_sec + (extend_local % source_span);
+        return in_sec + (extend_media % source_span);
     }
 
-    let segment = (extend_local / source_span).floor();
-    let phase = extend_local % source_span;
+    let segment = (extend_media / source_span).floor();
+    let phase = extend_media % source_span;
     if (segment as i64).rem_euclid(2) == 0 {
         out_sec - phase
     } else {
@@ -321,12 +341,12 @@ fn clip_source_sec_at_local(clip: &RenderTimelineClipInput, local: f64) -> f64 {
 
 fn extend_split_points(clip: &RenderTimelineClipInput) -> Vec<f64> {
     let timeline_dur = clip_timeline_duration(clip);
-    let source_span = clip_extend_source_span(clip);
+    let playthrough = clip_playthrough_unit(clip);
     let mut points = vec![0.0];
-    let mut t = source_span;
+    let mut t = playthrough;
     while t < timeline_dur - 1e-6 {
         points.push(t);
-        t += source_span;
+        t += playthrough;
     }
     points.push(timeline_dur);
     points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -353,7 +373,8 @@ fn resolve_extend_bake_path(
         if path.is_file() {
             if let Some(cover) = clip.extend_bake_cover_sec.filter(|v| v.is_finite() && *v > 0.0)
             {
-                if timeline_dur <= cover + 0.001 {
+                let needed = timeline_dur * clip_speed(clip);
+                if cover + 0.001 >= needed {
                     return Ok(Some(path));
                 }
             } else {
@@ -371,10 +392,21 @@ fn resolve_extend_bake_path(
     let source_path = resolve_media_path(paths, asset_id, false)?;
     let in_sec = clip_in_sec(clip.in_sec);
     let out_sec = clip_trim_out_sec(clip);
+    // Bake 1× loop/pong material long enough that cover/speed >= timeline.
     let source_span = clip_extend_source_span(clip);
-    let target = compute_extend_target_sec(timeline_dur, source_span);
+    let speed = clip_speed(clip);
+    let media_needed = timeline_dur * speed;
+    let spans = (media_needed / source_span).ceil().max(1.0);
+    let target = (spans * source_span * 1000.0).round() / 1000.0;
     let ping_pong = clip.extend_ping_pong == Some(true);
-    let baked = extend_clip_on_disk(&source_path, ping_pong, target, Some(in_sec), Some(out_sec))?;
+    let baked = extend_clip_on_disk(
+        &source_path,
+        ping_pong,
+        target,
+        Some(in_sec),
+        Some(out_sec),
+        None,
+    )?;
     Ok(Some(baked))
 }
 
@@ -708,15 +740,20 @@ fn build_video_segments(
         let local_end = (range.end - clip.start_sec).max(0.0);
 
         if let Some(bake_path) = extend_bakes.get(&clip_index) {
+            let speed = clip_speed(clip);
+            // 1× bake timeline is media-domain; retimed via setpts on encode.
+            let bake_in = local_offset * speed;
+            let bake_out = (local_end * speed).max(bake_in + 0.001);
             segments.push(VideoSegment {
                 duration_sec,
                 source: Some(VideoSource {
                     path: bake_path.clone(),
-                    in_sec: local_offset,
-                    out_sec: local_end.max(local_offset + 0.001),
+                    in_sec: bake_in,
+                    out_sec: bake_out,
                     is_image: false,
                     framing: clip_framing(clip),
                     reverse_trim: false,
+                    speed,
                 }),
             });
             emit_progress(
@@ -731,8 +768,31 @@ fn build_video_segments(
             continue;
         }
 
-        let source_in = (in_sec + local_offset).min(out_sec);
-        let source_out = (source_in + duration_sec).min(out_sec);
+        let speed = clip_speed(clip);
+        let source_in = if clip
+            .kind
+            .as_deref()
+            .map(|k| {
+                k.eq_ignore_ascii_case("slideshow") || k.eq_ignore_ascii_case("image")
+            })
+            .unwrap_or(false)
+        {
+            (in_sec + local_offset).min(out_sec)
+        } else {
+            clip_source_sec_at_local(clip, local_offset)
+        };
+        let source_out = if clip
+            .kind
+            .as_deref()
+            .map(|k| {
+                k.eq_ignore_ascii_case("slideshow") || k.eq_ignore_ascii_case("image")
+            })
+            .unwrap_or(false)
+        {
+            (source_in + duration_sec).min(out_sec)
+        } else {
+            clip_source_sec_at_local(clip, local_end).max(source_in + 0.001)
+        };
 
         if clip
             .kind
@@ -785,6 +845,7 @@ fn build_video_segments(
                     // Bake already framed; stretch into the segment frame.
                     framing: Framing::Stretch,
                     reverse_trim: false,
+                    speed: 1.0,
                 }),
             });
         } else {
@@ -806,6 +867,7 @@ fn build_video_segments(
                     is_image,
                     framing: clip_framing(clip),
                     reverse_trim: false,
+                    speed: if is_image { 1.0 } else { speed },
                 }),
             });
         }
@@ -831,17 +893,41 @@ fn build_video_segments(
 }
 
 fn audio_segment_reverse_trim(clip: &RenderTimelineClipInput, local_start: f64, local_end: f64) -> bool {
-    let source_span = clip_extend_source_span(clip);
-    if clip.extend_ping_pong != Some(true) || local_end <= source_span + 1e-6 {
+    let playthrough = clip_playthrough_unit(clip);
+    if clip.extend_ping_pong != Some(true) || local_end <= playthrough + 1e-6 {
         return false;
     }
     let mid = (local_start + local_end) * 0.5;
-    let extend_local = mid - source_span;
+    let extend_local = mid - playthrough;
     if extend_local <= 1e-6 {
         return false;
     }
-    let segment = (extend_local / source_span).floor() as i64;
+    let segment = (extend_local / playthrough).floor() as i64;
     segment.rem_euclid(2) == 0
+}
+
+fn atempo_filter_chain(speed: f64) -> Option<String> {
+    if !(speed.is_finite() && speed > 0.0) || (speed - 1.0).abs() < 0.001 {
+        return None;
+    }
+    let mut remaining = speed.clamp(0.25, 4.0);
+    let mut parts: Vec<String> = Vec::new();
+    while remaining > 2.0 + 1e-9 {
+        parts.push("atempo=2.0".into());
+        remaining /= 2.0;
+    }
+    while remaining < 0.5 - 1e-9 {
+        parts.push("atempo=0.5".into());
+        remaining *= 2.0;
+    }
+    if (remaining - 1.0).abs() >= 0.001 {
+        parts.push(format!("atempo={remaining:.6}"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(","))
+    }
 }
 
 fn collect_audio_segments(
@@ -888,21 +974,24 @@ fn collect_audio_segments(
                     out_sec,
                     delay_ms: ((delay_base + local_start) * 1000.0).round() as u64,
                     reverse_trim,
+                    speed: clip_speed(clip),
                 });
             }
             continue;
         }
 
         let timeline_dur = clip_timeline_duration(clip);
+        let speed = clip_speed(clip);
         let in_sec = clip_in_sec(clip.in_sec);
         let out_sec = clip_trim_out_sec(clip);
-        let source_dur = (out_sec - in_sec).min(timeline_dur);
+        let media_dur = (timeline_dur * speed).min(out_sec - in_sec).max(0.001);
         out.push(AudioSegment {
             path,
             in_sec,
-            out_sec: in_sec + source_dur,
+            out_sec: in_sec + media_dur,
             delay_ms: (delay_base * 1000.0).round() as u64,
             reverse_trim: false,
+            speed,
         });
     }
     Ok(out)
@@ -1079,10 +1168,15 @@ fn render_timeline_file(
                     "trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS",
                     source.in_sec, source.out_sec
                 );
-                let vf = if source.reverse_trim {
-                    format!("{trim},reverse,{frame}")
+                let timed = if (source.speed - 1.0).abs() >= 0.001 {
+                    format!("{trim},setpts=PTS/{:.6}", source.speed)
                 } else {
-                    format!("{trim},{frame}")
+                    trim
+                };
+                let vf = if source.reverse_trim {
+                    format!("{timed},reverse,{frame}")
+                } else {
+                    format!("{timed},{frame}")
                 };
                 args.push(vf);
             }
@@ -1156,10 +1250,13 @@ fn render_timeline_file(
             "[{idx}:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS",
             segment.in_sec, segment.out_sec
         );
+        let tempo = atempo_filter_chain(segment.speed)
+            .map(|c| format!(",{c}"))
+            .unwrap_or_default();
         let chain = if segment.reverse_trim {
-            format!("{trim},areverse,adelay={delay}|{delay}[a{idx}]")
+            format!("{trim}{tempo},areverse,adelay={delay}|{delay}[a{idx}]")
         } else {
-            format!("{trim},adelay={delay}|{delay}[a{idx}]")
+            format!("{trim}{tempo},adelay={delay}|{delay}[a{idx}]")
         };
         filter_parts.push(chain);
         audio_labels.push(format!("[a{idx}]"));
@@ -1242,6 +1339,9 @@ fn run_render(
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create render directory: {e}"))?;
     let filename = format!("{}.mp4", safe_id(render_id));
     let output_path = dir.join(&filename);
+    // Surface progress immediately so the UI doesn't sit on "Starting FFmpeg…"
+    // while reverse/extend prep or the first segment encode runs.
+    emit_progress(app, &paths, project_id, render_id, "prepare", 0, 1);
     let (duration_sec, command_line) = render_timeline_file(
         app,
         &paths,
@@ -1252,13 +1352,38 @@ fn run_render(
         &output_path,
     )?;
 
-    update_render(&paths, project_id, render_id, |render| {
+    match update_render(&paths, project_id, render_id, |render| {
         render.duration_sec = duration_sec;
-        render.command_line = command_line;
+        render.command_line = command_line.clone();
         render.status = "ready".into();
         render.progress = None;
         render.error = None;
-    })
+    }) {
+        Ok(updated) => Ok(updated),
+        Err(_) => {
+            // Entry may have been deleted mid-render; re-insert as ready so the
+            // finished file is not orphaned from the Publisher list.
+            let _guard = manifest_lock()
+                .lock()
+                .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+            let mut manifest = read_manifest(&paths, project_id)?;
+            let render = TimelineRender {
+                id: render_id.into(),
+                path: output_path.display().to_string(),
+                created_at: Utc::now().to_rfc3339(),
+                duration_sec,
+                aspect_ratio: aspect_ratio.into(),
+                clip_count: clips.len() as u32,
+                command_line,
+                status: "ready".into(),
+                progress: None,
+                error: None,
+            };
+            manifest.renders.insert(0, render.clone());
+            write_manifest(&paths, project_id, &manifest)?;
+            Ok(render)
+        }
+    }
 }
 
 fn create_pending_render(
@@ -1309,7 +1434,38 @@ pub async fn publisher_list_renders(project_id: String) -> Result<Vec<TimelineRe
     manifest
         .renders
         .retain(|render| render.status != "ready" || Path::new(&render.path).is_file());
-    if manifest.renders.len() != before {
+    let mut healed = false;
+    // Hot-reload / crash can leave status=rendering with no worker. Only heal
+    // when there is no output AND no segment workspace (active renders have a
+    // `.segments` dir for most of the job; the final mp4 appears only at the end).
+    let now = Utc::now();
+    for render in &mut manifest.renders {
+        if render.status != "rendering" {
+            continue;
+        }
+        if Path::new(&render.path).is_file() {
+            continue;
+        }
+        let segments_dir = Path::new(&render.path).with_extension("segments");
+        if segments_dir.is_dir() {
+            continue;
+        }
+        let Ok(created) = chrono::DateTime::parse_from_rfc3339(&render.created_at) else {
+            continue;
+        };
+        if now
+            .signed_duration_since(created.with_timezone(&Utc))
+            .num_seconds()
+            < 180
+        {
+            continue;
+        }
+        render.status = "failed".into();
+        render.progress = None;
+        render.error = Some("Render was interrupted before it finished.".into());
+        healed = true;
+    }
+    if manifest.renders.len() != before || healed {
         write_manifest(&paths, &project_id, &manifest)?;
     }
     Ok(manifest.renders)
@@ -1380,12 +1536,14 @@ pub async fn publisher_delete_render(project_id: String, render_id: String) -> R
     else {
         return Err("Render not found".into());
     };
-    if manifest.renders[index].status == "rendering" {
-        return Err("Cannot delete a render while FFmpeg is running".into());
-    }
     let render = manifest.renders.remove(index);
     if Path::new(&render.path).is_file() {
         fs::remove_file(&render.path).map_err(|e| format!("Could not delete render file: {e}"))?;
+    }
+    // Segment workspace from mid-render (also covers interrupted jobs).
+    let segments_dir = Path::new(&render.path).with_extension("segments");
+    if segments_dir.is_dir() {
+        let _ = fs::remove_dir_all(&segments_dir);
     }
     write_manifest(&paths, &project_id, &manifest)?;
     Ok(())

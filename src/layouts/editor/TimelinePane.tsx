@@ -28,11 +28,9 @@ import {
 } from "../../project/aspectRatios";
 import {
   isBeatSlideshowMode,
-  type AddAssetGeneration,
   type LyricAlignment,
   type TimelineClip,
 } from "../../project/types";
-import { GeneratedClipBadge } from "./GeneratedClipBadge";
 import {
   formatClipDurationCompact,
   lyricBlockLabel,
@@ -72,6 +70,7 @@ import {
   clipExtendDivitFraction,
   clipIsTimelineExtended,
   clipVideoMinTimelineDurationSec,
+  finalizeVideoResizeEndSec,
   timelineSequenceDuration,
 } from "./timelineCompose";
 import { clipExtendLoopLineFractions, clipExtendPongSegmentFractions, mergeExtendBakeFields } from "./clipExtendBake";
@@ -354,7 +353,6 @@ function MiniClip({
   extendDivitFrac = null,
   extendLoopLineFracs = [],
   extendPongSegments = [],
-  addAssetGeneration,
   resizeEnabled = false,
   resizing = false,
   moveEnabled = true,
@@ -387,7 +385,6 @@ function MiniClip({
   extendDivitFrac?: number | null;
   extendLoopLineFracs?: number[];
   extendPongSegments?: ExtendSegmentRange[];
-  addAssetGeneration?: AddAssetGeneration;
   resizeEnabled?: boolean;
   resizing?: boolean;
   /** False when synced to timeline — clip can be selected but not dragged. */
@@ -408,7 +405,6 @@ function MiniClip({
     (layoutTier !== "sliver" && widthPx >= 28
       ? (label ?? formatClipDuration(safeDuration))
       : null);
-  const showGeneratedBadge = Boolean(addAssetGeneration) && widthPx >= 36;
   const showExtendDivit =
     extendDivitFrac != null &&
     Number.isFinite(extendDivitFrac) &&
@@ -497,13 +493,6 @@ function MiniClip({
         >
           !
         </span>
-      ) : null}
-      {showGeneratedBadge ? (
-        <GeneratedClipBadge
-          generation={addAssetGeneration!}
-          className="editor-timeline-clip-generated"
-          compact={widthPx < 56}
-        />
       ) : null}
       {showExtendDivit ? (
         <>
@@ -1119,17 +1108,22 @@ export function TimelinePane({
       const inSec = Number.isFinite(clip.inSec)
         ? Math.max(0, Number(clip.inSec))
         : 0;
-      const trimSpan = clipVideoMinTimelineDurationSec(clip);
+      const playthrough = clipVideoMinTimelineDurationSec(clip);
+      const sourceTrimSpan =
+        Number.isFinite(clip.outSec) && Number(clip.outSec) > inSec
+          ? Math.max(0.1, Number(clip.outSec) - inSec)
+          : playthrough;
       const minDuration = isPlaceholder
         ? ADD_ASSET_MIN_DURATION_SEC
         : clip.kind === "video"
-          ? trimSpan
+          ? playthrough
           : 0.1;
       const maxDuration = isPlaceholder ? ADD_ASSET_MAX_DURATION_SEC : Infinity;
 
       let endSec = Math.max(clip.startSec + minDuration, pointToStartSec(clientX));
       endSec = Math.min(clip.startSec + maxDuration, endSec);
       if (finalize) {
+        const pointerEndSec = endSec;
         const exclude = new Set([clip.id]);
         const laneClips = clipsRef.current.filter(
           (c) =>
@@ -1145,6 +1139,14 @@ export function TimelinePane({
         );
         endSec = Math.max(clip.startSec + minDuration, endSec);
         endSec = Math.min(clip.startSec + maxDuration, endSec);
+        if (clip.kind === "video" && !isPlaceholder) {
+          endSec = finalizeVideoResizeEndSec({
+            startSec: clip.startSec,
+            pointerEndSec,
+            snappedEndSec: endSec,
+            sourceSpanSec: playthrough,
+          });
+        }
       }
 
       const duration = isPlaceholder
@@ -1167,16 +1169,18 @@ export function TimelinePane({
             };
           }
           const prevDuration = c.endSec - c.startSec;
-          const wasExtended = prevDuration > trimSpan + 0.001;
-          const nowExtended = duration > trimSpan + 0.001;
+          const wasExtended = prevDuration > playthrough + 0.001;
+          const nowExtended = duration > playthrough + 0.001;
           const nextClip = {
             ...c,
             endSec,
             label: formatClipDuration(duration),
-            extendSourceSpanSec: nowExtended ? c.extendSourceSpanSec ?? trimSpan : undefined,
+            extendSourceSpanSec: nowExtended
+              ? c.extendSourceSpanSec ?? sourceTrimSpan
+              : undefined,
             extendPingPong: resolveExtendPingPong(
               duration,
-              trimSpan,
+              playthrough,
               wasExtended,
               c,
             ),
@@ -1899,7 +1903,6 @@ export function TimelinePane({
                         ? addAssetGenerationByClipId?.get(clip.id)?.error
                         : bakeInfoByClipId?.get(clip.id)?.error
                     }
-                    addAssetGeneration={clip.addAssetGeneration}
                     extendDivitFrac={
                       clipIsTimelineExtended(clip)
                         ? clipExtendDivitFraction(clip)

@@ -131,6 +131,7 @@ export async function bakeClipExtend(opts: {
   targetSec: number;
   inSec?: number;
   outSec?: number;
+  speed?: number;
 }): Promise<{ path: string; mediaUrl: string }> {
   const path = await invoke<string>("library_extend_clip", {
     sourcePath: opts.sourcePath,
@@ -138,6 +139,7 @@ export async function bakeClipExtend(opts: {
     targetSec: opts.targetSec,
     inSec: opts.inSec ?? null,
     outSec: opts.outSec ?? null,
+    speed: opts.speed ?? null,
   });
   return { path, mediaUrl: mediaUrlFor(path) };
 }

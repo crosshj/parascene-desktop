@@ -78,6 +78,23 @@ function mediaOrigin(): string {
 }
 
 /**
+ * Parascene is still producing this creation — do not catalog-sync yet.
+ * Matches `creating` and prefixed variants (e.g. `creating_video`).
+ */
+export function isCreatingRemoteStatus(
+  status: string | null | undefined,
+): boolean {
+  const s = (status ?? "").trim().toLowerCase();
+  return s === "creating" || s.startsWith("creating");
+}
+
+function isSyncableRemoteCreation(
+  creation: Pick<CreationUpsert, "status">,
+): boolean {
+  return !isCreatingRemoteStatus(creation.status);
+}
+
+/**
  * Turn an embedded group `source_creations[]` row into a RemoteCreateImage.
  * Group members often only have `file_path` (no top-level `url`).
  */
@@ -156,8 +173,10 @@ export function mapGroupSourceCreations(
     if (!remote) continue;
     const id = String(remote.id);
     if (seen.has(id)) continue;
+    const upsert = mapRemoteCreation(remote);
+    if (!isSyncableRemoteCreation(upsert)) continue;
     seen.add(id);
-    out.push(mapRemoteCreation(remote));
+    out.push(upsert);
   }
   return out;
 }
@@ -335,7 +354,7 @@ async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
     rethrowCatalogError(e);
   }
 
-  return all.map(mapRemoteCreation);
+  return all.map(mapRemoteCreation).filter(isSyncableRemoteCreation);
 }
 
 async function warmAheadPreviews(status?: SyncStatus): Promise<SyncStatus> {
@@ -416,6 +435,7 @@ export async function syncNewestCreationsManifest(opts?: {
       if (page.images.length === 0) break;
 
       const upserts = page.images.map(mapRemoteCreation);
+      // Keep creating ids in the prune window so we do not treat them as deletions.
       remoteRows.push(...upserts);
       const checked = remoteRows.length;
       report(
@@ -424,9 +444,11 @@ export async function syncNewestCreationsManifest(opts?: {
         checked,
       );
 
-      const ids = upserts.map((c) => c.id);
+      // Skip in-flight Parascene creates — ingest waits until they leave creating.
+      const syncable = upserts.filter(isSyncableRemoteCreation);
+      const ids = syncable.map((c) => c.id);
       const existing = new Set(await existingCreationIds(ids));
-      const newRows = upserts.filter((c) => !existing.has(c.id));
+      const newRows = syncable.filter((c) => !existing.has(c.id));
 
       if (newRows.length > 0) {
         report(
@@ -443,8 +465,10 @@ export async function syncNewestCreationsManifest(opts?: {
         );
       }
 
-      // Caught up: every id on this page is already local.
-      const allKnown = upserts.every((c) => existing.has(c.id));
+      // Caught up: every syncable id on this page is already local.
+      // An all-creating page is not "caught up" — keep paging for completed rows.
+      const allKnown =
+        syncable.length > 0 && syncable.every((c) => existing.has(c.id));
       if (allKnown) {
         report(
           "fetch",

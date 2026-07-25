@@ -340,12 +340,15 @@ fn find_vocals_wav(root: &Path) -> Result<PathBuf, String> {
 }
 
 /// Extend a short clip to `target_sec` by looping the trimmed region (optional ping-pong).
+/// When `speed` ≠ 1, the trimmed segment is retimed first so each loop unit matches
+/// wall-clock `source_span / speed`.
 pub fn extend_clip_on_disk(
     source_path: &Path,
     ping_pong: bool,
     target_sec: f64,
     in_sec: Option<f64>,
     out_sec: Option<f64>,
+    speed: Option<f64>,
 ) -> Result<PathBuf, String> {
     if !source_path.is_file() {
         return Err("Source media file not found".into());
@@ -353,6 +356,10 @@ pub fn extend_clip_on_disk(
     if !(target_sec > 0.1) {
         return Err("targetSec must be > 0.1".into());
     }
+    let speed = speed
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| v.clamp(0.25, 4.0))
+        .unwrap_or(1.0);
     let mode = if ping_pong { "pingpong_v4" } else { "loop" };
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
         "FFmpeg is required. Install with: brew install ffmpeg".to_string()
@@ -366,6 +373,7 @@ pub fn extend_clip_on_disk(
         &format!("{target_sec:.3}"),
         &format!("{in_s:.3}"),
         &format!("{:.3}", out_s.unwrap_or(-1.0)),
+        &format!("speed_{speed:.3}"),
     ]);
     let dir = cache_dir("extend")?;
     let dest = dir.join(format!("{key}.mp4"));
@@ -390,8 +398,13 @@ pub fn extend_clip_on_disk(
                 args.push(format!("{:.3}", o - in_s));
             }
         }
+        args.push("-an".into());
+        if (speed - 1.0).abs() >= 0.001 {
+            // setpts=PTS/speed: speed>1 shortens, speed<1 lengthens.
+            args.push("-vf".into());
+            args.push(format!("setpts=PTS/{speed:.6}"));
+        }
         args.extend([
-            "-an".into(),
             "-c:v".into(),
             "libx264".into(),
             "-pix_fmt".into(),
@@ -499,6 +512,7 @@ pub async fn library_extend_clip(
     target_sec: f64,
     in_sec: Option<f64>,
     out_sec: Option<f64>,
+    speed: Option<f64>,
 ) -> Result<String, String> {
     extend_clip_on_disk(
         &PathBuf::from(&source_path),
@@ -506,6 +520,7 @@ pub async fn library_extend_clip(
         target_sec,
         in_sec,
         out_sec,
+        speed,
     )
     .map(|path| path.to_string_lossy().to_string())
 }

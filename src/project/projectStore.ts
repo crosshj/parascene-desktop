@@ -1,6 +1,7 @@
 import {
   clampSensitivity,
   normalizeSlideshowMode,
+  type AddAssetDraft,
   type AddAssetGeneration,
   type AlignedLyricLine,
   type LyricAlignment,
@@ -176,6 +177,11 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     isAddAssetPlaceholder:
       c.isAddAssetPlaceholder === true ? true : undefined,
     timelineLocked: c.timelineLocked === true ? true : undefined,
+    speed: (() => {
+      const s = Number(c.speed);
+      if (!Number.isFinite(s) || Math.abs(s - 1) < 0.001) return undefined;
+      return Math.min(4, Math.max(0.25, s));
+    })(),
     extendPingPong: c.extendPingPong === true ? true : undefined,
     extendSourceSpanSec:
       Number.isFinite(Number(c.extendSourceSpanSec)) &&
@@ -195,8 +201,36 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
       Number(c.extendBakeCoverSec) > 0
         ? Math.max(0.1, Number(c.extendBakeCoverSec))
         : undefined,
+    addAssetDraft: normalizeAddAssetDraft(c.addAssetDraft),
     addAssetGeneration: normalizeAddAssetGeneration(c.addAssetGeneration),
   };
+}
+
+function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const prompt =
+    typeof row.prompt === "string" ? row.prompt : undefined;
+  const audioMode =
+    row.audioMode === "full_mix"
+      ? "full_mix"
+      : row.audioMode === "vocals"
+        ? "vocals"
+        : undefined;
+  const continuityMode =
+    row.continuityMode === "first_last"
+      ? "first_last"
+      : row.continuityMode === "start_frame"
+        ? "start_frame"
+        : undefined;
+  if (
+    prompt === undefined &&
+    audioMode === undefined &&
+    continuityMode === undefined
+  ) {
+    return undefined;
+  }
+  return { prompt, audioMode, continuityMode };
 }
 
 function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undefined {
@@ -209,10 +243,23 @@ function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undef
   if (typeof row.creationId !== "string" || !row.creationId.trim()) {
     return undefined;
   }
-  const audioMode = row.audioMode === "full_mix" ? "full_mix" : "vocals";
+  const mode: AddAssetGeneration["mode"] =
+    row.mode === "first_last" ? "first_last" : "start_frame";
+  const audioMode =
+    row.audioMode === "full_mix"
+      ? "full_mix"
+      : row.audioMode === "vocals"
+        ? "vocals"
+        : mode === "first_last"
+          ? undefined
+          : "vocals";
   const lyricsText =
     typeof row.lyricsText === "string" && row.lyricsText.trim()
       ? row.lyricsText.trim()
+      : undefined;
+  const model =
+    typeof row.model === "string" && row.model.trim()
+      ? row.model.trim()
       : undefined;
   return {
     prompt: row.prompt,
@@ -220,6 +267,8 @@ function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undef
     lyricsText,
     generatedAt: row.generatedAt.trim(),
     creationId: row.creationId.trim(),
+    mode,
+    model,
   };
 }
 

@@ -104,6 +104,11 @@ export type TimelineClip = {
    * synced. Audio clips are always locked; image clips are never locked.
    */
   timelineLocked?: boolean;
+  /**
+   * Playback rate for video (default 1). Timeline playthrough length is
+   * (out−in)/speed; duration beyond that loops or ping-pongs.
+   */
+  speed?: number;
   /** When timeline duration exceeds source trim, ping-pong the extension (else loop). */
   extendPingPong?: boolean;
   /** Source trim span captured when the clip was first extended on the timeline. */
@@ -114,17 +119,33 @@ export type TimelineClip = {
   extendBakePath?: string | null;
   /** Timeline seconds covered by the cached repeat-unit bake on disk. */
   extendBakeCoverSec?: number;
+  /** In-progress AI fill form settings for a placeholder (prompt, modes). */
+  addAssetDraft?: AddAssetDraft;
   /** Metadata when this clip was produced by add-asset A2V generation. */
   addAssetGeneration?: AddAssetGeneration;
 };
 
+/** Draft form state for an unfilled add-asset placeholder. */
+export type AddAssetDraft = {
+  prompt?: string;
+  audioMode?: "vocals" | "full_mix";
+  continuityMode?: AddAssetGenerationMode;
+};
+
 /** Persisted provenance for add-asset generated timeline clips. */
+export type AddAssetGenerationMode = "start_frame" | "first_last";
+
 export type AddAssetGeneration = {
   prompt: string;
-  audioMode: "vocals" | "full_mix";
+  /** Present for audio-driven (start_frame) generations. */
+  audioMode?: "vocals" | "full_mix";
   lyricsText?: string;
   generatedAt: string;
   creationId: string;
+  /** Continuity path used for this generation. Defaults to start_frame when omitted. */
+  mode?: AddAssetGenerationMode;
+  /** Model id passed to Parascene create (e.g. ltx_a2v, wan_i2v). */
+  model?: string;
 };
 
 export type HookSuggestion = {

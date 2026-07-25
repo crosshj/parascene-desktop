@@ -213,6 +213,8 @@ export type StagedClipDraft = {
   /** Placeholder clip staged from the add-asset slot (no library asset yet). */
   isAddAssetPlaceholder?: boolean;
   timelineLocked?: boolean;
+  /** Playback rate for video (default 1). Omitted / 1 = realtime. */
+  speed?: number;
   /** Timeline placement duration for video (may exceed source trim when extended). */
   timelineDurationSec?: number;
   /** Ping-pong the extended tail instead of looping. */
@@ -354,33 +356,47 @@ export function stagedClipSourceSpan(draft: StagedClipDraft): number {
   return Math.max(0.1, draft.outSec - draft.inSec);
 }
 
+/** Clamp video playback rate for staging (default 1). */
+export function stagedClipSpeed(draft: { speed?: number }): number {
+  const s = Number(draft.speed);
+  if (!Number.isFinite(s) || s <= 0) return 1;
+  return Math.min(4, Math.max(0.25, s));
+}
+
+/** Wall-clock length of one source playthrough at draft speed. */
+export function stagedClipPlaythroughUnit(draft: StagedClipDraft): number {
+  return Math.max(0.1, stagedClipSourceSpan(draft) / stagedClipSpeed(draft));
+}
+
 /** Timeline duration shown in staging / applied to endSec for video clips. */
 export function stagedClipTimelineDuration(draft: StagedClipDraft): number {
-  const sourceSpan = stagedClipSourceSpan(draft);
   if (draft.kind === "video") {
     const timeline = draft.timelineDurationSec;
     if (timeline != null && Number.isFinite(timeline)) {
-      return Math.max(sourceSpan, timeline);
+      // Duration is independent of speed; playthrough only affects extend/ripples.
+      return Math.max(0.1, timeline);
     }
-    return sourceSpan;
+    return stagedClipPlaythroughUnit(draft);
   }
   return Math.max(0.1, stagedClipDuration(draft));
 }
 
 export function stagedClipTimelineExtended(draft: StagedClipDraft): boolean {
   if (draft.kind !== "video") return false;
-  return stagedClipTimelineDuration(draft) > stagedClipSourceSpan(draft) + 0.001;
+  return (
+    stagedClipTimelineDuration(draft) > stagedClipPlaythroughUnit(draft) + 0.001
+  );
 }
 
 /** Ping-pong vs loop for an extended video clip (defaults to ping-pong on first extend). */
 export function resolveExtendPingPong(
   timelineDur: number,
-  sourceSpan: number,
+  playthroughUnit: number,
   wasExtended: boolean,
   clip: { extendPingPong?: boolean },
   draftPingPong?: boolean,
 ): boolean | undefined {
-  if (timelineDur <= sourceSpan + 0.001) return undefined;
+  if (timelineDur <= playthroughUnit + 0.001) return undefined;
   if (draftPingPong === true) return true;
   if (draftPingPong === false) return undefined;
   if (!wasExtended) return true;
@@ -409,6 +425,7 @@ export function applyDraftToTimelineClip(
     bakePath?: string | null;
     isAddAssetPlaceholder?: boolean;
     timelineLocked?: boolean;
+    speed?: number;
     extendPingPong?: boolean;
     extendSourceSpanSec?: number;
     extendBakeKey?: string | null;
@@ -419,22 +436,28 @@ export function applyDraftToTimelineClip(
 ): typeof clip {
   const prevInSec = Number.isFinite(clip.inSec) ? Math.max(0, Number(clip.inSec)) : 0;
   const sourceSpan = stagedClipSourceSpan(draft);
+  // Sync freezes the Speed control in UI but keeps the stored rate.
+  const speed = stagedClipSpeed(draft);
+  const playthrough = Math.max(0.1, sourceSpan / speed);
   const prevTimelineDur = Math.max(0.1, clip.endSec - clip.startSec);
   const prevOutSec = Number.isFinite(clip.outSec)
     ? Number(clip.outSec)
     : prevInSec + prevTimelineDur;
   const prevSourceSpan = Math.max(0.1, prevOutSec - prevInSec);
-  const wasExtended = prevTimelineDur > prevSourceSpan + 0.001;
+  const prevSpeed = stagedClipSpeed({ speed: clip.speed });
+  const prevPlaythrough = Math.max(0.1, prevSourceSpan / prevSpeed);
+  const wasExtended = prevTimelineDur > prevPlaythrough + 0.001;
 
   let timelineDur: number;
   if (draft.kind === "video") {
     const explicit = draft.timelineDurationSec;
     if (explicit != null && Number.isFinite(explicit)) {
-      timelineDur = Math.max(sourceSpan, explicit);
+      // Do not clamp up to playthrough — speed changes must not move endSec.
+      timelineDur = Math.max(0.1, explicit);
     } else if (wasExtended) {
-      timelineDur = Math.max(sourceSpan, prevTimelineDur);
+      timelineDur = Math.max(0.1, prevTimelineDur);
     } else {
-      timelineDur = sourceSpan;
+      timelineDur = playthrough;
     }
   } else {
     timelineDur = Math.max(0.1, stagedClipDuration(draft));
@@ -449,11 +472,10 @@ export function applyDraftToTimelineClip(
     (!slideshowRecipesEqual(clip.slideshow, draft.slideshow) ||
       normalizeFraming(clip.framing) !== draft.framing);
 
-  const locked = clip.timelineLocked === true;
   const inDelta = draft.inSec - prevInSec;
   const outDelta = draft.outSec - prevOutSec;
   const inOnly =
-    locked &&
+    clip.timelineLocked === true &&
     Math.abs(inDelta) > 0.0001 &&
     Math.abs(outDelta) <= 0.0001;
 
@@ -495,23 +517,26 @@ export function applyDraftToTimelineClip(
             : draft.timelineLocked === false
               ? undefined
               : clip.timelineLocked,
+    speed:
+      draft.kind === "video" && Math.abs(speed - 1) >= 0.001 ? speed : undefined,
     extendPingPong:
       draft.kind === "video"
         ? resolveExtendPingPong(
             timelineDur,
-            sourceSpan,
+            playthrough,
             wasExtended,
             clip,
             draft.extendPingPong,
           )
         : undefined,
     extendSourceSpanSec:
-      draft.kind === "video" && timelineDur > sourceSpan + 0.001
+      draft.kind === "video" && timelineDur > playthrough + 0.001
         ? (clip.extendSourceSpanSec ?? sourceSpan)
         : draft.kind === "video"
           ? undefined
           : clip.extendSourceSpanSec,
   } as typeof clip & {
+    speed?: number;
     extendPingPong?: boolean;
     extendSourceSpanSec?: number;
   };
@@ -604,6 +629,7 @@ export function timelineClipToStagedDraft(clip: {
   bakePath?: string | null;
   isAddAssetPlaceholder?: boolean;
   timelineLocked?: boolean;
+  speed?: number;
   extendPingPong?: boolean;
   extendBakeKey?: string | null;
   extendBakePath?: string | null;
@@ -682,6 +708,10 @@ export function timelineClipToStagedDraft(clip: {
     timelineLocked: clip.timelineLocked === true ? true : undefined,
     timelineDurationSec:
       kind === "video" ? Math.max(0.1, clip.endSec - clip.startSec) : undefined,
+    speed:
+      kind === "video" && Math.abs(stagedClipSpeed({ speed: clip.speed }) - 1) >= 0.001
+        ? stagedClipSpeed({ speed: clip.speed })
+        : undefined,
     extendPingPong:
       kind === "video" && clip.extendPingPong === true ? true : undefined,
     extendBakeKey:
@@ -743,6 +773,12 @@ export function parseStagedClipPayload(raw: string): StagedClipDraft | null {
         kind === "video" && Number.isFinite(Number(d.timelineDurationSec))
           ? Math.max(0.1, Number(d.timelineDurationSec))
           : undefined,
+      speed: (() => {
+        if (kind !== "video") return undefined;
+        const s = Number(d.speed);
+        if (!Number.isFinite(s) || Math.abs(s - 1) < 0.001) return undefined;
+        return Math.min(4, Math.max(0.25, s));
+      })(),
       extendPingPong: d.extendPingPong === true ? true : undefined,
       extendBakeKey: typeof d.extendBakeKey === "string" ? d.extendBakeKey : null,
       extendBakePath:

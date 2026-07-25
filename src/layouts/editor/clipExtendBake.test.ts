@@ -36,6 +36,80 @@ describe("clipExtendBake", () => {
     expect(computeExtendBakeTargetSec(extended)).toBe(18);
   });
 
+  it("bakes enough 1× material to cover timeline at speed", () => {
+    const fast = clip({
+      id: "v1",
+      startSec: 0,
+      endSec: 9.5,
+      assetId: "a1",
+      inSec: 0,
+      outSec: 9,
+      extendSourceSpanSec: 9,
+      speed: 2,
+    });
+    // mediaNeeded = 19 → ceil(19/9)*9 = 27
+    expect(computeExtendBakeTargetSec(fast)).toBe(27);
+  });
+
+  it("reuses bake when slowing down if cover still fits", () => {
+    const base = clip({
+      id: "v1",
+      startSec: 0,
+      endSec: 10,
+      assetId: "a1",
+      inSec: 0,
+      outSec: 5,
+      extendSourceSpanSec: 5,
+      speed: 2,
+    });
+    const key = computeExtendBakeKey(base);
+    // At 2×, needed cover = 20; bake has 20.
+    const baked = {
+      ...base,
+      extendBakeKey: key ?? undefined,
+      extendBakePath: "/tmp/extend.mp4",
+      extendBakeCoverSec: 20,
+    };
+    expect(clipHasFreshExtendBake(baked)).toBe(true);
+    // Slow to 1×: needed = 10 ≤ 20 → still fresh, same recipe key.
+    const slower = { ...baked, speed: 1 };
+    expect(computeExtendBakeKey(slower)).toBe(key);
+    expect(clipHasFreshExtendBake(slower)).toBe(true);
+    expect(clipNeedsExtendBake(slower)).toBe(false);
+  });
+
+  it("needs rebake when speeding up past cached cover", () => {
+    const baked = clip({
+      id: "v1",
+      startSec: 0,
+      endSec: 10,
+      assetId: "a1",
+      inSec: 0,
+      outSec: 5,
+      extendSourceSpanSec: 5,
+      speed: 1,
+      extendBakeKey:
+        computeExtendBakeKey(
+          clip({
+            id: "v1",
+            startSec: 0,
+            endSec: 10,
+            assetId: "a1",
+            inSec: 0,
+            outSec: 5,
+            extendSourceSpanSec: 5,
+          }),
+        ) ?? undefined,
+      extendBakePath: "/tmp/extend.mp4",
+      extendBakeCoverSec: 10,
+    });
+    expect(clipHasFreshExtendBake(baked)).toBe(true);
+    const faster = { ...baked, speed: 2 };
+    // needed = 20 > cover 10
+    expect(clipHasFreshExtendBake(faster)).toBe(false);
+    expect(clipNeedsExtendBake(faster)).toBe(true);
+  });
+
   it("detects when an extended clip needs a bake", () => {
     const extended = clip({
       id: "v1",

@@ -467,6 +467,38 @@ describe("stagedClip", () => {
     expect(next.label).toBe("8.0s");
   });
 
+  it("keeps timeline ends fixed when speed changes and preserves speed under Sync", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "v1",
+      label: "Take",
+      kind: "video",
+      sourceDurationSec: 10,
+    });
+    draft.inSec = 0;
+    draft.outSec = 4;
+    draft.timelineDurationSec = 8;
+    draft.speed = 2;
+    draft.timelineLocked = true;
+    const clip = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "8.0s",
+        startSec: 2,
+        endSec: 10,
+        assetId: "v1",
+        kind: "video",
+        inSec: 0,
+        outSec: 4,
+        timelineLocked: true,
+      },
+      draft,
+    );
+    expect(clip.startSec).toBe(2);
+    expect(clip.endSec).toBe(10);
+    expect(clip.speed).toBe(2);
+    expect(clip.timelineLocked).toBe(true);
+  });
+
   it("defaults ping-pong when a video clip first enters extend mode", () => {
     const draft = defaultStagedClipDraft({
       assetId: "v1",
@@ -646,7 +678,7 @@ describe("stagedClip", () => {
       inSec: 0,
       outSec: 3,
       extendSourceSpanSec: 3,
-      extendBakeKey: '{"v":5,"assetId":"v1","inSec":0,"outSec":3,"pingPong":false,"reverse":false}',
+      extendBakeKey: '{"v":7,"assetId":"v1","inSec":0,"outSec":3,"pingPong":false,"reverse":false}',
       extendBakePath: "/tmp/extend.mp4",
       extendBakeCoverSec: 6,
     };
@@ -669,7 +701,7 @@ describe("stagedClip", () => {
       outSec: 3,
       extendSourceSpanSec: 3,
       extendPingPong: true,
-      extendBakeKey: '{"v":5,"assetId":"v1","inSec":0,"outSec":3,"pingPong":true,"reverse":false}',
+      extendBakeKey: '{"v":7,"assetId":"v1","inSec":0,"outSec":3,"pingPong":true,"reverse":false}',
       extendBakePath: "/tmp/extend-ping.mp4",
       extendBakeCoverSec: 6,
     };
@@ -692,7 +724,7 @@ describe("stagedClip", () => {
       inSec: 0,
       outSec: 3,
       extendSourceSpanSec: 3,
-      extendBakeKey: '{"v":5,"assetId":"v1","inSec":0,"outSec":3,"pingPong":false,"reverse":false}',
+      extendBakeKey: '{"v":7,"assetId":"v1","inSec":0,"outSec":3,"pingPong":false,"reverse":false}',
       extendBakePath: "/tmp/extend.mp4",
       extendBakeCoverSec: 6,
     };

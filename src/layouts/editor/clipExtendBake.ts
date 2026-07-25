@@ -4,6 +4,8 @@ import {
   clipInSec,
   clipIsTimelineExtended,
   clipOutSec,
+  clipPlaythroughUnitSec,
+  clipSpeed,
   clipTimelineDurationSec,
 } from "./timelineCompose";
 
@@ -13,7 +15,9 @@ function roundBakeSec(sec: number): number {
 
 /**
  * Recipe fingerprint for an extend bake (trim, ping-pong, reverse, asset).
- * Stored on the clip as `extendBakeKey` after a successful bake.
+ * Speed is intentionally omitted: bakes are 1× loop/pong material; playback
+ * maps `localSec * speed` into the bake so slowing down reuses cover and
+ * speeding up only needs a rebake when cover is too short.
  */
 export function computeExtendBakeKey(clip: TimelineClip): string | null {
   if (!clipIsTimelineExtended(clip)) return null;
@@ -23,7 +27,7 @@ export function computeExtendBakeKey(clip: TimelineClip): string | null {
   const outSec = clipOutSec(clip);
   if (!(outSec > inSec)) return null;
   return JSON.stringify({
-    v: 5,
+    v: 7,
     assetId,
     inSec: roundBakeSec(inSec),
     outSec: roundBakeSec(outSec),
@@ -33,19 +37,27 @@ export function computeExtendBakeKey(clip: TimelineClip): string | null {
 }
 
 /**
- * Disk cache length: the smallest whole number of source repeat units that
- * covers the current timeline placement.
+ * Disk cache length in 1× media time: enough loop/pong material so that
+ * playing at the clip's speed covers the timeline placement
+ * (`cover / speed >= timelineDuration`).
  */
 export function computeExtendBakeTargetSec(clip: TimelineClip): number | null {
   if (!clipIsTimelineExtended(clip)) return null;
   const sourceSpan = clipExtendSourceSpanSec(clip);
   if (!sourceSpan) return null;
   const timelineDur = clipTimelineDurationSec(clip);
-  const spans = Math.max(1, Math.ceil(timelineDur / sourceSpan));
-  return roundBakeSec(spans * sourceSpan);
+  const speed = clipSpeed(clip);
+  const mediaNeeded = timelineDur * speed;
+  const spans = Math.max(1, Math.ceil(mediaNeeded / sourceSpan - 1e-9));
+  return Math.round(spans * sourceSpan * 1000) / 1000;
 }
 
-/** Current clip settings match the baked recipe and cached cover fits the timeline. */
+/** 1× bake seconds that must be present to cover the timeline at current speed. */
+export function clipExtendBakeCoverNeededSec(clip: TimelineClip): number {
+  return Math.round(clipTimelineDurationSec(clip) * clipSpeed(clip) * 1000) / 1000;
+}
+
+/** Current clip settings match the baked recipe and cached cover fits at speed. */
 export function clipHasFreshExtendBake(clip: TimelineClip): boolean {
   if (!clipIsTimelineExtended(clip)) return false;
   if (clip.reverse) return false;
@@ -54,7 +66,7 @@ export function clipHasFreshExtendBake(clip: TimelineClip): boolean {
   if (clip.extendBakeKey !== key) return false;
   const cover = clip.extendBakeCoverSec;
   if (!(cover != null && Number.isFinite(cover) && cover > 0)) return false;
-  return clipTimelineDurationSec(clip) <= cover + 0.001;
+  return cover + 0.001 >= clipExtendBakeCoverNeededSec(clip);
 }
 
 /** Extended clip needs a bake (or rebake) before monitor/export can use a cached extend file. */
@@ -67,11 +79,11 @@ export function clipNeedsExtendBake(clip: TimelineClip): boolean {
 /** 0..1 positions of repeat boundaries after the source-trim divit. */
 export function clipExtendLoopLineFractions(clip: TimelineClip): number[] {
   if (!clipIsTimelineExtended(clip)) return [];
-  const sourceSpan = clipExtendSourceSpanSec(clip);
-  if (!sourceSpan) return [];
+  const playthrough = clipPlaythroughUnitSec(clip);
+  if (!(playthrough > 0)) return [];
   const timelineDur = clipTimelineDurationSec(clip);
   const fracs: number[] = [];
-  for (let t = 2 * sourceSpan; t < timelineDur - 1e-6; t += sourceSpan) {
+  for (let t = 2 * playthrough; t < timelineDur - 1e-6; t += playthrough) {
     fracs.push(t / timelineDur);
   }
   return fracs;
@@ -84,14 +96,14 @@ export function clipExtendPongSegmentFractions(
   clip: TimelineClip,
 ): ExtendSegmentRange[] {
   if (!clipIsTimelineExtended(clip) || clip.extendPingPong !== true) return [];
-  const sourceSpan = clipExtendSourceSpanSec(clip);
-  if (!sourceSpan) return [];
+  const playthrough = clipPlaythroughUnitSec(clip);
+  if (!(playthrough > 0)) return [];
   const timelineDur = clipTimelineDurationSec(clip);
   const segments: ExtendSegmentRange[] = [];
   for (let i = 0; ; i += 2) {
-    const start = sourceSpan + i * sourceSpan;
+    const start = playthrough + i * playthrough;
     if (start >= timelineDur - 1e-6) break;
-    const end = Math.min(sourceSpan + (i + 1) * sourceSpan, timelineDur);
+    const end = Math.min(playthrough + (i + 1) * playthrough, timelineDur);
     if (end <= start + 1e-6) break;
     segments.push({ left: start / timelineDur, width: (end - start) / timelineDur });
   }

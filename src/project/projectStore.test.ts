@@ -191,6 +191,7 @@ describe("projectStore", () => {
       endSec: 9,
       assetId: "v1",
       timelineLocked: true,
+      speed: 1.5,
       addAssetGeneration: {
         prompt: "Wave at camera",
         audioMode: "full_mix",
@@ -200,12 +201,35 @@ describe("projectStore", () => {
       },
     });
     expect(clip?.timelineLocked).toBe(true);
+    expect(clip?.speed).toBe(1.5);
     expect(clip?.addAssetGeneration).toEqual({
       prompt: "Wave at camera",
       audioMode: "full_mix",
       lyricsText: "Hello world",
       generatedAt: "2026-07-22T12:00:00.000Z",
       creationId: "gen-99",
+      mode: "start_frame",
+      model: undefined,
+    });
+  });
+
+  it("round-trips addAssetDraft on placeholder clips", () => {
+    const clip = normalizeTimelineClip({
+      id: "ph-1",
+      label: "0:09",
+      startSec: 10,
+      endSec: 19,
+      isAddAssetPlaceholder: true,
+      addAssetDraft: {
+        prompt: "Pasted bridge prompt",
+        audioMode: "vocals",
+        continuityMode: "first_last",
+      },
+    });
+    expect(clip?.addAssetDraft).toEqual({
+      prompt: "Pasted bridge prompt",
+      audioMode: "vocals",
+      continuityMode: "first_last",
     });
   });
 

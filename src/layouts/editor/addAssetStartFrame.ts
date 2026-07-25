@@ -46,6 +46,11 @@ export function lastFrameSourceSec(clip: TimelineClip): number {
   return clipVisibleSourceSec(clip, endTimelineSec);
 }
 
+/** Source media time of the first visible frame in a timeline clip. */
+export function firstFrameSourceSec(clip: TimelineClip): number {
+  return clipVisibleSourceSec(clip, clip.startSec);
+}
+
 function isVisualTimelineClip(clip: TimelineClip): boolean {
   if (clip.isAddAssetPlaceholder) return false;
   if (clip.lane === "audio" || clip.kind === "audio") return false;
@@ -76,6 +81,29 @@ export function visualLayerBeforePlaceholder(
 }
 
 /**
+ * Visual layer on the timeline immediately after a placeholder ends.
+ * Uses the same composition rules as the program monitor.
+ */
+export function visualLayerAfterPlaceholder(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+): { clip: TimelineClip; sourceSec: number } | null {
+  const cutSec = placeholder.endSec;
+  for (const epsilon of [0.001, 0.01, 0.05, 0.1]) {
+    const t = cutSec + epsilon;
+    const { visual } = resolveTimelineFrame(timeline, t);
+    if (!visual?.clip.assetId?.trim()) continue;
+    if (visual.clip.isAddAssetPlaceholder) continue;
+    if (visual.clip.id === placeholder.id) continue;
+    return {
+      clip: visual.clip,
+      sourceSec: firstFrameSourceSec(visual.clip),
+    };
+  }
+  return null;
+}
+
+/**
  * Video clip on V1 immediately before `beforeSec` (smallest gap, then latest end).
  */
 export function priorVideoClipBefore(
@@ -100,6 +128,38 @@ export function priorVideoClipBefore(
     ) {
       bestGap = gap;
       bestEnd = endSec;
+      best = clip;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Video clip on V1 immediately after `afterSec` (smallest gap, then earliest start).
+ */
+export function nextVideoClipAfter(
+  timeline: readonly TimelineClip[],
+  afterSec: number,
+  excludeClipId?: string,
+): TimelineClip | null {
+  let best: TimelineClip | null = null;
+  let bestGap = Infinity;
+  let bestStart = Infinity;
+
+  for (const clip of timeline) {
+    if (excludeClipId && clip.id === excludeClipId) continue;
+    if (!isVisualTimelineClip(clip)) continue;
+    if (clip.startSec < afterSec - 0.001) continue;
+
+    const gap = clip.startSec - afterSec;
+    const startSec = clip.startSec;
+    if (
+      gap < bestGap - 0.0001 ||
+      (Math.abs(gap - bestGap) < 0.0001 && startSec < bestStart - 0.0001)
+    ) {
+      bestGap = gap;
+      bestStart = startSec;
       best = clip;
     }
   }
@@ -184,18 +244,42 @@ function isImagePriorClip(
   return creation?.mediaType === "image";
 }
 
-function framingNote(framing: StagedClipFraming, fromImage: boolean): string {
-  const source = fromImage ? "image" : "last frame";
+type FrameRole = "start" | "end";
+
+function framingNote(
+  framing: StagedClipFraming,
+  fromImage: boolean,
+  role: FrameRole,
+): string {
+  const neighbor = role === "start" ? "previous" : "next";
+  const source =
+    fromImage ? "image" : role === "start" ? "last frame" : "first frame";
   const label =
     framing === "fill" ? "Fill" : framing === "stretch" ? "Stretch" : "Fit";
-  return `The start frame is the previous clip’s ${source} with ${label} framing.`;
+  const which = role === "start" ? "start" : "end";
+  return `The ${which} frame is the ${neighbor} clip’s ${source} with ${label} framing.`;
 }
 
-async function applyPriorFraming(opts: {
+function framingFallbackNote(
+  fromImage: boolean,
+  role: FrameRole,
+): string {
+  if (role === "start") {
+    return fromImage
+      ? "The start frame is the image from the previous clip."
+      : "The start frame is the last frame of the previous video clip.";
+  }
+  return fromImage
+    ? "The end frame is the image from the next clip."
+    : "The end frame is the first frame of the next video clip.";
+}
+
+async function applyNeighborFraming(opts: {
   sourcePath: string;
   framing: StagedClipFraming;
   aspectRatio: string;
   fromImage: boolean;
+  role: FrameRole;
   frameTimeSec: number | null;
   fallbackPreviewUrl?: string | null;
 }): Promise<StartFramePreview> {
@@ -207,7 +291,7 @@ async function applyPriorFraming(opts: {
     });
     return {
       previewUrl: framed.mediaUrl,
-      note: framingNote(opts.framing, opts.fromImage),
+      note: framingNote(opts.framing, opts.fromImage, opts.role),
       framePath: framed.path,
       frameTimeSec: opts.frameTimeSec,
       framing: opts.framing,
@@ -215,9 +299,7 @@ async function applyPriorFraming(opts: {
   } catch {
     return {
       previewUrl: opts.fallbackPreviewUrl ?? null,
-      note: opts.fromImage
-        ? "The start frame is the image from the previous clip."
-        : "The start frame is the last frame of the previous video clip.",
+      note: framingFallbackNote(opts.fromImage, opts.role),
       framePath: opts.sourcePath,
       frameTimeSec: opts.frameTimeSec,
       framing: opts.framing,
@@ -225,45 +307,35 @@ async function applyPriorFraming(opts: {
   }
 }
 
-export async function resolveAddAssetStartFrame(
-  timeline: readonly TimelineClip[],
-  placeholder: TimelineClip,
-  aspectRatio: string = "16:9",
-): Promise<StartFramePreview> {
-  const layer = visualLayerBeforePlaceholder(timeline, placeholder);
-  const prior = layer?.clip ?? priorVideoClipBefore(
-    timeline,
-    placeholder.startSec,
-    placeholder.id,
-  );
-  if (!prior) {
-    return {
-      previewUrl: null,
-      note: "No previous clip on the timeline.",
-      framePath: null,
-      frameTimeSec: null,
-    };
-  }
-
-  const framing = normalizeFraming(prior.framing);
-  const assetId = prior.assetId!.trim();
+async function resolveFrameFromNeighborClip(opts: {
+  neighbor: TimelineClip;
+  frameTimeSec: number | null;
+  aspectRatio: string;
+  role: FrameRole;
+  missingLocalNote: string;
+  extractFailedNote: string;
+}): Promise<StartFramePreview> {
+  const { neighbor, aspectRatio, role } = opts;
+  const framing = normalizeFraming(neighbor.framing);
+  const assetId = neighbor.assetId!.trim();
   const [creation] = await getCreations([assetId]);
   let sourcePath = creation?.localPath?.trim() || null;
   if (!sourcePath) {
     return {
       previewUrl: null,
-      note: "Previous clip is not available locally yet.",
+      note: opts.missingLocalNote,
       framePath: null,
       frameTimeSec: null,
     };
   }
 
-  if (creation && isImagePriorClip(prior, creation)) {
-    return applyPriorFraming({
+  if (creation && isImagePriorClip(neighbor, creation)) {
+    return applyNeighborFraming({
       sourcePath,
       framing,
       aspectRatio,
       fromImage: true,
+      role,
       frameTimeSec: null,
       fallbackPreviewUrl:
         creationDetailUrl(creation) ?? creationPreviewUrl(creation),
@@ -271,9 +343,12 @@ export async function resolveAddAssetStartFrame(
   }
 
   const frameTimeSec =
-    layer?.sourceSec ?? lastFrameSourceSec(prior);
-  const reverse = Boolean(prior.reverse);
-  const kind = prior.kind ?? "video";
+    opts.frameTimeSec ??
+    (role === "start"
+      ? lastFrameSourceSec(neighbor)
+      : firstFrameSourceSec(neighbor));
+  const reverse = Boolean(neighbor.reverse);
+  const kind = neighbor.kind ?? "video";
 
   if (reverse && (kind === "video" || kind === "slideshow")) {
     try {
@@ -298,11 +373,12 @@ export async function resolveAddAssetStartFrame(
       sourcePath,
       timeSec: frameTimeSec,
     });
-    return applyPriorFraming({
+    return applyNeighborFraming({
       sourcePath: frame.path,
       framing,
       aspectRatio,
       fromImage: false,
+      role,
       frameTimeSec,
       fallbackPreviewUrl: frame.mediaUrl ?? previewUrl,
     });
@@ -310,13 +386,98 @@ export async function resolveAddAssetStartFrame(
     return {
       previewUrl,
       note: previewUrl
-        ? "The start frame is the last frame of the previous video clip."
-        : "Could not extract the last frame from the previous clip.",
+        ? framingFallbackNote(false, role)
+        : opts.extractFailedNote,
       framePath: null,
       frameTimeSec: previewUrl ? frameTimeSec : null,
       framing,
     };
   }
+}
+
+export async function resolveAddAssetStartFrame(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
+): Promise<StartFramePreview> {
+  const layer = visualLayerBeforePlaceholder(timeline, placeholder);
+  const prior = layer?.clip ?? priorVideoClipBefore(
+    timeline,
+    placeholder.startSec,
+    placeholder.id,
+  );
+  if (!prior) {
+    return {
+      previewUrl: null,
+      note: "No previous clip on the timeline.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+
+  return resolveFrameFromNeighborClip({
+    neighbor: prior,
+    frameTimeSec: layer?.sourceSec ?? null,
+    aspectRatio,
+    role: "start",
+    missingLocalNote: "Previous clip is not available locally yet.",
+    extractFailedNote: "Could not extract the last frame from the previous clip.",
+  });
+}
+
+export async function resolveAddAssetEndFrame(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
+): Promise<StartFramePreview> {
+  const durationSec = addAssetClipDurationSec(placeholder);
+  const placeholderSpan = {
+    ...placeholder,
+    endSec: placeholder.startSec + durationSec,
+  };
+  const layer = visualLayerAfterPlaceholder(timeline, placeholderSpan);
+  const next =
+    layer?.clip ??
+    nextVideoClipAfter(timeline, placeholderSpan.endSec, placeholder.id);
+  if (!next) {
+    return {
+      previewUrl: null,
+      note: "No next clip on the timeline.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+
+  return resolveFrameFromNeighborClip({
+    neighbor: next,
+    frameTimeSec: layer?.sourceSec ?? null,
+    aspectRatio,
+    role: "end",
+    missingLocalNote: "Next clip is not available locally yet.",
+    extractFailedNote: "Could not extract the first frame from the next clip.",
+  });
+}
+
+export type BridgeFrames = {
+  first: StartFramePreview;
+  last: StartFramePreview;
+};
+
+/**
+ * First = last frame of prior clip; last = first frame of next clip.
+ * Returns null unless both frames have a usable local path.
+ */
+export async function resolveAddAssetBridgeFrames(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
+): Promise<BridgeFrames | null> {
+  const [first, last] = await Promise.all([
+    resolveAddAssetStartFrame(timeline, placeholder, aspectRatio),
+    resolveAddAssetEndFrame(timeline, placeholder, aspectRatio),
+  ]);
+  if (!first.framePath?.trim() || !last.framePath?.trim()) return null;
+  return { first, last };
 }
 
 export function clipSongTimeRangeFromTimeline(

@@ -1,22 +1,29 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
-import type { LyricAlignment, TimelineClip } from "../../project/types";
+import type {
+  AddAssetDraft,
+  LyricAlignment,
+  TimelineClip,
+} from "../../project/types";
 import {
+  PROJECT_ASPECT_OPTIONS,
   projectAspectCss,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
 import {
-  ADD_ASSET_NO_LYRICS_AUDIO_NOTE,
   addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
   resolveAddAssetAudioMode,
   type AddAssetAudioMode,
+  type AddAssetContinuityMode,
   type AddAssetGenerationSession,
 } from "./addAssetGenerate";
 import { resolveLyricsForTimeRange, matchingLyricAlignment } from "./addAssetLyrics";
 import {
+  resolveAddAssetBridgeFrames,
   resolveAddAssetGenerationTiming,
   resolveAddAssetStartFrame,
+  type BridgeFrames,
   type StartFramePreview,
 } from "./addAssetStartFrame";
 import {
@@ -32,8 +39,10 @@ export type StartAddAssetGenerationRequest = {
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
+  continuityMode: AddAssetContinuityMode;
   songRange: { startSec: number; endSec: number };
   startFrame: StartFramePreview;
+  endFrame?: StartFramePreview | null;
 };
 
 type AddAssetGeneratePanelProps = {
@@ -46,6 +55,8 @@ type AddAssetGeneratePanelProps = {
   onStartGeneration: (request: StartAddAssetGenerationRequest) => void;
   /** Resize the placeholder on the timeline when duration changes. */
   onDurationChange?: (durationSec: number) => void;
+  /** Persist prompt / mode choices on the placeholder clip. */
+  onDraftChange?: (draft: AddAssetDraft) => void;
   onClearError?: () => void;
 };
 
@@ -58,6 +69,38 @@ function formatTimeRange(startSec: number, endSec: number): string {
     return `${m}:${s.padStart(4, "0")}`;
   };
   return `${fmt(startSec)} – ${fmt(endSec)}`;
+}
+
+function draftFromClip(
+  clip: TimelineClip,
+  lyricsText: string,
+): {
+  prompt: string;
+  audioMode: AddAssetAudioMode;
+  continuityMode: AddAssetContinuityMode | null;
+} {
+  const draft = clip.addAssetDraft;
+  return {
+    prompt:
+      typeof draft?.prompt === "string" ? draft.prompt : LAB_A2V_PROMPT,
+    audioMode:
+      draft?.audioMode === "vocals" || draft?.audioMode === "full_mix"
+        ? draft.audioMode
+        : resolveAddAssetAudioMode(lyricsText),
+    continuityMode:
+      draft?.continuityMode === "first_last" ||
+      draft?.continuityMode === "start_frame"
+        ? draft.continuityMode
+        : null,
+  };
+}
+
+function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
+  return (
+    (a.prompt ?? "") === (b?.prompt ?? "") &&
+    (a.audioMode ?? "") === (b?.audioMode ?? "") &&
+    (a.continuityMode ?? "") === (b?.continuityMode ?? "")
+  );
 }
 
 function GenerateActions({
@@ -140,6 +183,50 @@ function AddAssetGenerationProgressBar({
   );
 }
 
+function FramePreview({
+  aspectRatio,
+  loading,
+  loadingLabel,
+  preview,
+  emptyLabel,
+  alt,
+}: {
+  aspectRatio: ProjectAspectRatio;
+  loading: boolean;
+  loadingLabel: string;
+  preview: StartFramePreview | null;
+  emptyLabel: string;
+  alt: string;
+}) {
+  const aspect = PROJECT_ASPECT_OPTIONS.find((o) => o.id === aspectRatio);
+  const w = aspect?.w ?? 16;
+  const h = aspect?.h ?? 9;
+  return (
+    <div
+      className={`add-asset-generate-frame-preview${loading ? " is-loading" : ""}`}
+      style={
+        {
+          aspectRatio: projectAspectCss(aspectRatio),
+          "--add-asset-frame-aspect": projectAspectCss(aspectRatio),
+          "--add-asset-frame-w": String(w),
+          "--add-asset-frame-h": String(h),
+        } as CSSProperties
+      }
+      aria-busy={loading || undefined}
+    >
+      {loading ? (
+        <p className="muted add-asset-generate-field-placeholder">
+          {loadingLabel}
+        </p>
+      ) : preview?.previewUrl ? (
+        <img src={preview.previewUrl} alt={alt} draggable={false} />
+      ) : (
+        <p className="muted add-asset-generate-field-placeholder">{emptyLabel}</p>
+      )}
+    </div>
+  );
+}
+
 export function AddAssetGeneratePanel({
   clip,
   aspectRatio,
@@ -149,6 +236,7 @@ export function AddAssetGeneratePanel({
   mainAudioCreationId,
   onStartGeneration,
   onDurationChange,
+  onDraftChange,
   onClearError,
 }: AddAssetGeneratePanelProps) {
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
@@ -192,85 +280,159 @@ export function AddAssetGeneratePanel({
     }
   };
 
-  const [prompt, setPrompt] = useState(LAB_A2V_PROMPT);
-  const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(() =>
-    resolveAddAssetAudioMode(""),
+  const initial = draftFromClip(clip, lyricsText);
+  const [prompt, setPrompt] = useState(initial.prompt);
+  const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(
+    initial.audioMode,
   );
-  const [loadedStartFrame, setLoadedStartFrame] = useState<{
+  /** null = auto (prefer first+last when both frames exist). */
+  const [continuityMode, setContinuityMode] =
+    useState<AddAssetContinuityMode | null>(initial.continuityMode);
+  const [loadedFrames, setLoadedFrames] = useState<{
     key: string;
-    preview: StartFramePreview | null;
+    start: StartFramePreview | null;
+    bridge: BridgeFrames | null;
   } | null>(null);
   const [prevLyricsText, setPrevLyricsText] = useState(lyricsText);
   if (lyricsText !== prevLyricsText) {
     setPrevLyricsText(lyricsText);
-    setPrompt(LAB_A2V_PROMPT);
-    setAudioMode(resolveAddAssetAudioMode(lyricsText));
+    // Keep prompt / modes; only refresh neighbor frames for the new window.
     setPullEpoch(0);
-    setLoadedStartFrame(null);
+    setLoadedFrames(null);
   }
 
-  const startFrameKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v2:${pullEpoch}`;
+  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v3:${pullEpoch}`;
   const activeSession = session?.clipId === clip.id ? session : null;
   const phase: PanelPhase = activeSession?.phase ?? "form";
-  const startFrame =
-    loadedStartFrame?.key === startFrameKey ? loadedStartFrame.preview : null;
-  const startFrameLoading = phase === "form" && loadedStartFrame?.key !== startFrameKey;
+  const framesReady = loadedFrames?.key === framesKey;
+  const startFrame = framesReady ? loadedFrames.start : null;
+  const bridge = framesReady ? loadedFrames.bridge : null;
+  const bridgeAvailable = Boolean(bridge);
+  const framesLoading = phase === "form" && !framesReady;
 
   const hasLyrics = Boolean(lyricsText.trim());
   const resolvedAudioMode = hasLyrics ? audioMode : "full_mix";
+  const resolvedContinuityMode: AddAssetContinuityMode = bridgeAvailable
+    ? (continuityMode ?? "first_last")
+    : "start_frame";
+
+  // Persist form choices on the placeholder so they survive clip switches.
+  useEffect(() => {
+    const next: AddAssetDraft = {
+      prompt,
+      audioMode,
+      continuityMode: continuityMode ?? undefined,
+    };
+    if (draftsEqual(next, clip.addAssetDraft)) return;
+    onDraftChange?.(next);
+  }, [prompt, audioMode, continuityMode, clip.addAssetDraft, onDraftChange]);
 
   useEffect(() => {
     if (phase !== "form") return;
     let cancelled = false;
-    void resolveAddAssetStartFrame(timeline, clip, aspectRatio).then((preview) => {
+    void (async () => {
+      const [start, resolvedBridge] = await Promise.all([
+        resolveAddAssetStartFrame(timeline, clip, aspectRatio),
+        resolveAddAssetBridgeFrames(timeline, clip, aspectRatio),
+      ]);
       if (cancelled) return;
-      setLoadedStartFrame({ key: startFrameKey, preview });
-    });
+      setLoadedFrames({
+        key: framesKey,
+        start,
+        bridge: resolvedBridge,
+      });
+      // Bridge gone → can't keep first_last; otherwise keep draft/auto choice.
+      if (!resolvedBridge) {
+        setContinuityMode((prev) =>
+          prev === "first_last" ? "start_frame" : prev,
+        );
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [timeline, clip, startFrameKey, phase, aspectRatio]);
+    // framesKey covers clip geometry / neighbors; omit clip/timeline objects so
+    // drafting the prompt does not re-extract frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [framesKey, phase, aspectRatio]);
 
   const handleRefresh = () => {
-    if (phase !== "form" || startFrameLoading) return;
-    setLoadedStartFrame(null);
+    if (phase !== "form" || framesLoading) return;
+    setLoadedFrames(null);
     setPullEpoch((epoch) => epoch + 1);
   };
 
   const handleGenerate = () => {
-    if (
-      phase !== "form" ||
-      !startFrame?.framePath?.trim() ||
-      !prompt.trim()
-    ) {
+    if (phase !== "form" || !prompt.trim()) return;
+    const useFirstLast = resolvedContinuityMode === "first_last";
+    if (useFirstLast) {
+      if (!bridge?.first.framePath?.trim() || !bridge.last.framePath?.trim()) {
+        return;
+      }
+    } else if (!startFrame?.framePath?.trim()) {
       return;
     }
-    void resolveAddAssetStartFrame(timeline, clip, aspectRatio).then(
-      (freshStartFrame) => {
-        if (!freshStartFrame.framePath?.trim()) return;
-        const timing = resolveAddAssetGenerationTiming(
+
+    void (async () => {
+      const timing = resolveAddAssetGenerationTiming(
+        timeline,
+        clip,
+        mainAudioCreationId,
+        lyricAlignment,
+      );
+      if (useFirstLast) {
+        const freshBridge = await resolveAddAssetBridgeFrames(
           timeline,
           clip,
-          mainAudioCreationId,
-          lyricAlignment,
+          aspectRatio,
         );
+        if (
+          !freshBridge?.first.framePath?.trim() ||
+          !freshBridge.last.framePath?.trim()
+        ) {
+          return;
+        }
         onStartGeneration({
           clip: withAddAssetDuration(clip, timing.durationSec),
           prompt,
           lyricsText,
           audioMode: resolvedAudioMode,
+          continuityMode: "first_last",
           songRange: timing.songRange,
-          startFrame: freshStartFrame,
+          startFrame: freshBridge.first,
+          endFrame: freshBridge.last,
         });
-      },
-    );
+        return;
+      }
+
+      const freshStart = await resolveAddAssetStartFrame(
+        timeline,
+        clip,
+        aspectRatio,
+      );
+      if (!freshStart.framePath?.trim()) return;
+      onStartGeneration({
+        clip: withAddAssetDuration(clip, timing.durationSec),
+        prompt,
+        lyricsText,
+        audioMode: resolvedAudioMode,
+        continuityMode: "start_frame",
+        songRange: timing.songRange,
+        startFrame: freshStart,
+        endFrame: null,
+      });
+    })();
   };
 
   const canGenerate =
     phase === "form" &&
-    Boolean(startFrame?.framePath?.trim()) &&
     Boolean(prompt.trim()) &&
-    !startFrameLoading;
+    !framesLoading &&
+    (resolvedContinuityMode === "first_last"
+      ? Boolean(
+          bridge?.first.framePath?.trim() && bridge.last.framePath?.trim(),
+        )
+      : Boolean(startFrame?.framePath?.trim()));
 
   if (phase === "running" && activeSession) {
     return (
@@ -333,45 +495,88 @@ export function AddAssetGeneratePanel({
     );
   }
 
+  const showFirstLast = resolvedContinuityMode === "first_last";
+  const firstPreview = showFirstLast ? bridge?.first ?? null : startFrame;
+  const lastPreview = showFirstLast ? bridge?.last ?? null : null;
+
   return (
     <div className="add-asset-generate-pane">
       <div className="add-asset-generate-body">
-        <section className="add-asset-generate-section">
-          <h3>Start frame</h3>
-          <p className="muted add-asset-generate-note">
-            {startFrame?.note?.trim() ||
-              "Last frame of the previous clip on the timeline, with that clip’s framing."}
-          </p>
-          <div className="add-asset-generate-field add-asset-generate-frame-field">
+        {bridgeAvailable ? (
+          <section className="add-asset-generate-section">
+            <h3>Continuity</h3>
             <div
-              className="add-asset-generate-frame-preview"
-              style={{ aspectRatio: projectAspectCss(aspectRatio) }}
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Continuity mode"
             >
-              {startFrameLoading ? (
-                <p className="muted add-asset-generate-field-placeholder">
-                  Loading start frame…
-                </p>
-              ) : startFrame?.previewUrl ? (
-                <img
-                  src={startFrame.previewUrl}
-                  alt="Start frame from previous clip"
-                  draggable={false}
-                />
-              ) : (
-                <p className="muted add-asset-generate-field-placeholder">
-                  No prior video clip — generation will start without a still.
-                </p>
-              )}
+              <button
+                type="button"
+                className={
+                  resolvedContinuityMode === "first_last" ? "is-active" : ""
+                }
+                onClick={() => setContinuityMode("first_last")}
+                aria-pressed={resolvedContinuityMode === "first_last"}
+              >
+                First + last frame
+              </button>
+              <button
+                type="button"
+                className={
+                  resolvedContinuityMode === "start_frame" ? "is-active" : ""
+                }
+                onClick={() => setContinuityMode("start_frame")}
+                aria-pressed={resolvedContinuityMode === "start_frame"}
+              >
+                Start frame
+              </button>
             </div>
-          </div>
+          </section>
+        ) : null}
+
+        <section className="add-asset-generate-section">
+          <h3>{showFirstLast ? "First & last frames" : "Start frame"}</h3>
+          {showFirstLast ? (
+            <div className="add-asset-generate-frame-pair">
+              <div className="add-asset-generate-field add-asset-generate-frame-field">
+                <span className="add-asset-generate-frame-caption">First</span>
+                <FramePreview
+                  aspectRatio={aspectRatio}
+                  loading={framesLoading}
+                  loadingLabel="Loading first frame…"
+                  preview={firstPreview}
+                  emptyLabel="No previous clip."
+                  alt="First frame from previous clip"
+                />
+              </div>
+              <div className="add-asset-generate-field add-asset-generate-frame-field">
+                <span className="add-asset-generate-frame-caption">Last</span>
+                <FramePreview
+                  aspectRatio={aspectRatio}
+                  loading={framesLoading}
+                  loadingLabel="Loading last frame…"
+                  preview={lastPreview}
+                  emptyLabel="No next clip."
+                  alt="Last frame from next clip"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="add-asset-generate-field add-asset-generate-frame-field">
+              <FramePreview
+                aspectRatio={aspectRatio}
+                loading={framesLoading}
+                loadingLabel="Loading start frame…"
+                preview={startFrame}
+                emptyLabel="No prior video clip — generation will start without a still."
+                alt="Start frame from previous clip"
+              />
+            </div>
+          )}
         </section>
 
         <section className="add-asset-generate-section">
           <h3>Duration</h3>
-          <p className="muted add-asset-generate-note">
-            Output length ({ADD_ASSET_MIN_DURATION_SEC}–{ADD_ASSET_MAX_DURATION_SEC}s).
-            You can also drag the clip’s right edge on the timeline.
-          </p>
           <label className="add-asset-generate-field">
             <span>Seconds</span>
             <input
@@ -394,56 +599,43 @@ export function AddAssetGeneratePanel({
           </label>
         </section>
 
-        <section className="add-asset-generate-section">
-          <h3>Audio</h3>
-          {hasLyrics ? (
-            <>
-              <p className="muted add-asset-generate-note">
-                Choose which part of the song to sync for this clip.
-              </p>
-              <div
-                className="add-asset-generate-audio-toggle"
-                role="group"
-                aria-label="Audio source"
+        {!showFirstLast && hasLyrics ? (
+          <section className="add-asset-generate-section">
+            <h3>Audio</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Audio source"
+            >
+              <button
+                type="button"
+                className={resolvedAudioMode === "vocals" ? "is-active" : ""}
+                onClick={() => setAudioMode("vocals")}
+                aria-pressed={resolvedAudioMode === "vocals"}
               >
-                <button
-                  type="button"
-                  className={resolvedAudioMode === "vocals" ? "is-active" : ""}
-                  onClick={() => setAudioMode("vocals")}
-                  aria-pressed={resolvedAudioMode === "vocals"}
-                >
-                  Lyrics track
-                </button>
-                <button
-                  type="button"
-                  className={
-                    resolvedAudioMode === "full_mix" ? "is-active" : ""
-                  }
-                  onClick={() => setAudioMode("full_mix")}
-                  aria-pressed={resolvedAudioMode === "full_mix"}
-                >
-                  Full track
-                </button>
-              </div>
-            </>
-          ) : (
-            <p className="muted add-asset-generate-note">
-              {ADD_ASSET_NO_LYRICS_AUDIO_NOTE}
-            </p>
-          )}
-        </section>
+                Lyrics track
+              </button>
+              <button
+                type="button"
+                className={
+                  resolvedAudioMode === "full_mix" ? "is-active" : ""
+                }
+                onClick={() => setAudioMode("full_mix")}
+                aria-pressed={resolvedAudioMode === "full_mix"}
+              >
+                Full track
+              </button>
+            </div>
+          </section>
+        ) : null}
 
-        {hasLyrics && resolvedAudioMode === "vocals" ? (
+        {!showFirstLast && hasLyrics && resolvedAudioMode === "vocals" ? (
           <section className="add-asset-generate-section">
             <h3>Lyrics</h3>
-            <p className="muted add-asset-generate-note">
-              {formatTimeRange(songRange.startSec, songRange.endSec)} on the song
-              timeline
-            </p>
             <div
               className="add-asset-generate-callout"
               role="note"
-              aria-label="Lyrics for this section"
+              aria-label={`Lyrics for ${formatTimeRange(songRange.startSec, songRange.endSec)}`}
             >
               <p className="add-asset-generate-lyrics-text">{lyricsText}</p>
             </div>
@@ -471,7 +663,7 @@ export function AddAssetGeneratePanel({
       <GenerateActions
         onRefresh={handleRefresh}
         onGenerate={handleGenerate}
-        refreshDisabled={startFrameLoading}
+        refreshDisabled={framesLoading}
         generateDisabled={!canGenerate}
       />
     </div>

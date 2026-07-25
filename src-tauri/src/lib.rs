@@ -63,11 +63,24 @@ pub fn run() {
         })
         // Keep the window hidden until the dark HTML/CSS has painted so maximize
         // and WKWebView compositing never flash the default white surface.
+        // On macOS, show + immediate set_focus often loses the activation race to
+        // the parent terminal/IDE (esp. under `tauri dev`), so the first click can
+        // land on another app. Re-assert focus after a short delay.
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {
                 let window = webview.window();
+                let app = webview.app_handle().clone();
                 let _ = window.show();
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = app.show();
+                }
                 let _ = window.set_focus();
+                let window_again = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    let _ = window_again.set_focus();
+                });
             }
         })
         .setup(|app| {
@@ -84,9 +97,29 @@ pub fn run() {
                 // Native Help menu is macOS-only (system menu bar). On Windows it
                 // paints an ugly classic menu strip; those actions live in the
                 // account menu + keyboard shortcuts instead.
+                //
+                // Edit must stay in the menu bar: on macOS, Cmd+C/V/X/A/Z for
+                // webview inputs only work when the matching PredefinedMenuItems
+                // exist (replacing the default menu with Help-only broke them).
                 #[cfg(target_os = "macos")]
                 {
-                    use tauri::menu::{Menu, MenuItem, Submenu};
+                    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+                    let undo = PredefinedMenuItem::undo(app, None)?;
+                    let redo = PredefinedMenuItem::redo(app, None)?;
+                    let edit_sep = PredefinedMenuItem::separator(app)?;
+                    let cut = PredefinedMenuItem::cut(app, None)?;
+                    let copy = PredefinedMenuItem::copy(app, None)?;
+                    let paste = PredefinedMenuItem::paste(app, None)?;
+                    let select_all = PredefinedMenuItem::select_all(app, None)?;
+                    let edit = Submenu::with_items(
+                        app,
+                        "Edit",
+                        true,
+                        &[
+                            &undo, &redo, &edit_sep, &cut, &copy, &paste, &select_all,
+                        ],
+                    )?;
 
                     let check_updates = MenuItem::with_id(
                         app,
@@ -115,7 +148,7 @@ pub fn run() {
                         true,
                         &[&check_updates, &diagnose, &unlock],
                     )?;
-                    let menu = Menu::with_items(app, &[&help])?;
+                    let menu = Menu::with_items(app, &[&edit, &help])?;
                     app.set_menu(menu)?;
 
                     let handle = app.handle().clone();

@@ -3156,6 +3156,10 @@ input[type="checkbox"].control,
   position: relative;
 }
 
+.editor-preview-pane:focus {
+  outline: none;
+}
+
 .editor-preview-pane.has-assets-expand {
   display: grid;
   grid-template-columns: 2rem minmax(0, 1fr);
@@ -3813,16 +3817,29 @@ input[type="checkbox"].control,
 }
 
 /* Persistent source-ownership badge (Timeline / Asset / Clip). */
-.editor-preview-source-label {
+.editor-preview-source-row {
   position: absolute;
   top: 0.5rem;
   left: 0.5rem;
   z-index: 5;
   display: inline-flex;
   align-items: center;
+  gap: 0.55rem;
+  max-width: calc(100% - 1rem);
+}
+
+.editor-preview-source-row .editor-generated-clip-badge {
+  flex: 0 0 auto;
+  pointer-events: auto;
+}
+
+.editor-preview-source-label {
+  display: inline-flex;
+  align-items: center;
   gap: 0.3rem;
   height: 22px;
-  max-width: calc(100% - 1rem);
+  min-width: 0;
+  flex: 0 1 auto;
   padding: 0 0.45rem;
   border-radius: 5px;
   font-size: 0.72rem;
@@ -3945,20 +3962,26 @@ input[type="checkbox"].control,
   animation: editor-bake-spin 0.7s linear infinite;
 }
 
-.editor-timeline-clip-generated {
-  position: absolute;
-  right: 4px;
-  top: 4px;
-  z-index: 2;
-  max-width: calc(100% - 8px);
-}
-
 .editor-generated-clip-badge {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 2px;
   max-width: 100%;
+}
+
+.editor-generated-clip-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .editor-generated-clip-pill {
@@ -3979,19 +4002,20 @@ input[type="checkbox"].control,
 
 .editor-generated-clip-info {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 14px;
   height: 14px;
-  padding: 0;
-  border: none;
   border-radius: 999px;
   background: rgba(30, 58, 95, 0.92);
   color: #bfdbfe;
   font-size: 0.62rem;
   line-height: 1;
-  cursor: pointer;
 }
 
-.editor-generated-clip-info:hover {
+.editor-generated-clip-trigger:hover .editor-generated-clip-pill,
+.editor-generated-clip-trigger:hover .editor-generated-clip-info {
   background: rgba(37, 99, 235, 0.85);
 }
 
@@ -4003,10 +4027,11 @@ input[type="checkbox"].control,
 
 .editor-generated-clip-popover {
   position: absolute;
-  right: 0;
+  left: 0;
   top: calc(100% + 4px);
   z-index: 20;
-  width: min(240px, 70vw);
+  width: min(240px, calc(100vw - 2rem));
+  max-width: min(240px, 36vw);
   padding: 0.45rem 0.55rem;
   border-radius: 6px;
   border: 1px solid rgba(147, 197, 253, 0.35);
@@ -4015,6 +4040,7 @@ input[type="checkbox"].control,
   font-size: 0.72rem;
   line-height: 1.4;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
 }
 
 .editor-generated-clip-popover p {
@@ -4023,10 +4049,6 @@ input[type="checkbox"].control,
 
 .editor-generated-clip-popover p:last-child {
   margin-bottom: 0;
-}
-
-.editor-staging-generated {
-  flex: 1 1 100%;
 }
 
 .editor-timeline-clip-resize-edge {
@@ -4736,6 +4758,12 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   accent-color: var(--accent);
 }
 
+.editor-staging-field.is-frozen input[type="number"] {
+  cursor: not-allowed;
+  pointer-events: none;
+  opacity: 0.72;
+}
+
 .editor-staging-field .muted {
   font-size: 0.85rem;
 }
@@ -4974,28 +5002,81 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 
 .add-asset-generate-pane .add-asset-generate-frame-field {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: center;
+  gap: 0.35rem;
   padding: 0.5rem;
 }
 
+.add-asset-generate-frame-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  width: 100%;
+  align-items: start;
+}
+
+.add-asset-generate-frame-pair .add-asset-generate-frame-field {
+  padding: 0.25rem;
+  min-width: 0;
+  align-items: center;
+}
+
+.add-asset-generate-frame-caption {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  text-align: center;
+}
+
+/* Fixed reserved matte: size from max height × aspect so loading never collapses. */
 .add-asset-generate-pane .add-asset-generate-frame-preview {
+  --frame-max-h: min(16rem, 28vh);
+  --add-asset-frame-aspect: 16 / 9;
+  --add-asset-frame-w: 16;
+  --add-asset-frame-h: 9;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  height: min(32rem, 48vh);
-  max-width: 100%;
+  box-sizing: border-box;
+  aspect-ratio: var(--add-asset-frame-aspect);
+  width: min(
+    100%,
+    calc(
+      var(--frame-max-h) * (var(--add-asset-frame-w) / var(--add-asset-frame-h))
+    )
+  );
+  height: auto;
+  max-height: var(--frame-max-h);
   margin: 0 auto;
   overflow: hidden;
+  flex: 0 0 auto;
   background: #0a0a0e;
+}
+
+.add-asset-generate-pane .add-asset-generate-frame-preview.is-loading {
+  background: color-mix(in srgb, #0a0a0e 85%, var(--panel, #1a1a22));
 }
 
 .add-asset-generate-pane .add-asset-generate-frame-preview img {
   display: block;
   width: 100%;
   height: 100%;
-  /* Framed stills are already project-aspect pixels — fill the matte edge-to-edge. */
   object-fit: fill;
+}
+
+.add-asset-generate-pane .add-asset-generate-frame-preview .add-asset-generate-field-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  box-sizing: border-box;
 }
 
 .add-asset-generate-pane .add-asset-generate-lyrics-text {
@@ -5070,6 +5151,7 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
+  clip-path: inset(0 round 999px);
   background: #3d3d48;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 65%, transparent);
 }
@@ -5078,23 +5160,40 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   display: block;
   min-width: 3px;
   height: 100%;
-  border-radius: inherit;
+  border-radius: 999px;
   background: var(--select);
   transition: width 200ms linear;
 }
 
 .add-asset-generate-progress.is-indeterminate .add-asset-generate-progress-bar {
-  width: 35%;
-  background: linear-gradient(90deg, transparent, var(--select), transparent);
-  animation: add-asset-generate-progress-cycle 1s linear infinite;
+  width: 100%;
+  min-width: 100%;
+  transition: none;
+  border-radius: 999px;
+  background-color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--select) 12%, transparent) 22%,
+    color-mix(in srgb, var(--select) 28%, transparent) 34%,
+    color-mix(in srgb, var(--select) 58%, transparent) 43%,
+    color-mix(in srgb, var(--select) 78%, transparent) 50%,
+    color-mix(in srgb, var(--select) 58%, transparent) 57%,
+    color-mix(in srgb, var(--select) 28%, transparent) 66%,
+    color-mix(in srgb, var(--select) 12%, transparent) 78%,
+    transparent 100%
+  );
+  background-size: 240% 100%;
+  background-repeat: no-repeat;
+  animation: add-asset-generate-progress-cycle 5.5s linear infinite;
 }
 
 @keyframes add-asset-generate-progress-cycle {
   0% {
-    transform: translateX(-100%);
+    background-position: 100% 0;
   }
   100% {
-    transform: translateX(320%);
+    background-position: -100% 0;
   }
 }
 

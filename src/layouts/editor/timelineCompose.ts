@@ -60,7 +60,7 @@ export function clipSourceTrimSpanSec(clip: TimelineClip): number | null {
   return Math.max(0.1, Number(clip.outSec) - inSec);
 }
 
-/** Source trim span used for extend UI and playback looping. */
+/** Source trim span used for extend UI and playback looping (media domain). */
 export function clipExtendSourceSpanSec(clip: TimelineClip): number | null {
   if (
     Number.isFinite(clip.extendSourceSpanSec) &&
@@ -71,7 +71,20 @@ export function clipExtendSourceSpanSec(clip: TimelineClip): number | null {
   return clipSourceTrimSpanSec(clip);
 }
 
-/** True when timeline placement is longer than the trimmed source region. */
+/** Clamp video playback rate (default 1). */
+export function clipSpeed(clip: { speed?: number }): number {
+  const s = Number(clip.speed);
+  if (!Number.isFinite(s) || s <= 0) return 1;
+  return Math.min(4, Math.max(0.25, s));
+}
+
+/** Wall-clock length of one source playthrough at the clip's speed. */
+export function clipPlaythroughUnitSec(clip: TimelineClip): number {
+  const sourceSpan = clipSourceSpanSec(clip);
+  return Math.max(0.1, sourceSpan / clipSpeed(clip));
+}
+
+/** True when timeline placement is longer than one playthrough at speed. */
 export function clipIsTimelineExtended(clip: TimelineClip): boolean {
   if (
     clip.kind === "image" ||
@@ -83,28 +96,51 @@ export function clipIsTimelineExtended(clip: TimelineClip): boolean {
   }
   const trimSpan = clipExtendSourceSpanSec(clip);
   if (trimSpan == null) return false;
-  return clipTimelineDurationSec(clip) > trimSpan + 0.001;
+  return clipTimelineDurationSec(clip) > clipPlaythroughUnitSec(clip) + 0.001;
 }
 
-/** 0..1 position along the clip where the source trim ends (extend divit). */
+/** 0..1 position along the clip where the first playthrough ends (extend divit). */
 export function clipExtendDivitFraction(clip: TimelineClip): number | null {
   if (!clipIsTimelineExtended(clip)) return null;
-  const trimSpan = clipExtendSourceSpanSec(clip);
-  if (trimSpan == null) return null;
-  return trimSpan / clipTimelineDurationSec(clip);
+  return clipPlaythroughUnitSec(clip) / clipTimelineDurationSec(clip);
 }
 
 /** Trimmed source media span (out − in). */
 export function clipSourceSpanSec(clip: TimelineClip): number {
   const trimSpan = clipExtendSourceSpanSec(clip);
   if (trimSpan != null) return trimSpan;
+  return clipTimelineDurationSec(clip) * clipSpeed(clip);
+}
+
+/** Minimum timeline duration for video resize (one playthrough at speed). */
+export function clipVideoMinTimelineDurationSec(clip: TimelineClip): number {
+  const trimSpan = clipExtendSourceSpanSec(clip);
+  if (trimSpan != null) return Math.max(0.1, trimSpan / clipSpeed(clip));
   return clipTimelineDurationSec(clip);
 }
 
-export function clipVideoMinTimelineDurationSec(clip: TimelineClip): number {
-  const frozen = clipExtendSourceSpanSec(clip);
-  if (frozen != null) return frozen;
-  return clipTimelineDurationSec(clip);
+/**
+ * Finalize a video clip's right-edge resize.
+ * Absolute 0.1s snapping of endSec can re-extend a clip the user just
+ * collapsed to source length when startSec has subframe precision — keep the
+ * exact source span in that case.
+ */
+export function finalizeVideoResizeEndSec(opts: {
+  startSec: number;
+  /** End time from the pointer before magnetic / grid snap. */
+  pointerEndSec: number;
+  /** End time after magnetic / grid snap. */
+  snappedEndSec: number;
+  sourceSpanSec: number;
+}): number {
+  const startSec = opts.startSec;
+  const sourceSpan = Math.max(0.1, opts.sourceSpanSec);
+  const minEnd = startSec + sourceSpan;
+  const pointerDuration = Math.max(0, opts.pointerEndSec - startSec);
+  if (pointerDuration <= sourceSpan + 0.001) {
+    return minEnd;
+  }
+  return Math.max(minEnd, opts.snappedEndSec);
 }
 
 /** Timeline placement span (end − start). */
@@ -116,24 +152,27 @@ export function clipSourceSec(clip: TimelineClip, timelineSec: number): number {
   const inSec = clipInSec(clip);
   const outSec = clipOutSec(clip);
   const sourceSpan = clipSourceSpanSec(clip);
+  const speed = clipSpeed(clip);
   const local = Math.max(0, timelineSec - clip.startSec);
   const timelineDur = clipTimelineDurationSec(clip);
+  const playthrough = sourceSpan / speed;
+  const mediaLocal = local * speed;
 
   if (
     clip.kind !== "video" ||
-    local <= sourceSpan + 1e-6 ||
-    timelineDur <= sourceSpan + 1e-6
+    mediaLocal <= sourceSpan + 1e-6 ||
+    timelineDur <= playthrough + 1e-6
   ) {
-    return Math.min(outSec, Math.max(inSec, inSec + local));
+    return Math.min(outSec, Math.max(inSec, inSec + mediaLocal));
   }
 
-  const extendLocal = local - sourceSpan;
+  const extendMedia = mediaLocal - sourceSpan;
   if (clip.extendPingPong !== true) {
-    return inSec + (extendLocal % sourceSpan);
+    return inSec + (extendMedia % sourceSpan);
   }
 
-  const segment = Math.floor(extendLocal / sourceSpan);
-  const phase = extendLocal % sourceSpan;
+  const segment = Math.floor(extendMedia / sourceSpan);
+  const phase = extendMedia % sourceSpan;
   if (segment % 2 === 0) {
     return outSec - phase;
   }

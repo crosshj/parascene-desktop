@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
+  isCreatingRemoteStatus,
   mapGroupSourceCreations,
   mapRemoteCreation,
   NEWEST_SYNC_MAX_PAGES,
@@ -202,6 +203,15 @@ describe("manifestSync", () => {
     });
   });
 
+  it("detects creating remote status including prefixed variants", () => {
+    expect(isCreatingRemoteStatus("creating")).toBe(true);
+    expect(isCreatingRemoteStatus("Creating")).toBe(true);
+    expect(isCreatingRemoteStatus("creating_video")).toBe(true);
+    expect(isCreatingRemoteStatus("pending")).toBe(false);
+    expect(isCreatingRemoteStatus("completed")).toBe(false);
+    expect(isCreatingRemoteStatus(null)).toBe(false);
+  });
+
   it("derives video_url for embedded i2v members that only have a poster path", () => {
     const remote = remoteFromGroupSource({
       id: 18843,
@@ -239,6 +249,24 @@ describe("manifestSync", () => {
     expect(mapped[0]?.remoteUrl).toBe(
       "https://www.parascene.com/api/images/created/26_17804_x.png",
     );
+  });
+
+  it("mapGroupSourceCreations skips members still in creating status", () => {
+    const mapped = mapGroupSourceCreations([
+      {
+        id: 1,
+        file_path: "/api/images/created/ready.png",
+        media_type: "image",
+        status: "completed",
+      },
+      {
+        id: 2,
+        file_path: "/api/images/created/wip.png",
+        media_type: "image",
+        status: "creating",
+      },
+    ]);
+    expect(mapped.map((c) => c.id)).toEqual(["1"]);
   });
 
   it("withEmbeddedGroupMembers appends missing members without duplicating", () => {
@@ -383,6 +411,35 @@ describe("manifestSync", () => {
         ],
       }),
     );
+  });
+
+  it("full sync skips creations still in creating status", async () => {
+    listMyCreations.mockImplementation(async ({ offset }: { offset: number }) => {
+      if (offset > 0) return { images: [], hasMore: false };
+      return {
+        images: [
+          { ...remoteImage(1, "Ready"), status: "completed" },
+          { ...remoteImage(2, "WIP"), status: "creating" },
+          { ...remoteImage(3, "WIP video"), status: "creating_video" },
+        ],
+        hasMore: false,
+      };
+    });
+    const applied: string[][] = [];
+    invoke.mockImplementation(async (cmd: string, args?: { creations?: Array<{ id: string }> }) => {
+      if (cmd === "library_apply_manifest") {
+        applied.push((args?.creations ?? []).map((c) => c.id));
+        return { ...emptyStatus, total: args?.creations?.length ?? 0, remote: args?.creations?.length ?? 0 };
+      }
+      if (cmd === "library_download_pending") {
+        return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
+      }
+      if (cmd === "library_sync_status") return emptyStatus;
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    await syncFullCreationsManifest();
+    expect(applied).toEqual([["1"]]);
   });
 
   it("syncCreationsManifest aliases full sync", async () => {
@@ -550,6 +607,45 @@ describe("manifestSync", () => {
     await syncNewestCreationsManifest();
     expect(listMyCreations).toHaveBeenCalledTimes(2);
     expect(applied).toEqual([["1", "3"]]);
+  });
+
+  it("newest sync skips creating creations and still catches up on known completed", async () => {
+    const page = [
+      { ...remoteImage(1, "WIP"), status: "creating" },
+      remoteImage(2, "Known"),
+      { ...remoteImage(3, "WIP video"), status: "creating_video" },
+    ];
+    listMyCreations.mockResolvedValueOnce({ images: page, hasMore: true });
+
+    const known = new Set(["2"]);
+    const applied: string[][] = [];
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: Array<{ id: string }> }) => {
+      if (cmd === "library_existing_creation_ids") {
+        return (args?.ids ?? []).filter((id) => known.has(id));
+      }
+      if (cmd === "library_apply_manifest") {
+        applied.push((args?.creations ?? []).map((c) => c.id));
+        return emptyStatus;
+      }
+      if (cmd === "library_download_pending") {
+        return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
+      }
+      if (cmd === "library_cloud_ids_since") {
+        return [];
+      }
+      if (cmd === "library_sync_status") {
+        return emptyStatus;
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const result = await syncNewestCreationsManifest();
+    expect(result.added).toBe(0);
+    expect(applied).toEqual([[]]);
+    expect(listMyCreations).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("library_existing_creation_ids", {
+      ids: ["2"],
+    });
   });
 
   it("newest sync pages through more than one page of new creations", async () => {

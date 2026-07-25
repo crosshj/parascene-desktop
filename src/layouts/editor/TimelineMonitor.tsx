@@ -25,6 +25,7 @@ import {
 } from "./clipExtendBake";
 import {
   clipInSec,
+  clipSpeed,
   peekNextVisualClip,
   resolveTimelineFrame,
   type TimelineLayer,
@@ -578,7 +579,12 @@ function ExtendBakeDecoder({
       stageH={stageH}
       matteW={matteW}
       matteH={matteH}
-      sourceSec={active ? (liveLayer?.localSec ?? 0) : (prepSourceSec ?? 0)}
+      // 1× bake: map wall time through speed into bake timeline.
+      sourceSec={
+        active
+          ? (liveLayer?.localSec ?? 0) * clipSpeed(liveLayer?.clip ?? {})
+          : (prepSourceSec ?? 0)
+      }
       playing={playing}
       mediaSeekEpoch={mediaSeekEpoch}
       clipId={liveLayer?.clip.id ?? null}
@@ -751,6 +757,8 @@ function AssetDecoder({
   }
 
   if (kind === "video" && videoSrc) {
+    const speed = clipSpeed(liveLayer?.clip ?? {});
+    const rateAway = Math.abs(speed - 1) >= 0.001;
     return (
       <PersistentVideo
         decoderKey={decoderKey}
@@ -766,6 +774,9 @@ function AssetDecoder({
         playing={playing}
         mediaSeekEpoch={mediaSeekEpoch}
         clipId={liveLayer?.clip.id ?? null}
+        // Speed ≠ 1: clock-sync to rate-aware sourceSec (free-run at
+        // playbackRate cannot handle loop/pong boundaries).
+        clockSync={rateAway}
         onReady={onReady}
       />
     );

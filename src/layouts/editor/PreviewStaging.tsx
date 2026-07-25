@@ -7,7 +7,8 @@ import {
   setActiveStagedClipDrag,
   setStagedClipPointer,
   stagedClipDuration,
-  stagedClipSourceSpan,
+  stagedClipPlaythroughUnit,
+  stagedClipSpeed,
   stagedClipTimelineDuration,
   stagedClipTimelineExtended,
   targetLaneForDraft,
@@ -20,9 +21,7 @@ import type { BakeInfo } from "../../library/slideshowMedia";
 import {
   DEFAULT_SLIDESHOW_SENSITIVITY,
   isBeatSlideshowMode,
-  type AddAssetGeneration,
 } from "../../project/types";
-import { GeneratedClipBadge } from "./GeneratedClipBadge";
 import { subscribeGestureAbort } from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 
@@ -63,8 +62,6 @@ type StagingFieldsProps = {
   onDraftChange: (draft: StagedClipDraft) => void;
   /** Runtime slideshow bake status when editing a timeline clip. */
   bakeInfo?: BakeInfo | null;
-  /** Persisted add-asset generation metadata on the selected timeline clip. */
-  addAssetGeneration?: AddAssetGeneration | null;
 };
 
 type ClipDragHandleProps = {
@@ -78,7 +75,10 @@ type SlideshowRenderHandleProps = {
 
 function formatDurationInput(sec: number): string {
   if (!Number.isFinite(sec)) return "0";
-  return (Math.round(sec * 10) / 10).toFixed(1);
+  // Millisecond precision — enough to collapse an extended clip exactly to
+  // source length without the old 0.1s rounding re-extending it.
+  const rounded = Math.round(sec * 1000) / 1000;
+  return String(rounded);
 }
 
 export function StagingFields({
@@ -86,9 +86,9 @@ export function StagingFields({
   sourceDurationSec,
   onDraftChange,
   bakeInfo = null,
-  addAssetGeneration = null,
 }: StagingFieldsProps) {
-  const sourceSpan = stagedClipSourceSpan(draft);
+  const speed = stagedClipSpeed(draft);
+  const playthrough = stagedClipPlaythroughUnit(draft);
   const duration =
     draft.kind === "video"
       ? stagedClipTimelineDuration(draft)
@@ -98,7 +98,7 @@ export function StagingFields({
     draft.kind === "image" || draft.kind === "slideshow"
       ? Math.max(60, draft.outSec)
       : draft.kind === "video"
-        ? 120
+        ? Math.max(playthrough * 20, 120)
         : sourceDurationSec > 0
           ? sourceDurationSec
           : draft.outSec;
@@ -113,11 +113,6 @@ export function StagingFields({
 
   return (
     <div className="editor-staging-controls">
-      {addAssetGeneration ? (
-        <div className="editor-staging-generated">
-          <GeneratedClipBadge generation={addAssetGeneration} />
-        </div>
-      ) : null}
       {draft.kind === "slideshow" ? (
         <>
           <label className="editor-staging-field">
@@ -313,25 +308,64 @@ export function StagingFields({
 
       {draft.kind === "video" ? (
         <>
+          <label
+            className={`editor-staging-field${syncLocked ? " is-frozen" : ""}`}
+            title={
+              syncLocked
+                ? "Speed is frozen while Sync to timeline is on — turn Sync off to change it"
+                : undefined
+            }
+          >
+            <span>Speed</span>
+            <input
+              type="number"
+              min={0.25}
+              max={4}
+              step={0.01}
+              value={formatDurationInput(speed)}
+              aria-disabled={syncLocked || undefined}
+              onClick={(e) => {
+                if (syncLocked) e.preventDefault();
+              }}
+              onChange={(e) => {
+                if (syncLocked) return;
+                const next = Number(e.target.value);
+                if (!Number.isFinite(next) || next <= 0) return;
+                const nextSpeed = Math.min(4, Math.max(0.25, next));
+                if (Math.abs(nextSpeed - speed) < 0.0001) return;
+                // Keep timeline Duration / start–end fixed; only the playthrough
+                // unit and ripple marks rescale with speed.
+                onDraftChange({
+                  ...draft,
+                  speed: Math.abs(nextSpeed - 1) < 0.001 ? undefined : nextSpeed,
+                  timelineDurationSec: duration,
+                });
+              }}
+            />
+            <span className="muted">×</span>
+          </label>
           <label className="editor-staging-field">
             <span>Duration</span>
             <input
               type="number"
-              min={sourceSpan}
+              min={0.1}
               max={durationMaxSec}
-              step={0.5}
+              step={0.01}
               value={formatDurationInput(duration)}
               onChange={(e) => {
                 const next = Number(e.target.value);
                 if (!Number.isFinite(next) || next <= 0) return;
-                const nextDur = Math.max(sourceSpan, next);
+                const nextDur = Math.max(0.1, next);
+                const collapsed = nextDur <= playthrough + 0.001;
                 const enteringExtend =
-                  !stagedClipTimelineExtended(draft) &&
-                  nextDur > sourceSpan + 0.001;
+                  !stagedClipTimelineExtended(draft) && !collapsed;
                 onDraftChange({
                   ...draft,
-                  timelineDurationSec: nextDur,
+                  timelineDurationSec: collapsed
+                    ? Math.min(nextDur, playthrough)
+                    : nextDur,
                   ...(enteringExtend ? { extendPingPong: true } : {}),
+                  ...(collapsed ? { extendPingPong: false } : {}),
                 });
               }}
             />
@@ -369,14 +403,15 @@ export function StagingFields({
               <input
                 type="checkbox"
                 checked={draft.timelineLocked === true}
-                onChange={(e) =>
+                onChange={(e) => {
                   onDraftChange({
                     ...draft,
                     // Explicit false so applyDraftToTimelineClip unlocks
                     // (undefined preserves the previous locked clip).
+                    // Speed is frozen while Sync is on, but kept as-is.
                     timelineLocked: e.target.checked ? true : false,
-                  })
-                }
+                  });
+                }}
               />
             </label>
           ) : null}

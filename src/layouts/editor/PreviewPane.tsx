@@ -87,7 +87,8 @@ import {
 } from "./AddAssetGeneratePanel";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import { isAddAssetPlaceholderClip } from "./stagedClip";
-import type { AddAssetGeneration } from "../../project/types";
+import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
+import { GeneratedClipBadge } from "./GeneratedClipBadge";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -102,6 +103,7 @@ type PreviewPaneProps = {
   mainAudioCreationId?: string | null;
   onStartAddAssetGeneration?: (request: StartAddAssetGenerationRequest) => void;
   onAddAssetDurationChange?: (durationSec: number) => void;
+  onAddAssetDraftChange?: (draft: AddAssetDraft) => void;
   onClearAddAssetGenerationError?: () => void;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
@@ -158,6 +160,8 @@ type PreviewPaneProps = {
   /** Shared preview volume (0–100). */
   volume?: number;
   onVolumeChange?: (volume: number) => void;
+  /** Play/pause the timeline (used when generate panel is focused, no field active). */
+  onToggleTimelinePlay?: () => void;
 };
 
 type Size = { w: number; h: number };
@@ -265,6 +269,20 @@ function SourceLabelIcon({
   );
 }
 
+/** Fields and controls that should keep Space for their own behavior. */
+function isPreviewInteractiveKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    tag === "BUTTON" ||
+    tag === "A" ||
+    target.isContentEditable
+  );
+}
+
 export function PreviewPane({
   assetId,
   addAssetMode = false,
@@ -275,6 +293,7 @@ export function PreviewPane({
   mainAudioCreationId = null,
   onStartAddAssetGeneration,
   onAddAssetDurationChange,
+  onAddAssetDraftChange,
   onClearAddAssetGenerationError,
   selectedAssetIds = [],
   projectCabinets = null,
@@ -300,6 +319,7 @@ export function PreviewPane({
   onExpandAssets,
   volume: volumeProp,
   onVolumeChange,
+  onToggleTimelinePlay,
 }: PreviewPaneProps) {
   const [creation, setCreation] = useState<Creation | null>(null);
   const [selectionClass, setSelectionClass] =
@@ -329,6 +349,9 @@ export function PreviewPane({
   const appliedSeedKeyRef = useRef<string | null>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const paneRef = useRef<HTMLElement | null>(null);
+  const togglePlayRef = useRef<() => void>(() => {});
+  const toggleTimelinePlayRef = useRef<(() => void) | undefined>(undefined);
   const playingRef = useRef(false);
   const frameRef = useRef<HTMLDivElement>(null);
   const onClipDraftChangeRef = useRef(onClipDraftChange);
@@ -814,6 +837,7 @@ export function PreviewPane({
         prev.inSec === stagingSeed.inSec &&
         prev.outSec === stagingSeed.outSec &&
         prev.timelineDurationSec === stagingSeed.timelineDurationSec &&
+        prev.speed === stagingSeed.speed &&
         prev.extendPingPong === stagingSeed.extendPingPong &&
         prev.extendBakeKey === stagingSeed.extendBakeKey &&
         prev.extendBakePath === stagingSeed.extendBakePath
@@ -825,6 +849,7 @@ export function PreviewPane({
         inSec: stagingSeed.inSec,
         outSec: stagingSeed.outSec,
         timelineDurationSec: stagingSeed.timelineDurationSec,
+        speed: stagingSeed.speed,
         extendPingPong: stagingSeed.extendPingPong,
         extendBakeKey: stagingSeed.extendBakeKey,
         extendBakePath: stagingSeed.extendBakePath,
@@ -835,6 +860,7 @@ export function PreviewPane({
     stagingSeed?.inSec,
     stagingSeed?.outSec,
     stagingSeed?.timelineDurationSec,
+    stagingSeed?.speed,
     stagingSeed?.extendPingPong,
     stagingSeed?.extendBakeKey,
     stagingSeed?.extendBakePath,
@@ -1286,6 +1312,43 @@ export function PreviewPane({
       setPlaying(false);
     }
   };
+  togglePlayRef.current = onTogglePlay;
+  toggleTimelinePlayRef.current = onToggleTimelinePlay;
+
+  // Space toggles play/pause when the preview pane is focused and focus isn't
+  // in a field or other interactive control (staging / generate forms).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code !== "Space" && event.key !== " ") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isPreviewInteractiveKeyboardTarget(event.target)) return;
+      const pane = paneRef.current;
+      const active = document.activeElement;
+      if (
+        !pane ||
+        !active ||
+        (active !== pane && !pane.contains(active))
+      ) {
+        return;
+      }
+
+      // Source media transport (clip / asset preview).
+      if (monitorMode === "source" && !addAssetMode && canPlay) {
+        event.preventDefault();
+        togglePlayRef.current();
+        return;
+      }
+
+      // Generate panel: no source transport — play/pause the timeline instead.
+      if (addAssetMode && toggleTimelinePlayRef.current) {
+        event.preventDefault();
+        toggleTimelinePlayRef.current();
+      }
+    };
+
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [monitorMode, addAssetMode, canPlay]);
 
   const seekTo = (sec: number, options?: { trim?: boolean }) => {
     void options;
@@ -1462,10 +1525,19 @@ export function PreviewPane({
 
   return (
     <section
+      ref={paneRef}
       className={`editor-preview-pane${
         showAssetsExpand ? " has-assets-expand" : ""
       }`}
       aria-label="Preview"
+      tabIndex={-1}
+      onPointerDown={(event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        // Keep focus in fields/buttons; otherwise arm the pane for Space.
+        if (isPreviewInteractiveKeyboardTarget(target)) return;
+        event.currentTarget.focus({ preventScroll: true });
+      }}
     >
       {showAssetsExpand ? (
         <button
@@ -1524,6 +1596,7 @@ export function PreviewPane({
                     onStartAddAssetGeneration?.(request)
                   }
                   onDurationChange={onAddAssetDurationChange}
+                  onDraftChange={onAddAssetDraftChange}
                   onClearError={onClearAddAssetGenerationError}
                 />
               ) : (
@@ -1637,13 +1710,25 @@ export function PreviewPane({
             ) : null}
           </div>
 
-          {sourceLabelText ? (
-            <div
-              className="editor-preview-source-label"
-              data-source={sourceKind ?? (showAddAssetGenerate ? "generate" : undefined)}
-            >
-              <SourceLabelIcon kind={sourceKind} />
-              <span>{sourceLabelText}</span>
+          {sourceLabelText || selectedClipAddAssetGeneration ? (
+            <div className="editor-preview-source-row">
+              {sourceLabelText ? (
+                <div
+                  className="editor-preview-source-label"
+                  data-source={
+                    sourceKind ??
+                    (showAddAssetGenerate ? "generate" : undefined)
+                  }
+                >
+                  <SourceLabelIcon kind={sourceKind} />
+                  <span>{sourceLabelText}</span>
+                </div>
+              ) : null}
+              {selectedClipAddAssetGeneration ? (
+                <GeneratedClipBadge
+                  generation={selectedClipAddAssetGeneration}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1690,7 +1775,7 @@ export function PreviewPane({
                   type="button"
                   className="editor-transport-icon is-play"
                   disabled={!transportCanPlay}
-                  title={playing ? "Pause" : "Play"}
+                  title={playing ? "Pause (Space)" : "Play (Space)"}
                   aria-label={playing ? "Pause" : "Play"}
                   onClick={onTogglePlay}
                 >
@@ -1809,7 +1894,6 @@ export function PreviewPane({
                       ? bakeInfo
                       : null
                   }
-                  addAssetGeneration={selectedClipAddAssetGeneration}
                 />
               ) : assetId ? (
                 <div

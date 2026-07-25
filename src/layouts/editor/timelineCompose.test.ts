@@ -5,6 +5,7 @@ import {
   clipSourceSpanSec,
   clipIsTimelineExtended,
   clipExtendDivitFraction,
+  finalizeVideoResizeEndSec,
   peekNextVisualClip,
   resolveTimelineFrame,
   timelineSequenceDuration,
@@ -69,6 +70,25 @@ describe("clipSourceSec", () => {
     expect(clipSourceSpanSec(c)).toBe(5);
     expect(clipSourceSec(c, 6)).toBe(1);
     expect(clipSourceSec(c, 7)).toBe(2);
+  });
+
+  it("maps source through speed without moving clip ends", () => {
+    const c = clip({
+      id: "v",
+      startSec: 0,
+      endSec: 5,
+      inSec: 0,
+      outSec: 4,
+      kind: "video",
+      speed: 2,
+    });
+    // Playthrough = 4/2 = 2s; timeline 5s stays put → extended.
+    expect(clipSourceSec(c, 1)).toBe(2);
+    expect(clipSourceSec(c, 2.5)).toBe(1);
+    expect(clipIsTimelineExtended(c)).toBe(true);
+    expect(clipExtendDivitFraction(c)).toBeCloseTo(2 / 5);
+    expect(c.startSec).toBe(0);
+    expect(c.endSec).toBe(5);
   });
 
   it("ping-pongs extended video past the source trim", () => {
@@ -230,5 +250,41 @@ describe("peekNextVisualClip", () => {
 
   it("returns null when nothing follows", () => {
     expect(peekNextVisualClip(clips, 35)).toBeNull();
+  });
+});
+
+describe("finalizeVideoResizeEndSec", () => {
+  it("keeps an exact source-length collapse when 0.1s end snap would re-extend", () => {
+    // startSec with subframe precision (e.g. 44:14 @ 30fps) + source 6.5s
+    // rounds end upward on a 0.1s grid and would re-enter extend.
+    const startSec = 44 + 14 / 30;
+    const sourceSpanSec = 6.5;
+    const pointerEndSec = startSec + sourceSpanSec;
+    const snappedEndSec = Math.round(pointerEndSec * 10) / 10;
+    expect(snappedEndSec - startSec).toBeGreaterThan(sourceSpanSec + 0.001);
+
+    const endSec = finalizeVideoResizeEndSec({
+      startSec,
+      pointerEndSec,
+      snappedEndSec,
+      sourceSpanSec,
+    });
+    expect(endSec).toBeCloseTo(startSec + sourceSpanSec, 6);
+    expect(endSec - startSec).toBeLessThanOrEqual(sourceSpanSec + 0.001);
+  });
+
+  it("preserves snapped length when the user intentionally extended", () => {
+    const startSec = 10;
+    const sourceSpanSec = 6.5;
+    const pointerEndSec = startSec + 8.2;
+    const snappedEndSec = startSec + 8.0;
+    expect(
+      finalizeVideoResizeEndSec({
+        startSec,
+        pointerEndSec,
+        snappedEndSec,
+        sourceSpanSec,
+      }),
+    ).toBe(snappedEndSec);
   });
 });

@@ -196,13 +196,21 @@ export function HookLayout() {
 
     void listen<RenderProgress>("publisher-render-progress", (event) => {
       if (event.payload.projectId !== project.id) return;
-      setRenders((current) =>
-        current.map((render) =>
-          render.id === event.payload.renderId
-            ? { ...render, progress: event.payload }
+      setRenders((current) => {
+        const index = current.findIndex(
+          (render) => render.id === event.payload.renderId,
+        );
+        if (index < 0) {
+          // Progress can arrive before the pending row is inserted; ignore —
+          // the next tick after setRenders(created) will catch up via refresh.
+          return current;
+        }
+        return current.map((render, i) =>
+          i === index
+            ? { ...render, status: "rendering", progress: event.payload }
             : render,
-        ),
-      );
+        );
+      });
     }).then((fn) => {
       unlistenProgress = fn;
     });
@@ -219,6 +227,16 @@ export function HookLayout() {
       unlistenFinished?.();
     };
   }, [project.id, refreshRenders]);
+
+  // Poll while any row is rendering so a missed event / mid-render list heal
+  // cannot leave the UI frozen on "Starting FFmpeg…".
+  useEffect(() => {
+    if (!renders.some((render) => render.status === "rendering")) return;
+    const id = window.setInterval(() => {
+      void refreshRenders();
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [renders, refreshRenders]);
 
   const seekTo = useCallback(
     (sec: number) => {
@@ -762,7 +780,6 @@ export function HookLayout() {
                     <button
                       type="button"
                       className="btn ghost hook-render-delete"
-                      disabled={rendering}
                       aria-label={`Delete render from ${formatRenderStamp(render.createdAt)}`}
                       onClick={() => {
                         void deleteRender(render);

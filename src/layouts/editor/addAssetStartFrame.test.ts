@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { TimelineClip } from "../../project/types";
 import {
   clipSongTimeRangeFromTimeline,
+  firstFrameSourceSec,
   lastFrameSourceSec,
+  nextVideoClipAfter,
   priorVideoClipBefore,
   resolveAddAssetGenerationTiming,
   resolveEditorMainAudioCreationId,
   timelineSecToSongSec,
+  visualLayerAfterPlaceholder,
   visualLayerBeforePlaceholder,
 } from "./addAssetStartFrame";
 import { resolveTimelineFrame } from "./timelineCompose";
@@ -147,6 +150,106 @@ describe("priorVideoClipBefore", () => {
   });
 });
 
+describe("nextVideoClipAfter", () => {
+  it("picks the immediately following clip, not a later one", () => {
+    const timeline = [
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 19,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+      clip({ id: "next", startSec: 19, endSec: 28, assetId: "n" }),
+      clip({ id: "later", startSec: 40, endSec: 50, assetId: "l" }),
+    ];
+    expect(nextVideoClipAfter(timeline, 19, "placeholder")?.id).toBe("next");
+  });
+
+  it("ignores other placeholders", () => {
+    const timeline = [
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 19,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+      clip({
+        id: "other-ghost",
+        startSec: 19,
+        endSec: 28,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+      clip({ id: "real", startSec: 30, endSec: 40, assetId: "r" }),
+    ];
+    expect(nextVideoClipAfter(timeline, 19, "placeholder")?.id).toBe("real");
+  });
+
+  it("returns null when nothing follows", () => {
+    const timeline = [
+      clip({ id: "prior", startSec: 0, endSec: 10, assetId: "p" }),
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 19,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+    ];
+    expect(nextVideoClipAfter(timeline, 19, "placeholder")).toBeNull();
+  });
+});
+
+describe("bridge neighbor availability", () => {
+  it("has both neighbors when placeholder sits between filled clips", () => {
+    const timeline = [
+      clip({ id: "prior", startSec: 0, endSec: 10, assetId: "p" }),
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 19,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+      clip({ id: "next", startSec: 19, endSec: 28, assetId: "n" }),
+    ];
+    expect(priorVideoClipBefore(timeline, 10, "placeholder")?.id).toBe("prior");
+    expect(nextVideoClipAfter(timeline, 19, "placeholder")?.id).toBe("next");
+  });
+
+  it("missing next means no bridge", () => {
+    const timeline = [
+      clip({ id: "prior", startSec: 0, endSec: 10, assetId: "p" }),
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 19,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+    ];
+    expect(priorVideoClipBefore(timeline, 10, "placeholder")?.id).toBe("prior");
+    expect(nextVideoClipAfter(timeline, 19, "placeholder")).toBeNull();
+  });
+
+  it("missing prior means no bridge", () => {
+    const timeline = [
+      clip({
+        id: "placeholder",
+        startSec: 0,
+        endSec: 9,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+      clip({ id: "next", startSec: 9, endSec: 18, assetId: "n" }),
+    ];
+    expect(priorVideoClipBefore(timeline, 0, "placeholder")).toBeNull();
+    expect(nextVideoClipAfter(timeline, 9, "placeholder")?.id).toBe("next");
+  });
+});
+
 describe("lastFrameSourceSec", () => {
   it("uses timeline duration when outSec extends past the visible clip", () => {
     const prior = clip({
@@ -170,6 +273,20 @@ describe("lastFrameSourceSec", () => {
       kind: "video",
     });
     expect(lastFrameSourceSec(prior)).toBeCloseTo(7.55, 2);
+  });
+});
+
+describe("firstFrameSourceSec", () => {
+  it("uses the clip in-point at timeline start", () => {
+    const next = clip({
+      id: "v",
+      startSec: 20,
+      endSec: 30,
+      inSec: 2.5,
+      outSec: 12.5,
+      kind: "video",
+    });
+    expect(firstFrameSourceSec(next)).toBeCloseTo(2.5, 2);
   });
 });
 
@@ -212,6 +329,31 @@ describe("visualLayerBeforePlaceholder", () => {
     expect(visualLayerBeforePlaceholder(timeline, timeline[1]!)?.clip.id).toBe(
       "still",
     );
+  });
+});
+
+describe("visualLayerAfterPlaceholder", () => {
+  it("resolves the clip visible just after the placeholder ends", () => {
+    const timeline = [
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 19,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+      clip({
+        id: "next",
+        startSec: 19,
+        endSec: 28,
+        assetId: "n",
+        inSec: 1,
+        outSec: 10,
+      }),
+    ];
+    const layer = visualLayerAfterPlaceholder(timeline, timeline[0]!);
+    expect(layer?.clip.id).toBe("next");
+    expect(layer?.sourceSec).toBeCloseTo(1, 2);
   });
 });
 
