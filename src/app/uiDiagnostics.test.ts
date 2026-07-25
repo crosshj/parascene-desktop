@@ -36,11 +36,12 @@ describe("uiDiagnostics", () => {
       activePointerCaptures: [],
       gestureProviders: {},
       stagedClipDrag: { active: false, kind: null },
-      stagedClipDragTrace: [
+      uiOpTrace: [
         {
           t: "2026-01-01T00:00:00.000Z",
-          type: "reject_not_over_tracks",
-          overTracks: false,
+          type: "render_media_ensure_fail",
+          ids: "19512",
+          reason: "missing_local_path_after_download",
         },
       ],
       openModals: [],
@@ -52,8 +53,8 @@ describe("uiDiagnostics", () => {
     const text = formatUiDiagnosticsReport(report);
     expect(text).toContain("Parascene UI diagnostics");
     expect(text).toContain("main.app-main");
-    expect(text).toContain("Staged clip drag trace");
-    expect(text).toContain("reject_not_over_tracks");
+    expect(text).toContain("UI op trace");
+    expect(text).toContain("render_media_ensure_fail");
   });
 
   it("tracks pointer capture after spy install", () => {

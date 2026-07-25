@@ -13,6 +13,7 @@ import {
   deleteTimelineRender,
   exportTimelineRender,
   listTimelineRenders,
+  collectRenderAssetIds,
   renderTimeline,
   timelineClipsToRenderInput,
   type RenderFinished,
@@ -357,16 +358,27 @@ export function HookLayout() {
 
   const runRender = async () => {
     if (!hasTimeline) return;
+    const clips = timelineClipsToRenderInput(project.timeline);
+    const mediaIds = collectRenderAssetIds(clips);
     setRenderModal({
       phase: "running",
       clipCount: project.timeline.length,
-      progress: null,
+      progress:
+        mediaIds.length > 0
+          ? {
+              projectId: project.id,
+              renderId: "",
+              phase: "download",
+              done: 0,
+              total: mediaIds.length,
+            }
+          : null,
     });
     try {
       const created = await renderTimeline(
         project.id,
         project.aspectRatio,
-        timelineClipsToRenderInput(project.timeline),
+        clips,
       );
       setRenderModal(null);
       setRenders((current) => [

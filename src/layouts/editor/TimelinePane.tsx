@@ -44,9 +44,8 @@ import {
 } from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 import {
-  recordStagedClipDragTrace,
-  scrollRectSnapshot,
-} from "./stagedClipDragTrace";
+  recordUiOpTrace,
+} from "./uiOpTrace";
 import { laneAppendStartSec } from "./timelineAppend";
 import {
   getActiveStagedClipDrag,
@@ -1401,26 +1400,12 @@ export function TimelinePane({
 
   const placeDraftAt = useCallback(
     (draft: StagedClipDraft, clientX: number, clientY: number) => {
-      const scrollEl = scrollRef.current;
       const over = isOverTracks(clientX, clientY);
-      recordStagedClipDragTrace({
-        type: "drop_received",
-        x: clientX,
-        y: clientY,
-        overTracks: over,
-        scrollRect: scrollRectSnapshot(scrollEl),
-        kind: draft.kind,
-        reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
-      });
       if (!over) {
-        recordStagedClipDragTrace({
-          type: "reject_not_over_tracks",
-          x: clientX,
-          y: clientY,
-          overTracks: false,
-          scrollRect: scrollRectSnapshot(scrollEl),
+        recordUiOpTrace({
+          type: "place_reject_not_over_tracks",
           kind: draft.kind,
-          reason: "isOverTracks_false",
+          reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
         });
         return;
       }
@@ -1439,14 +1424,11 @@ export function TimelinePane({
       commitClips([...clips, placed]);
       onSelectClipRef.current?.(placed);
       setGhost(null);
-      recordStagedClipDragTrace({
+      recordUiOpTrace({
         type: "placed",
-        x: clientX,
-        y: clientY,
-        overTracks: true,
         clipId: placed.id,
         kind: draft.kind,
-        reason: `startSec=${startSec.toFixed(2)}`,
+        reason: `drop startSec=${startSec.toFixed(2)} addAsset=${draft.isAddAssetPlaceholder === true}`,
       });
     },
     [
@@ -1471,11 +1453,11 @@ export function TimelinePane({
       commitClips([...clips, placed]);
       onSelectClipRef.current?.(placed);
       setGhost(null);
-      recordStagedClipDragTrace({
+      recordUiOpTrace({
         type: "placed",
         clipId: placed.id,
         kind: draft.kind,
-        reason: `append startSec=${startSec.toFixed(2)}`,
+        reason: `append startSec=${startSec.toFixed(2)} addAsset=${draft.isAddAssetPlaceholder === true}`,
       });
     },
     [clips, commitClips],
@@ -1532,11 +1514,6 @@ export function TimelinePane({
       const custom = event as CustomEvent<PointerPlaceDetail>;
       const detail = custom.detail;
       if (!detail?.draft) return;
-      recordStagedClipDragTrace({
-        type: "place_at_end",
-        kind: detail.draft.kind,
-        reason: detail.draft.isAddAssetPlaceholder ? "add_asset" : "staged",
-      });
       placeDraftAtEnd(detail.draft);
     };
     window.addEventListener("parascene-staged-clip-drop", onPointerDrop);

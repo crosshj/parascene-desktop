@@ -1,10 +1,10 @@
 import { abortEditorGestures, releasePointerCaptureSafe } from "../layouts/editor/gestureCleanup";
 import { getActiveStagedClipDrag } from "../layouts/editor/stagedClip";
 import {
-  formatStagedClipDragTrace,
-  getStagedClipDragTrace,
-  type StagedClipDragTraceEvent,
-} from "../layouts/editor/stagedClipDragTrace";
+  formatUiOpTrace,
+  getUiOpTrace,
+  type UiOpTraceEvent,
+} from "../layouts/editor/uiOpTrace";
 
 export type PointerCaptureRecord = {
   tag: string;
@@ -29,7 +29,8 @@ export type UiDiagnosticsReport = {
   activePointerCaptures: PointerCaptureRecord[];
   gestureProviders: Record<string, Record<string, unknown>>;
   stagedClipDrag: { active: boolean; kind: string | null };
-  stagedClipDragTrace: StagedClipDragTraceEvent[];
+  /** Editor + publisher op ring buffer (place, timeline patch, render media). */
+  uiOpTrace: UiOpTraceEvent[];
   openModals: string[];
   centerHitTarget: string | null;
   centerHitStack: string[];
@@ -223,24 +224,37 @@ function buildNotes(report: Omit<UiDiagnosticsReport, "notes">): string[] {
     );
   }
 
-  const trace = report.stagedClipDragTrace;
+  const trace = report.uiOpTrace;
   if (trace.length > 0) {
     const last = trace[trace.length - 1];
     notes.push(
-      `Staged clip drag trace has ${trace.length} event(s); last=${last?.type ?? "?"}.`,
+      `UI op trace has ${trace.length} event(s); last=${last?.type ?? "?"}.`,
     );
-    if (trace.some((row) => row.type === "reject_not_over_tracks")) {
+    if (trace.some((row) => row.type === "add_asset_draft_patch" && row.reason === "SKIP_MISSING_CLIP")) {
       notes.push(
-        "Drop was rejected as not over timeline tracks (see Staged clip drag trace).",
+        "Add-asset draft patch skipped — clip missing from timeline (possible wipe race).",
       );
     }
-    if (
-      trace.some((row) => row.type === "endDrag" && row.drop === false) ||
-      trace.some((row) => row.type === "gesture_abort")
-    ) {
+    if (trace.some((row) => row.type === "timeline_commit" && row.reason?.includes("removed="))) {
+      const wipe = [...trace]
+        .reverse()
+        .find(
+          (row) =>
+            row.type === "timeline_commit" &&
+            row.reason &&
+            !row.reason.includes("removed=none"),
+        );
+      if (wipe) {
+        notes.push(`Timeline commit removed clips: ${wipe.reason}`);
+      }
+    }
+    if (trace.some((row) => row.type === "render_media_ensure_fail")) {
       notes.push(
-        "Staged clip drag ended without requesting a drop (abort or drop=false).",
+        "Scratch render could not get local media after download (see UI op trace).",
       );
+    }
+    if (trace.some((row) => row.type === "render_media_ensure_ok")) {
+      notes.push("Scratch render media ensure succeeded before FFmpeg.");
     }
   }
 
@@ -309,7 +323,7 @@ export function collectUiDiagnostics(): UiDiagnosticsReport {
       active: staged != null,
       kind: staged?.kind ?? null,
     },
-    stagedClipDragTrace: [...getStagedClipDragTrace()],
+    uiOpTrace: [...getUiOpTrace()],
     openModals: collectOpenModals(),
     centerHitTarget: center.target,
     centerHitStack: center.stack,
@@ -375,8 +389,8 @@ export function formatUiDiagnosticsReport(report: UiDiagnosticsReport): string {
       ? report.viewportOverlays.map((row) => `  ${row}`).join("\n")
       : "  (none)",
     "",
-    "Staged clip drag trace",
-    formatStagedClipDragTrace(report.stagedClipDragTrace),
+    "UI op trace (place / timeline / render media)",
+    formatUiOpTrace(report.uiOpTrace),
     "",
     "Gesture providers",
     JSON.stringify(report.gestureProviders, null, 2),

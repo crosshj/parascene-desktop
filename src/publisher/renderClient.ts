@@ -5,6 +5,9 @@ import {
   type SlideshowMode,
   type TimelineClip,
 } from "../project/types";
+import { downloadIds, getCreations } from "../library/catalogClient";
+import { ensureAccessToken } from "../auth/session";
+import { recordUiOpTrace } from "../layouts/editor/uiOpTrace";
 
 export type RenderSlideshowRecipe = {
   imageAssetIds: string[];
@@ -106,6 +109,77 @@ export function timelineClipsToRenderInput(
   }));
 }
 
+/** Unique catalog ids a timeline render needs on disk (full media). */
+export function collectRenderAssetIds(
+  clips: readonly RenderTimelineClipInput[],
+): string[] {
+  const ids = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    const id = typeof value === "string" ? value.trim() : "";
+    if (id) ids.add(id);
+  };
+  for (const clip of clips) {
+    add(clip.assetId);
+    const slideshow = clip.slideshow;
+    if (!slideshow) continue;
+    for (const imageId of slideshow.imageAssetIds) add(imageId);
+    add(slideshow.audioAssetId);
+  }
+  return Array.from(ids);
+}
+
+/**
+ * Download any missing full media for a render, then verify local paths.
+ * `downloadIds` blocks until the batch finishes (unlike ensureLocal enqueue).
+ */
+export async function ensureRenderMediaLocal(
+  clips: readonly RenderTimelineClipInput[],
+): Promise<void> {
+  const ids = collectRenderAssetIds(clips);
+  if (ids.length === 0) {
+    recordUiOpTrace({
+      type: "render_media_ensure_skip",
+      reason: "no_asset_ids",
+    });
+    return;
+  }
+
+  recordUiOpTrace({
+    type: "render_media_ensure_start",
+    count: ids.length,
+    ids: ids.slice(0, 8).join(","),
+  });
+
+  // Unpublished full media needs a live bearer before Rust downloads.
+  await ensureAccessToken();
+  await downloadIds(ids);
+
+  const rows = await getCreations(ids);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const missing = ids.filter((id) => !byId.get(id)?.localPath?.trim());
+  if (missing.length === 0) {
+    recordUiOpTrace({
+      type: "render_media_ensure_ok",
+      count: ids.length,
+      ids: ids.slice(0, 8).join(","),
+    });
+    return;
+  }
+
+  recordUiOpTrace({
+    type: "render_media_ensure_fail",
+    count: missing.length,
+    ids: missing.slice(0, 8).join(","),
+    reason: "missing_local_path_after_download",
+  });
+
+  throw new Error(
+    missing.length === 1
+      ? `Could not download local media for ${missing[0]}. Sync it in Library, then try again.`
+      : `Could not download local media for ${missing.length} assets (${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}). Sync them in Library, then try again.`,
+  );
+}
+
 export async function listTimelineRenders(
   projectId: string,
 ): Promise<TimelineRender[]> {
@@ -117,6 +191,12 @@ export async function renderTimeline(
   aspectRatio: ProjectAspectRatio,
   clips: RenderTimelineClipInput[],
 ): Promise<TimelineRender> {
+  await ensureRenderMediaLocal(clips);
+  recordUiOpTrace({
+    type: "render_ffmpeg_start",
+    count: clips.length,
+    reason: `project=${projectId} aspect=${aspectRatio}`,
+  });
   return invoke<TimelineRender>("publisher_render_timeline", {
     projectId,
     aspectRatio,

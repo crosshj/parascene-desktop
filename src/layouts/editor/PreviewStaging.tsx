@@ -27,7 +27,7 @@ import {
   subscribeGestureAbort,
 } from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
-import { recordStagedClipDragTrace } from "./stagedClipDragTrace";
+import { recordUiOpTrace } from "./uiOpTrace";
 
 /** Per-mode label + endpoint hints for the sensitivity dial. */
 const SENSITIVITY_LABELS: Record<
@@ -545,7 +545,7 @@ export function ClipPlaceHandle({ draft }: ClipPlaceHandleProps) {
       title={`Place on ${laneLabel} after the last clip (no overlap)`}
       aria-label={`Place prepared clip on ${laneLabel} at end of track`}
       onClick={() => {
-        recordStagedClipDragTrace({
+        recordUiOpTrace({
           type: "place_at_end_click",
           kind: draft.kind,
           reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
@@ -589,18 +589,14 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
       cleanup?.();
 
       const wasDragging = draggingRef.current;
-      const last = lastPointerRef.current;
-      recordStagedClipDragTrace({
-        type: "endDrag",
-        pointerId: pointerIdRef.current,
-        x: clientX,
-        y: clientY,
-        lastMoveX: last.x,
-        lastMoveY: last.y,
-        drop: drop && wasDragging,
-        reason: wasDragging ? reason : `${reason}_not_dragging`,
-        kind: draftRef.current.kind,
-      });
+      // Only log failed / aborted ends — successful drops are traced at place.
+      if (!(drop && wasDragging)) {
+        recordUiOpTrace({
+          type: "drag_end_no_drop",
+          kind: draftRef.current.kind,
+          reason: wasDragging ? reason : `${reason}_not_dragging`,
+        });
+      }
       document.body.classList.remove("is-staged-clip-dragging");
       releasePointerCaptureSafe(captureTargetRef.current, pointerIdRef.current);
       captureTargetRef.current = null;
@@ -625,16 +621,6 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
 
   const abortDrag = useCallback(() => {
     if (!originRef.current && !draggingRef.current) return;
-    recordStagedClipDragTrace({
-      type: "gesture_abort",
-      pointerId: pointerIdRef.current,
-      x: lastPointerRef.current.x,
-      y: lastPointerRef.current.y,
-      lastMoveX: lastPointerRef.current.x,
-      lastMoveY: lastPointerRef.current.y,
-      drop: false,
-      kind: draftRef.current.kind,
-    });
     endDrag(
       lastPointerRef.current.x,
       lastPointerRef.current.y,
@@ -675,14 +661,6 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     originRef.current = { x: event.clientX, y: event.clientY };
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
     draggingRef.current = false;
-    recordStagedClipDragTrace({
-      type: "pointerdown",
-      pointerType: event.pointerType,
-      pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      kind: draftRef.current.kind,
-    });
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId || !originRef.current) return;
@@ -696,14 +674,6 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
         draggingRef.current = true;
         setActiveStagedClipDrag(draftRef.current);
         document.body.classList.add("is-staged-clip-dragging");
-        recordStagedClipDragTrace({
-          type: "drag_armed",
-          pointerType: ev.pointerType,
-          pointerId,
-          x: ev.clientX,
-          y: ev.clientY,
-          kind: draftRef.current.kind,
-        });
       }
       setStagedClipPointer({ x: ev.clientX, y: ev.clientY });
     };
@@ -716,16 +686,6 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
 
     const finish = (ev: PointerEvent, reason: string) => {
       if (ev.pointerId !== pointerId) return;
-      recordStagedClipDragTrace({
-        type: reason,
-        pointerType: ev.pointerType,
-        pointerId,
-        x: ev.clientX,
-        y: ev.clientY,
-        lastMoveX: lastPointerRef.current.x,
-        lastMoveY: lastPointerRef.current.y,
-        kind: draftRef.current.kind,
-      });
       // Prefer last move point — cancel/up coords are unreliable on WebView2.
       endDrag(lastPointerRef.current.x, lastPointerRef.current.y, true, reason);
     };

@@ -69,6 +69,7 @@ import {
   subscribeGestureAbort,
 } from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
+import { recordUiOpTrace } from "./uiOpTrace";
 import { TimelinePane } from "./TimelinePane";
 import {
   clipInSec,
@@ -1310,7 +1311,23 @@ export function EditorLayout() {
       // Keep ref in sync during the same event turn so child effects (e.g.
       // AddAssetGeneratePanel mount persist) do not rewrite a stale timeline
       // and wipe a just-placed placeholder.
+      const prev = timelineRef.current;
+      const prevIds = new Set(prev.map((c) => c.id));
+      const added = next
+        .filter((c) => !prevIds.has(c.id))
+        .map((c) => c.id);
+      const removed = prev
+        .filter((c) => !next.some((n) => n.id === c.id))
+        .map((c) => c.id);
       timelineRef.current = next;
+      if (!options?.live) {
+        recordUiOpTrace({
+          type: "timeline_commit",
+          count: next.length,
+          clipId: added[0],
+          reason: `${prev.length}->${next.length} added=${added.slice(0, 3).join(",") || "none"} removed=${removed.slice(0, 3).join(",") || "none"}`,
+        });
+      }
       if (options?.live) {
         setLiveTimeline(next);
         syncClipStagingFromTimeline(next);
@@ -1862,7 +1879,16 @@ export function EditorLayout() {
           const clip = generateTargetClip;
           if (!clip) return;
           setOpenProjectTimeline((prev) => {
-            if (!prev.some((c) => c.id === clip.id)) return prev;
+            const found = prev.some((c) => c.id === clip.id);
+            recordUiOpTrace({
+              type: "add_asset_duration_patch",
+              clipId: clip.id,
+              count: prev.length,
+              reason: found
+                ? `ok duration=${durationSec}`
+                : "SKIP_MISSING_CLIP",
+            });
+            if (!found) return prev;
             const next = prev.map((c) =>
               c.id === clip.id ? withAddAssetDuration(c, durationSec) : c,
             );
@@ -1874,7 +1900,14 @@ export function EditorLayout() {
           const clip = generateTargetClip;
           if (!clip) return;
           setOpenProjectTimeline((prev) => {
-            if (!prev.some((c) => c.id === clip.id)) return prev;
+            const found = prev.some((c) => c.id === clip.id);
+            recordUiOpTrace({
+              type: "add_asset_draft_patch",
+              clipId: clip.id,
+              count: prev.length,
+              reason: found ? "ok" : "SKIP_MISSING_CLIP",
+            });
+            if (!found) return prev;
             const next = prev.map((c) =>
               c.id === clip.id ? { ...c, addAssetDraft: draft } : c,
             );

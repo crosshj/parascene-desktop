@@ -15,6 +15,11 @@ type PublisherRenderModalProps = {
 
 function progressLabel(progress: RenderProgress | null): string {
   if (!progress) return "Starting render…";
+  if (progress.phase === "download") {
+    return progress.total > 0
+      ? `Downloading media (${progress.total} asset${progress.total === 1 ? "" : "s"})…`
+      : "Downloading missing media…";
+  }
   if (progress.phase === "prepare") {
     return `Preparing clips ${progress.done}/${progress.total}…`;
   }
