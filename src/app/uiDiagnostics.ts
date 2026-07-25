@@ -1,5 +1,10 @@
 import { abortEditorGestures, releasePointerCaptureSafe } from "../layouts/editor/gestureCleanup";
 import { getActiveStagedClipDrag } from "../layouts/editor/stagedClip";
+import {
+  formatStagedClipDragTrace,
+  getStagedClipDragTrace,
+  type StagedClipDragTraceEvent,
+} from "../layouts/editor/stagedClipDragTrace";
 
 export type PointerCaptureRecord = {
   tag: string;
@@ -24,6 +29,7 @@ export type UiDiagnosticsReport = {
   activePointerCaptures: PointerCaptureRecord[];
   gestureProviders: Record<string, Record<string, unknown>>;
   stagedClipDrag: { active: boolean; kind: string | null };
+  stagedClipDragTrace: StagedClipDragTraceEvent[];
   openModals: string[];
   centerHitTarget: string | null;
   centerHitStack: string[];
@@ -217,6 +223,27 @@ function buildNotes(report: Omit<UiDiagnosticsReport, "notes">): string[] {
     );
   }
 
+  const trace = report.stagedClipDragTrace;
+  if (trace.length > 0) {
+    const last = trace[trace.length - 1];
+    notes.push(
+      `Staged clip drag trace has ${trace.length} event(s); last=${last?.type ?? "?"}.`,
+    );
+    if (trace.some((row) => row.type === "reject_not_over_tracks")) {
+      notes.push(
+        "Drop was rejected as not over timeline tracks (see Staged clip drag trace).",
+      );
+    }
+    if (
+      trace.some((row) => row.type === "endDrag" && row.drop === false) ||
+      trace.some((row) => row.type === "gesture_abort")
+    ) {
+      notes.push(
+        "Staged clip drag ended without requesting a drop (abort or drop=false).",
+      );
+    }
+  }
+
   if (report.openModals.length > 0) {
     notes.push(
       `Modal dialog open: ${report.openModals.join(", ")}. Backdrop may block clicks until dismissed.`,
@@ -282,6 +309,7 @@ export function collectUiDiagnostics(): UiDiagnosticsReport {
       active: staged != null,
       kind: staged?.kind ?? null,
     },
+    stagedClipDragTrace: [...getStagedClipDragTrace()],
     openModals: collectOpenModals(),
     centerHitTarget: center.target,
     centerHitStack: center.stack,
@@ -346,6 +374,9 @@ export function formatUiDiagnosticsReport(report: UiDiagnosticsReport): string {
     report.viewportOverlays.length > 0
       ? report.viewportOverlays.map((row) => `  ${row}`).join("\n")
       : "  (none)",
+    "",
+    "Staged clip drag trace",
+    formatStagedClipDragTrace(report.stagedClipDragTrace),
     "",
     "Gesture providers",
     JSON.stringify(report.gestureProviders, null, 2),

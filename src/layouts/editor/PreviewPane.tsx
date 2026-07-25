@@ -44,6 +44,7 @@ import {
 } from "./selectionClassify";
 import {
   ClipDragHandle,
+  ClipPlaceHandle,
   ExtendBakeHandle,
   SlideshowRenderHandle,
   StagingFields,
@@ -1872,7 +1873,7 @@ export function PreviewPane({
             <div className="editor-preview-deck-row">
               {addAssetMode ? (
                 <p className="muted editor-staging-empty">
-                  Drop the clip on the timeline to generate a video.
+                  Place or drag the clip onto the timeline to generate a video.
                 </p>
               ) : unsupportedMessage ? (
                 <p className="muted editor-staging-empty">
@@ -1905,12 +1906,18 @@ export function PreviewPane({
                 </p>
               )}
               {addAssetMode && !editingClip ? (
-                <ClipDragHandle draft={ADD_ASSET_DRAG_DRAFT} />
+                <div className="editor-cartridge-actions">
+                  <ClipPlaceHandle draft={ADD_ASSET_DRAG_DRAFT} />
+                  <ClipDragHandle draft={ADD_ASSET_DRAG_DRAFT} />
+                </div>
               ) : canStage &&
               stagedDraft &&
               !editingClip &&
               !unsupportedMessage ? (
-                <ClipDragHandle draft={stagedDraft} />
+                <div className="editor-cartridge-actions">
+                  <ClipPlaceHandle draft={stagedDraft} />
+                  <ClipDragHandle draft={stagedDraft} />
+                </div>
               ) : assetId && !editingClip && !unsupportedMessage ? (
                 <div
                   className="editor-cartridge-grip is-placeholder"

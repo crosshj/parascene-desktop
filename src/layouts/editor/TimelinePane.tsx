@@ -44,6 +44,10 @@ import {
 } from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 import {
+  recordStagedClipDragTrace,
+  scrollRectSnapshot,
+} from "./stagedClipDragTrace";
+import {
   getActiveStagedClipDrag,
   parseStagedClipPayload,
   readStagedClipFromDataTransfer,
@@ -127,6 +131,10 @@ type TimelinePaneProps = {
 type PointerDropDetail = {
   draft: StagedClipDraft;
   point: { x: number; y: number };
+};
+
+type PointerPlaceDetail = {
+  draft: StagedClipDraft;
 };
 
 const DEFAULT_DURATION_SEC = 60;
@@ -1392,7 +1400,29 @@ export function TimelinePane({
 
   const placeDraftAt = useCallback(
     (draft: StagedClipDraft, clientX: number, clientY: number) => {
-      if (!isOverTracks(clientX, clientY)) return;
+      const scrollEl = scrollRef.current;
+      const over = isOverTracks(clientX, clientY);
+      recordStagedClipDragTrace({
+        type: "drop_received",
+        x: clientX,
+        y: clientY,
+        overTracks: over,
+        scrollRect: scrollRectSnapshot(scrollEl),
+        kind: draft.kind,
+        reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
+      });
+      if (!over) {
+        recordStagedClipDragTrace({
+          type: "reject_not_over_tracks",
+          x: clientX,
+          y: clientY,
+          overTracks: false,
+          scrollRect: scrollRectSnapshot(scrollEl),
+          kind: draft.kind,
+          reason: "isOverTracks_false",
+        });
+        return;
+      }
       const lane = targetLaneForDraft(draft);
       const laneClips = clips.filter((c) =>
         lane === "audio"
@@ -1408,6 +1438,15 @@ export function TimelinePane({
       commitClips([...clips, placed]);
       onSelectClipRef.current?.(placed);
       setGhost(null);
+      recordStagedClipDragTrace({
+        type: "placed",
+        x: clientX,
+        y: clientY,
+        overTracks: true,
+        clipId: placed.id,
+        kind: draft.kind,
+        reason: `startSec=${startSec.toFixed(2)}`,
+      });
     },
     [
       clips,
@@ -1416,6 +1455,29 @@ export function TimelinePane({
       magnetic,
       pointToStartSec,
     ],
+  );
+
+  const placeDraftAtPlayhead = useCallback(
+    (draft: StagedClipDraft) => {
+      const lane = targetLaneForDraft(draft);
+      const laneClips = clips.filter((c) =>
+        lane === "audio"
+          ? c.lane === "audio"
+          : (c.lane ?? "video") === "video",
+      );
+      const startSec = snapStartSec(playheadSec, laneClips, magnetic);
+      const placed = draftToClip(draft, startSec, lane, clips);
+      commitClips([...clips, placed]);
+      onSelectClipRef.current?.(placed);
+      setGhost(null);
+      recordStagedClipDragTrace({
+        type: "placed",
+        clipId: placed.id,
+        kind: draft.kind,
+        reason: `playhead startSec=${startSec.toFixed(2)}`,
+      });
+    },
+    [clips, commitClips, magnetic, playheadSec],
   );
 
   const syncGhostFromPoint = useCallback(
@@ -1465,11 +1527,27 @@ export function TimelinePane({
       if (!detail?.draft || !detail.point) return;
       placeDraftAt(detail.draft, detail.point.x, detail.point.y);
     };
+    const onPlaceAtPlayhead = (event: Event) => {
+      const custom = event as CustomEvent<PointerPlaceDetail>;
+      const detail = custom.detail;
+      if (!detail?.draft) return;
+      recordStagedClipDragTrace({
+        type: "place_at_playhead",
+        kind: detail.draft.kind,
+        reason: detail.draft.isAddAssetPlaceholder ? "add_asset" : "staged",
+      });
+      placeDraftAtPlayhead(detail.draft);
+    };
     window.addEventListener("parascene-staged-clip-drop", onPointerDrop);
+    window.addEventListener("parascene-staged-clip-place", onPlaceAtPlayhead);
     return () => {
       window.removeEventListener("parascene-staged-clip-drop", onPointerDrop);
+      window.removeEventListener(
+        "parascene-staged-clip-place",
+        onPlaceAtPlayhead,
+      );
     };
-  }, [placeDraftAt]);
+  }, [placeDraftAt, placeDraftAtPlayhead]);
 
   const isStagedClipDrag = useCallback((event: DragEvent) => {
     if (getActiveStagedClipDrag()) return true;

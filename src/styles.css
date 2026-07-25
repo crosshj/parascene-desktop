@@ -5302,6 +5302,13 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   touch-action: none;
 }
 
+.editor-cartridge-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .editor-cartridge-grip.is-action {
   cursor: pointer;
   -webkit-user-drag: none;

@@ -27,6 +27,7 @@ import {
   subscribeGestureAbort,
 } from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
+import { recordStagedClipDragTrace } from "./stagedClipDragTrace";
 
 /** Per-mode label + endpoint hints for the sensitivity dial. */
 const SENSITIVITY_LABELS: Record<
@@ -68,6 +69,10 @@ type StagingFieldsProps = {
 };
 
 type ClipDragHandleProps = {
+  draft: StagedClipDraft;
+};
+
+type ClipPlaceHandleProps = {
   draft: StagedClipDraft;
 };
 
@@ -529,6 +534,35 @@ export function SlideshowRenderHandle({
 
 const DRAG_THRESHOLD_PX = 4;
 
+/** Place at playhead — no pointer hit-testing (WebView2-safe fallback). */
+export function ClipPlaceHandle({ draft }: ClipPlaceHandleProps) {
+  const lane = targetLaneForDraft(draft);
+  const laneLabel = lane === "audio" ? "A1" : "V1";
+  return (
+    <button
+      type="button"
+      className="editor-cartridge-grip is-action"
+      title="Place on timeline at the playhead"
+      aria-label={`Place prepared clip on ${laneLabel} at playhead`}
+      onClick={() => {
+        recordStagedClipDragTrace({
+          type: "place_at_playhead_click",
+          kind: draft.kind,
+          reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
+        });
+        window.dispatchEvent(
+          new CustomEvent("parascene-staged-clip-place", {
+            detail: { draft },
+          }),
+        );
+      }}
+    >
+      <span className="editor-cartridge-grip-label">Place</span>
+      <span className="editor-cartridge-lane">{laneLabel}</span>
+    </button>
+  );
+}
+
 export function ClipDragHandle({ draft }: ClipDragHandleProps) {
   const lane = targetLaneForDraft(draft);
   const laneLabel = lane === "audio" ? "A1" : "V1";
@@ -543,35 +577,70 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     draftRef.current = draft;
   }, [draft]);
 
-  const endDrag = useCallback((clientX: number, clientY: number, drop: boolean) => {
-    const cleanup = gestureCleanupRef.current;
-    gestureCleanupRef.current = null;
-    cleanup?.();
+  const endDrag = useCallback(
+    (
+      clientX: number,
+      clientY: number,
+      drop: boolean,
+      reason: string,
+    ) => {
+      const cleanup = gestureCleanupRef.current;
+      gestureCleanupRef.current = null;
+      cleanup?.();
 
-    const wasDragging = draggingRef.current;
-    document.body.classList.remove("is-staged-clip-dragging");
-    releasePointerCaptureSafe(captureTargetRef.current, pointerIdRef.current);
-    captureTargetRef.current = null;
-    if (drop && wasDragging) {
-      const dropped = getActiveStagedClipDrag() ?? draftRef.current;
-      window.dispatchEvent(
-        new CustomEvent("parascene-staged-clip-drop", {
-          detail: {
-            draft: dropped,
-            point: { x: clientX, y: clientY },
-          },
-        }),
-      );
-    }
-    draggingRef.current = false;
-    originRef.current = null;
-    pointerIdRef.current = null;
-    clearStagedClipDrag();
-  }, []);
+      const wasDragging = draggingRef.current;
+      const last = lastPointerRef.current;
+      recordStagedClipDragTrace({
+        type: "endDrag",
+        pointerId: pointerIdRef.current,
+        x: clientX,
+        y: clientY,
+        lastMoveX: last.x,
+        lastMoveY: last.y,
+        drop: drop && wasDragging,
+        reason: wasDragging ? reason : `${reason}_not_dragging`,
+        kind: draftRef.current.kind,
+      });
+      document.body.classList.remove("is-staged-clip-dragging");
+      releasePointerCaptureSafe(captureTargetRef.current, pointerIdRef.current);
+      captureTargetRef.current = null;
+      if (drop && wasDragging) {
+        const dropped = getActiveStagedClipDrag() ?? draftRef.current;
+        window.dispatchEvent(
+          new CustomEvent("parascene-staged-clip-drop", {
+            detail: {
+              draft: dropped,
+              point: { x: clientX, y: clientY },
+            },
+          }),
+        );
+      }
+      draggingRef.current = false;
+      originRef.current = null;
+      pointerIdRef.current = null;
+      clearStagedClipDrag();
+    },
+    [],
+  );
 
   const abortDrag = useCallback(() => {
     if (!originRef.current && !draggingRef.current) return;
-    endDrag(lastPointerRef.current.x, lastPointerRef.current.y, false);
+    recordStagedClipDragTrace({
+      type: "gesture_abort",
+      pointerId: pointerIdRef.current,
+      x: lastPointerRef.current.x,
+      y: lastPointerRef.current.y,
+      lastMoveX: lastPointerRef.current.x,
+      lastMoveY: lastPointerRef.current.y,
+      drop: false,
+      kind: draftRef.current.kind,
+    });
+    endDrag(
+      lastPointerRef.current.x,
+      lastPointerRef.current.y,
+      false,
+      "gesture_abort",
+    );
   }, [endDrag]);
 
   useEffect(() => subscribeGestureAbort(abortDrag), [abortDrag]);
@@ -606,6 +675,14 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     originRef.current = { x: event.clientX, y: event.clientY };
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
     draggingRef.current = false;
+    recordStagedClipDragTrace({
+      type: "pointerdown",
+      pointerType: event.pointerType,
+      pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      kind: draftRef.current.kind,
+    });
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId || !originRef.current) return;
@@ -619,26 +696,47 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
         draggingRef.current = true;
         setActiveStagedClipDrag(draftRef.current);
         document.body.classList.add("is-staged-clip-dragging");
+        recordStagedClipDragTrace({
+          type: "drag_armed",
+          pointerType: ev.pointerType,
+          pointerId,
+          x: ev.clientX,
+          y: ev.clientY,
+          kind: draftRef.current.kind,
+        });
       }
       setStagedClipPointer({ x: ev.clientX, y: ev.clientY });
     };
 
     const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
     };
 
-    const onUp = (ev: PointerEvent) => {
+    const finish = (ev: PointerEvent, reason: string) => {
       if (ev.pointerId !== pointerId) return;
-      // Use last move point — cancel events often report 0,0 on Windows WebView2.
-      endDrag(lastPointerRef.current.x, lastPointerRef.current.y, true);
+      recordStagedClipDragTrace({
+        type: reason,
+        pointerType: ev.pointerType,
+        pointerId,
+        x: ev.clientX,
+        y: ev.clientY,
+        lastMoveX: lastPointerRef.current.x,
+        lastMoveY: lastPointerRef.current.y,
+        kind: draftRef.current.kind,
+      });
+      // Prefer last move point — cancel/up coords are unreliable on WebView2.
+      endDrag(lastPointerRef.current.x, lastPointerRef.current.y, true, reason);
     };
+
+    const onPointerUp = (ev: PointerEvent) => finish(ev, "pointerup");
+    const onPointerCancel = (ev: PointerEvent) => finish(ev, "pointercancel");
 
     gestureCleanupRef.current = cleanup;
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
   };
 
   return (
