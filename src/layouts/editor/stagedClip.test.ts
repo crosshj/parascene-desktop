@@ -13,6 +13,7 @@ import {
   normalizeFraming,
   normalizeSlideshowRecipe,
   parseStagedClipPayload,
+  patchStagedClipInOut,
   remapTrimForReverse,
   resolveExtendPingPong,
   serializeStagedClip,
@@ -465,6 +466,58 @@ describe("stagedClip", () => {
     expect(next.outSec).toBe(5);
     expect(next.inSec).toBe(0);
     expect(next.label).toBe("8.0s");
+  });
+
+  it("shortens timeline duration when trimming a non-extended video clip", () => {
+    const clip = {
+      id: "c1",
+      label: "10.0s",
+      startSec: 2,
+      endSec: 12,
+      assetId: "v1",
+      kind: "video" as const,
+      inSec: 0,
+      outSec: 10,
+    };
+    const draft = timelineClipToStagedDraft(clip)!;
+    expect(draft.timelineDurationSec).toBe(10);
+
+    const trimmed = patchStagedClipInOut(draft, { outSec: 6 }, 10);
+    expect(trimmed.outSec).toBe(6);
+    expect(trimmed.timelineDurationSec).toBe(6);
+
+    const next = applyDraftToTimelineClip(clip, trimmed);
+    expect(next.startSec).toBe(2);
+    expect(next.endSec).toBe(8);
+    expect(next.outSec).toBe(6);
+    expect(next.label).toBe("6.0s");
+    expect(next.extendPingPong).toBeUndefined();
+  });
+
+  it("keeps extended timeline duration when trimming the source loop unit", () => {
+    const clip = {
+      id: "c1",
+      label: "12.0s",
+      startSec: 0,
+      endSec: 12,
+      assetId: "v1",
+      kind: "video" as const,
+      inSec: 0,
+      outSec: 5,
+      extendPingPong: true,
+      extendSourceSpanSec: 5,
+    };
+    const draft = timelineClipToStagedDraft(clip)!;
+    expect(draft.timelineDurationSec).toBe(12);
+
+    const trimmed = patchStagedClipInOut(draft, { outSec: 4 }, 10);
+    expect(trimmed.outSec).toBe(4);
+    expect(trimmed.timelineDurationSec).toBe(12);
+
+    const next = applyDraftToTimelineClip(clip, trimmed);
+    expect(next.startSec).toBe(0);
+    expect(next.endSec).toBe(12);
+    expect(next.outSec).toBe(4);
   });
 
   it("keeps timeline ends fixed when speed changes and preserves speed under Sync", () => {

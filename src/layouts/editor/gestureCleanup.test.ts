@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   abortEditorGestures,
   clearEditorBodyDragClasses,
+  installEditorGestureSafetyNet,
   releasePointerCaptureSafe,
   subscribeGestureAbort,
 } from "./gestureCleanup";
@@ -42,5 +43,40 @@ describe("gestureCleanup", () => {
     target.releasePointerCapture = release;
     releasePointerCaptureSafe(target, 7);
     expect(release).toHaveBeenCalledWith(7);
+  });
+
+  it("does not abort staged-clip drag on pointercancel", () => {
+    const uninstall = installEditorGestureSafetyNet();
+    const listener = vi.fn();
+    const unsubscribe = subscribeGestureAbort(listener);
+    document.body.classList.add("is-staged-clip-dragging");
+
+    window.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(document.body.classList.contains("is-staged-clip-dragging")).toBe(
+      true,
+    );
+
+    document.body.classList.remove("is-staged-clip-dragging");
+    unsubscribe();
+    uninstall();
+  });
+
+  it("aborts other editor drags on pointercancel", () => {
+    const uninstall = installEditorGestureSafetyNet();
+    const listener = vi.fn();
+    const unsubscribe = subscribeGestureAbort(listener);
+    document.body.classList.add("is-timeline-clip-moving");
+
+    window.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(document.body.classList.contains("is-timeline-clip-moving")).toBe(
+      false,
+    );
+
+    unsubscribe();
+    uninstall();
   });
 });

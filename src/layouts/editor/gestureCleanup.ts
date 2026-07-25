@@ -56,6 +56,12 @@ export function installEditorGestureSafetyNet(): () => void {
     }
   };
   const onPointerCancel = () => {
+    // Staged-clip drag treats pointercancel as a drop attempt (WebView2 on
+    // Windows cancels pointers often). Let ClipDragHandle commit if over the
+    // timeline instead of wiping the ghost with no placement.
+    if (document.body.classList.contains("is-staged-clip-dragging")) {
+      return;
+    }
     if (
       !BODY_DRAG_CLASSES.some((className) =>
         document.body.classList.contains(className),

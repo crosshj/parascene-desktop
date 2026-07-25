@@ -22,7 +22,10 @@ import {
   DEFAULT_SLIDESHOW_SENSITIVITY,
   isBeatSlideshowMode,
 } from "../../project/types";
-import { subscribeGestureAbort } from "./gestureCleanup";
+import {
+  releasePointerCaptureSafe,
+  subscribeGestureAbort,
+} from "./gestureCleanup";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 
 /** Per-mode label + endpoint hints for the sensitivity dial. */
@@ -532,6 +535,7 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
   const draggingRef = useRef(false);
   const originRef = useRef<{ x: number; y: number } | null>(null);
   const pointerIdRef = useRef<number | null>(null);
+  const captureTargetRef = useRef<HTMLElement | null>(null);
   const gestureCleanupRef = useRef<(() => void) | null>(null);
   const lastPointerRef = useRef({ x: 0, y: 0 });
   const draftRef = useRef(draft);
@@ -546,6 +550,8 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
 
     const wasDragging = draggingRef.current;
     document.body.classList.remove("is-staged-clip-dragging");
+    releasePointerCaptureSafe(captureTargetRef.current, pointerIdRef.current);
+    captureTargetRef.current = null;
     if (drop && wasDragging) {
       const dropped = getActiveStagedClipDrag() ?? draftRef.current;
       window.dispatchEvent(
@@ -577,6 +583,7 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
         pressing: originRef.current != null,
         dragging: draggingRef.current,
         pointerId: pointerIdRef.current,
+        pointerCapture: captureTargetRef.current != null,
       })),
     [],
   );
@@ -588,7 +595,14 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
     event.stopPropagation();
 
     const pointerId = event.pointerId;
+    const target = event.currentTarget;
     pointerIdRef.current = pointerId;
+    captureTargetRef.current = target;
+    try {
+      target.setPointerCapture(pointerId);
+    } catch {
+      captureTargetRef.current = null;
+    }
     originRef.current = { x: event.clientX, y: event.clientY };
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
     draggingRef.current = false;
@@ -617,7 +631,8 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
 
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
-      endDrag(ev.clientX, ev.clientY, true);
+      // Use last move point — cancel events often report 0,0 on Windows WebView2.
+      endDrag(lastPointerRef.current.x, lastPointerRef.current.y, true);
     };
 
     gestureCleanupRef.current = cleanup;

@@ -388,6 +388,34 @@ export function stagedClipTimelineExtended(draft: StagedClipDraft): boolean {
   );
 }
 
+/**
+ * Apply scrubber / in-out trim to a staged draft.
+ * Non-extended video clips keep timeline duration locked to playthrough so the
+ * timeline block shortens/lengthens with the trim. Extended clips keep their
+ * sticky timeline duration (trim only changes the loop unit).
+ */
+export function patchStagedClipInOut(
+  draft: StagedClipDraft,
+  patch: Partial<Pick<StagedClipDraft, "inSec" | "outSec">>,
+  maxSec: number,
+): StagedClipDraft {
+  let inSec = patch.inSec ?? draft.inSec;
+  let outSec = patch.outSec ?? draft.outSec;
+  inSec = Math.max(0, inSec);
+  if (maxSec > 0) {
+    inSec = Math.min(inSec, maxSec);
+    outSec = Math.min(outSec, maxSec);
+  }
+  outSec = Math.max(outSec, inSec + 0.1);
+  const next: StagedClipDraft = { ...draft, inSec, outSec };
+  if (draft.kind !== "video") return next;
+
+  if (!stagedClipTimelineExtended(draft)) {
+    next.timelineDurationSec = stagedClipPlaythroughUnit(next);
+  }
+  return next;
+}
+
 /** Ping-pong vs loop for an extended video clip (defaults to ping-pong on first extend). */
 export function resolveExtendPingPong(
   timelineDur: number,

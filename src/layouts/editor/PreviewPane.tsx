@@ -58,6 +58,7 @@ import {
   framingViewportStyle,
   isProvisionalOutSec,
   normalizeFraming,
+  patchStagedClipInOut,
   slideshowRecipesEqual,
   type StagedClipDraft,
   type StagedClipFraming,
@@ -1058,15 +1059,7 @@ export function PreviewPane({
     patch: Partial<Pick<StagedClipDraft, "inSec" | "outSec">>,
     maxSec: number,
   ): StagedClipDraft {
-    let inSec = patch.inSec ?? draft.inSec;
-    let outSec = patch.outSec ?? draft.outSec;
-    inSec = Math.max(0, inSec);
-    if (maxSec > 0) {
-      inSec = Math.min(inSec, maxSec);
-      outSec = Math.min(outSec, maxSec);
-    }
-    outSec = Math.max(outSec, inSec + 0.1);
-    return { ...draft, inSec, outSec };
+    return patchStagedClipInOut(draft, patch, maxSec);
   }
 
   if (
