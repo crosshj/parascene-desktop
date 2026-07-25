@@ -358,7 +358,7 @@ pub fn extend_clip_on_disk(
     }
     let speed = speed
         .filter(|v| v.is_finite() && *v > 0.0)
-        .map(|v| v.clamp(0.25, 4.0))
+        .map(|v| v.clamp(0.25, 8.0))
         .unwrap_or(1.0);
     let mode = if ping_pong { "pingpong_v4" } else { "loop" };
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| {

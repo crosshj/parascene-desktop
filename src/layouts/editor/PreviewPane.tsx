@@ -1312,8 +1312,14 @@ export function PreviewPane({
       setPlaying(false);
     }
   };
-  togglePlayRef.current = onTogglePlay;
-  toggleTimelinePlayRef.current = onToggleTimelinePlay;
+
+  useEffect(() => {
+    togglePlayRef.current = onTogglePlay;
+  });
+
+  useEffect(() => {
+    toggleTimelinePlayRef.current = onToggleTimelinePlay;
+  }, [onToggleTimelinePlay]);
 
   // Space toggles play/pause when the preview pane is focused and focus isn't
   // in a field or other interactive control (staging / generate forms).

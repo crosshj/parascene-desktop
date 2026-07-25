@@ -360,7 +360,7 @@ export function stagedClipSourceSpan(draft: StagedClipDraft): number {
 export function stagedClipSpeed(draft: { speed?: number }): number {
   const s = Number(draft.speed);
   if (!Number.isFinite(s) || s <= 0) return 1;
-  return Math.min(4, Math.max(0.25, s));
+  return Math.min(8, Math.max(0.25, s));
 }
 
 /** Wall-clock length of one source playthrough at draft speed. */
@@ -777,7 +777,7 @@ export function parseStagedClipPayload(raw: string): StagedClipDraft | null {
         if (kind !== "video") return undefined;
         const s = Number(d.speed);
         if (!Number.isFinite(s) || Math.abs(s - 1) < 0.001) return undefined;
-        return Math.min(4, Math.max(0.25, s));
+        return Math.min(8, Math.max(0.25, s));
       })(),
       extendPingPong: d.extendPingPong === true ? true : undefined,
       extendBakeKey: typeof d.extendBakeKey === "string" ? d.extendBakeKey : null,

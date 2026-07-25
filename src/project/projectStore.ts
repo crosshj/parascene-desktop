@@ -180,7 +180,7 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     speed: (() => {
       const s = Number(c.speed);
       if (!Number.isFinite(s) || Math.abs(s - 1) < 0.001) return undefined;
-      return Math.min(4, Math.max(0.25, s));
+      return Math.min(8, Math.max(0.25, s));
     })(),
     extendPingPong: c.extendPingPong === true ? true : undefined,
     extendSourceSpanSec:

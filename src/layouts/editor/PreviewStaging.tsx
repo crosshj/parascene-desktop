@@ -320,7 +320,7 @@ export function StagingFields({
             <input
               type="number"
               min={0.25}
-              max={4}
+              max={8}
               step={0.01}
               value={formatDurationInput(speed)}
               aria-disabled={syncLocked || undefined}
@@ -331,7 +331,7 @@ export function StagingFields({
                 if (syncLocked) return;
                 const next = Number(e.target.value);
                 if (!Number.isFinite(next) || next <= 0) return;
-                const nextSpeed = Math.min(4, Math.max(0.25, next));
+                const nextSpeed = Math.min(8, Math.max(0.25, next));
                 if (Math.abs(nextSpeed - speed) < 0.0001) return;
                 // Keep timeline Duration / start–end fixed; only the playthrough
                 // unit and ripple marks rescale with speed.

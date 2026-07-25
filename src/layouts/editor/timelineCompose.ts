@@ -75,7 +75,7 @@ export function clipExtendSourceSpanSec(clip: TimelineClip): number | null {
 export function clipSpeed(clip: { speed?: number }): number {
   const s = Number(clip.speed);
   if (!Number.isFinite(s) || s <= 0) return 1;
-  return Math.min(4, Math.max(0.25, s));
+  return Math.min(8, Math.max(0.25, s));
 }
 
 /** Wall-clock length of one source playthrough at the clip's speed. */

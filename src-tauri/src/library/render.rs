@@ -274,7 +274,7 @@ fn clip_extend_source_span(clip: &RenderTimelineClipInput) -> f64 {
 fn clip_speed(clip: &RenderTimelineClipInput) -> f64 {
     clip.speed
         .filter(|v| v.is_finite() && *v > 0.0)
-        .map(|v| v.clamp(0.25, 4.0))
+        .map(|v| v.clamp(0.25, 8.0))
         .unwrap_or(1.0)
 }
 
@@ -303,11 +303,6 @@ fn clip_is_video_extended(clip: &RenderTimelineClipInput) -> bool {
         return false;
     }
     clip_timeline_duration(clip) > clip_playthrough_unit(clip) + 1e-3
-}
-
-fn compute_extend_target_sec(timeline_dur: f64, playthrough: f64) -> f64 {
-    let spans = (timeline_dur / playthrough).ceil().max(1.0);
-    (spans * playthrough * 1000.0).round() / 1000.0
 }
 
 /// Match editor `clipSourceSec` for video clips (rate-aware loop/pong).
@@ -910,7 +905,7 @@ fn atempo_filter_chain(speed: f64) -> Option<String> {
     if !(speed.is_finite() && speed > 0.0) || (speed - 1.0).abs() < 0.001 {
         return None;
     }
-    let mut remaining = speed.clamp(0.25, 4.0);
+    let mut remaining = speed.clamp(0.25, 8.0);
     let mut parts: Vec<String> = Vec::new();
     while remaining > 2.0 + 1e-9 {
         parts.push("atempo=2.0".into());
