@@ -41,6 +41,7 @@ import {
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
 import { findOverlappingAudioClip } from "./audioOverlap";
+import { pasteAppendStartSec } from "./timelineAppend";
 import {
   selectionFromProject,
   pendingDraftMatchesSelection,
@@ -503,7 +504,8 @@ export function EditorLayout() {
     timelinePlaying,
   ]);
 
-  // Cmd/Ctrl+C copies selected clips; Cmd/Ctrl+V pastes at the playhead.
+  // Cmd/Ctrl+C copies selected clips; Cmd/Ctrl+V pastes after the last clip
+  // on each target lane (no overlap), preserving relative offsets.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -527,14 +529,11 @@ export function EditorLayout() {
       const sources = clipClipboardRef.current;
       if (sources.length === 0) return;
       event.preventDefault();
-      const playhead = Math.max(
-        0,
-        timelinePlaying ? livePlayheadRef.current : project.timelinePlayheadSec,
-      );
       const origin = Math.min(...sources.map((c) => c.startSec));
+      const startBase = pasteAppendStartSec(project.timeline, sources);
       const pasted = sources.map((source) => {
         const duration = Math.max(0.1, source.endSec - source.startSec);
-        const startSec = playhead + (source.startSec - origin);
+        const startSec = startBase + (source.startSec - origin);
         return {
           ...source,
           id: newTimelineClipId(),
@@ -563,8 +562,6 @@ export function EditorLayout() {
   }, [
     selectedClipIds,
     project.timeline,
-    project.timelinePlayheadSec,
-    timelinePlaying,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
   ]);
@@ -1310,6 +1307,10 @@ export function EditorLayout() {
 
   const onTimelineClipsChange = useCallback(
     (next: TimelineClip[], options?: { live?: boolean }) => {
+      // Keep ref in sync during the same event turn so child effects (e.g.
+      // AddAssetGeneratePanel mount persist) do not rewrite a stale timeline
+      // and wipe a just-placed placeholder.
+      timelineRef.current = next;
       if (options?.live) {
         setLiveTimeline(next);
         syncClipStagingFromTimeline(next);
@@ -1860,18 +1861,26 @@ export function EditorLayout() {
         onAddAssetDurationChange={(durationSec) => {
           const clip = generateTargetClip;
           if (!clip) return;
-          const nextTimeline = project.timeline.map((c) =>
-            c.id === clip.id ? withAddAssetDuration(c, durationSec) : c,
-          );
-          setOpenProjectTimeline(nextTimeline);
+          setOpenProjectTimeline((prev) => {
+            if (!prev.some((c) => c.id === clip.id)) return prev;
+            const next = prev.map((c) =>
+              c.id === clip.id ? withAddAssetDuration(c, durationSec) : c,
+            );
+            timelineRef.current = next;
+            return next;
+          });
         }}
         onAddAssetDraftChange={(draft) => {
           const clip = generateTargetClip;
           if (!clip) return;
-          const nextTimeline = timelineRef.current.map((c) =>
-            c.id === clip.id ? { ...c, addAssetDraft: draft } : c,
-          );
-          setOpenProjectTimeline(nextTimeline);
+          setOpenProjectTimeline((prev) => {
+            if (!prev.some((c) => c.id === clip.id)) return prev;
+            const next = prev.map((c) =>
+              c.id === clip.id ? { ...c, addAssetDraft: draft } : c,
+            );
+            timelineRef.current = next;
+            return next;
+          });
         }}
         onClearAddAssetGenerationError={clearAddAssetGenerationError}
         selectedAssetIds={

@@ -71,7 +71,11 @@ type ShellState = {
   /** Set the open project's creative aspect ratio (no-op if none open). */
   setOpenProjectAspectRatio: (aspectRatio: ProjectAspectRatio) => void;
   /** Replace the open project's timeline clips (no-op if none open). */
-  setOpenProjectTimeline: (timeline: TimelineClip[]) => void;
+  setOpenProjectTimeline: (
+    timeline:
+      | TimelineClip[]
+      | ((prev: TimelineClip[]) => TimelineClip[]),
+  ) => void;
   /** Remember which timeline clip is selected in the editor. */
   setOpenProjectSelectedTimelineClipId: (clipId: string | null) => void;
   /** Remember which asset is selected in the editor. */
@@ -412,8 +416,16 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   );
 
   const setOpenProjectTimeline = useCallback(
-    (timeline: TimelineClip[]) => {
-      patchOpenProject((p) => setStoredProjectTimeline(p, timeline));
+    (
+      timeline:
+        | TimelineClip[]
+        | ((prev: TimelineClip[]) => TimelineClip[]),
+    ) => {
+      patchOpenProject((p) => {
+        const prev = storedProjectToUi(p).timeline;
+        const next = typeof timeline === "function" ? timeline(prev) : timeline;
+        return setStoredProjectTimeline(p, next);
+      });
     },
     [patchOpenProject],
   );

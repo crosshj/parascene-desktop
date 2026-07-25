@@ -47,6 +47,7 @@ import {
   recordStagedClipDragTrace,
   scrollRectSnapshot,
 } from "./stagedClipDragTrace";
+import { laneAppendStartSec } from "./timelineAppend";
 import {
   getActiveStagedClipDrag,
   parseStagedClipPayload,
@@ -1457,7 +1458,7 @@ export function TimelinePane({
     ],
   );
 
-  const placeDraftAtPlayhead = useCallback(
+  const placeDraftAtEnd = useCallback(
     (draft: StagedClipDraft) => {
       const lane = targetLaneForDraft(draft);
       const laneClips = clips.filter((c) =>
@@ -1465,7 +1466,7 @@ export function TimelinePane({
           ? c.lane === "audio"
           : (c.lane ?? "video") === "video",
       );
-      const startSec = snapStartSec(playheadSec, laneClips, magnetic);
+      const startSec = laneAppendStartSec(laneClips);
       const placed = draftToClip(draft, startSec, lane, clips);
       commitClips([...clips, placed]);
       onSelectClipRef.current?.(placed);
@@ -1474,10 +1475,10 @@ export function TimelinePane({
         type: "placed",
         clipId: placed.id,
         kind: draft.kind,
-        reason: `playhead startSec=${startSec.toFixed(2)}`,
+        reason: `append startSec=${startSec.toFixed(2)}`,
       });
     },
-    [clips, commitClips, magnetic, playheadSec],
+    [clips, commitClips],
   );
 
   const syncGhostFromPoint = useCallback(
@@ -1527,27 +1528,24 @@ export function TimelinePane({
       if (!detail?.draft || !detail.point) return;
       placeDraftAt(detail.draft, detail.point.x, detail.point.y);
     };
-    const onPlaceAtPlayhead = (event: Event) => {
+    const onPlaceAtEnd = (event: Event) => {
       const custom = event as CustomEvent<PointerPlaceDetail>;
       const detail = custom.detail;
       if (!detail?.draft) return;
       recordStagedClipDragTrace({
-        type: "place_at_playhead",
+        type: "place_at_end",
         kind: detail.draft.kind,
         reason: detail.draft.isAddAssetPlaceholder ? "add_asset" : "staged",
       });
-      placeDraftAtPlayhead(detail.draft);
+      placeDraftAtEnd(detail.draft);
     };
     window.addEventListener("parascene-staged-clip-drop", onPointerDrop);
-    window.addEventListener("parascene-staged-clip-place", onPlaceAtPlayhead);
+    window.addEventListener("parascene-staged-clip-place", onPlaceAtEnd);
     return () => {
       window.removeEventListener("parascene-staged-clip-drop", onPointerDrop);
-      window.removeEventListener(
-        "parascene-staged-clip-place",
-        onPlaceAtPlayhead,
-      );
+      window.removeEventListener("parascene-staged-clip-place", onPlaceAtEnd);
     };
-  }, [placeDraftAt, placeDraftAtPlayhead]);
+  }, [placeDraftAt, placeDraftAtEnd]);
 
   const isStagedClipDrag = useCallback((event: DragEvent) => {
     if (getActiveStagedClipDrag()) return true;

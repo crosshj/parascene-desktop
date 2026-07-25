@@ -534,7 +534,7 @@ export function SlideshowRenderHandle({
 
 const DRAG_THRESHOLD_PX = 4;
 
-/** Place at playhead — no pointer hit-testing (WebView2-safe fallback). */
+/** Place at end of track (no overlap) — no pointer hit-testing. */
 export function ClipPlaceHandle({ draft }: ClipPlaceHandleProps) {
   const lane = targetLaneForDraft(draft);
   const laneLabel = lane === "audio" ? "A1" : "V1";
@@ -542,11 +542,11 @@ export function ClipPlaceHandle({ draft }: ClipPlaceHandleProps) {
     <button
       type="button"
       className="editor-cartridge-grip is-action"
-      title="Place on timeline at the playhead"
-      aria-label={`Place prepared clip on ${laneLabel} at playhead`}
+      title={`Place on ${laneLabel} after the last clip (no overlap)`}
+      aria-label={`Place prepared clip on ${laneLabel} at end of track`}
       onClick={() => {
         recordStagedClipDragTrace({
-          type: "place_at_playhead_click",
+          type: "place_at_end_click",
           kind: draft.kind,
           reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
         });
