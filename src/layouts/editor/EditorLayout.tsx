@@ -52,12 +52,15 @@ import {
   runAddAssetGeneration,
   type AddAssetGenerationSession,
 } from "./addAssetGenerate";
+import { resolveEditorMainAudioCreationId } from "./addAssetStartFrame";
 import {
   applyDraftToTimelineClip,
+  addAssetClipDurationSec,
   isAddAssetPlaceholderClip,
   newSlideshowSeed,
   slideshowRecipesEqual,
   timelineClipToStagedDraft,
+  withAddAssetDuration,
   type StagedClipDraft,
 } from "./stagedClip";
 import {
@@ -253,6 +256,15 @@ export function EditorLayout() {
   const [liveTimeline, setLiveTimeline] = useState<TimelineClip[] | null>(null);
   const displayTimeline = liveTimeline ?? project.timeline;
   const sequenceDurationSec = timelineSequenceDuration(displayTimeline);
+  const editorMainAudioCreationId = useMemo(
+    () =>
+      resolveEditorMainAudioCreationId(
+        displayTimeline,
+        project.mainAudioCreationId,
+        project.assets.find((asset) => asset.kind === "audio")?.id ?? null,
+      ),
+    [displayTimeline, project.mainAudioCreationId, project.assets],
+  );
   /**
    * While playing, playhead is local (avoids localStorage writes every frame).
    * When paused, the persisted project playhead is the source of truth.
@@ -1702,11 +1714,11 @@ export function EditorLayout() {
 
   const generateTargetClip = useMemo(() => {
     if (selectedClipId) {
-      const clip = project.timeline.find((c) => c.id === selectedClipId);
+      const clip = displayTimeline.find((c) => c.id === selectedClipId);
       if (clip && isAddAssetPlaceholderClip(clip)) return clip;
     }
-    return project.timeline.find(isAddAssetPlaceholderClip) ?? null;
-  }, [project.timeline, selectedClipId]);
+    return displayTimeline.find(isAddAssetPlaceholderClip) ?? null;
+  }, [displayTimeline, selectedClipId]);
 
   useEffect(() => {
     if (!addAssetGenerationSession) return;
@@ -1747,15 +1759,18 @@ export function EditorLayout() {
     const audioMode = request.audioMode;
     addAssetGenerationInflightRef.current = true;
     setAddAssetGenerationSession(
-      createRunningAddAssetGenerationSession(clipId, audioMode),
+      createRunningAddAssetGenerationSession(
+        clipId,
+        audioMode,
+        addAssetClipDurationSec(request.clip),
+      ),
     );
 
     void runAddAssetGeneration({
       placeholder: request.clip,
-      mainAudioCreationId:
-        project.mainAudioCreationId ??
-        project.assets.find((asset) => asset.kind === "audio")?.id ??
-        null,
+      timeline: timelineRef.current,
+      mainAudioCreationId: editorMainAudioCreationId,
+      lyricAlignment: project.lyricAlignment,
       aspectRatio: project.aspectRatio,
       projectId: project.id,
       projectTitle: project.title,
@@ -1764,7 +1779,6 @@ export function EditorLayout() {
       prompt: request.prompt,
       lyricsText: request.lyricsText,
       audioMode: request.audioMode,
-      songRange: request.songRange,
       startFrame: request.startFrame,
       onSteps: (steps) => {
         setAddAssetGenerationSession((prev) =>
@@ -1783,6 +1797,7 @@ export function EditorLayout() {
           clipId,
           projectCreationIds: result.projectCreationIds,
           videosGroupId: result.videosGroupId,
+          imagesGroupId: result.imagesGroupId,
           prompt: request.prompt,
           lyricsText: request.lyricsText,
           audioMode: request.audioMode,
@@ -1793,7 +1808,11 @@ export function EditorLayout() {
           const base =
             prev?.clipId === clipId
               ? prev
-              : createRunningAddAssetGenerationSession(clipId, audioMode);
+              : createRunningAddAssetGenerationSession(
+                  clipId,
+                  audioMode,
+                  addAssetClipDurationSec(request.clip),
+                );
           return {
             ...base,
             phase: "error",
@@ -1813,13 +1832,21 @@ export function EditorLayout() {
     clipId: string;
     projectCreationIds: string[];
     videosGroupId?: string | null;
+    imagesGroupId?: string | null;
     prompt: string;
     lyricsText: string;
     audioMode: import("./addAssetGenerate").AddAssetAudioMode;
   }) => {
     addCreationsToOpenProject(result.projectCreationIds);
-    if (result.videosGroupId) {
-      setOpenProjectGroupIds({ videosGroupId: result.videosGroupId });
+    if (result.videosGroupId || result.imagesGroupId) {
+      setOpenProjectGroupIds({
+        ...(result.videosGroupId
+          ? { videosGroupId: result.videosGroupId }
+          : {}),
+        ...(result.imagesGroupId
+          ? { imagesGroupId: result.imagesGroupId }
+          : {}),
+      });
     }
     const nextTimeline = replaceAddAssetPlaceholderWithVideo(
       timelineRef.current,
@@ -1916,12 +1943,16 @@ export function EditorLayout() {
         addAssetPlaceholderClip={generateTargetClip}
         addAssetGenerationSession={addAssetGenerationSession}
         lyricAlignment={project.lyricAlignment}
-        mainAudioCreationId={
-          project.mainAudioCreationId ??
-          project.assets.find((asset) => asset.kind === "audio")?.id ??
-          null
-        }
+        mainAudioCreationId={editorMainAudioCreationId}
         onStartAddAssetGeneration={startAddAssetGeneration}
+        onAddAssetDurationChange={(durationSec) => {
+          const clip = generateTargetClip;
+          if (!clip) return;
+          const nextTimeline = project.timeline.map((c) =>
+            c.id === clip.id ? withAddAssetDuration(c, durationSec) : c,
+          );
+          setOpenProjectTimeline(nextTimeline);
+        }}
         onClearAddAssetGenerationError={clearAddAssetGenerationError}
         selectedAssetIds={
           monitorMode === "source" && !clipStagingSeed
@@ -2035,11 +2066,7 @@ export function EditorLayout() {
         bakeInfoByClipId={bakeInfoByClipId}
         addAssetGenerationByClipId={addAssetGenerationByClipId}
         lyricAlignment={project.lyricAlignment}
-        mainAudioCreationId={
-          project.mainAudioCreationId ??
-          project.assets.find((asset) => asset.kind === "audio")?.id ??
-          null
-        }
+        mainAudioCreationId={editorMainAudioCreationId}
         selectedClipIds={selectedClipIds}
         onSelectClip={selectClip}
         zoom={project.timelineZoom}

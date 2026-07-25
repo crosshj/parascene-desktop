@@ -4,6 +4,8 @@ import {
   clipSongTimeRangeFromTimeline,
   lastFrameSourceSec,
   priorVideoClipBefore,
+  resolveAddAssetGenerationTiming,
+  resolveEditorMainAudioCreationId,
   timelineSecToSongSec,
   visualLayerBeforePlaceholder,
 } from "./addAssetStartFrame";
@@ -21,6 +23,91 @@ function clip(
     ...partial,
   };
 }
+
+describe("resolveEditorMainAudioCreationId", () => {
+  it("uses timeline audio when Lab main audio is unset", () => {
+    const timeline = [
+      clip({
+        id: "a1",
+        lane: "audio",
+        kind: "audio",
+        startSec: 0,
+        endSec: 240,
+        assetId: "timeline-audio",
+      }),
+    ];
+    expect(resolveEditorMainAudioCreationId(timeline, null, null)).toBe(
+      "timeline-audio",
+    );
+  });
+
+  it("prefers the Lab main audio clip when it is on the timeline", () => {
+    const timeline = [
+      clip({
+        id: "a1",
+        lane: "audio",
+        kind: "audio",
+        startSec: 0,
+        endSec: 10,
+        assetId: "other-audio",
+      }),
+      clip({
+        id: "a2",
+        lane: "audio",
+        kind: "audio",
+        startSec: 10,
+        endSec: 20,
+        assetId: "lab-audio",
+      }),
+    ];
+    expect(
+      resolveEditorMainAudioCreationId(timeline, "lab-audio", "project-audio"),
+    ).toBe("lab-audio");
+  });
+
+  it("falls back to Lab/project audio when the timeline has none", () => {
+    expect(
+      resolveEditorMainAudioCreationId([], "lab-audio", "project-audio"),
+    ).toBe("lab-audio");
+    expect(resolveEditorMainAudioCreationId([], null, "project-audio")).toBe(
+      "project-audio",
+    );
+  });
+});
+
+describe("resolveAddAssetGenerationTiming", () => {
+  it("clamps duration and keeps song range length matched", () => {
+    const timeline = [
+      clip({
+        id: "audio",
+        lane: "audio",
+        kind: "audio",
+        startSec: 0,
+        endSec: 200,
+        assetId: "mix",
+        inSec: 0,
+        outSec: 200,
+      }),
+      clip({
+        id: "placeholder",
+        startSec: 10,
+        endSec: 40,
+        isAddAssetPlaceholder: true,
+        assetId: "",
+      }),
+    ];
+    const timing = resolveAddAssetGenerationTiming(
+      timeline,
+      timeline[1]!,
+      "mix",
+    );
+    expect(timing.durationSec).toBe(15);
+    expect(timing.songRange.endSec - timing.songRange.startSec).toBeCloseTo(
+      15,
+      1,
+    );
+  });
+});
 
 describe("priorVideoClipBefore", () => {
   it("picks the immediately preceding clip, not an earlier one", () => {

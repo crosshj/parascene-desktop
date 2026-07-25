@@ -7,6 +7,8 @@ export type RunA2vGenerationOpts = {
   aspectRatio: string;
   imageUrl: string;
   audioClipId: string;
+  /** Output length in seconds (LTX ia2v default is 9). Caller must clamp. */
+  durationSeconds?: number;
   onProgress: (note: string) => void;
   onPendingCreation?: (id: string | null) => void;
 };
@@ -14,21 +16,36 @@ export type RunA2vGenerationOpts = {
 export async function runA2vGeneration(
   opts: RunA2vGenerationOpts,
 ): Promise<{ creationId: string; remote: RemoteCreateImage }> {
-  const { prompt, aspectRatio, imageUrl, audioClipId, onProgress, onPendingCreation } =
-    opts;
+  const {
+    prompt,
+    aspectRatio,
+    imageUrl,
+    audioClipId,
+    durationSeconds,
+    onProgress,
+    onPendingCreation,
+  } = opts;
   onProgress("Starting audio-to-video…");
   const sdk = createAuthedSdk();
+  const args: Record<string, unknown> = {
+    prompt: prompt.trim(),
+    model: "ltx_a2v",
+    aspect_ratio: aspectRatio,
+    input_images: [imageUrl],
+    audio_clip_id: Number(audioClipId),
+  };
+  if (
+    typeof durationSeconds === "number" &&
+    Number.isFinite(durationSeconds) &&
+    durationSeconds > 0
+  ) {
+    args.duration_seconds = durationSeconds;
+  }
   const started = await sdk.create({
     serverId: 6,
     method: "audio2video",
     creationToken: newCreationToken(),
-    args: {
-      prompt: prompt.trim(),
-      model: "ltx_a2v",
-      aspect_ratio: aspectRatio,
-      input_images: [imageUrl],
-      audio_clip_id: Number(audioClipId),
-    },
+    args,
   });
   onPendingCreation?.(String(started.id));
   onProgress(`Generating video (${started.id})…`);

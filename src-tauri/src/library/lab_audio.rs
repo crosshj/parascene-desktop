@@ -674,6 +674,130 @@ pub async fn library_extract_video_frame(
     Ok(dest.to_string_lossy().to_string())
 }
 
+fn output_size_for_aspect(aspect_ratio: &str) -> (u32, u32) {
+    match aspect_ratio.trim() {
+        "1:1" => (1080, 1080),
+        "9:16" => (1080, 1920),
+        "4:5" => (1080, 1350),
+        _ => (1920, 1080),
+    }
+}
+
+fn aspect_parts_for(aspect_ratio: &str) -> (u32, u32) {
+    match aspect_ratio.trim() {
+        "1:1" => (1, 1),
+        "9:16" => (9, 16),
+        "4:5" => (4, 5),
+        _ => (16, 9),
+    }
+}
+
+/// Largest even aw:ah box that fits inside max_w×max_h (editor `fitAspect`).
+fn fit_inside(max_w: u32, max_h: u32, aw: u32, ah: u32) -> (u32, u32) {
+    if aw == 0 || ah == 0 {
+        return (max_w & !1, max_h & !1);
+    }
+    let mut w = max_w as u64;
+    let mut h = w * ah as u64 / aw as u64;
+    if h > max_h as u64 {
+        h = max_h as u64;
+        w = h * aw as u64 / ah as u64;
+    }
+    ((w as u32) & !1, (h as u32) & !1)
+}
+
+/// Editor preview stage is always 16:9; Fit contains into it, then crops to the
+/// project matte — same as timeline export (`render.rs` / `slideshow.rs`).
+const PREVIEW_STAGE_W: u32 = 1920;
+const PREVIEW_STAGE_H: u32 = 1080;
+
+fn still_framing_filter(
+    out_w: u32,
+    out_h: u32,
+    crop_w: u32,
+    crop_h: u32,
+    framing: &str,
+) -> String {
+    match framing.trim().to_ascii_lowercase().as_str() {
+        "fill" => format!(
+            "setsar=1,scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,format=yuvj420p"
+        ),
+        "stretch" => format!(
+            "setsar=1,scale={out_w}:{out_h},setsar=1,format=yuvj420p"
+        ),
+        // Fit: contain into 16:9 stage → center-crop project matte → scale out.
+        _ => format!(
+            "setsar=1,scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,format=yuvj420p"
+        ),
+    }
+}
+
+/// Apply Fit/Fill/Stretch into the project aspect; writes a cached JPEG.
+#[tauri::command]
+pub async fn library_apply_image_framing(
+    source_path: String,
+    framing: String,
+    aspect_ratio: String,
+) -> Result<String, String> {
+    let src = PathBuf::from(&source_path);
+    if !src.is_file() {
+        return Err("Source image file not found".into());
+    }
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
+    })?;
+
+    let framing_key = match framing.trim().to_ascii_lowercase().as_str() {
+        "fill" => "fill",
+        "stretch" => "stretch",
+        _ => "fit",
+    };
+    let aspect_key = match aspect_ratio.trim() {
+        "1:1" | "9:16" | "4:5" | "16:9" => aspect_ratio.trim(),
+        _ => "16:9",
+    };
+    let (out_w, out_h) = output_size_for_aspect(aspect_key);
+    let (aw, ah) = aspect_parts_for(aspect_key);
+    let (crop_w, crop_h) = fit_inside(PREVIEW_STAGE_W, PREVIEW_STAGE_H, aw, ah);
+    let fp = source_fingerprint(&src)?;
+    let dir = cache_dir("framed-stills")?;
+    let aspect_slug = aspect_key.replace(':', "x");
+    // v2: Fit matches editor stage→matte crop (not direct contain into project).
+    let dest = dir.join(format!("{fp}-{framing_key}-{aspect_slug}-v2.jpg"));
+    if dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        return Ok(dest.to_string_lossy().to_string());
+    }
+
+    let tmp = dir.join(format!("{fp}-{framing_key}-{aspect_slug}-v2.tmp.jpg"));
+    let _ = fs::remove_file(&tmp);
+    let vf = still_framing_filter(out_w, out_h, crop_w, crop_h, framing_key);
+    let src_arg = src.to_string_lossy().to_string();
+    let tmp_arg = tmp.to_string_lossy().to_string();
+    run_ffmpeg_frame(
+        &ffmpeg,
+        &[
+            "-y",
+            "-i",
+            &src_arg,
+            "-an",
+            "-frames:v",
+            "1",
+            "-vf",
+            &vf,
+            "-q:v",
+            "2",
+            "-update",
+            "1",
+            &tmp_arg,
+        ],
+    )?;
+    if !tmp.is_file() || tmp.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+        return Err("Could not apply framing to start frame".into());
+    }
+    fs::rename(&tmp, &dest).map_err(|e| format!("framed still rename: {e}"))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 fn probe_media_duration_sec(ffmpeg: &Path, source: &Path) -> Result<f64, String> {
     // `-i` alone exits non-zero after printing metadata — no full decode.
     let output = ffmpeg::command(ffmpeg)

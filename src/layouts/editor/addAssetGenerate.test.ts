@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ADD_ASSET_NO_LYRICS_AUDIO_NOTE,
   buildAddAssetGenerationPrompt,
+  addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
   initialAddAssetGenerationSteps,
   replaceAddAssetPlaceholderWithVideo,
@@ -24,6 +25,22 @@ describe("resolveAddAssetAudioMode", () => {
 
   it("uses the full mix when lyrics are absent", () => {
     expect(resolveAddAssetAudioMode("  ")).toBe("full_mix");
+  });
+});
+
+describe("addAssetClipDurationSec", () => {
+  it("reads and clamps the placeholder span", async () => {
+    const {
+      addAssetClipDurationSec,
+      clampAddAssetDurationSec,
+      ADD_ASSET_MIN_DURATION_SEC,
+      ADD_ASSET_MAX_DURATION_SEC,
+    } = await import("./stagedClip");
+    expect(
+      addAssetClipDurationSec({ startSec: 10, endSec: 14.5 }),
+    ).toBe(4.5);
+    expect(clampAddAssetDurationSec(1)).toBe(ADD_ASSET_MIN_DURATION_SEC);
+    expect(clampAddAssetDurationSec(99)).toBe(ADD_ASSET_MAX_DURATION_SEC);
   });
 });
 
@@ -115,6 +132,20 @@ describe("addAssetGenerationProgress", () => {
     expect(
       addAssetGenerationProgress(ADD_ASSET_GENERATION_EXPECTED_MS).indeterminate,
     ).toBe(true);
+  });
+
+  it("scales expected wall time with clip duration (9s → 2.5 min)", () => {
+    expect(addAssetGenerationExpectedMs(9)).toBe(ADD_ASSET_GENERATION_EXPECTED_MS);
+    expect(addAssetGenerationExpectedMs(4.5)).toBe(
+      ADD_ASSET_GENERATION_EXPECTED_MS / 2,
+    );
+    expect(addAssetGenerationExpectedMs(18)).toBe(
+      (15 / 9) * ADD_ASSET_GENERATION_EXPECTED_MS,
+    );
+    const half = addAssetGenerationExpectedMs(4.5) / 2;
+    expect(addAssetGenerationProgress(half, addAssetGenerationExpectedMs(4.5)).percent).toBe(
+      50,
+    );
   });
 });
 

@@ -5,11 +5,22 @@ import {
   uploadVocalsSliceClip,
 } from "../../lab/audioTools";
 import { runA2vGeneration } from "../../lab/a2vGeneration";
+import { createAuthedSdk } from "../../auth/session";
+import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
 import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
 import { getCreations } from "../../library/catalogClient";
-import type { AddAssetGeneration, TimelineClip } from "../../project/types";
+import type {
+  AddAssetGeneration,
+  LyricAlignment,
+  TimelineClip,
+} from "../../project/types";
+import {
+  ADD_ASSET_TIMELINE_DURATION_SEC,
+  addAssetClipDurationSec,
+  clampAddAssetDurationSec,
+} from "./stagedClip";
+import { resolveAddAssetGenerationTiming } from "./addAssetStartFrame";
 import type { StartFramePreview } from "./addAssetStartFrame";
-import { ADD_ASSET_TIMELINE_DURATION_SEC } from "./stagedClip";
 
 export type AddAssetGenerationStepId =
   | "vocals"
@@ -24,8 +35,19 @@ export type AddAssetGenerationStep = {
   status: "pending" | "active" | "done";
 };
 
-/** Typical A2V turnaround — progress bar fills over this duration, then cycles. */
+/**
+ * Baseline A2V turnaround for a default-length clip (~9s → ~2.5 min).
+ * Progress bar fills over {@link addAssetGenerationExpectedMs} then cycles.
+ */
 export const ADD_ASSET_GENERATION_EXPECTED_MS = 150_000;
+
+/** Scale expected wall-clock time from clip duration (linear with baseline 9s). */
+export function addAssetGenerationExpectedMs(durationSec: number): number {
+  const duration = clampAddAssetDurationSec(durationSec);
+  return (
+    (duration / ADD_ASSET_TIMELINE_DURATION_SEC) * ADD_ASSET_GENERATION_EXPECTED_MS
+  );
+}
 
 export type AddAssetGenerationProgress = {
   percent: number;
@@ -36,12 +58,13 @@ export function addAssetGenerationProgress(
   elapsedMs: number,
   expectedMs: number = ADD_ASSET_GENERATION_EXPECTED_MS,
 ): AddAssetGenerationProgress {
+  const expected = Math.max(1, expectedMs);
   const elapsed = Math.max(0, elapsedMs);
-  if (elapsed >= expectedMs) {
+  if (elapsed >= expected) {
     return { percent: 100, indeterminate: true };
   }
   return {
-    percent: Math.min(100, (elapsed / expectedMs) * 100),
+    percent: Math.min(100, (elapsed / expected) * 100),
     indeterminate: false,
   };
 }
@@ -51,6 +74,8 @@ export type AddAssetGenerationSession = {
   clipId: string;
   phase: "running" | "error";
   startedAtMs: number;
+  /** Wall-clock estimate used by the progress bar (scaled by clip duration). */
+  expectedMs: number;
   steps: AddAssetGenerationStep[];
   progressNote: string;
   errorMessage: string | null;
@@ -69,11 +94,13 @@ export const ADD_ASSET_NO_LYRICS_AUDIO_NOTE =
 export function createRunningAddAssetGenerationSession(
   clipId: string,
   audioMode: AddAssetAudioMode,
+  durationSec: number = ADD_ASSET_TIMELINE_DURATION_SEC,
 ): AddAssetGenerationSession {
   return {
     clipId,
     phase: "running",
     startedAtMs: Date.now(),
+    expectedMs: addAssetGenerationExpectedMs(durationSec),
     steps: initialAddAssetGenerationSteps(audioMode),
     progressNote: "Starting…",
     errorMessage: null,
@@ -95,7 +122,7 @@ export function initialAddAssetGenerationSteps(
       label: fullMix ? "Upload audio clip" : "Upload vocals clip",
       status: "pending",
     },
-    { id: "still", label: "Prepare start frame", status: "pending" },
+    { id: "still", label: "Prepare framed start still", status: "pending" },
     { id: "generate", label: "Generate video", status: "pending" },
     { id: "file", label: "Add to project", status: "pending" },
   ];
@@ -159,10 +186,7 @@ export function replaceAddAssetPlaceholderWithVideo(
 ): TimelineClip[] {
   return timeline.map((clip) => {
     if (clip.id !== clipId) return clip;
-    const duration = Math.max(
-      0.1,
-      clip.endSec - clip.startSec || ADD_ASSET_TIMELINE_DURATION_SEC,
-    );
+    const duration = addAssetClipDurationSec(clip);
     return {
       ...clip,
       assetId: creationId,
@@ -170,6 +194,7 @@ export function replaceAddAssetPlaceholderWithVideo(
       label: formatClipDuration(duration),
       inSec: 0,
       outSec: duration,
+      endSec: clip.startSec + duration,
       includeAudio: false,
       isAddAssetPlaceholder: undefined,
       timelineLocked: true,
@@ -181,7 +206,9 @@ export function replaceAddAssetPlaceholderWithVideo(
 
 export type RunAddAssetGenerationOpts = {
   placeholder: TimelineClip;
+  timeline: readonly TimelineClip[];
   mainAudioCreationId: string | null;
+  lyricAlignment?: LyricAlignment | null;
   aspectRatio: string;
   projectId: string;
   projectTitle: string;
@@ -190,7 +217,6 @@ export type RunAddAssetGenerationOpts = {
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
-  songRange: { startSec: number; endSec: number };
   startFrame: StartFramePreview;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
@@ -202,6 +228,7 @@ export async function runAddAssetGeneration(
   creationId: string;
   projectCreationIds: string[];
   videosGroupId: string | null;
+  imagesGroupId: string | null;
 }> {
   const audioMode = opts.audioMode;
   let steps = initialAddAssetGenerationSteps(audioMode);
@@ -210,21 +237,30 @@ export async function runAddAssetGeneration(
     opts.onSteps(steps);
   };
 
-  const inSec = opts.songRange.startSec;
-  const outSec = opts.songRange.endSec;
-  if (!(outSec > inSec)) {
+  const { durationSec: durationSeconds, songRange } =
+    resolveAddAssetGenerationTiming(
+      opts.timeline,
+      opts.placeholder,
+      opts.mainAudioCreationId,
+      opts.lyricAlignment,
+    );
+  const inSec = songRange.startSec;
+  const sliceOutSec = inSec + durationSeconds;
+  if (!(sliceOutSec > inSec)) {
     throw new Error("Invalid song time range for this clip.");
   }
   const audioId = opts.mainAudioCreationId?.trim();
   if (!audioId) {
-    throw new Error("Set the project main audio in Lab before generating.");
+    throw new Error(
+      "Add main audio to the timeline (or set it in Lab) before generating.",
+    );
   }
 
   pushSteps(advanceStep(steps, "vocals"));
   opts.onProgress(
     audioMode === "full_mix"
-      ? "Preparing audio slice…"
-      : "Preparing vocals stem…",
+      ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
+      : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
   );
   const [audioRow] = await getCreations([audioId]);
   const mixPath = audioRow?.localPath?.trim();
@@ -236,12 +272,12 @@ export async function runAddAssetGeneration(
       ? await sliceAudioRange({
           sourcePath: mixPath,
           inSec,
-          outSec,
+          outSec: sliceOutSec,
         })
       : await isolateVocalsRange({
           sourcePath: mixPath,
           inSec,
-          outSec,
+          outSec: sliceOutSec,
         });
   pushSteps(completeStep(steps, "vocals"));
 
@@ -250,24 +286,65 @@ export async function runAddAssetGeneration(
   const { clipId } = await uploadVocalsSliceClip(audioSlice.path, {
     title:
       audioMode === "full_mix"
-        ? `Editor mix ${inSec.toFixed(1)}–${outSec.toFixed(1)}s`
-        : `Editor vocals ${inSec.toFixed(1)}–${outSec.toFixed(1)}s`,
-    durationSec: outSec - inSec,
+        ? `Editor mix ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`
+        : `Editor vocals ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`,
+    durationSec: durationSeconds,
   });
   pushSteps(completeStep(steps, "upload-audio"));
 
   pushSteps(advanceStep(steps, "still"));
-  opts.onProgress("Preparing start frame…");
+  opts.onProgress("Preparing framed start still…");
   if (!opts.startFrame.framePath?.trim()) {
     throw new Error(
       "Place this clip after another clip on the timeline.",
     );
   }
+  const framingLabel =
+    opts.startFrame.framing === "fill"
+      ? "fill"
+      : opts.startFrame.framing === "stretch"
+        ? "stretch"
+        : "fit";
   const uploaded = await uploadLocalImageFile(opts.startFrame.framePath, {
-    filename: "editor-a2v-start-frame.jpg",
+    filename: `editor-a2v-start-${framingLabel}.jpg`,
     contentType: "image/jpeg",
   });
-  const imageUrl = uploaded.url;
+  opts.onProgress("Creating framed start image on Parascene…");
+  const sdk = createAuthedSdk();
+  const startedStill = await sdk.create({
+    serverId: 1,
+    method: "uploadImage",
+    creationToken: newCreationToken(),
+    args: {
+      image_url: uploaded.url,
+      aspect_ratio: opts.aspectRatio,
+    },
+  });
+  opts.onProgress(`Waiting for start image ${startedStill.id}…`);
+  const doneStill = await sdk.waitForCreation(startedStill.id, {
+    onTick: (row) =>
+      opts.onProgress(`Waiting for start image (${row.status || "…"})…`),
+  });
+  if (String(doneStill.status).toLowerCase() === "failed") {
+    throw new Error(`Start frame upload failed (${doneStill.id})`);
+  }
+  const stillCreationId = await ingestRemoteCreation(doneStill);
+  opts.onProgress("Filing framed start image into Images group…");
+  const filedStill = await fileCreationIntoProjectGroup({
+    creationId: stillCreationId,
+    mediaType: "image",
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+  });
+  const [stillRow] = await getCreations([stillCreationId]);
+  const imageUrl =
+    stillRow?.remoteUrl?.trim() ||
+    uploaded.url;
+  if (!imageUrl) {
+    throw new Error("Framed start image has no remote URL.");
+  }
   pushSteps(completeStep(steps, "still"));
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
@@ -278,6 +355,7 @@ export async function runAddAssetGeneration(
     aspectRatio: opts.aspectRatio,
     imageUrl,
     audioClipId: clipId,
+    durationSeconds,
     onProgress: opts.onProgress,
   });
   pushSteps(completeStep(steps, "generate"));
@@ -289,14 +367,20 @@ export async function runAddAssetGeneration(
     mediaType: "video",
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
-    imagesGroupId: opts.imagesGroupId,
+    imagesGroupId: filedStill.groupId ?? opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
   });
   pushSteps(completeStep(steps, "file"));
 
   return {
     creationId,
-    projectCreationIds: filed.projectCreationIds,
+    projectCreationIds: [
+      ...new Set([
+        ...filedStill.projectCreationIds,
+        ...filed.projectCreationIds,
+      ]),
+    ],
     videosGroupId: filed.groupId,
+    imagesGroupId: filedStill.groupId,
   };
 }

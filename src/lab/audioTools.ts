@@ -168,6 +168,20 @@ export async function extractVideoFrame(opts: {
   return { path, mediaUrl: mediaUrlFor(path), timeSec: opts.timeSec };
 }
 
+/** Fit/Fill/Stretch a local still into the project aspect (cached JPEG). */
+export async function applyImageFraming(opts: {
+  sourcePath: string;
+  framing: "fit" | "fill" | "stretch" | string;
+  aspectRatio: string;
+}): Promise<{ path: string; mediaUrl: string }> {
+  const path = await invoke<string>("library_apply_image_framing", {
+    sourcePath: opts.sourcePath,
+    framing: opts.framing,
+    aspectRatio: opts.aspectRatio,
+  });
+  return { path, mediaUrl: mediaUrlFor(path) };
+}
+
 /** Upload a local image file to Parascene generic storage; returns a public URL. */
 export async function uploadLocalImageFile(
   path: string,

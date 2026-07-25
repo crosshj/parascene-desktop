@@ -7,6 +7,7 @@ import {
 } from "../../project/aspectRatios";
 import {
   ADD_ASSET_NO_LYRICS_AUDIO_NOTE,
+  addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
   resolveAddAssetAudioMode,
   type AddAssetAudioMode,
@@ -14,10 +15,17 @@ import {
 } from "./addAssetGenerate";
 import { resolveLyricsForTimeRange, matchingLyricAlignment } from "./addAssetLyrics";
 import {
-  clipSongTimeRangeFromTimeline,
+  resolveAddAssetGenerationTiming,
   resolveAddAssetStartFrame,
   type StartFramePreview,
 } from "./addAssetStartFrame";
+import {
+  ADD_ASSET_MAX_DURATION_SEC,
+  ADD_ASSET_MIN_DURATION_SEC,
+  addAssetClipDurationSec,
+  clampAddAssetDurationSec,
+  withAddAssetDuration,
+} from "./stagedClip";
 
 export type StartAddAssetGenerationRequest = {
   clip: TimelineClip;
@@ -36,6 +44,8 @@ type AddAssetGeneratePanelProps = {
   lyricAlignment: LyricAlignment | null;
   mainAudioCreationId: string | null;
   onStartGeneration: (request: StartAddAssetGenerationRequest) => void;
+  /** Resize the placeholder on the timeline when duration changes. */
+  onDurationChange?: (durationSec: number) => void;
   onClearError?: () => void;
 };
 
@@ -87,12 +97,18 @@ function timelineFingerprint(timeline: readonly TimelineClip[]): string {
   return timeline
     .map(
       (clip) =>
-        `${clip.id}:${clip.startSec.toFixed(3)}:${clip.endSec.toFixed(3)}:${clip.assetId ?? ""}:${clip.inSec ?? 0}:${clip.outSec ?? ""}`,
+        `${clip.id}:${clip.startSec.toFixed(3)}:${clip.endSec.toFixed(3)}:${clip.assetId ?? ""}:${clip.inSec ?? 0}:${clip.outSec ?? ""}:${clip.framing ?? "fit"}:${clip.reverse ? 1 : 0}`,
     )
     .join("|");
 }
 
-function AddAssetGenerationProgressBar({ startedAtMs }: { startedAtMs: number }) {
+function AddAssetGenerationProgressBar({
+  startedAtMs,
+  expectedMs,
+}: {
+  startedAtMs: number;
+  expectedMs: number;
+}) {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -102,6 +118,7 @@ function AddAssetGenerationProgressBar({ startedAtMs }: { startedAtMs: number })
 
   const { percent, indeterminate } = addAssetGenerationProgress(
     nowMs - startedAtMs,
+    expectedMs,
   );
 
   return (
@@ -131,13 +148,21 @@ export function AddAssetGeneratePanel({
   lyricAlignment,
   mainAudioCreationId,
   onStartGeneration,
+  onDurationChange,
   onClearError,
 }: AddAssetGeneratePanelProps) {
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
   const [pullEpoch, setPullEpoch] = useState(0);
+  const clipDurationSec = addAssetClipDurationSec(clip);
+  const [durationDraft, setDurationDraft] = useState(String(clipDurationSec));
+  const [prevClipDuration, setPrevClipDuration] = useState(clipDurationSec);
+  if (clipDurationSec !== prevClipDuration) {
+    setPrevClipDuration(clipDurationSec);
+    setDurationDraft(String(clipDurationSec));
+  }
 
   const { songRange, lyricsText } = useMemo(() => {
-    const range = clipSongTimeRangeFromTimeline(
+    const { songRange: range } = resolveAddAssetGenerationTiming(
       timeline,
       clip,
       mainAudioCreationId,
@@ -149,6 +174,23 @@ export function AddAssetGeneratePanel({
       : "";
     return { songRange: range, lyricsText: text };
   }, [timeline, clip, mainAudioCreationId, lyricAlignment]);
+
+  // Heal placeholders that somehow fall outside the allowed window.
+  useEffect(() => {
+    const raw = Number(clip.endSec) - Number(clip.startSec);
+    if (!Number.isFinite(raw) || raw <= 0) return;
+    const clamped = clampAddAssetDurationSec(raw);
+    if (Math.abs(raw - clamped) < 0.05) return;
+    onDurationChange?.(clamped);
+  }, [clip.id, clip.startSec, clip.endSec, onDurationChange]);
+
+  const commitDurationDraft = () => {
+    const next = clampAddAssetDurationSec(Number(durationDraft));
+    setDurationDraft(String(next));
+    if (Math.abs(next - clipDurationSec) >= 0.05) {
+      onDurationChange?.(next);
+    }
+  };
 
   const [prompt, setPrompt] = useState(LAB_A2V_PROMPT);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(() =>
@@ -167,7 +209,7 @@ export function AddAssetGeneratePanel({
     setLoadedStartFrame(null);
   }
 
-  const startFrameKey = `${timelineKey}:${clip.id}:${pullEpoch}`;
+  const startFrameKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v2:${pullEpoch}`;
   const activeSession = session?.clipId === clip.id ? session : null;
   const phase: PanelPhase = activeSession?.phase ?? "form";
   const startFrame =
@@ -180,14 +222,14 @@ export function AddAssetGeneratePanel({
   useEffect(() => {
     if (phase !== "form") return;
     let cancelled = false;
-    void resolveAddAssetStartFrame(timeline, clip).then((preview) => {
+    void resolveAddAssetStartFrame(timeline, clip, aspectRatio).then((preview) => {
       if (cancelled) return;
       setLoadedStartFrame({ key: startFrameKey, preview });
     });
     return () => {
       cancelled = true;
     };
-  }, [timeline, clip, startFrameKey, phase]);
+  }, [timeline, clip, startFrameKey, phase, aspectRatio]);
 
   const handleRefresh = () => {
     if (phase !== "form" || startFrameLoading) return;
@@ -203,17 +245,25 @@ export function AddAssetGeneratePanel({
     ) {
       return;
     }
-    void resolveAddAssetStartFrame(timeline, clip).then((freshStartFrame) => {
-      if (!freshStartFrame.framePath?.trim()) return;
-      onStartGeneration({
-        clip,
-        prompt,
-        lyricsText,
-        audioMode: resolvedAudioMode,
-        songRange,
-        startFrame: freshStartFrame,
-      });
-    });
+    void resolveAddAssetStartFrame(timeline, clip, aspectRatio).then(
+      (freshStartFrame) => {
+        if (!freshStartFrame.framePath?.trim()) return;
+        const timing = resolveAddAssetGenerationTiming(
+          timeline,
+          clip,
+          mainAudioCreationId,
+          lyricAlignment,
+        );
+        onStartGeneration({
+          clip: withAddAssetDuration(clip, timing.durationSec),
+          prompt,
+          lyricsText,
+          audioMode: resolvedAudioMode,
+          songRange: timing.songRange,
+          startFrame: freshStartFrame,
+        });
+      },
+    );
   };
 
   const canGenerate =
@@ -230,7 +280,13 @@ export function AddAssetGeneratePanel({
         aria-label="Generating video"
       >
         <div className="add-asset-generate-body">
-          <AddAssetGenerationProgressBar startedAtMs={activeSession.startedAtMs} />
+          <AddAssetGenerationProgressBar
+            startedAtMs={activeSession.startedAtMs}
+            expectedMs={
+              activeSession.expectedMs ??
+              addAssetGenerationExpectedMs(clipDurationSec)
+            }
+          />
           <p className="add-asset-generate-progress-note muted">
             {activeSession.progressNote}
           </p>
@@ -283,7 +339,8 @@ export function AddAssetGeneratePanel({
         <section className="add-asset-generate-section">
           <h3>Start frame</h3>
           <p className="muted add-asset-generate-note">
-            Last frame of the previous video clip on the timeline.
+            {startFrame?.note?.trim() ||
+              "Last frame of the previous clip on the timeline, with that clip’s framing."}
           </p>
           <div className="add-asset-generate-field add-asset-generate-frame-field">
             <div
@@ -307,6 +364,34 @@ export function AddAssetGeneratePanel({
               )}
             </div>
           </div>
+        </section>
+
+        <section className="add-asset-generate-section">
+          <h3>Duration</h3>
+          <p className="muted add-asset-generate-note">
+            Output length ({ADD_ASSET_MIN_DURATION_SEC}–{ADD_ASSET_MAX_DURATION_SEC}s).
+            You can also drag the clip’s right edge on the timeline.
+          </p>
+          <label className="add-asset-generate-field">
+            <span>Seconds</span>
+            <input
+              type="number"
+              min={ADD_ASSET_MIN_DURATION_SEC}
+              max={ADD_ASSET_MAX_DURATION_SEC}
+              step={0.5}
+              value={durationDraft}
+              disabled={phase !== "form"}
+              onChange={(event) => setDurationDraft(event.target.value)}
+              onBlur={commitDurationDraft}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitDurationDraft();
+                  (event.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+          </label>
         </section>
 
         <section className="add-asset-generate-section">
@@ -377,7 +462,7 @@ export function AddAssetGeneratePanel({
               rows={4}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Describe what happens in these 9 seconds…"
+              placeholder={`Describe what happens in these ${clipDurationSec.toFixed(1)} seconds…`}
             />
           </label>
         </section>

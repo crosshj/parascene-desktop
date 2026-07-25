@@ -58,6 +58,10 @@ import {
   normalizeFraming,
   isAddAssetPlaceholderClip,
   clipTimelineMoveEnabled,
+  ADD_ASSET_MIN_DURATION_SEC,
+  ADD_ASSET_MAX_DURATION_SEC,
+  clampAddAssetDurationSec,
+  withAddAssetDuration,
   type StagedClipDraft,
   type StagedClipFraming,
   type TimelineGhostClip,
@@ -215,7 +219,10 @@ function draftToClip(
   lane: "video" | "audio",
   allClips: readonly TimelineClip[],
 ): TimelineClip {
-  const duration = stagedClipDuration(draft);
+  const rawDuration = stagedClipDuration(draft);
+  const duration = draft.isAddAssetPlaceholder
+    ? clampAddAssetDurationSec(rawDuration)
+    : rawDuration;
   let slideshow = draft.kind === "slideshow" ? draft.slideshow : undefined;
   // A rendered slideshow can be placed again like any other source clip.
   // Keep its original beat edit instead of rebinding and baking at the copy.
@@ -233,6 +240,8 @@ function draftToClip(
       };
     }
   }
+  const inSec = draft.isAddAssetPlaceholder ? 0 : draft.inSec;
+  const outSec = draft.isAddAssetPlaceholder ? duration : draft.outSec;
   return {
     id: newClipId(),
     label: formatClipDuration(duration),
@@ -242,8 +251,8 @@ function draftToClip(
     thumbUrl: draft.thumbUrl,
     lane,
     kind: draft.kind,
-    inSec: draft.inSec,
-    outSec: draft.outSec,
+    inSec,
+    outSec,
     includeAudio: draft.includeAudio,
     reverse: draft.reverse,
     transform: draft.transform,
@@ -745,6 +754,22 @@ export function TimelinePane({
   );
 
   useEffect(() => {
+    addAssetGenerationByClipIdRef.current = addAssetGenerationByClipId;
+    const resizingId = resizeRef.current?.clipId;
+    const movingIds = moveRef.current?.movingIds ?? [];
+    if (
+      (resizingId && isClipGenerating(resizingId)) ||
+      movingIds.some((id) => isClipGenerating(id))
+    ) {
+      abortTimelineGestures();
+    }
+  }, [
+    addAssetGenerationByClipId,
+    abortTimelineGestures,
+    isClipGenerating,
+  ]);
+
+  useEffect(() => {
     clipsRef.current = clips;
     selectedClipIdsRef.current = selectedClipIds;
     onClipsChangeRef.current = onClipsChange;
@@ -752,7 +777,6 @@ export function TimelinePane({
     onActivateMonitorRef.current = onActivateMonitor;
     onPlayheadChangeRef.current = onPlayheadChange;
     magneticRef.current = magnetic;
-    addAssetGenerationByClipIdRef.current = addAssetGenerationByClipId;
   }, [
     clips,
     selectedClipIds,
@@ -761,7 +785,6 @@ export function TimelinePane({
     onActivateMonitor,
     onPlayheadChange,
     magnetic,
-    addAssetGenerationByClipId,
   ]);
 
   const commitClips = useCallback((next: TimelineClip[]) => {
@@ -1081,18 +1104,31 @@ export function TimelinePane({
     (clientX: number, finalize: boolean) => {
       const resize = resizeRef.current;
       if (!resize) return;
+      if (isClipGenerating(resize.clipId)) return;
       const clip = clipsRef.current.find((c) => c.id === resize.clipId);
       if (!clip) return;
-      if (clip.kind !== "image" && clip.kind !== "video") return;
-      if (isAddAssetPlaceholderClip(clip)) return;
+      const isPlaceholder = isAddAssetPlaceholderClip(clip);
+      if (
+        clip.kind !== "image" &&
+        clip.kind !== "video" &&
+        !isPlaceholder
+      ) {
+        return;
+      }
 
       const inSec = Number.isFinite(clip.inSec)
         ? Math.max(0, Number(clip.inSec))
         : 0;
       const trimSpan = clipVideoMinTimelineDurationSec(clip);
-      const minDuration = clip.kind === "video" ? trimSpan : 0.1;
+      const minDuration = isPlaceholder
+        ? ADD_ASSET_MIN_DURATION_SEC
+        : clip.kind === "video"
+          ? trimSpan
+          : 0.1;
+      const maxDuration = isPlaceholder ? ADD_ASSET_MAX_DURATION_SEC : Infinity;
 
       let endSec = Math.max(clip.startSec + minDuration, pointToStartSec(clientX));
+      endSec = Math.min(clip.startSec + maxDuration, endSec);
       if (finalize) {
         const exclude = new Set([clip.id]);
         const laneClips = clipsRef.current.filter(
@@ -1108,13 +1144,20 @@ export function TimelinePane({
           exclude,
         );
         endSec = Math.max(clip.startSec + minDuration, endSec);
+        endSec = Math.min(clip.startSec + maxDuration, endSec);
       }
 
-      const duration = endSec - clip.startSec;
+      const duration = isPlaceholder
+        ? clampAddAssetDurationSec(endSec - clip.startSec)
+        : endSec - clip.startSec;
+      endSec = clip.startSec + duration;
 
       setClips((prev) => {
         const next = prev.map((c) => {
           if (c.id !== clip.id) return c;
+          if (isAddAssetPlaceholderClip(c)) {
+            return withAddAssetDuration(c, duration);
+          }
           if (c.kind === "image") {
             return {
               ...c,
@@ -1148,7 +1191,7 @@ export function TimelinePane({
       });
       notifyClipsChange(clipsRef.current, { live: !finalize });
     },
-    [notifyClipsChange, pointToStartSec],
+    [isClipGenerating, notifyClipsChange, pointToStartSec],
   );
 
   const endClipResize = useCallback(
@@ -1168,8 +1211,11 @@ export function TimelinePane({
     (clip: TimelineClip, event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       if (getActiveStagedClipDrag()) return;
-      if (clip.kind !== "image" && clip.kind !== "video") return;
-      if (isAddAssetPlaceholderClip(clip)) return;
+      if (isClipGenerating(clip.id)) return;
+      const isPlaceholder = isAddAssetPlaceholderClip(clip);
+      if (clip.kind !== "image" && clip.kind !== "video" && !isPlaceholder) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       resizeRef.current = { clipId: clip.id, pointerId: event.pointerId };
@@ -1178,7 +1224,7 @@ export function TimelinePane({
       document.body.classList.add("is-timeline-clip-resizing");
       armPointerCapture(event.currentTarget, event.pointerId);
     },
-    [armPointerCapture],
+    [armPointerCapture, isClipGenerating],
   );
 
   const armClipMove = useCallback(
@@ -1392,6 +1438,7 @@ export function TimelinePane({
         lane,
         label: draft.label,
         thumbUrl: draft.thumbUrl,
+        framing: normalizeFraming(draft.framing),
       });
     },
     [clips, isOverTracks, magnetic, pointToStartSec],
@@ -1722,33 +1769,38 @@ export function TimelinePane({
       </div>
 
       <div className="editor-timeline-body">
-        <div className="editor-timeline-labels" aria-hidden>
+        <div
+          className={`editor-timeline-labels${lyricBlocks.length > 0 ? " has-lyrics" : ""}`}
+          aria-hidden
+        >
           <div className="editor-timeline-label-spacer" />
           <div className="editor-timeline-label">V1</div>
-          <div className="editor-timeline-label">LYR</div>
+          {lyricBlocks.length > 0 ? (
+            <div className="editor-timeline-label">LYR</div>
+          ) : null}
           <div className="editor-timeline-label">A1</div>
         </div>
 
-        <div
-          ref={scrollRef}
-          className="editor-timeline-scroll"
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-        >
           <div
-            className="editor-timeline-tracks"
-            style={{ width: trackWidth }}
-            onPointerDown={(event) => {
-              if (event.button !== 0) return;
-              const target = event.target as HTMLElement | null;
-              if (target?.closest(".editor-timeline-clip")) return;
-              if (target?.closest(".editor-timeline-ruler")) return;
-              if (target?.closest(".editor-timeline-lyric-block")) return;
-              onActivateMonitor?.();
-              onSelectClip?.(null);
-            }}
+            ref={scrollRef}
+            className="editor-timeline-scroll"
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
           >
+            <div
+              className={`editor-timeline-tracks${lyricBlocks.length > 0 ? " has-lyrics" : ""}`}
+              style={{ width: trackWidth }}
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                const target = event.target as HTMLElement | null;
+                if (target?.closest(".editor-timeline-clip")) return;
+                if (target?.closest(".editor-timeline-ruler")) return;
+                if (target?.closest(".editor-timeline-lyric-block")) return;
+                onActivateMonitor?.();
+                onSelectClip?.(null);
+              }}
+            >
             <div
               className="editor-timeline-ruler"
               role="slider"
@@ -1789,7 +1841,11 @@ export function TimelinePane({
                   Drop image here
                 </div>
               ) : (
-                videoClips.map((clip) => (
+                videoClips.map((clip) => {
+                  const generating =
+                    addAssetGenerationByClipId?.get(clip.id)?.status ===
+                    "generating";
+                  return (
                   <MiniClip
                     key={clip.id}
                     className="editor-timeline-clip"
@@ -1860,37 +1916,39 @@ export function TimelinePane({
                         : []
                     }
                     resizeEnabled={
-                      (clip.kind === "image" || clip.kind === "video") &&
-                      !isAddAssetPlaceholderClip(clip)
+                      !generating &&
+                      (clip.kind === "image" ||
+                        clip.kind === "video" ||
+                        isAddAssetPlaceholderClip(clip))
                     }
-                    moveEnabled={clipTimelineMoveEnabled(clip)}
+                    moveEnabled={
+                      !generating && clipTimelineMoveEnabled(clip)
+                    }
                     onPointerDown={(event) => beginClipPress(clip, event)}
                     onResizePointerDown={(event) => armClipResize(clip, event)}
                   />
-                ))
+                  );
+                })
               )}
               {ghost?.lane === "video" ? (
                 <MiniClip
-                  className="editor-timeline-ghost-clip"
+                  className="editor-timeline-clip editor-timeline-ghost-clip"
                   startSec={ghost.startSec}
                   durationSec={ghost.durationSec}
                   thumbUrl={ghost.thumbUrl}
                   pxPerSec={pxPerSec}
+                  framing={ghost.framing}
                   thumbAspectRatio={thumbAspectRatio}
                 />
               ) : null}
             </div>
 
-            <div
-              className="editor-timeline-lane is-lyrics"
-              aria-label="Lyrics lane"
-            >
-              {lyricBlocks.length === 0 ? (
-                <div className="editor-timeline-lane-empty muted">
-                  {lyricAlignment ? "No sung lyrics" : "No lyric alignment"}
-                </div>
-              ) : (
-                lyricBlocks.map((block, index) => {
+            {lyricBlocks.length > 0 ? (
+              <div
+                className="editor-timeline-lane is-lyrics"
+                aria-label="Lyrics lane"
+              >
+                {lyricBlocks.map((block, index) => {
                   const widthPx = Math.max(
                     4,
                     Math.round((block.endSec - block.startSec) * pxPerSec),
@@ -1920,9 +1978,9 @@ export function TimelinePane({
                       </span>
                     </button>
                   );
-                })
-              )}
-            </div>
+                })}
+              </div>
+            ) : null}
 
             <div
               className="editor-timeline-lane is-audio"
@@ -1935,6 +1993,9 @@ export function TimelinePane({
               ) : (
                 audioClips.map((clip) => {
                   const isMainAudio = mainAudioClip?.id === clip.id;
+                  const generating =
+                    addAssetGenerationByClipId?.get(clip.id)?.status ===
+                    "generating";
                   return (
                   <MiniClip
                     key={clip.id}
@@ -1962,7 +2023,9 @@ export function TimelinePane({
                     clipOutSec={clipOutSec(clip)}
                     bakeStatus={bakeInfoByClipId?.get(clip.id)?.status}
                     bakeError={bakeInfoByClipId?.get(clip.id)?.error}
-                    moveEnabled={clipTimelineMoveEnabled(clip)}
+                    moveEnabled={
+                      !generating && clipTimelineMoveEnabled(clip)
+                    }
                     onPointerDown={(event) => beginClipPress(clip, event)}
                   />
                   );
@@ -1970,7 +2033,7 @@ export function TimelinePane({
               )}
               {ghost?.lane === "audio" ? (
                 <MiniClip
-                  className="editor-timeline-ghost-clip"
+                  className="editor-timeline-clip editor-timeline-ghost-clip"
                   startSec={ghost.startSec}
                   durationSec={ghost.durationSec}
                   thumbUrl={ghost.thumbUrl}

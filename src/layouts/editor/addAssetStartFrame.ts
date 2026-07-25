@@ -1,4 +1,4 @@
-import { extractVideoFrame } from "../../lab/audioTools";
+import { applyImageFraming, extractVideoFrame } from "../../lab/audioTools";
 import { getCreations, ensureReversed } from "../../library/catalogClient";
 import { ensureClipThumbnail } from "../../library/clipThumbnail";
 import {
@@ -12,13 +12,18 @@ import {
   clipSourceSec,
   resolveTimelineFrame,
 } from "./timelineCompose";
-import { ADD_ASSET_TIMELINE_DURATION_SEC } from "./stagedClip";
+import {
+  addAssetClipDurationSec,
+  normalizeFraming,
+  type StagedClipFraming,
+} from "./stagedClip";
 
 export type StartFramePreview = {
   previewUrl: string | null;
   note: string;
   framePath: string | null;
   frameTimeSec: number | null;
+  framing?: StagedClipFraming;
 };
 
 /** Source media time within the visible timeline span of a clip. */
@@ -136,6 +141,24 @@ export function resolveMainAudioClip(
   return audioClips[0] ?? null;
 }
 
+/**
+ * Creation id for editor generate / lyrics: prefer the audio clip on the
+ * timeline, then Lab/project main audio, then any project audio asset.
+ */
+export function resolveEditorMainAudioCreationId(
+  timeline: readonly TimelineClip[],
+  projectMainAudioCreationId: string | null | undefined,
+  projectAudioAssetId?: string | null,
+): string | null {
+  const preferred =
+    projectMainAudioCreationId?.trim() ||
+    projectAudioAssetId?.trim() ||
+    null;
+  const fromTimeline = resolveMainAudioClip(timeline, preferred)?.assetId?.trim();
+  if (fromTimeline) return fromTimeline;
+  return preferred;
+}
+
 /** Map a timeline second to song/source-audio seconds via the aligned audio clip. */
 export function timelineSecToSongSec(
   timeline: readonly TimelineClip[],
@@ -161,22 +184,51 @@ function isImagePriorClip(
   return creation?.mediaType === "image";
 }
 
-function imageStartFramePreview(
-  creation: Creation,
-  sourcePath: string,
-): StartFramePreview {
-  return {
-    previewUrl:
-      creationDetailUrl(creation) ?? creationPreviewUrl(creation),
-    note: "The start frame is the image from the previous clip.",
-    framePath: sourcePath,
-    frameTimeSec: null,
-  };
+function framingNote(framing: StagedClipFraming, fromImage: boolean): string {
+  const source = fromImage ? "image" : "last frame";
+  const label =
+    framing === "fill" ? "Fill" : framing === "stretch" ? "Stretch" : "Fit";
+  return `The start frame is the previous clip’s ${source} with ${label} framing.`;
+}
+
+async function applyPriorFraming(opts: {
+  sourcePath: string;
+  framing: StagedClipFraming;
+  aspectRatio: string;
+  fromImage: boolean;
+  frameTimeSec: number | null;
+  fallbackPreviewUrl?: string | null;
+}): Promise<StartFramePreview> {
+  try {
+    const framed = await applyImageFraming({
+      sourcePath: opts.sourcePath,
+      framing: opts.framing,
+      aspectRatio: opts.aspectRatio,
+    });
+    return {
+      previewUrl: framed.mediaUrl,
+      note: framingNote(opts.framing, opts.fromImage),
+      framePath: framed.path,
+      frameTimeSec: opts.frameTimeSec,
+      framing: opts.framing,
+    };
+  } catch {
+    return {
+      previewUrl: opts.fallbackPreviewUrl ?? null,
+      note: opts.fromImage
+        ? "The start frame is the image from the previous clip."
+        : "The start frame is the last frame of the previous video clip.",
+      framePath: opts.sourcePath,
+      frameTimeSec: opts.frameTimeSec,
+      framing: opts.framing,
+    };
+  }
 }
 
 export async function resolveAddAssetStartFrame(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
 ): Promise<StartFramePreview> {
   const layer = visualLayerBeforePlaceholder(timeline, placeholder);
   const prior = layer?.clip ?? priorVideoClipBefore(
@@ -193,6 +245,7 @@ export async function resolveAddAssetStartFrame(
     };
   }
 
+  const framing = normalizeFraming(prior.framing);
   const assetId = prior.assetId!.trim();
   const [creation] = await getCreations([assetId]);
   let sourcePath = creation?.localPath?.trim() || null;
@@ -206,7 +259,15 @@ export async function resolveAddAssetStartFrame(
   }
 
   if (creation && isImagePriorClip(prior, creation)) {
-    return imageStartFramePreview(creation, sourcePath);
+    return applyPriorFraming({
+      sourcePath,
+      framing,
+      aspectRatio,
+      fromImage: true,
+      frameTimeSec: null,
+      fallbackPreviewUrl:
+        creationDetailUrl(creation) ?? creationPreviewUrl(creation),
+    });
   }
 
   const frameTimeSec =
@@ -237,12 +298,14 @@ export async function resolveAddAssetStartFrame(
       sourcePath,
       timeSec: frameTimeSec,
     });
-    return {
-      previewUrl: frame.mediaUrl ?? previewUrl,
-      note: "The start frame is the last frame of the previous video clip.",
-      framePath: frame.path,
+    return applyPriorFraming({
+      sourcePath: frame.path,
+      framing,
+      aspectRatio,
+      fromImage: false,
       frameTimeSec,
-    };
+      fallbackPreviewUrl: frame.mediaUrl ?? previewUrl,
+    });
   } catch {
     return {
       previewUrl,
@@ -251,6 +314,7 @@ export async function resolveAddAssetStartFrame(
         : "Could not extract the last frame from the previous clip.",
       framePath: null,
       frameTimeSec: previewUrl ? frameTimeSec : null,
+      framing,
     };
   }
 }
@@ -262,7 +326,9 @@ export function clipSongTimeRangeFromTimeline(
   alignment?: LyricAlignment | null,
 ): { startSec: number; endSec: number } {
   const timelineStart = clip.startSec;
-  const timelineEnd = clip.startSec + ADD_ASSET_TIMELINE_DURATION_SEC;
+  // Always use the clamped add-asset window so lyrics / audio / API agree.
+  const durationSec = addAssetClipDurationSec(clip);
+  const timelineEnd = clip.startSec + durationSec;
   return {
     startSec: timelineSecToSongSec(
       timeline,
@@ -277,4 +343,27 @@ export function clipSongTimeRangeFromTimeline(
       alignment,
     ),
   };
+}
+
+/**
+ * Single timing source for generate: clamped duration + matching song window.
+ * Audio slice length and `duration_seconds` must both use `durationSec`.
+ */
+export function resolveAddAssetGenerationTiming(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  mainAudioCreationId: string | null,
+  alignment?: LyricAlignment | null,
+): {
+  durationSec: number;
+  songRange: { startSec: number; endSec: number };
+} {
+  const durationSec = addAssetClipDurationSec(placeholder);
+  const songRange = clipSongTimeRangeFromTimeline(
+    timeline,
+    { ...placeholder, endSec: placeholder.startSec + durationSec },
+    mainAudioCreationId,
+    alignment,
+  );
+  return { durationSec, songRange };
 }

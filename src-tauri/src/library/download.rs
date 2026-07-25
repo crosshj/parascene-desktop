@@ -1,8 +1,8 @@
 use super::catalog::{
     clear_local_thumb_paths, default_paths, delete_creation_local, get_creation_by_id,
-    get_creations_by_ids, invalidate_disk_size_cache, list_creations, list_creations_page,
-    mark_downloaded, ready_connection, set_download_state, set_local_thumb_path, sync_status_for,
-    Creation, SyncStatus,
+    get_creations_by_ids, invalidate_disk_size_cache, list_all_creations, list_creations,
+    list_creations_page, mark_downloaded, ready_connection, set_download_state,
+    set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
 use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
@@ -1747,7 +1747,8 @@ pub fn library_cache_missing_thumbs(app: AppHandle) -> Result<DownloadSummary, S
     let paths = default_paths()?;
     let pending: Vec<Creation> = {
         let conn = ready_connection(&paths)?;
-        list_creations(&conn)?
+        // Include group members — same set as missing_thumb_cacheable status counts.
+        list_all_creations(&conn)?
             .into_iter()
             .filter(needs_thumb)
             .collect()
@@ -1781,7 +1782,8 @@ pub fn library_cache_missing_media(app: AppHandle) -> Result<DownloadSummary, St
     let paths = default_paths()?;
     let pending: Vec<Creation> = {
         let conn = ready_connection(&paths)?;
-        list_creations(&conn)?
+        // Include group members — same set as missing_media_cacheable status counts.
+        list_all_creations(&conn)?
             .into_iter()
             .filter(needs_download)
             .collect()

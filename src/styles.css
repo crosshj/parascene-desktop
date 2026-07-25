@@ -4926,6 +4926,34 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   font-family: inherit;
 }
 
+.add-asset-generate-pane label.add-asset-generate-field {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.add-asset-generate-pane label.add-asset-generate-field > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.add-asset-generate-pane label.add-asset-generate-field > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
 .add-asset-generate-pane .add-asset-generate-field:focus-within {
   border-color: color-mix(in srgb, var(--text) 35%, var(--border));
 }
@@ -4966,7 +4994,8 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  /* Framed stills are already project-aspect pixels — fill the matte edge-to-edge. */
+  object-fit: fill;
 }
 
 .add-asset-generate-pane .add-asset-generate-lyrics-text {
@@ -5538,9 +5567,13 @@ body.is-timeline-clip-moving * {
 
 .editor-timeline-labels {
   display: grid;
-  grid-template-rows: 1.6rem 1fr auto 1fr;
+  grid-template-rows: 1.6rem 1fr 1fr;
   border-right: 1px solid var(--border);
   background: var(--surface-raised);
+}
+
+.editor-timeline-labels.has-lyrics {
+  grid-template-rows: 1.6rem 1fr auto 1fr;
 }
 
 .editor-timeline-label-spacer {
@@ -5568,6 +5601,10 @@ body.is-timeline-clip-moving * {
   min-height: 100%;
   height: 100%;
   display: grid;
+  grid-template-rows: 1.6rem minmax(72px, 1fr) minmax(72px, 1fr);
+}
+
+.editor-timeline-tracks.has-lyrics {
   grid-template-rows: 1.6rem minmax(72px, 1fr) minmax(2.75rem, auto) minmax(72px, 1fr);
 }
 
@@ -5722,7 +5759,9 @@ body.is-timeline-clip-moving * {
   z-index: 1;
   display: block;
   height: calc(100% - 1.1rem - 4px);
+  max-height: calc(100% - 1.1rem - 4px);
   width: auto;
+  max-width: calc(100% - 8px);
   aspect-ratio: 16 / 9;
   border-radius: 1px;
   object-fit: cover;
@@ -5730,6 +5769,7 @@ body.is-timeline-clip-moving * {
   border: none;
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
 }
 
 .editor-timeline-clip-thumb.is-fit {
@@ -5847,6 +5887,7 @@ body.is-timeline-clip-moving * {
 
 .editor-timeline-ghost-clip {
   z-index: 3;
+  overflow: hidden;
 }
 
 .editor-timeline-drop-flash {

@@ -666,6 +666,21 @@ pub(crate) fn list_creations(conn: &Connection) -> Result<Vec<Creation>, String>
     Ok(out)
 }
 
+/// Every catalog row, including group members hidden from the board.
+/// Used by Sync bulk-cache so counts match `missing_*_cacheable` status fields.
+pub(crate) fn list_all_creations(conn: &Connection) -> Result<Vec<Creation>, String> {
+    let sql = format!("{CREATION_SELECT} ORDER BY created_at DESC, title ASC");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], map_creation_row)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 pub(crate) fn list_creations_page(
     conn: &Connection,
     limit: u32,

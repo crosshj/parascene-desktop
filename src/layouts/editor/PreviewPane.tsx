@@ -53,6 +53,7 @@ import {
   defaultStagedClipDraft,
   ADD_ASSET_DRAG_DRAFT,
   ADD_ASSET_TIMELINE_DURATION_SEC,
+  addAssetClipDurationSec,
   framingClassName,
   framingViewportStyle,
   isProvisionalOutSec,
@@ -100,6 +101,7 @@ type PreviewPaneProps = {
   lyricAlignment?: LyricAlignment | null;
   mainAudioCreationId?: string | null;
   onStartAddAssetGeneration?: (request: StartAddAssetGenerationRequest) => void;
+  onAddAssetDurationChange?: (durationSec: number) => void;
   onClearAddAssetGenerationError?: () => void;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
@@ -272,6 +274,7 @@ export function PreviewPane({
   lyricAlignment = null,
   mainAudioCreationId = null,
   onStartAddAssetGeneration,
+  onAddAssetDurationChange,
   onClearAddAssetGenerationError,
   selectedAssetIds = [],
   projectCabinets = null,
@@ -1446,7 +1449,9 @@ export function PreviewPane({
   const transportCanPlay =
     monitorMode === "source" && !addAssetMode && canPlay;
   const scrubMax = addAssetMode
-    ? ADD_ASSET_TIMELINE_DURATION_SEC
+    ? addAssetPlaceholderClip
+      ? addAssetClipDurationSec(addAssetPlaceholderClip)
+      : ADD_ASSET_TIMELINE_DURATION_SEC
     : Math.max(durationSec, 0.1);
   const showTrimHandles =
     Boolean(stagedDraft) &&
@@ -1518,6 +1523,7 @@ export function PreviewPane({
                   onStartGeneration={(request) =>
                     onStartAddAssetGeneration?.(request)
                   }
+                  onDurationChange={onAddAssetDurationChange}
                   onClearError={onClearAddAssetGenerationError}
                 />
               ) : (
@@ -1717,7 +1723,11 @@ export function PreviewPane({
                 {durationSec > 0 || addAssetMode ? (
                   <span className="editor-transport-tc is-duration" title="Duration">
                     {formatClock(
-                      addAssetMode ? ADD_ASSET_TIMELINE_DURATION_SEC : durationSec,
+                      addAssetMode
+                        ? addAssetPlaceholderClip
+                          ? addAssetClipDurationSec(addAssetPlaceholderClip)
+                          : ADD_ASSET_TIMELINE_DURATION_SEC
+                        : durationSec,
                     )}
                   </span>
                 ) : null}

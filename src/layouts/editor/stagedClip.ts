@@ -18,8 +18,56 @@ export type StagedClipFraming = "fit" | "fill" | "stretch";
 export type { SlideshowMode, SlideshowRecipe };
 
 export const DEFAULT_IMAGE_DURATION_SEC = 10;
-/** Fixed preview/timeline length for the add-asset placeholder clip. */
+/**
+ * Add-asset / A2V duration window.
+ * Default matches LTX ia2v workflow; min/max bound the form, timeline resize,
+ * audio slice, and `duration_seconds` sent to the API — keep them in lockstep.
+ */
 export const ADD_ASSET_TIMELINE_DURATION_SEC = 9;
+export const ADD_ASSET_MIN_DURATION_SEC = 1;
+export const ADD_ASSET_MAX_DURATION_SEC = 15;
+
+export function clampAddAssetDurationSec(sec: number): number {
+  if (!Number.isFinite(sec) || sec <= 0) return ADD_ASSET_TIMELINE_DURATION_SEC;
+  const clamped = Math.min(
+    ADD_ASSET_MAX_DURATION_SEC,
+    Math.max(ADD_ASSET_MIN_DURATION_SEC, sec),
+  );
+  return Math.round(clamped * 10) / 10;
+}
+
+/** Timeline span used for generate / audio slice / API duration. */
+export function addAssetClipDurationSec(clip: {
+  startSec?: number;
+  endSec?: number;
+}): number {
+  const start = Number(clip.startSec);
+  const end = Number(clip.endSec);
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    return clampAddAssetDurationSec(end - start);
+  }
+  return ADD_ASSET_TIMELINE_DURATION_SEC;
+}
+
+/** Resize a placeholder (or any clip) to a clamped add-asset duration. */
+export function withAddAssetDuration<
+  T extends {
+    startSec: number;
+    endSec: number;
+    inSec?: number;
+    outSec?: number;
+    label?: string;
+  },
+>(clip: T, durationSec: number): T {
+  const duration = clampAddAssetDurationSec(durationSec);
+  const inSec = Number.isFinite(clip.inSec) ? Math.max(0, Number(clip.inSec)) : 0;
+  return {
+    ...clip,
+    endSec: clip.startSec + duration,
+    outSec: inSec + duration,
+    label: `${duration.toFixed(1)}s`,
+  };
+}
 /** Staged draft dragged from the add-asset slot onto the timeline. */
 export const ADD_ASSET_DRAG_DRAFT: StagedClipDraft = {
   assetId: "",
@@ -722,6 +770,7 @@ export type TimelineGhostClip = {
   lane: "video" | "audio";
   label: string;
   thumbUrl: string | null;
+  framing?: StagedClipFraming;
 };
 
 /** Active staged-clip drag (HTML5 getData is drop-only in most browsers). */
