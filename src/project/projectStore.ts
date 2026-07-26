@@ -26,6 +26,13 @@ import {
   isProjectAspectRatio,
   type ProjectAspectRatio,
 } from "./aspectRatios";
+import {
+  isProjectLookId,
+  normalizeProjectLooks,
+  PROJECT_LOOK_IDS,
+  type ProjectLookId,
+  type ProjectLooks,
+} from "./looks";
 
 export type StoredProject = {
   id: string;
@@ -35,6 +42,8 @@ export type StoredProject = {
   folderIds?: string[];
   /** Creative output frame; omitted on older stored projects → default. */
   aspectRatio?: ProjectAspectRatio;
+  /** Export-time Looks; omitted on older stored projects → {}. */
+  looks?: ProjectLooks;
   /** Editor timeline clips; omitted on older stored projects → []. */
   timeline?: TimelineClip[];
   /** Selected timeline clip in the editor; omitted → null. */
@@ -307,7 +316,7 @@ function normalizeStoredSlideshow(value: unknown): SlideshowRecipe | undefined {
   return recipe;
 }
 
-function normalizeStoredTimeline(value: unknown): TimelineClip[] {
+export function normalizeStoredTimeline(value: unknown): TimelineClip[] {
   if (!Array.isArray(value)) return [];
   return value
     .map(normalizeTimelineClip)
@@ -347,7 +356,7 @@ function normalizeSelectedAssetId(
   return creationIds.includes(value) ? value : null;
 }
 
-function normalizeFolderIds(value: unknown): string[] {
+export function normalizeFolderIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [
     ...new Set(
@@ -377,6 +386,7 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     ...project,
     folderIds: normalizeFolderIds(project.folderIds),
     aspectRatio,
+    looks: normalizeProjectLooks(project.looks),
     timeline,
     selectedTimelineClipId: selectedClipId,
     selectedAssetId,
@@ -600,6 +610,7 @@ export function createStoredProject(
     aspectRatio: isProjectAspectRatio(aspectRatio)
       ? aspectRatio
       : DEFAULT_PROJECT_ASPECT_RATIO,
+    looks: {},
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,
@@ -786,6 +797,46 @@ export function setStoredProjectAspectRatio(
     ...project,
     aspectRatio: next,
     timeline,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function setStoredProjectLookEnabled(
+  project: StoredProject,
+  lookId: ProjectLookId,
+  enabled: boolean,
+): StoredProject {
+  if (!isProjectLookId(lookId)) return project;
+  const looks = normalizeProjectLooks(project.looks);
+  const prev = looks[lookId];
+  const wasEnabled = prev?.enabled === true;
+  if (wasEnabled === enabled) return project;
+  const nextLooks: ProjectLooks = { ...looks };
+  if (!enabled) {
+    if (prev?.params) {
+      nextLooks[lookId] = { enabled: false, params: prev.params };
+    } else {
+      delete nextLooks[lookId];
+    }
+  } else {
+    // Looks are mutually exclusive — enabling one clears the others.
+    for (const id of PROJECT_LOOK_IDS) {
+      if (id === lookId) continue;
+      const other = nextLooks[id];
+      if (!other?.enabled) continue;
+      if (other.params) {
+        nextLooks[id] = { enabled: false, params: other.params };
+      } else {
+        delete nextLooks[id];
+      }
+    }
+    nextLooks[lookId] = prev?.params
+      ? { enabled: true, params: prev.params }
+      : { enabled: true };
+  }
+  return {
+    ...project,
+    looks: nextLooks,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1137,6 +1188,7 @@ export function storedProjectToUi(project: StoredProject): Project {
     aspectRatio: isProjectAspectRatio(project.aspectRatio)
       ? project.aspectRatio
       : DEFAULT_PROJECT_ASPECT_RATIO,
+    looks: normalizeProjectLooks(project.looks),
     scenes: [
       {
         id: `${project.id}-scene-1`,
@@ -1173,6 +1225,7 @@ export function emptyUiProject(): Project {
     id: "",
     title: "",
     aspectRatio: DEFAULT_PROJECT_ASPECT_RATIO,
+    looks: {},
     scenes: [],
     assets: [],
     folderIds: [],

@@ -467,17 +467,18 @@ describe("manifestSync", () => {
     );
   });
 
-  it("newest sync no-ops when a complete page is already local", async () => {
+  it("newest sync refreshes existing rows when a complete page is already local", async () => {
     const page = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
       remoteImage(1000 + i),
     );
     listMyCreations.mockResolvedValueOnce({ images: page, hasMore: true });
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
+    const applied: string[][] = [];
+    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: Array<{ id: string }> }) => {
       if (cmd === "library_existing_creation_ids") {
         return args?.ids ?? [];
       }
       if (cmd === "library_apply_manifest") {
-        expect(args?.creations).toEqual([]);
+        applied.push((args?.creations ?? []).map((c) => c.id));
         return emptyStatus;
       }
       if (cmd === "library_download_pending") {
@@ -500,9 +501,7 @@ describe("manifestSync", () => {
     const result = await syncNewestCreationsManifest();
     expect(result.added).toBe(0);
     expect(listMyCreations).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith("library_apply_manifest", {
-      creations: [],
-    });
+    expect(applied).toEqual([page.map((img) => String(img.id))]);
   });
 
   it("newest sync prunes local rows deleted remotely in the recent window", async () => {
@@ -559,7 +558,7 @@ describe("manifestSync", () => {
     );
   });
 
-  it("newest sync applies only unknown ids and continues past mixed pages", async () => {
+  it("newest sync upserts known and unknown ids and continues past mixed pages", async () => {
     const firstPage = [
       remoteImage(1, "New A"),
       remoteImage(2, "Known"),
@@ -604,12 +603,16 @@ describe("manifestSync", () => {
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
-    await syncNewestCreationsManifest();
+    const result = await syncNewestCreationsManifest();
     expect(listMyCreations).toHaveBeenCalledTimes(2);
-    expect(applied).toEqual([["1", "3"]]);
+    expect(result.added).toBe(2);
+    expect(applied).toEqual([
+      ["1", "2", "3"],
+      secondPage.map((img) => String(img.id)),
+    ]);
   });
 
-  it("newest sync skips creating creations and still catches up on known completed", async () => {
+  it("newest sync refreshes known completed rows while skipping creating", async () => {
     const page = [
       { ...remoteImage(1, "WIP"), status: "creating" },
       remoteImage(2, "Known"),
@@ -641,7 +644,7 @@ describe("manifestSync", () => {
 
     const result = await syncNewestCreationsManifest();
     expect(result.added).toBe(0);
-    expect(applied).toEqual([[]]);
+    expect(applied).toEqual([["2"]]);
     expect(listMyCreations).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith("library_existing_creation_ids", {
       ids: ["2"],

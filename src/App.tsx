@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { LoginScreen } from "./auth/LoginScreen";
 import { ReauthOverlay } from "./auth/ReauthOverlay";
@@ -14,19 +15,52 @@ import "./styles.css";
 
 function LayoutRouter() {
   const { primaryTab, mode, openProjectId } = useShell();
+  // Lab mounts media/waveform UIs (esp. MV Scenes). Fully unmounting that tree
+  // when switching tabs beachballs WebKit — keep it alive once opened.
+  const [labMountedForProject, setLabMountedForProject] = useState<
+    string | null
+  >(null);
+  if (openProjectId && mode === "lab" && labMountedForProject !== openProjectId) {
+    setLabMountedForProject(openProjectId);
+  }
+  if (!openProjectId && labMountedForProject !== null) {
+    setLabMountedForProject(null);
+  }
 
+  const labActive =
+    primaryTab === "project" && Boolean(openProjectId) && mode === "lab";
+  const keepLab =
+    Boolean(openProjectId) && labMountedForProject === openProjectId;
+
+  let main: React.ReactNode = null;
   if (primaryTab === "library") {
-    return <LibraryView />;
+    main = <LibraryView />;
+  } else if (!openProjectId) {
+    main = <ProjectWelcome />;
+  } else if (mode === "editor") {
+    main = <EditorLayout />;
+  } else if (mode === "hook") {
+    main = <HookLayout />;
+  } else if (mode === "lab") {
+    main = null;
+  } else {
+    main = <DirectorLayout />;
   }
 
-  if (!openProjectId) {
-    return <ProjectWelcome />;
-  }
-
-  if (mode === "editor") return <EditorLayout />;
-  if (mode === "hook") return <HookLayout />;
-  if (mode === "lab") return <LabLayout />;
-  return <DirectorLayout />;
+  return (
+    <>
+      {main}
+      {keepLab ? (
+        <div
+          className="layout-keep-alive"
+          hidden={!labActive}
+          aria-hidden={!labActive}
+        >
+          <LabLayout active={labActive} />
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function Root() {

@@ -1,4 +1,5 @@
 import type { ProjectAspectRatio } from "./aspectRatios";
+import type { ProjectLooks } from "./looks";
 
 export type LayoutMode = "director" | "editor" | "hook" | "lab";
 
@@ -395,12 +396,18 @@ export type StoryboardProposal = {
 };
 
 export type { ProjectAspectRatio };
+export type { ProjectLookId, ProjectLooks, ProjectLookState } from "./looks";
 
 export type Project = {
   id: string;
   title: string;
   /** Creative output frame — Library aspect filter presets. */
   aspectRatio: ProjectAspectRatio;
+  /**
+   * Export-time Looks (FFmpeg filter stacks). Applied on publisher render only.
+   * Missing / empty → no looks.
+   */
+  looks: ProjectLooks;
   scenes: Scene[];
   assets: ProjectAsset[];
   /** Local Library folder ids attached to this project. */

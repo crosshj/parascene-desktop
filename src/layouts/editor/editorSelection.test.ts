@@ -11,6 +11,7 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     id: "p1",
     title: "Demo",
     aspectRatio: "9:16",
+    looks: {},
     scenes: [],
     assets: [
       { id: "a1", name: "a1", kind: "image" },

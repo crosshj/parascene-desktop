@@ -5,10 +5,12 @@ import {
   useEffect,
   useRef,
   useState,
+  useTransition,
   type CSSProperties,
 } from "react";
 import { useShell } from "../../app/ShellProvider";
 import { projectAspectCss } from "../../project/aspectRatios";
+import { enabledLookLabels } from "../../project/looks";
 import {
   deleteTimelineRender,
   exportTimelineRender,
@@ -29,7 +31,11 @@ import {
   PublisherRenderModal,
   type PublisherRenderModalState,
 } from "./PublisherRenderModal";
-import { PublisherRenderDetailsModal } from "./PublisherRenderDetailsModal";
+import {
+  describeRenderProgress,
+  HookRenderDetailsPane,
+  renderProgressPercent as liveRenderProgressPercent,
+} from "./HookRenderDetailsPane";
 
 function formatClock(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -62,17 +68,11 @@ function renderVideoSrc(render: TimelineRender | null): string | null {
 }
 
 function renderProgressPercent(progress: RenderProgress | null): number {
-  if (!progress || progress.total <= 0) return 0;
-  const phaseProgress = Math.min(1, Math.max(0, progress.done / progress.total));
-  return progress.phase === "prepare"
-    ? phaseProgress * 20
-    : 20 + phaseProgress * 80;
+  return liveRenderProgressPercent(progress);
 }
 
 function renderProgressLabel(progress: RenderProgress | null): string {
-  if (!progress) return "Starting FFmpeg…";
-  if (progress.phase === "prepare") return "Preparing clips…";
-  return "Rendering with FFmpeg…";
+  return describeRenderProgress(progress);
 }
 
 function isInteractiveKeyboardTarget(target: EventTarget | null): boolean {
@@ -93,7 +93,7 @@ export function HookLayout() {
   const [renderModal, setRenderModal] = useState<PublisherRenderModalState | null>(
     null,
   );
-  const [detailsRender, setDetailsRender] = useState<TimelineRender | null>(null);
+  const [viewerMode, setViewerMode] = useState<"player" | "details">("player");
   const [exportingRenderId, setExportingRenderId] = useState<string | null>(null);
   const [rebuildingCache, setRebuildingCache] = useState(false);
   const [cacheStatus, setCacheStatus] = useState<string | null>(null);
@@ -107,28 +107,43 @@ export function HookLayout() {
   const renderInProgress = renders.some((render) => render.status === "rendering");
   const selectedRender =
     renders.find((render) => render.id === selectedRenderId) ?? null;
+  const selectedRendering = selectedRender?.status === "rendering";
   const activeDurationSec = selectedRender?.durationSec ?? sequenceDurationSec;
-  const activeVideoSrc = renderVideoSrc(selectedRender);
+  const activeVideoSrc = selectedRendering
+    ? null
+    : renderVideoSrc(selectedRender);
+
+  const [, startRendersTransition] = useTransition();
 
   const refreshRenders = useCallback(async () => {
     try {
       const rows = await listTimelineRenders(project.id);
-      setRenders(rows);
-      setSelectedRenderId((current) => {
-        if (
-          current &&
-          rows.some((row) => row.id === current && row.status === "ready")
-        ) {
-          return current;
-        }
-        return rows.find((row) => row.status === "ready")?.id ?? null;
+      startRendersTransition(() => {
+        setRenders(rows);
+        setSelectedRenderId((current) => {
+          if (
+            current &&
+            rows.some(
+              (row) =>
+                row.id === current &&
+                (row.status === "ready" || row.status === "rendering"),
+            )
+          ) {
+            return current;
+          }
+          return (
+            rows.find((row) => row.status === "rendering")?.id ??
+            rows.find((row) => row.status === "ready")?.id ??
+            null
+          );
+        });
       });
     } catch (error) {
       console.error("Failed to list timeline renders", error);
     } finally {
       setRendersBusy(false);
     }
-  }, [project.id]);
+  }, [project.id, startRendersTransition]);
 
   const [rendersProjectId, setRendersProjectId] = useState<string | null>(null);
   if (project.id !== rendersProjectId) {
@@ -138,30 +153,52 @@ export function HookLayout() {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const rows = await listTimelineRenders(project.id);
-        if (cancelled) return;
-        setRenders(rows);
-        setSelectedRenderId((current) => {
-          if (
-            current &&
-            rows.some((row) => row.id === current && row.status === "ready")
-          ) {
-            return current;
-          }
-          return rows.find((row) => row.status === "ready")?.id ?? null;
-        });
-      } catch (error) {
-        console.error("Failed to list timeline renders", error);
-      } finally {
-        if (!cancelled) setRendersBusy(false);
-      }
-    })();
+    let raf2 = 0;
+    let timeoutId = 0;
+    // Let Publisher chrome paint before the list IPC round-trip.
+    const raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        timeoutId = window.setTimeout(() => {
+          void (async () => {
+            try {
+              const rows = await listTimelineRenders(project.id);
+              if (cancelled) return;
+              startRendersTransition(() => {
+                setRenders(rows);
+                setSelectedRenderId((current) => {
+                  if (
+                    current &&
+                    rows.some((row) => row.id === current && row.status === "ready")
+                  ) {
+                    return current;
+                  }
+                  return rows.find((row) => row.status === "ready")?.id ?? null;
+                });
+              });
+            } catch (error) {
+              console.error("Failed to list timeline renders", error);
+            } finally {
+              if (!cancelled) setRendersBusy(false);
+            }
+          })();
+        }, 0);
+      });
+    });
     return () => {
       cancelled = true;
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      window.clearTimeout(timeoutId);
     };
-  }, [project.id]);
+  }, [project.id, startRendersTransition]);
+
+  // Background heal may promote abandoned jobs shortly after list — refresh once.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      void refreshRenders();
+    }, 1200);
+    return () => window.clearTimeout(id);
+  }, [project.id, refreshRenders]);
 
   useEffect(() => {
     playheadRef.current = playheadSec;
@@ -190,6 +227,44 @@ export function HookLayout() {
     const el = videoRef.current;
     if (el) el.volume = Math.max(0, Math.min(1, volume / 100));
   }, [volume, activeVideoSrc]);
+
+  const seekTo = useCallback(
+    (sec: number) => {
+      const end = Math.max(activeDurationSec, 0.1);
+      const next = Math.max(0, Math.min(end, sec));
+      playheadRef.current = next;
+      setPlayheadSec(next);
+      const el = videoRef.current;
+      if (el) {
+        try {
+          el.currentTime = next;
+        } catch {
+          // ignore
+        }
+      }
+    },
+    [activeDurationSec],
+  );
+
+  const togglePlay = useCallback(() => {
+    if (!activeVideoSrc || activeDurationSec <= 0) return;
+    const el = videoRef.current;
+    if (!el) return;
+    if (playing) {
+      el.pause();
+      setPlaying(false);
+      return;
+    }
+    if (playheadSec >= activeDurationSec - 0.05) {
+      playheadRef.current = 0;
+      setPlayheadSec(0);
+      el.currentTime = 0;
+    } else if (playheadRef.current === 0 && el.currentTime > 0.05) {
+      el.currentTime = 0;
+    }
+    void el.play().catch(() => {});
+    setPlaying(true);
+  }, [activeDurationSec, activeVideoSrc, playheadSec, playing]);
 
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
@@ -239,44 +314,8 @@ export function HookLayout() {
     return () => window.clearInterval(id);
   }, [renders, refreshRenders]);
 
-  const seekTo = useCallback(
-    (sec: number) => {
-      const end = Math.max(activeDurationSec, 0.1);
-      const next = Math.max(0, Math.min(end, sec));
-      playheadRef.current = next;
-      setPlayheadSec(next);
-      const el = videoRef.current;
-      if (el) {
-        try {
-          el.currentTime = next;
-        } catch {
-          // ignore
-        }
-      }
-    },
-    [activeDurationSec],
-  );
-
-  const togglePlay = useCallback(() => {
-    if (!activeVideoSrc || activeDurationSec <= 0) return;
-    const el = videoRef.current;
-    if (!el) return;
-    if (playing) {
-      el.pause();
-      setPlaying(false);
-      return;
-    }
-    if (playheadSec >= activeDurationSec - 0.05) {
-      playheadRef.current = 0;
-      setPlayheadSec(0);
-      el.currentTime = 0;
-    }
-    void el.play().catch(() => {});
-    setPlaying(true);
-  }, [activeDurationSec, activeVideoSrc, playheadSec, playing]);
-
   useEffect(() => {
-    if (!activeVideoSrc || renderModal || detailsRender) return;
+    if (!activeVideoSrc || renderModal || viewerMode === "details") return;
 
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -309,10 +348,10 @@ export function HookLayout() {
   }, [
     activeDurationSec,
     activeVideoSrc,
-    detailsRender,
     renderModal,
     seekTo,
     togglePlay,
+    viewerMode,
   ]);
 
   const startRender = () => {
@@ -320,6 +359,7 @@ export function HookLayout() {
     setRenderModal({
       phase: "confirm",
       clipCount: project.timeline.length,
+      lookLabels: enabledLookLabels(project.looks),
     });
   };
 
@@ -360,9 +400,11 @@ export function HookLayout() {
     if (!hasTimeline) return;
     const clips = timelineClipsToRenderInput(project.timeline);
     const mediaIds = collectRenderAssetIds(clips);
+    const lookLabels = enabledLookLabels(project.looks);
     setRenderModal({
       phase: "running",
       clipCount: project.timeline.length,
+      lookLabels,
       progress:
         mediaIds.length > 0
           ? {
@@ -379,18 +421,23 @@ export function HookLayout() {
         project.id,
         project.aspectRatio,
         clips,
+        project.looks,
       );
       setRenderModal(null);
       setRenders((current) => [
         created,
         ...current.filter((render) => render.id !== created.id),
       ]);
+      setSelectedRenderId(created.id);
+      setViewerMode("details");
+      setPlaying(false);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not start timeline render.";
       setRenderModal({
         phase: "error",
         clipCount: project.timeline.length,
+        lookLabels,
         message,
       });
     }
@@ -407,10 +454,10 @@ export function HookLayout() {
     if (!ok) return;
     try {
       await deleteTimelineRender(project.id, render.id);
-      if (detailsRender?.id === render.id) setDetailsRender(null);
       if (selectedRenderId === render.id) {
         setSelectedRenderId(null);
         setPlaying(false);
+        setViewerMode("player");
       }
       await refreshRenders();
     } catch (error) {
@@ -475,10 +522,26 @@ export function HookLayout() {
   return (
     <div className="layout hook">
       <section className="hook-preview" aria-label="Timeline render preview">
-        <div className="hook-player">
-          <div className="hook-player-frame">
-            <div className="hook-player-surface" style={surfaceStyle}>
-              {activeVideoSrc ? (
+        {viewerMode === "details" && selectedRender ? (
+          <HookRenderDetailsPane
+            projectId={project.id}
+            render={selectedRender}
+            onClose={() => setViewerMode("player")}
+          />
+        ) : (
+          <div className="hook-player">
+            <div className="hook-player-frame">
+              <div className="hook-player-surface" style={surfaceStyle}>
+              {selectedRendering ? (
+                <div
+                  className="hook-player-empty hook-player-rendering"
+                  aria-live="polite"
+                  aria-busy="true"
+                  aria-label="Rendering"
+                >
+                  <span className="confirm-dialog-spinner" aria-hidden />
+                </div>
+              ) : activeVideoSrc ? (
                 <video
                   ref={videoRef}
                   className="hook-player-video"
@@ -663,6 +726,7 @@ export function HookLayout() {
             </div>
           </div>
         </div>
+        )}
       </section>
 
       <aside className="hook-side">
@@ -727,8 +791,11 @@ export function HookLayout() {
           <ul className="hook-render-list" aria-label="Scratch renders">
             {renders.map((render) => {
               const selected = render.id === selectedRenderId;
+              const previewSelected = selected && viewerMode === "player";
+              const detailsSelected = selected && viewerMode === "details";
               const ready = render.status === "ready";
               const rendering = render.status === "rendering";
+              const selectable = ready || rendering;
               const progressPercent = renderProgressPercent(render.progress);
               return (
                 <li
@@ -737,10 +804,14 @@ export function HookLayout() {
                 >
                   <button
                     type="button"
-                    className={`hook-render-item${selected ? " is-selected" : ""}`}
-                    disabled={!ready}
+                    className={`hook-render-item${previewSelected ? " is-selected" : ""}`}
+                    disabled={!selectable}
+                    aria-pressed={previewSelected}
                     onClick={() => {
-                      if (ready) setSelectedRenderId(render.id);
+                      if (!selectable) return;
+                      setSelectedRenderId(render.id);
+                      setViewerMode("player");
+                      if (rendering) setPlaying(false);
                     }}
                   >
                     <span className="hook-render-item-title">
@@ -783,9 +854,16 @@ export function HookLayout() {
                     </button>
                     <button
                       type="button"
-                      className="btn ghost hook-render-details"
-                      disabled={!ready}
-                      onClick={() => setDetailsRender(render)}
+                      className={`btn ghost hook-render-details${
+                        detailsSelected ? " is-active" : ""
+                      }`}
+                      disabled={!(ready || rendering)}
+                      aria-pressed={detailsSelected}
+                      onClick={() => {
+                        setSelectedRenderId(render.id);
+                        setViewerMode(detailsSelected ? "player" : "details");
+                        setPlaying(false);
+                      }}
                     >
                       Details
                     </button>
@@ -818,12 +896,6 @@ export function HookLayout() {
         />
       ) : null}
 
-      {detailsRender ? (
-        <PublisherRenderDetailsModal
-          render={detailsRender}
-          onClose={() => setDetailsRender(null)}
-        />
-      ) : null}
     </div>
   );
 }

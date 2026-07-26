@@ -39,6 +39,10 @@ export function LabStoryboardEditor(props: {
   const [currentSec, setCurrentSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [playbackSource, setPlaybackSource] = useState<"mix" | "vocals">("mix");
+  // Don't attach <audio src> until play/seek — loading a full mix on mount is
+  // what beachballs when leaving Lab with MV Scenes open.
+  const [mediaArmed, setMediaArmed] = useState(false);
+  const playAfterArmRef = useRef(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const dragRef = useRef<{
     sceneId: string;
@@ -50,6 +54,16 @@ export function LabStoryboardEditor(props: {
     playbackSource === "vocals" && vocalsMediaUrl ? "vocals" : "mix";
   const activeMediaUrl =
     effectivePlaybackSource === "vocals" ? vocalsMediaUrl : mixUrl;
+
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- disarm on URL change */
+    setMediaArmed(false);
+    playAfterArmRef.current = false;
+    setPlaying(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [activeMediaUrl]);
+
+  const playerSrc = mediaArmed ? activeMediaUrl : null;
 
   const scenes = proposal.scenes;
   const scenesRef = useRef(scenes);
@@ -70,15 +84,21 @@ export function LabStoryboardEditor(props: {
     (sec: number) => {
       const next = clamp(sec, 0, durationSec || sec);
       setCurrentSec(next);
+      if (!activeMediaUrl) return;
+      if (!mediaArmed) {
+        playAfterArmRef.current = false;
+        setMediaArmed(true);
+        return;
+      }
       const audio = audioRef.current;
       if (audio) audio.currentTime = next;
     },
-    [durationSec],
+    [activeMediaUrl, durationSec, mediaArmed],
   );
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !activeMediaUrl) return;
+    if (!audio || !playerSrc) return;
     const onTime = () => setCurrentSec(audio.currentTime);
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
@@ -90,7 +110,33 @@ export function LabStoryboardEditor(props: {
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
     };
-  }, [activeMediaUrl]);
+  }, [playerSrc]);
+
+  useEffect(() => {
+    if (!playerSrc) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const start = currentSec;
+    const onReady = () => {
+      try {
+        if (start > 0) audio.currentTime = start;
+      } catch {
+        // ignore
+      }
+      if (playAfterArmRef.current) {
+        playAfterArmRef.current = false;
+        void audio.play().catch(() => {});
+      }
+    };
+    if (audio.readyState >= 1) {
+      onReady();
+      return;
+    }
+    audio.addEventListener("loadedmetadata", onReady, { once: true });
+    return () => audio.removeEventListener("loadedmetadata", onReady);
+    // Only when the element arms — not on every playhead tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerSrc]);
 
   const activeSceneId = useMemo(() => {
     const hit = scenes.find(
@@ -131,7 +177,11 @@ export function LabStoryboardEditor(props: {
 
   return (
     <div className="lab-storyboard-editor">
-      <audio ref={audioRef} src={activeMediaUrl ?? undefined} preload="metadata" />
+      {playerSrc ? (
+        <audio ref={audioRef} src={playerSrc} preload="metadata" />
+      ) : (
+        <audio ref={audioRef} preload="none" />
+      )}
 
       <LabStoryboardPreview
         proposal={proposal}
@@ -146,10 +196,18 @@ export function LabStoryboardEditor(props: {
           className="lab-waveform-play lab-timeline-play"
           disabled={!activeMediaUrl}
           onClick={() => {
-            const audio = audioRef.current;
-            if (!audio) return;
-            if (audio.paused) void audio.play();
-            else audio.pause();
+            if (!activeMediaUrl) return;
+            if (playing) {
+              audioRef.current?.pause();
+              setPlaying(false);
+              return;
+            }
+            if (!mediaArmed) {
+              playAfterArmRef.current = true;
+              setMediaArmed(true);
+              return;
+            }
+            void audioRef.current?.play().catch(() => {});
           }}
           aria-label={playing ? "Pause" : "Play"}
           title={playing ? "Pause" : "Play"}

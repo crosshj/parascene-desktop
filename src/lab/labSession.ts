@@ -389,7 +389,19 @@ export function saveLabSession(
 ): void {
   if (!projectId) return;
   try {
-    localStorage.setItem(KEY_PREFIX + projectId, JSON.stringify(snapshot));
+    // Drop bulky LLM request/response blobs from disk — they only matter for the
+    // in-memory "Last result" panel and made every Lab tab switch rewrite 50–100KB.
+    const lastByModule: LabSessionSnapshot["lastByModule"] = {};
+    for (const [id, last] of Object.entries(snapshot.lastByModule)) {
+      if (!last) continue;
+      const rest: LabLastResult = { ...last };
+      delete rest.json;
+      lastByModule[id as LabModuleId] = rest;
+    }
+    localStorage.setItem(
+      KEY_PREFIX + projectId,
+      JSON.stringify({ ...snapshot, lastByModule }),
+    );
   } catch {
     /* ignore quota */
   }

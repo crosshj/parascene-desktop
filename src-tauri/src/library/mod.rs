@@ -1,6 +1,7 @@
 mod beats;
 mod catalog;
 mod clip_thumb;
+mod crt_gpu;
 mod download;
 mod ffmpeg;
 mod folders;
@@ -9,6 +10,7 @@ mod jobs;
 mod lab_audio;
 mod lab_deps;
 mod lab_transcribe;
+mod looks;
 mod merge;
 mod parascene_api;
 pub(crate) mod paths;
@@ -50,7 +52,7 @@ pub use lab_deps::{
 pub use lab_transcribe::library_transcribe_local;
 pub use merge::library_merge_timeline_clips;
 pub use render::{
-    publisher_delete_render, publisher_export_render, publisher_list_renders,
+    publisher_delete_render, publisher_export_render, publisher_get_render, publisher_list_renders,
     publisher_render_timeline,
 };
 pub use reverse::{library_ensure_reversed, library_rebuild_reversed};

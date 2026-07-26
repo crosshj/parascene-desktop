@@ -180,7 +180,7 @@ type RunCtx = {
 };
 type Runner = (fn: (ctx: RunCtx) => Promise<LastResult>) => void;
 
-export function LabLayout() {
+export function LabLayout({ active = true }: { active?: boolean }) {
   const {
     project,
     setOpenProjectGroupIds,
@@ -448,6 +448,22 @@ export function LabLayout() {
       ensureAbortRef.current?.abort();
     };
   }, []);
+
+  // When Lab stays mounted but hidden (tab switch), pause media so WebKit is not
+  // still decoding stems/waveforms in the background.
+  useEffect(() => {
+    if (active) return;
+    const root = document.querySelector(".layout.lab");
+    if (!root) return;
+    root.querySelectorAll("audio, video").forEach((node) => {
+      const media = node as HTMLMediaElement;
+      try {
+        media.pause();
+      } catch {
+        // ignore
+      }
+    });
+  }, [active]);
 
   const moduleId = session.moduleId;
   const setModuleId = (id: LabModuleId) => {

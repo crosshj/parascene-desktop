@@ -1,11 +1,11 @@
 /**
  * Desktop “cabinet” groups — Images/Videos filing for a project so Parascene’s
  * creations feed stays uncluttered. Distinct from creative image packs that
- * Editor expands into slideshow clips.
+ * stay as group covers in Editor Assets.
  *
- * Detection (prefer in order):
- * 1. Project store ids (`imagesGroupId` / `videosGroupId`)
- * 2. Stamped meta on the Parascene group row (see {@link DESKTOP_GROUP_META_KEY})
+ * Editor expansion uses project store ids only (`imagesGroupId` /
+ * `videosGroupId`). Stamped meta is for Parascene recovery / labeling — it does
+ * not expand every desktop-stamped group in the Assets pane.
  *
  * Party names are human-facing on Parascene; meta is the machine signal.
  */
@@ -124,12 +124,14 @@ export function isDesktopProjectGroup(
   return desktopProjectGroupMetaFromCreation(creation) != null;
 }
 
-/** Cabinet for Editor behavior: project ids and/or stamped meta. */
+/**
+ * Editor expands **only** this project's Images/Videos source cabinets.
+ * Ordinary groups (even other desktop-stamped covers) stay as single covers.
+ */
 export function isEditorProjectCabinet(
   id: string,
-  creation: Creation | undefined,
+  _creation: Creation | undefined,
   cabinets: ProjectCabinetIds | null | undefined,
 ): boolean {
-  if (isProjectCabinetId(id, cabinets)) return true;
-  return isDesktopProjectGroup(creation);
+  return isProjectCabinetId(id, cabinets);
 }

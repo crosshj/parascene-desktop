@@ -33,7 +33,7 @@ export function useLabMainAudioPaths(mainAudioId: string): LabMainAudioPaths {
       if (cancelled) return;
       const path = rows[0]?.localPath?.trim() || null;
       setMixPath(path);
-      setMixUrl(path ? convertFileSrc(path) : null);
+      setMixUrl(path ? convertFileSrc(path, "media") : null);
       setVocalsPath(null);
       setVocalsUrl(null);
       setVocalsReady(false);

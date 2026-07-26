@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
+import type { ProjectLooks } from "../project/looks";
+import { normalizeProjectLooks } from "../project/looks";
 import {
   normalizeSlideshowMode,
   type SlideshowMode,
@@ -47,10 +49,14 @@ export type TimelineRender = {
   id: string;
   path: string;
   createdAt: string;
+  /** Set when the render leaves `rendering` (ready or failed). */
+  finishedAt?: string | null;
   durationSec: number;
   aspectRatio: string;
   clipCount: number;
   commandLine: string;
+  /** Look name baked into this render, if any (e.g. "TV"). */
+  lookLabel?: string | null;
   status: "rendering" | "ready" | "failed";
   progress: RenderProgress | null;
   error: string | null;
@@ -59,9 +65,18 @@ export type TimelineRender = {
 export type RenderProgress = {
   projectId: string;
   renderId: string;
+  /** prepare | encode_segment | concat | render (legacy) */
   phase: string;
   done: number;
   total: number;
+  message?: string | null;
+  segmentIndex?: number | null;
+  segmentCount?: number | null;
+  segmentDurationSec?: number | null;
+  timelineDurationSec?: number | null;
+  lookEnabled?: boolean | null;
+  lookLabel?: string | null;
+  currentCommand?: string | null;
 };
 
 export type RenderFinished = {
@@ -186,12 +201,21 @@ export async function listTimelineRenders(
   return invoke<TimelineRender[]>("publisher_list_renders", { projectId });
 }
 
+export async function getTimelineRender(
+  projectId: string,
+  renderId: string,
+): Promise<TimelineRender> {
+  return invoke<TimelineRender>("publisher_get_render", { projectId, renderId });
+}
+
 export async function renderTimeline(
   projectId: string,
   aspectRatio: ProjectAspectRatio,
   clips: RenderTimelineClipInput[],
+  looks?: ProjectLooks,
 ): Promise<TimelineRender> {
   await ensureRenderMediaLocal(clips);
+  const normalizedLooks = normalizeProjectLooks(looks);
   recordUiOpTrace({
     type: "render_ffmpeg_start",
     count: clips.length,
@@ -201,6 +225,7 @@ export async function renderTimeline(
     projectId,
     aspectRatio,
     clips,
+    looks: normalizedLooks,
   });
 }
 

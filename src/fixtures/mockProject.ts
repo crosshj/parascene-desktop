@@ -5,6 +5,7 @@ export const mockProject: Project = {
   id: "fixture-project-1",
   title: "Sample sequence",
   aspectRatio: "16:9",
+  looks: {},
   scenes: [
     { id: "s1", title: "Opening", durationLabel: "0:08" },
     { id: "s2", title: "Interview A", durationLabel: "0:24" },

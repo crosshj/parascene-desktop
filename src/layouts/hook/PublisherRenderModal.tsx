@@ -2,9 +2,14 @@ import { useEffect } from "react";
 import type { RenderProgress } from "../../publisher/renderClient";
 
 export type PublisherRenderModalState =
-  | { phase: "confirm"; clipCount: number }
-  | { phase: "running"; clipCount: number; progress: RenderProgress | null }
-  | { phase: "error"; clipCount: number; message: string };
+  | { phase: "confirm"; clipCount: number; lookLabels: string[] }
+  | {
+      phase: "running";
+      clipCount: number;
+      lookLabels: string[];
+      progress: RenderProgress | null;
+    }
+  | { phase: "error"; clipCount: number; lookLabels: string[]; message: string };
 
 type PublisherRenderModalProps = {
   state: PublisherRenderModalState;
@@ -61,6 +66,11 @@ export function PublisherRenderModal({
         ? progressLabel(state.progress)
         : `Creates an FFmpeg render of the current timeline (${state.clipCount} clips). The file is saved to disk as a scratch preview — it is not added to the library.`;
 
+  const lookLine =
+    state.lookLabels.length > 0
+      ? `Look: ${state.lookLabels.join(", ")}`
+      : null;
+
   return (
     <div
       className="confirm-dialog-backdrop"
@@ -84,6 +94,9 @@ export function PublisherRenderModal({
         <p id="publisher-render-message" className="muted">
           {message}
         </p>
+        {lookLine && state.phase !== "error" ? (
+          <p className="muted publisher-render-look">{lookLine}</p>
+        ) : null}
 
         {locked ? (
           <div

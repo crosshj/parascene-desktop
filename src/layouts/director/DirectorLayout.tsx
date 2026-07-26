@@ -5,6 +5,11 @@ import {
   projectAspectCss,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
+import {
+  isLookEnabled,
+  PROJECT_LOOK_OPTIONS,
+  type ProjectLookId,
+} from "../../project/looks";
 
 export function DirectorLayout() {
   const {
@@ -13,6 +18,7 @@ export function DirectorLayout() {
     setSelectedSceneId,
     renameOpenProject,
     setOpenProjectAspectRatio,
+    setOpenProjectLookEnabled,
     closeProject,
   } = useShell();
   const [titleDraft, setTitleDraft] = useState(project.title);
@@ -33,6 +39,10 @@ export function DirectorLayout() {
 
   const onAspectChange = (next: ProjectAspectRatio) => {
     if (next !== project.aspectRatio) setOpenProjectAspectRatio(next);
+  };
+
+  const onLookToggle = (id: ProjectLookId) => {
+    setOpenProjectLookEnabled(id, !isLookEnabled(project.looks, id));
   };
 
   return (
@@ -109,6 +119,43 @@ export function DirectorLayout() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="director-looks" role="radiogroup" aria-label="Project look">
+          <span className="director-looks-label">Looks</span>
+          <div className="director-looks-options">
+            {PROJECT_LOOK_OPTIONS.map((opt) => {
+              const active = isLookEnabled(project.looks, opt.id);
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="radio"
+                  className={
+                    active
+                      ? "director-look-option is-active"
+                      : "director-look-option"
+                  }
+                  aria-checked={active}
+                  onClick={() => onLookToggle(opt.id)}
+                  title={`${opt.label} · ${opt.sublabel}`}
+                >
+                  <span className="director-look-option-text">
+                    <span className="director-look-option-label">
+                      {opt.label}
+                    </span>
+                    <span className="director-look-option-sub muted">
+                      {opt.sublabel}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="muted director-looks-hint">
+            Applied on Publisher render only (baked into the output). GPU CRT when
+            available; TV can fall back to FFmpeg. No vintage color grade.
+          </p>
         </div>
 
         <h2>Scenes</h2>

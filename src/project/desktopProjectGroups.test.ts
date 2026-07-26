@@ -56,4 +56,28 @@ describe("desktopProjectGroups", () => {
       }),
     ).toBe(true);
   });
+
+  it("does not expand ordinary or foreign desktop groups as cabinets", () => {
+    const stamped = {
+      id: "99",
+      filename: "group/cover.json",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: { kind: "group_creations" },
+          desktop: {
+            role: "project_images",
+            client: "parascene-desktop",
+            projectId: "other",
+          },
+        },
+      }),
+    };
+    expect(isDesktopProjectGroup(stamped)).toBe(true);
+    expect(
+      isEditorProjectCabinet("99", stamped as never, {
+        imagesGroupId: "10",
+        videosGroupId: "20",
+      }),
+    ).toBe(false);
+  });
 });

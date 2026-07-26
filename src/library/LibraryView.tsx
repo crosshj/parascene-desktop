@@ -212,6 +212,7 @@ function CatalogSyncButton({
 }
 
 function useCatalog(librarySurface: LibrarySurface) {
+  const { reconcileProjectsAfterLibrarySync } = useShell();
   const [creations, setCreations] = useState<Creation[] | null>(null);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -634,6 +635,54 @@ function useCatalog(librarySurface: LibrarySurface) {
           ) {
             setError(folderResult.message);
           }
+
+          // Pull project cabinets/folder groups into project.creationIds so
+          // web-side group/folder edits show up without a manual re-add.
+          setSyncHeadline("Updating projects…");
+          const projectJobId = `projects-${Date.now()}`;
+          pushActivity({
+            id: projectJobId,
+            kind: "catalog",
+            state: "active",
+            title: "Update projects",
+            detail: "Merging group and folder members…",
+          });
+          try {
+            const merged = await reconcileProjectsAfterLibrarySync({
+              refreshCoversFromList: mode === "newest",
+            });
+            const detailParts = [
+              merged.creationsRemoved > 0
+                ? `removed ${merged.creationsRemoved.toLocaleString()} expanded group member(s)`
+                : null,
+              merged.creationsMerged > 0
+                ? `added ${merged.creationsMerged.toLocaleString()} creation(s)`
+                : null,
+            ].filter(Boolean);
+            pushActivity({
+              id: projectJobId,
+              kind: "catalog",
+              state: "done",
+              title: "Update projects",
+              detail:
+                detailParts.length > 0
+                  ? `${detailParts.join(" · ")} across ${merged.projectsUpdated.toLocaleString()} project(s)`
+                  : "Projects already up to date",
+            });
+          } catch (projectError) {
+            const message =
+              projectError instanceof Error
+                ? projectError.message
+                : String(projectError);
+            console.error(projectError);
+            pushActivity({
+              id: projectJobId,
+              kind: "catalog",
+              state: "failed",
+              title: "Update projects",
+              detail: message,
+            });
+          }
         } finally {
           setFolderSyncing(false);
         }
@@ -657,6 +706,7 @@ function useCatalog(librarySurface: LibrarySurface) {
     [
       loadInitial,
       pushActivity,
+      reconcileProjectsAfterLibrarySync,
       refreshFolderSync,
       runFolderSync,
       status?.total,

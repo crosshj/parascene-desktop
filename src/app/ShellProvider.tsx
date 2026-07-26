@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { LayoutMode, LyricAlignment, Project, StoryboardGenerationPlan, StoryboardProposal, TimelineClip } from "../project/types";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
+import type { ProjectLookId } from "../project/looks";
 import { ConfirmProvider } from "../ui/ConfirmDialog";
 import {
   createStoredProject,
@@ -21,6 +22,7 @@ import {
   renameStoredProject,
   saveStoredProjects,
   setStoredProjectAspectRatio,
+  setStoredProjectLookEnabled,
   setStoredProjectSelectedTimelineClipId,
   setStoredProjectSelectedAssetId,
   setStoredProjectPendingStagedDraft,
@@ -38,6 +40,14 @@ import {
   storedProjectToUi,
   type StoredProject,
 } from "../project/projectStore";
+import {
+  collectProjectGroupCoverIdsToRefresh,
+  reconcileStoredProjectsFromLibrary,
+} from "../project/reconcileProjectLibrary";
+import {
+  refreshCreationsFromListById,
+  syncGroupMembersManifest,
+} from "../sync/manifestSync";
 import {
   bindAddAssetGenerationApplier,
   type AddAssetGenerationSuccess,
@@ -70,6 +80,8 @@ type ShellState = {
   renameOpenProject: (title: string) => void;
   /** Set the open project's creative aspect ratio (no-op if none open). */
   setOpenProjectAspectRatio: (aspectRatio: ProjectAspectRatio) => void;
+  /** Enable/disable a project Look (export-time filter). */
+  setOpenProjectLookEnabled: (lookId: ProjectLookId, enabled: boolean) => void;
   /** Replace the open project's timeline clips (no-op if none open). */
   setOpenProjectTimeline: (
     timeline:
@@ -122,6 +134,18 @@ type ShellState = {
   setOpenProjectLabStoryboardDirection: (direction: string | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => void;
+  /**
+   * After Library sync: refresh project group covers, expand embedded members,
+   * and merge missing folder/cabinet/group members into every stored project.
+   */
+  reconcileProjectsAfterLibrarySync: (opts?: {
+    /** Re-fetch project group covers from list pages (needed after newest sync). */
+    refreshCoversFromList?: boolean;
+  }) => Promise<{
+    projectsUpdated: number;
+    creationsMerged: number;
+    creationsRemoved: number;
+  }>;
   /** Remove library creation IDs from the open project (no-op if none open). */
   removeCreationsFromOpenProject: (creationIds: string[]) => void;
   /** Attach local Library folders (and their members) to the open project. */
@@ -254,6 +278,45 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // One-shot cleanup: strip ordinary group members flattened onto projects by
+  // an earlier reconcile that expanded every group. Must refresh covers first —
+  // detail/local rows often omit meta.group, so strip would no-op otherwise.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const current = loadStoredProjects();
+        if (current.length === 0) return;
+
+        const coverIds = await collectProjectGroupCoverIdsToRefresh(current);
+        if (cancelled) return;
+        if (coverIds.length > 0) {
+          await refreshCreationsFromListById(coverIds);
+        }
+        if (cancelled) return;
+        await syncGroupMembersManifest();
+        if (cancelled) return;
+
+        const { projects, result } =
+          await reconcileStoredProjectsFromLibrary(loadStoredProjects());
+        if (cancelled) return;
+        if (result.projectsUpdated > 0) {
+          updateStoredProjects(() => projects);
+        }
+        if (result.creationsRemoved > 0) {
+          setChromeStatus(
+            `Cleaned ${result.creationsRemoved.toLocaleString()} expanded group asset(s) from ${result.projectsUpdated.toLocaleString()} project(s)`,
+          );
+        }
+      } catch (error) {
+        console.error("Failed to clean up project group expansions", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [setChromeStatus, updateStoredProjects]);
+
   // Keep add-asset generation able to commit results after Editor unmounts
   // (e.g. user browses Library while a job is running).
   useEffect(() => {
@@ -375,6 +438,29 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const reconcileProjectsAfterLibrarySync = useCallback(
+    async (opts?: { refreshCoversFromList?: boolean }) => {
+      const current = loadStoredProjects();
+      // Newest sync may miss older group covers; list pages carry meta.group
+      // (detail GET often omits it). Full catalog sync already refreshed covers.
+      if (opts?.refreshCoversFromList !== false) {
+        const coverIds = await collectProjectGroupCoverIdsToRefresh(current);
+        if (coverIds.length > 0) {
+          await refreshCreationsFromListById(coverIds);
+        }
+      }
+      // Materialize embedded members as catalog rows.
+      await syncGroupMembersManifest();
+      const { projects, result } =
+        await reconcileStoredProjectsFromLibrary(current);
+      if (result.projectsUpdated > 0) {
+        updateStoredProjects(() => projects);
+      }
+      return result;
+    },
+    [updateStoredProjects],
+  );
+
   const removeCreationsFromOpenProject = useCallback(
     (creationIds: string[]) => {
       if (creationIds.length === 0) return;
@@ -411,6 +497,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const setOpenProjectAspectRatio = useCallback(
     (aspectRatio: ProjectAspectRatio) => {
       patchOpenProject((p) => setStoredProjectAspectRatio(p, aspectRatio));
+    },
+    [patchOpenProject],
+  );
+
+  const setOpenProjectLookEnabled = useCallback(
+    (lookId: ProjectLookId, enabled: boolean) => {
+      patchOpenProject((p) => setStoredProjectLookEnabled(p, lookId, enabled));
     },
     [patchOpenProject],
   );
@@ -559,6 +652,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       createProject,
       renameOpenProject,
       setOpenProjectAspectRatio,
+      setOpenProjectLookEnabled,
       setOpenProjectTimeline,
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
@@ -575,6 +669,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
+      reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
       removeFoldersFromOpenProject,
@@ -605,6 +700,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       createProject,
       renameOpenProject,
       setOpenProjectAspectRatio,
+      setOpenProjectLookEnabled,
       setOpenProjectTimeline,
       setOpenProjectSelectedTimelineClipId,
       setOpenProjectSelectedAssetId,
@@ -621,6 +717,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
+      reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
       removeFoldersFromOpenProject,

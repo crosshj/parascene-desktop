@@ -31,7 +31,7 @@ use library::{
     library_transcribe_local,
     library_read_local_thumb_base64, library_rebuild_reversed, library_remove_from_folder,
     library_rename_folder, library_sync_status, jobs_cancel, jobs_enqueue, jobs_get, jobs_list,
-    publisher_delete_render, publisher_export_render,
+    publisher_delete_render, publisher_export_render, publisher_get_render,
     publisher_list_renders, publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
@@ -47,19 +47,23 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("media", |_ctx, request, responder| {
-            match media_stream::media_response(request) {
-                Ok(response) => responder.respond(response),
-                Err(error) => {
-                    let body = error.to_string().into_bytes();
-                    let response = http::Response::builder()
-                        .status(http::StatusCode::BAD_REQUEST)
-                        .header(http::header::CONTENT_TYPE, "text/plain")
-                        .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                        .body(body)
-                        .unwrap_or_else(|_| http::Response::new(Vec::new()));
-                    responder.respond(response);
+            // File I/O must not run on the WebView/UI thread — sync reads here
+            // beachball the OS when Publisher mounts a large scratch MP4.
+            std::thread::spawn(move || {
+                match media_stream::media_response(request) {
+                    Ok(response) => responder.respond(response),
+                    Err(error) => {
+                        let body = error.to_string().into_bytes();
+                        let response = http::Response::builder()
+                            .status(http::StatusCode::BAD_REQUEST)
+                            .header(http::header::CONTENT_TYPE, "text/plain")
+                            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                            .body(body)
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
+                        responder.respond(response);
+                    }
                 }
-            }
+            });
         })
         // Keep the window hidden until the dark HTML/CSS has painted so maximize
         // and WKWebView compositing never flash the default white surface.
@@ -250,9 +254,10 @@ pub fn run() {
             jobs_list,
             jobs_cancel,
             publisher_list_renders,
+            publisher_get_render,
             publisher_render_timeline,
             publisher_delete_render,
-            publisher_export_render
+            publisher_export_render,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

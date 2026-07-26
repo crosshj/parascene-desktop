@@ -1,6 +1,6 @@
 [package]
 name = "parascene-desktop"
-version = "1.1.7"
+version = "1.1.8"
 description = "Parascene Desktop"
 authors = ["Parascene"]
 edition = "2021"
@@ -35,3 +35,6 @@ rustfft = "6"
 rfd = "0.15"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+wgpu = "30"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pollster = "1.0.1"

@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use crate::library::paths::{default_root, resolve_paths};
 
 /// Max bytes returned for a single range response.
+/// WebKit needs generous ranged chunks for smooth mid-stream playback of large
+/// scratch MP4s — tiny caps (≤512KiB) reintroduce the old Publisher choke where
+/// the same file plays fine after Save. IO still runs off the UI thread.
 const MAX_RANGE_LEN: u64 = 8 * 1024 * 1024;
 
 fn allowed_roots() -> Result<Vec<PathBuf>, String> {
@@ -46,12 +49,20 @@ fn resolve_media_path(request_path: &str) -> Result<PathBuf, String> {
         return Err("Media path is not a file".into());
     }
 
-    let roots = allowed_roots()?;
-    let allowed = roots.iter().any(|root| {
-        root.canonicalize()
-            .map(|root| file.starts_with(root))
-            .unwrap_or(false)
+    // Cache canonical roots once — per-request canonicalize was wasteful.
+    use std::sync::OnceLock;
+    static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    let roots = ROOTS.get_or_init(|| {
+        allowed_roots()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|root| root.canonicalize().ok().or(Some(root)))
+            .collect()
     });
+    if roots.is_empty() {
+        return Err("Could not resolve Parascene media roots".into());
+    }
+    let allowed = roots.iter().any(|root| file.starts_with(root));
     if !allowed {
         return Err("Media path is outside the Parascene library".into());
     }
@@ -175,8 +186,9 @@ pub fn media_response(
             resp.body(buf)
         }
     } else {
-        // Prefer ranged replies for video — full-body loads of 80MB+ MP4s are
-        // what WebKit + asset:// tend to stumble on mid-playback.
+        // Prefer ranged replies for video/audio — full-body loads of 80MB+ MP4s
+        // are what WebKit + asset:// stumble on mid-playback. Hand back the first
+        // MAX_RANGE_LEN as 206 so the element continues with Range requests.
         if mime.starts_with("video/") || mime.starts_with("audio/") {
             let end = (MAX_RANGE_LEN - 1).min(len.saturating_sub(1));
             let mut buf = Vec::with_capacity((end + 1) as usize);

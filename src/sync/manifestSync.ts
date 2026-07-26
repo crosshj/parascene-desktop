@@ -377,7 +377,8 @@ export async function syncCreationsMetadata(): Promise<SyncStatus> {
 
 /**
  * Newest-first catalog sync: fetch a small newest window (default 2×50),
- * apply only unknown ids, stop early once a page is already fully local.
+ * upsert every syncable row in that window (so existing group covers refresh
+ * membership), stop early once a page is already fully local.
  * Also drops local rows that should have appeared in that recent window but
  * are gone on Parascene (verified with getCreation) — capped to the last
  * {@link NEWEST_PRUNE_MAX_AGE_MS}. Older removals still need Sync full catalog.
@@ -450,13 +451,17 @@ export async function syncNewestCreationsManifest(opts?: {
       const existing = new Set(await existingCreationIds(ids));
       const newRows = syncable.filter((c) => !existing.has(c.id));
 
-      if (newRows.length > 0) {
+      // Upsert the whole syncable page (not only unknown ids) so existing group
+      // covers refresh `meta.group` membership after web-side edits.
+      if (syncable.length > 0) {
         report(
           "apply",
-          `Saving ${newRows.length} new creation(s) (${checked} of ~${target})…`,
+          newRows.length > 0
+            ? `Saving ${newRows.length} new creation(s) (${checked} of ~${target})…`
+            : `Refreshing ${syncable.length} creation(s) (${checked} of ~${target})…`,
           checked,
         );
-        lastStatus = await applyManifest(newRows);
+        lastStatus = await applyManifest(syncable);
         added += newRows.length;
         report(
           "apply",
@@ -589,6 +594,65 @@ export async function syncFullCreationsManifest(): Promise<SyncStatus> {
   const status = await applyManifest(creations);
   kickWarmAheadPreviews();
   return status;
+}
+
+/**
+ * Page the catalog until each wanted id is found (or pages are exhausted) and
+ * upsert those rows. Used after newest sync to refresh project group covers
+ * that may sit outside the newest window.
+ *
+ * Detail `GET /api/create/images/:id` often omits `meta.group`, so list pages
+ * are the reliable source for membership.
+ */
+export async function refreshCreationsFromListById(
+  ids: readonly string[],
+  opts?: { maxPages?: number; pageSize?: number },
+): Promise<number> {
+  const wanted = new Set(
+    ids.map((id) => String(id).trim()).filter(Boolean),
+  );
+  if (wanted.size === 0) return 0;
+
+  try {
+    await ensureAccessToken();
+  } catch (e: unknown) {
+    rethrowCatalogError(e);
+  }
+
+  const sdk = createAuthedSdk();
+  const pageSize = opts?.pageSize ?? NEWEST_SYNC_PAGE_SIZE;
+  const maxPages = opts?.maxPages ?? 40;
+  const found = new Set<string>();
+  let offset = 0;
+  let refreshed = 0;
+
+  try {
+    for (let page = 0; page < maxPages && found.size < wanted.size; page += 1) {
+      const result = await sdk.listMyCreations({ limit: pageSize, offset });
+      if (result.images.length === 0) break;
+
+      const hits = result.images.filter((img) =>
+        wanted.has(String(img.id)),
+      );
+      if (hits.length > 0) {
+        const syncable = hits
+          .map(mapRemoteCreation)
+          .filter(isSyncableRemoteCreation);
+        if (syncable.length > 0) {
+          await applyManifest(syncable);
+          refreshed += syncable.length;
+          for (const row of syncable) found.add(row.id);
+        }
+      }
+
+      if (!result.hasMore) break;
+      offset += result.images.length;
+    }
+  } catch (e: unknown) {
+    rethrowCatalogError(e);
+  }
+
+  return refreshed;
 }
 
 /**

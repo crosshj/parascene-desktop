@@ -1,6 +1,8 @@
 use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
 use super::ffmpeg::{self, resolve_ffmpeg};
 use super::lab_audio::extend_clip_on_disk;
+use super::crt_gpu::{self, apply_crt_preset_to_video};
+use super::looks::{build_look_video_filter, RenderLooks};
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
 use super::slideshow::{ensure_slideshow, SlideshowEnsureInput};
@@ -78,11 +80,17 @@ pub struct TimelineRender {
     pub id: String,
     pub path: String,
     pub created_at: String,
+    /// Set when the render leaves `rendering` (ready or failed).
+    #[serde(default)]
+    pub finished_at: Option<String>,
     pub duration_sec: f64,
     pub aspect_ratio: String,
     pub clip_count: u32,
     #[serde(default)]
     pub command_line: String,
+    /// Human Look name baked into this render, if any (e.g. "TV").
+    #[serde(default)]
+    pub look_label: Option<String>,
     #[serde(default = "ready_render_status")]
     pub status: String,
     #[serde(default)]
@@ -105,9 +113,50 @@ struct RenderManifest {
 pub struct RenderProgress {
     pub project_id: String,
     pub render_id: String,
+    /// prepare | encode_segment | concat | render (legacy)
     pub phase: String,
     pub done: u32,
     pub total: u32,
+    /// Human-readable status for the Hook UI.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// 1-based segment number while encoding clips; None on prepare/concat.
+    #[serde(default)]
+    pub segment_index: Option<u32>,
+    #[serde(default)]
+    pub segment_count: Option<u32>,
+    #[serde(default)]
+    pub segment_duration_sec: Option<f64>,
+    #[serde(default)]
+    pub timeline_duration_sec: Option<f64>,
+    #[serde(default)]
+    pub look_enabled: Option<bool>,
+    /// Human Look name when enabled (e.g. "TV").
+    #[serde(default)]
+    pub look_label: Option<String>,
+    /// FFmpeg command for the step currently running (or about to run).
+    #[serde(default)]
+    pub current_command: Option<String>,
+}
+
+impl RenderProgress {
+    fn base(project_id: &str, render_id: &str, phase: &str, done: u32, total: u32) -> Self {
+        Self {
+            project_id: project_id.into(),
+            render_id: render_id.into(),
+            phase: phase.into(),
+            done,
+            total,
+            message: None,
+            segment_index: None,
+            segment_count: None,
+            segment_duration_sec: None,
+            timeline_duration_sec: None,
+            look_enabled: None,
+            look_label: None,
+            current_command: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -514,25 +563,28 @@ where
     Ok(updated)
 }
 
-fn emit_progress(
+fn emit_progress_detail(
     app: &AppHandle,
     paths: &ParascenePaths,
     project_id: &str,
     render_id: &str,
-    phase: &str,
-    done: u32,
-    total: u32,
+    mut progress: RenderProgress,
 ) {
-    let progress = RenderProgress {
-        project_id: project_id.into(),
-        render_id: render_id.into(),
-        phase: phase.into(),
-        done,
-        total,
-    };
+    progress.project_id = project_id.into();
+    progress.render_id = render_id.into();
     let _ = update_render(paths, project_id, render_id, |render| {
         render.progress = Some(progress.clone());
     });
+    // Keep IPC/events light — full FFmpeg command lines are multi‑KB and
+    // repeatedly marshaling them into the webview beachballs the UI.
+    if let Some(cmd) = progress.current_command.as_mut() {
+        const MAX_UI_CMD: usize = 1_500;
+        if cmd.len() > MAX_UI_CMD {
+            let omitted = cmd.len() - MAX_UI_CMD;
+            cmd.truncate(MAX_UI_CMD);
+            cmd.push_str(&format!("\n# … {omitted} bytes omitted from live UI"));
+        }
+    }
     let _ = app.emit("publisher-render-progress", progress);
 }
 
@@ -699,14 +751,18 @@ fn build_video_segments(
 
     let extend_bakes = prepare_extend_bakes(&lane_clips, paths)?;
     let prepare_total = ranges.len().max(1) as u32;
-    emit_progress(
+    emit_progress_detail(
         app,
         paths,
         project_id,
         render_id,
-        "prepare",
-        0,
-        prepare_total,
+        RenderProgress {
+            message: Some(format!(
+                "Preparing clip sources (0 of {prepare_total})…"
+            )),
+            timeline_duration_sec: Some(total),
+            ..RenderProgress::base(project_id, render_id, "prepare", 0, prepare_total)
+        },
     );
 
     let mut segments: Vec<VideoSegment> = Vec::with_capacity(ranges.len());
@@ -717,14 +773,29 @@ fn build_video_segments(
                 duration_sec,
                 source: None,
             });
-            emit_progress(
+            emit_progress_detail(
                 app,
                 paths,
                 project_id,
                 render_id,
-                "prepare",
-                (index + 1) as u32,
-                prepare_total,
+                RenderProgress {
+                    message: Some(format!(
+                        "Prepared black gap {} of {prepare_total} ({:.1}s)",
+                        index + 1,
+                        duration_sec
+                    )),
+                    timeline_duration_sec: Some(total),
+                    segment_index: Some((index + 1) as u32),
+                    segment_count: Some(prepare_total),
+                    segment_duration_sec: Some(duration_sec),
+                    ..RenderProgress::base(
+                        project_id,
+                        render_id,
+                        "prepare",
+                        (index + 1) as u32,
+                        prepare_total,
+                    )
+                },
             );
             continue;
         };
@@ -751,14 +822,29 @@ fn build_video_segments(
                     speed,
                 }),
             });
-            emit_progress(
+            emit_progress_detail(
                 app,
                 paths,
                 project_id,
                 render_id,
-                "prepare",
-                (index + 1) as u32,
-                prepare_total,
+                RenderProgress {
+                    message: Some(format!(
+                        "Prepared extend bake {} of {prepare_total} ({:.1}s)",
+                        index + 1,
+                        duration_sec
+                    )),
+                    timeline_duration_sec: Some(total),
+                    segment_index: Some((index + 1) as u32),
+                    segment_count: Some(prepare_total),
+                    segment_duration_sec: Some(duration_sec),
+                    ..RenderProgress::base(
+                        project_id,
+                        render_id,
+                        "prepare",
+                        (index + 1) as u32,
+                        prepare_total,
+                    )
+                },
             );
             continue;
         }
@@ -866,14 +952,29 @@ fn build_video_segments(
                 }),
             });
         }
-        emit_progress(
+        emit_progress_detail(
             app,
             paths,
             project_id,
             render_id,
-            "prepare",
-            (index + 1) as u32,
-            prepare_total,
+            RenderProgress {
+                message: Some(format!(
+                    "Prepared source {} of {prepare_total} ({:.1}s)",
+                    index + 1,
+                    duration_sec
+                )),
+                timeline_duration_sec: Some(total),
+                segment_index: Some((index + 1) as u32),
+                segment_count: Some(prepare_total),
+                segment_duration_sec: Some(duration_sec),
+                ..RenderProgress::base(
+                    project_id,
+                    render_id,
+                    "prepare",
+                    (index + 1) as u32,
+                    prepare_total,
+                )
+            },
         );
     }
 
@@ -1083,6 +1184,15 @@ fn push_x264_encode(args: &mut Vec<String>) {
     args.push("+faststart".into());
 }
 
+/// Intermediate concat when a GPU Look will re-encode the final file.
+/// Stream-copy the already-uniform segment bitstreams — skip a full CPU x264 pass.
+fn push_gpu_look_intermediate_video(args: &mut Vec<String>) {
+    args.push("-c:v".into());
+    args.push("copy".into());
+    args.push("-avoid_negative_ts".into());
+    args.push("make_zero".into());
+}
+
 fn push_x264_segment_encode(args: &mut Vec<String>) {
     args.push("-an".into());
     push_x264_encode(args);
@@ -1095,6 +1205,7 @@ fn render_timeline_file(
     render_id: &str,
     aspect_ratio: &str,
     clips: &[RenderTimelineClipInput],
+    looks: &RenderLooks,
     output_path: &Path,
 ) -> Result<(f64, String), String> {
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
@@ -1125,16 +1236,35 @@ fn render_timeline_file(
     let seg_total = video_segments.len().max(1) as u32;
     let mut segment_paths: Vec<PathBuf> = Vec::with_capacity(video_segments.len());
     let mut logged_commands: Vec<String> = Vec::new();
+    let look_on = looks.has_any_enabled();
+    let look_label = looks.enabled_label().map(str::to_string);
 
     for (index, segment) in video_segments.iter().enumerate() {
-        emit_progress(
+        let seg_num = (index + 1) as u32;
+        emit_progress_detail(
             app,
             paths,
             project_id,
             render_id,
-            "render",
-            index as u32,
-            seg_total + 1,
+            RenderProgress {
+                message: Some(format!(
+                    "Encoding segment {seg_num} of {seg_total} ({:.1}s)…",
+                    segment.duration_sec
+                )),
+                segment_index: Some(seg_num),
+                segment_count: Some(seg_total),
+                segment_duration_sec: Some(segment.duration_sec),
+                timeline_duration_sec: Some(duration_sec),
+                look_enabled: Some(look_on),
+                look_label: look_label.clone(),
+                ..RenderProgress::base(
+                    project_id,
+                    render_id,
+                    "encode_segment",
+                    index as u32,
+                    seg_total + 1,
+                )
+            },
         );
         let seg_path = work_dir.join(format!("seg_{index:03}.mp4"));
         let mut args: Vec<String> = vec!["-y".into()];
@@ -1196,7 +1326,34 @@ fn render_timeline_file(
         args.push(frames.to_string());
         args.push(seg_path.display().to_string());
 
-        logged_commands.push(ffmpeg_command_line(&ffmpeg, &args));
+        let command = ffmpeg_command_line(&ffmpeg, &args);
+        logged_commands.push(command.clone());
+        emit_progress_detail(
+            app,
+            paths,
+            project_id,
+            render_id,
+            RenderProgress {
+                message: Some(format!(
+                    "Encoding segment {seg_num} of {seg_total} ({:.1}s)…",
+                    segment.duration_sec
+                )),
+                segment_index: Some(seg_num),
+                segment_count: Some(seg_total),
+                segment_duration_sec: Some(segment.duration_sec),
+                timeline_duration_sec: Some(duration_sec),
+                look_enabled: Some(look_on),
+                look_label: look_label.clone(),
+                current_command: Some(command),
+                ..RenderProgress::base(
+                    project_id,
+                    render_id,
+                    "encode_segment",
+                    index as u32,
+                    seg_total + 1,
+                )
+            },
+        );
         run_ffmpeg(&ffmpeg, &args)?;
         if !seg_path.is_file() {
             return Err(format!(
@@ -1205,14 +1362,29 @@ fn render_timeline_file(
             ));
         }
         segment_paths.push(seg_path);
-        emit_progress(
+        emit_progress_detail(
             app,
             paths,
             project_id,
             render_id,
-            "render",
-            (index + 1) as u32,
-            seg_total + 1,
+            RenderProgress {
+                message: Some(format!(
+                    "Finished segment {seg_num} of {seg_total}"
+                )),
+                segment_index: Some(seg_num),
+                segment_count: Some(seg_total),
+                segment_duration_sec: Some(segment.duration_sec),
+                timeline_duration_sec: Some(duration_sec),
+                look_enabled: Some(look_on),
+                look_label: look_label.clone(),
+                ..RenderProgress::base(
+                    project_id,
+                    render_id,
+                    "encode_segment",
+                    seg_num,
+                    seg_total + 1,
+                )
+            },
         );
     }
 
@@ -1257,6 +1429,30 @@ fn render_timeline_file(
         audio_labels.push(format!("[a{idx}]"));
     }
 
+    let gpu_preset = if crt_gpu::crt_gpu_available() {
+        looks.crt_preset()
+    } else {
+        None
+    };
+    // Prefer GPU CRT (fast). FFmpeg TV graph is CPU fallback only.
+    let look_graph = if gpu_preset.is_some() {
+        None
+    } else {
+        build_look_video_filter(looks, "0:v", "vout")
+    };
+    if looks.has_any_enabled() && gpu_preset.is_none() && look_graph.is_none() {
+        return Err(
+            "Afterglow and Broadcast require GPU acceleration. Enable TV for the CPU fallback, or check GPU drivers."
+                .into(),
+        );
+    }
+    if let Some(ref graph) = look_graph {
+        filter_parts.insert(0, graph.clone());
+    }
+
+    // GPU Look re-encodes the final file — don't pay a full baseline x264 concat first.
+    let gpu_intermediate = gpu_preset.is_some();
+
     if !audio_labels.is_empty() {
         let mix_inputs = audio_labels.join("");
         filter_parts.push(format!(
@@ -1266,44 +1462,171 @@ fn render_timeline_file(
         args.push("-filter_complex".into());
         args.push(filter_parts.join(";"));
         args.push("-map".into());
-        args.push("0:v".into());
+        if look_graph.is_some() {
+            args.push("[vout]".into());
+        } else {
+            args.push("0:v".into());
+        }
         args.push("-map".into());
         args.push("[aout]".into());
-        // Re-encode the joined bitstream. Stream-copying concat demuxer output
-        // leaves mid-file SPS/GOP seams that freeze Chromium's VideoToolbox path
-        // (software decode still looks fine; scrubbing still works).
-        push_x264_encode(&mut args);
+        if gpu_intermediate {
+            push_gpu_look_intermediate_video(&mut args);
+        } else {
+            // Re-encode the joined bitstream. Stream-copying concat demuxer output
+            // leaves mid-file SPS/GOP seams that freeze Chromium's VideoToolbox path
+            // (software decode still looks fine; scrubbing still works).
+            push_x264_encode(&mut args);
+        }
         args.push("-c:a".into());
         args.push("aac".into());
         args.push("-b:a".into());
         args.push("192k".into());
+    } else if look_graph.is_some() {
+        args.push("-filter_complex".into());
+        args.push(filter_parts.join(";"));
+        args.push("-map".into());
+        args.push("[vout]".into());
+        push_x264_encode(&mut args);
+        args.push("-an".into());
+    } else if gpu_intermediate {
+        args.push("-map".into());
+        args.push("0:v".into());
+        push_gpu_look_intermediate_video(&mut args);
+        args.push("-an".into());
     } else {
         args.push("-map".into());
         args.push("0:v".into());
         push_x264_encode(&mut args);
         args.push("-an".into());
     }
-    args.push("-fps_mode".into());
-    args.push("cfr".into());
+    if !gpu_intermediate {
+        args.push("-fps_mode".into());
+        args.push("cfr".into());
+    }
     args.push("-t".into());
     args.push(format!("{duration_sec:.3}"));
-    args.push(output_path.display().to_string());
-
-    logged_commands.push(ffmpeg_command_line(&ffmpeg, &args));
-    run_ffmpeg(&ffmpeg, &args)?;
-    if !output_path.is_file() {
-        return Err("ffmpeg render produced no output file".into());
+    // Write to a temp path, then rename — so a final output file only appears
+    // when concat fully succeeds (hot-reload mid-write can't leave a half file
+    // marked as the finished path).
+    let partial_path = output_path.with_extension("partial.mp4");
+    if partial_path.exists() {
+        let _ = fs::remove_file(&partial_path);
     }
+    args.push(partial_path.display().to_string());
 
-    let _ = fs::remove_dir_all(&work_dir);
-    emit_progress(
+    let concat_command = ffmpeg_command_line(&ffmpeg, &args);
+    logged_commands.push(concat_command.clone());
+    let concat_message = if gpu_intermediate {
+        format!(
+            "Joining segments ({duration_sec:.1}s, {seg_total} segments) for {} Look…",
+            look_label.as_deref().unwrap_or("GPU")
+        )
+    } else if look_graph.is_some() {
+        format!(
+            "Final concat re-encode ({duration_sec:.1}s, {seg_total} segments) with FFmpeg TV Look…"
+        )
+    } else {
+        format!("Final concat re-encode ({duration_sec:.1}s, {seg_total} segments)…")
+    };
+    emit_progress_detail(
         app,
         paths,
         project_id,
         render_id,
-        "render",
-        seg_total + 1,
-        seg_total + 1,
+        RenderProgress {
+            message: Some(concat_message),
+            segment_count: Some(seg_total),
+            timeline_duration_sec: Some(duration_sec),
+            look_enabled: Some(look_on),
+            look_label: look_label.clone(),
+            current_command: Some(concat_command),
+            ..RenderProgress::base(
+                project_id,
+                render_id,
+                "concat",
+                seg_total,
+                seg_total + 1,
+            )
+        },
+    );
+    run_ffmpeg(&ffmpeg, &args)?;
+    if !partial_path.is_file() {
+        return Err("ffmpeg render produced no output file".into());
+    }
+    if output_path.exists() {
+        let _ = fs::remove_file(output_path);
+    }
+    fs::rename(&partial_path, output_path).map_err(|e| {
+        format!(
+            "Could not finalize render output ({} → {}): {e}",
+            partial_path.display(),
+            output_path.display()
+        )
+    })?;
+
+    if let Some(preset) = gpu_preset {
+        emit_progress_detail(
+            app,
+            paths,
+            project_id,
+            render_id,
+            RenderProgress {
+                message: Some(format!(
+                    "Applying {} Look on GPU…",
+                    look_label.as_deref().unwrap_or(preset.as_str())
+                )),
+                segment_count: Some(seg_total),
+                timeline_duration_sec: Some(duration_sec),
+                look_enabled: Some(true),
+                look_label: look_label.clone(),
+                current_command: Some(format!(
+                    "# GPU CRT Look ({}) via wgpu — FFmpeg concat finished",
+                    preset.as_str()
+                )),
+                ..RenderProgress::base(
+                    project_id,
+                    render_id,
+                    "concat",
+                    seg_total,
+                    seg_total + 1,
+                )
+            },
+        );
+        let shaded = output_path.with_extension("crt-shaded.mp4");
+        let _ = fs::remove_file(&shaded);
+        apply_crt_preset_to_video(output_path, &shaded, preset).map_err(|e| {
+            let _ = fs::remove_file(&shaded);
+            e
+        })?;
+        let _ = fs::remove_file(output_path);
+        fs::rename(&shaded, output_path)
+            .map_err(|e| format!("Could not finalize GPU CRT output: {e}"))?;
+        logged_commands.push(format!(
+            "# GPU CRT Look ({}) via wgpu",
+            preset.as_str()
+        ));
+    }
+
+    let _ = fs::remove_dir_all(&work_dir);
+    emit_progress_detail(
+        app,
+        paths,
+        project_id,
+        render_id,
+        RenderProgress {
+            message: Some("Render finished".into()),
+            segment_count: Some(seg_total),
+            timeline_duration_sec: Some(duration_sec),
+            look_enabled: Some(look_on),
+            look_label: look_label.clone(),
+            ..RenderProgress::base(
+                project_id,
+                render_id,
+                "concat",
+                seg_total + 1,
+                seg_total + 1,
+            )
+        },
     );
 
     let command_line = format!(
@@ -1328,6 +1651,7 @@ fn run_render(
     render_id: &str,
     aspect_ratio: &str,
     clips: Vec<RenderTimelineClipInput>,
+    looks: RenderLooks,
 ) -> Result<TimelineRender, String> {
     let paths = default_paths()?;
     let dir = renders_dir(&paths, project_id);
@@ -1336,7 +1660,16 @@ fn run_render(
     let output_path = dir.join(&filename);
     // Surface progress immediately so the UI doesn't sit on "Starting FFmpeg…"
     // while reverse/extend prep or the first segment encode runs.
-    emit_progress(app, &paths, project_id, render_id, "prepare", 0, 1);
+    emit_progress_detail(
+        app,
+        &paths,
+        project_id,
+        render_id,
+        RenderProgress {
+            message: Some("Preparing timeline sources…".into()),
+            ..RenderProgress::base(project_id, render_id, "prepare", 0, 1)
+        },
+    );
     let (duration_sec, command_line) = render_timeline_file(
         app,
         &paths,
@@ -1344,6 +1677,7 @@ fn run_render(
         render_id,
         aspect_ratio,
         &clips,
+        &looks,
         &output_path,
     )?;
 
@@ -1351,6 +1685,7 @@ fn run_render(
         render.duration_sec = duration_sec;
         render.command_line = command_line.clone();
         render.status = "ready".into();
+        render.finished_at = Some(Utc::now().to_rfc3339());
         render.progress = None;
         render.error = None;
     }) {
@@ -1366,10 +1701,12 @@ fn run_render(
                 id: render_id.into(),
                 path: output_path.display().to_string(),
                 created_at: Utc::now().to_rfc3339(),
+                finished_at: Some(Utc::now().to_rfc3339()),
                 duration_sec,
                 aspect_ratio: aspect_ratio.into(),
                 clip_count: clips.len() as u32,
                 command_line,
+                look_label: looks.enabled_label().map(str::to_string),
                 status: "ready".into(),
                 progress: None,
                 error: None,
@@ -1385,6 +1722,7 @@ fn create_pending_render(
     project_id: &str,
     aspect_ratio: &str,
     clips: &[RenderTimelineClipInput],
+    looks: &RenderLooks,
 ) -> Result<TimelineRender, String> {
     if clips.is_empty() {
         return Err("Timeline is empty".into());
@@ -1400,10 +1738,12 @@ fn create_pending_render(
             .display()
             .to_string(),
         created_at: Utc::now().to_rfc3339(),
+        finished_at: None,
         duration_sec: sequence_duration(clips),
         aspect_ratio: aspect_ratio.into(),
         clip_count: clips.len() as u32,
         command_line: String::new(),
+        look_label: looks.enabled_label().map(str::to_string),
         status: "rendering".into(),
         progress: None,
         error: None,
@@ -1420,31 +1760,205 @@ fn create_pending_render(
 
 #[tauri::command]
 pub async fn publisher_list_renders(project_id: String) -> Result<Vec<TimelineRender>, String> {
+    let heal_id = project_id.clone();
+    let rows = tauri::async_runtime::spawn_blocking(move || list_renders_light(&project_id))
+        .await
+        .map_err(|e| format!("List renders task failed: {e}"))??;
+    // Heavy abandoned-job cleanup must not gate the tab open path.
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(move || heal_abandoned_renders(&heal_id)).await;
+    });
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn publisher_get_render(
+    project_id: String,
+    render_id: String,
+) -> Result<TimelineRender, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = default_paths()?;
+        let _guard = manifest_lock()
+            .lock()
+            .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+        let manifest = read_manifest(&paths, &project_id)?;
+        manifest
+            .renders
+            .into_iter()
+            .find(|render| render.id == render_id)
+            .ok_or_else(|| "Render not found".into())
+    })
+    .await
+    .map_err(|e| format!("Get render task failed: {e}"))?
+}
+
+fn file_mtime_age_secs(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()
+        .map(|age| age.as_secs())
+}
+
+/// Youngest (most recently written) age among existing workspace artifacts.
+fn workspace_newest_write_age_secs(partial: &Path, segments_dir: &Path) -> Option<u64> {
+    let mut newest: Option<u64> = None;
+    let consider = |age: Option<u64>, newest: &mut Option<u64>| {
+        if let Some(a) = age {
+            *newest = Some(match *newest {
+                Some(n) => n.min(a),
+                None => a,
+            });
+        }
+    };
+    if partial.is_file() {
+        consider(file_mtime_age_secs(partial), &mut newest);
+    }
+    // Only the directory mtime — walking every segment file on each list call
+    // was unnecessarily heavy for Publisher tab opens.
+    if segments_dir.is_dir() {
+        consider(file_mtime_age_secs(segments_dir), &mut newest);
+    }
+    newest
+}
+
+fn slim_render_for_list(render: &mut TimelineRender) {
+    render.command_line.clear();
+    if let Some(progress) = render.progress.as_mut() {
+        progress.current_command = None;
+    }
+}
+
+/// Fast path for Publisher tab open: read manifest, drop missing ready files,
+/// return UI-sized rows. Abandoned-job heal runs separately.
+fn list_renders_light(project_id: &str) -> Result<Vec<TimelineRender>, String> {
     let paths = default_paths()?;
     let _guard = manifest_lock()
         .lock()
         .map_err(|_| "Render manifest lock was poisoned".to_string())?;
-    let mut manifest = read_manifest(&paths, &project_id)?;
+    let mut manifest = read_manifest(&paths, project_id)?;
+    let before = manifest.renders.len();
+    manifest
+        .renders
+        .retain(|render| render.status != "ready" || Path::new(&render.path).is_file());
+    if manifest.renders.len() != before {
+        write_manifest(&paths, project_id, &manifest)?;
+    }
+    let mut rows = manifest.renders;
+    for render in &mut rows {
+        slim_render_for_list(render);
+    }
+    Ok(rows)
+}
+
+fn heal_abandoned_renders(project_id: &str) -> Result<(), String> {
+    let paths = default_paths()?;
+    let _guard = manifest_lock()
+        .lock()
+        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+    let mut manifest = read_manifest(&paths, project_id)?;
     let before = manifest.renders.len();
     manifest
         .renders
         .retain(|render| render.status != "ready" || Path::new(&render.path).is_file());
     let mut healed = false;
-    // Hot-reload / crash can leave status=rendering with no worker. Only heal
-    // when there is no output AND no segment workspace (active renders have a
-    // `.segments` dir for most of the job; the final mp4 appears only at the end).
+    // Hot-reload / crash can leave status=rendering with no worker.
     let now = Utc::now();
     for render in &mut manifest.renders {
         if render.status != "rendering" {
             continue;
         }
-        if Path::new(&render.path).is_file() {
+        let output = Path::new(&render.path);
+        let segments_dir = output.with_extension("segments");
+        let partial = output.with_extension("partial.mp4");
+        let shaded = output.with_extension("crt-shaded.mp4");
+        let crt_partial = output.with_extension("crt-partial.mp4");
+
+        // Final path only exists after a successful concat rename. GPU Look may
+        // still be shading while segments remain — only promote when workspace
+        // is gone (worker finished cleanup).
+        if output.is_file() && !segments_dir.is_dir() && !shaded.is_file() && !crt_partial.is_file()
+        {
+            render.status = "ready".into();
+            if render.finished_at.is_none() {
+                render.finished_at = Some(Utc::now().to_rfc3339());
+            }
+            render.progress = None;
+            render.error = None;
+            if partial.is_file() {
+                let _ = fs::remove_file(&partial);
+            }
+            healed = true;
             continue;
         }
-        let segments_dir = Path::new(&render.path).with_extension("segments");
-        if segments_dir.is_dir() {
+
+        // Still have workspace / in-flight CRT files: if nothing has been written
+        // recently, the worker is dead (dev reload, crash) — don't leave the UI
+        // stuck on a ghost FFmpeg command forever.
+        let mut newest = workspace_newest_write_age_secs(&partial, &segments_dir);
+        if shaded.is_file() {
+            let age = file_mtime_age_secs(&shaded);
+            newest = match (newest, age) {
+                (Some(n), Some(a)) => Some(n.min(a)),
+                (None, a) | (a, None) => a,
+            };
+        }
+        if crt_partial.is_file() {
+            let age = file_mtime_age_secs(&crt_partial);
+            newest = match (newest, age) {
+                (Some(n), Some(a)) => Some(n.min(a)),
+                (None, a) | (a, None) => a,
+            };
+        }
+        if output.is_file() {
+            let age = file_mtime_age_secs(output);
+            newest = match (newest, age) {
+                (Some(n), Some(a)) => Some(n.min(a)),
+                (None, a) | (a, None) => a,
+            };
+        }
+
+        let workspace_busy = segments_dir.is_dir()
+            || partial.is_file()
+            || shaded.is_file()
+            || crt_partial.is_file()
+            || output.is_file();
+
+        if workspace_busy {
+            // Active encodes keep touching files; 90s of silence ⇒ abandoned.
+            if newest.map(|age| age >= 90).unwrap_or(true) {
+                if output.is_file() {
+                    // Concat finished; GPU/worker died — ship the unshaded file.
+                    render.status = "ready".into();
+                    render.error = None;
+                } else {
+                    render.status = "failed".into();
+                    render.error = Some(
+                        "Render was interrupted (encoder stopped updating). Try rendering again."
+                            .into(),
+                    );
+                }
+                render.finished_at = Some(Utc::now().to_rfc3339());
+                render.progress = None;
+                if segments_dir.is_dir() {
+                    let _ = fs::remove_dir_all(&segments_dir);
+                }
+                if partial.is_file() {
+                    let _ = fs::remove_file(&partial);
+                }
+                if shaded.is_file() {
+                    let _ = fs::remove_file(&shaded);
+                }
+                if crt_partial.is_file() {
+                    let _ = fs::remove_file(&crt_partial);
+                }
+                healed = true;
+            }
             continue;
         }
+
         let Ok(created) = chrono::DateTime::parse_from_rfc3339(&render.created_at) else {
             continue;
         };
@@ -1456,14 +1970,15 @@ pub async fn publisher_list_renders(project_id: String) -> Result<Vec<TimelineRe
             continue;
         }
         render.status = "failed".into();
+        render.finished_at = Some(Utc::now().to_rfc3339());
         render.progress = None;
         render.error = Some("Render was interrupted before it finished.".into());
         healed = true;
     }
     if manifest.renders.len() != before || healed {
-        write_manifest(&paths, &project_id, &manifest)?;
+        write_manifest(&paths, project_id, &manifest)?;
     }
-    Ok(manifest.renders)
+    Ok(())
 }
 
 #[tauri::command]
@@ -1472,8 +1987,23 @@ pub async fn publisher_render_timeline(
     project_id: String,
     aspect_ratio: String,
     clips: Vec<RenderTimelineClipInput>,
+    looks: Option<RenderLooks>,
 ) -> Result<TimelineRender, String> {
-    let pending = create_pending_render(&project_id, &aspect_ratio, &clips)?;
+    let looks = looks.unwrap_or_default();
+    let project_for_pending = project_id.clone();
+    let aspect_for_pending = aspect_ratio.clone();
+    let clips_for_pending = clips.clone();
+    let looks_for_pending = looks.clone();
+    let pending = tauri::async_runtime::spawn_blocking(move || {
+        create_pending_render(
+            &project_for_pending,
+            &aspect_for_pending,
+            &clips_for_pending,
+            &looks_for_pending,
+        )
+    })
+    .await
+    .map_err(|e| format!("Create pending render failed: {e}"))??;
     let app_for_block = app.clone();
     let project_for_block = project_id.clone();
     let render_id = pending.id.clone();
@@ -1485,6 +2015,7 @@ pub async fn publisher_render_timeline(
             &render_id_for_block,
             &aspect_ratio,
             clips,
+            looks,
         ) {
             Ok(_) => {
                 emit_finished(
@@ -1500,6 +2031,7 @@ pub async fn publisher_render_timeline(
                     let _ =
                         update_render(&paths, &project_for_block, &render_id_for_block, |render| {
                             render.status = "failed".into();
+                            render.finished_at = Some(Utc::now().to_rfc3339());
                             render.progress = None;
                             render.error = Some(error.clone());
                         });
@@ -1519,29 +2051,34 @@ pub async fn publisher_render_timeline(
 
 #[tauri::command]
 pub async fn publisher_delete_render(project_id: String, render_id: String) -> Result<(), String> {
-    let paths = default_paths()?;
-    let _guard = manifest_lock()
-        .lock()
-        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
-    let mut manifest = read_manifest(&paths, &project_id)?;
-    let Some(index) = manifest
-        .renders
-        .iter()
-        .position(|render| render.id == render_id)
-    else {
-        return Err("Render not found".into());
-    };
-    let render = manifest.renders.remove(index);
-    if Path::new(&render.path).is_file() {
-        fs::remove_file(&render.path).map_err(|e| format!("Could not delete render file: {e}"))?;
-    }
-    // Segment workspace from mid-render (also covers interrupted jobs).
-    let segments_dir = Path::new(&render.path).with_extension("segments");
-    if segments_dir.is_dir() {
-        let _ = fs::remove_dir_all(&segments_dir);
-    }
-    write_manifest(&paths, &project_id, &manifest)?;
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = default_paths()?;
+        let _guard = manifest_lock()
+            .lock()
+            .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+        let mut manifest = read_manifest(&paths, &project_id)?;
+        let Some(index) = manifest
+            .renders
+            .iter()
+            .position(|render| render.id == render_id)
+        else {
+            return Err("Render not found".into());
+        };
+        let render = manifest.renders.remove(index);
+        if Path::new(&render.path).is_file() {
+            fs::remove_file(&render.path)
+                .map_err(|e| format!("Could not delete render file: {e}"))?;
+        }
+        // Segment workspace from mid-render (also covers interrupted jobs).
+        let segments_dir = Path::new(&render.path).with_extension("segments");
+        if segments_dir.is_dir() {
+            let _ = fs::remove_dir_all(&segments_dir);
+        }
+        write_manifest(&paths, &project_id, &manifest)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Delete render task failed: {e}"))?
 }
 
 #[derive(Clone, Debug, Serialize)]
