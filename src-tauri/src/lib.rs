@@ -3,6 +3,7 @@ mod http_client;
 mod library;
 mod media_stream;
 mod oauth_listener;
+mod replicate;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
 use http_client::{
@@ -35,6 +36,12 @@ use library::{
     publisher_list_renders, publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
+use replicate::{
+    replicate_cache_stats, replicate_model_get, replicate_model_set_enabled, replicate_model_update,
+    replicate_models_check_new, replicate_models_crawl_cancel, replicate_models_crawl_pause,
+    replicate_models_crawl_start, replicate_models_list_cached, replicate_models_list_enabled,
+    replicate_token_clear, replicate_token_set, replicate_token_status,
+};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::webview::PageLoadEvent;
@@ -258,6 +265,19 @@ pub fn run() {
             publisher_render_timeline,
             publisher_delete_render,
             publisher_export_render,
+            replicate_token_status,
+            replicate_token_set,
+            replicate_token_clear,
+            replicate_cache_stats,
+            replicate_models_list_cached,
+            replicate_model_get,
+            replicate_model_set_enabled,
+            replicate_models_list_enabled,
+            replicate_models_crawl_start,
+            replicate_models_crawl_pause,
+            replicate_models_crawl_cancel,
+            replicate_models_check_new,
+            replicate_model_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,5 @@
 export type LabModuleId =
+  | "replicateModels"
   | "groups"
   | "create"
   | "seeds"
@@ -19,6 +20,11 @@ export const LAB_MODULES: {
   label: string;
   blurb: string;
 }[] = [
+  {
+    id: "replicateModels",
+    label: "Replicate models",
+    blurb: "Browse cached Replicate catalog",
+  },
   { id: "groups", label: "Project groups", blurb: "Ensure Images or Videos group" },
   { id: "create", label: "Parascene create", blurb: "Image (or video) create → Library" },
   { id: "seeds", label: "Upload / seeds", blurb: "Inspect seed URLs from project assets" },

@@ -93,6 +93,7 @@ export type LabSessionSnapshot = {
 };
 
 const ALL_MODULE_IDS: LabModuleId[] = [
+  "replicateModels",
   "groups",
   "create",
   "seeds",

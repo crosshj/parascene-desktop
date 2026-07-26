@@ -9,6 +9,15 @@ import {
   loadOpenAiApiKey,
   saveOpenAiApiKey,
 } from "../lab/openaiClient";
+import {
+  replicateTokenClear,
+  replicateTokenSet,
+  replicateTokenStatus,
+} from "../replicate/replicateClient";
+import {
+  notifyOpenAiKeyChanged,
+  notifyReplicateTokenChanged,
+} from "./events";
 
 type Props = {
   open: boolean;
@@ -16,10 +25,13 @@ type Props = {
 };
 
 /**
- * App settings (account menu): OpenAI key + local tool readiness.
+ * App settings (account menu): API keys + local tool readiness.
  */
 export function SettingsModal({ open, onClose }: Props) {
   const [apiKey, setApiKey] = useState("");
+  const [replicateToken, setReplicateToken] = useState("");
+  const [replicatePreview, setReplicatePreview] = useState<string | null>(null);
+  const [replicateConfigured, setReplicateConfigured] = useState(false);
   const [deps, setDeps] = useState<LabDepsStatus | null>(null);
   const [depsError, setDepsError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -35,6 +47,18 @@ export function SettingsModal({ open, onClose }: Props) {
     }
   };
 
+  const refreshReplicate = async () => {
+    try {
+      const st = await replicateTokenStatus();
+      setReplicateConfigured(st.configured);
+      setReplicatePreview(st.preview ?? null);
+      setReplicateToken("");
+    } catch {
+      setReplicateConfigured(false);
+      setReplicatePreview(null);
+    }
+  };
+
   useEffect(() => {
     if (!open) return;
     // Intentional: reset the form to persisted values each time the modal opens.
@@ -42,6 +66,7 @@ export function SettingsModal({ open, onClose }: Props) {
     setApiKey(loadOpenAiApiKey());
     setInstallNote(null);
     void refreshDeps();
+    void refreshReplicate();
   }, [open]);
 
   useEffect(() => {
@@ -58,9 +83,31 @@ export function SettingsModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const save = () => {
+  const save = async () => {
     saveOpenAiApiKey(apiKey);
+    notifyOpenAiKeyChanged();
+    try {
+      if (replicateToken.trim()) {
+        await replicateTokenSet(replicateToken.trim());
+        notifyReplicateTokenChanged();
+      }
+    } catch (err) {
+      setDepsError(err instanceof Error ? err.message : String(err));
+      return;
+    }
     onClose();
+  };
+
+  const clearReplicate = async () => {
+    try {
+      await replicateTokenClear();
+      setReplicateConfigured(false);
+      setReplicatePreview(null);
+      setReplicateToken("");
+      notifyReplicateTokenChanged();
+    } catch (err) {
+      setDepsError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const onInstallDemucs = async () => {
@@ -115,6 +162,36 @@ export function SettingsModal({ open, onClose }: Props) {
             Stored only on this Mac. Used by Lab tools that call OpenAI (raw
             round-trip, MV storyboard planning).
           </p>
+
+          <label>
+            Replicate API token
+            <input
+              className="control"
+              type="password"
+              value={replicateToken}
+              onChange={(e) => setReplicateToken(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={
+                replicateConfigured
+                  ? `Configured (${replicatePreview ?? "••••"}) — paste to replace`
+                  : "r8_…"
+              }
+            />
+          </label>
+          <p className="muted settings-hint">
+            Stored in the system keychain. Used only for direct Replicate Lab
+            calls — not sent through Parascene.
+          </p>
+          {replicateConfigured ? (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => void clearReplicate()}
+            >
+              Clear Replicate token
+            </button>
+          ) : null}
 
           <h3 className="settings-section-title">Local tools</h3>
           <p className="muted settings-hint">
@@ -189,9 +266,11 @@ export function SettingsModal({ open, onClose }: Props) {
                   ? deps.docPath
                   : "LOCAL_TOOLS.md not found (open the git checkout)"
               }
-              onClick={() => void openLocalToolsDoc().catch((err) => {
-                setDepsError(err instanceof Error ? err.message : String(err));
-              })}
+              onClick={() =>
+                void openLocalToolsDoc().catch((err) => {
+                  setDepsError(err instanceof Error ? err.message : String(err));
+                })
+              }
             >
               Open LOCAL_TOOLS.md
             </button>
@@ -201,7 +280,11 @@ export function SettingsModal({ open, onClose }: Props) {
           <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="btn primary" onClick={save}>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => void save()}
+          >
             Save
           </button>
         </div>

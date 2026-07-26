@@ -19,6 +19,10 @@ const ready: LabGateContext = {
 };
 
 describe("labModuleGate", () => {
+  it("does not gate replicateModels (token handled in panel)", () => {
+    expect(labModuleGate("replicateModels", ready)).toBeNull();
+  });
+
   it("blocks mvConcept when lyric align is missing", () => {
     const gate = labModuleGate("mvConcept", {
       ...ready,

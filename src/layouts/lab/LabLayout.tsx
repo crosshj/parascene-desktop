@@ -95,6 +95,7 @@ import {
 } from "../../settings/events";
 import { labModuleGate } from "./labGates";
 import { LAB_MODULES, type LabModuleId } from "./labTypes";
+import { ReplicateModelsPanel } from "./ReplicateModelsPanel";
 
 function remoteMediaUrl(c: Creation): string | null {
   if (c.remoteUrl?.trim()) return c.remoteUrl.trim();
@@ -1305,9 +1306,11 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       </aside>
 
       <section className="lab-main">
-        <header className="lab-main-header">
-          <h2>{LAB_MODULES.find((m) => m.id === moduleId)?.label}</h2>
-        </header>
+        {moduleId !== "replicateModels" || activeGate ? (
+          <header className="lab-main-header">
+            <h2>{LAB_MODULES.find((m) => m.id === moduleId)?.label}</h2>
+          </header>
+        ) : null}
 
         {!activeGate && moduleError?.summary ? (
           <LabModuleErrorAlert
@@ -1318,6 +1321,9 @@ export function LabLayout({ active = true }: { active?: boolean }) {
         ) : null}
 
         <div className="lab-module-body">
+          {moduleId === "replicateModels" && !activeGate && (
+            <ReplicateModelsPanel onOpenSettings={requestOpenSettings} />
+          )}
           {moduleId === "groups" && (
             <GroupsModule
               imagesGroupId={
