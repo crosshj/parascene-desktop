@@ -533,6 +533,49 @@ describe("projectStore", () => {
     expect(project.timeline?.[0].bakePath).toBeNull();
   });
 
+  it("keeps a newly attached slideshow bake when recipe also changes", () => {
+    let project = createStoredProject("Demo", ["a1", "a2"]);
+    project = setStoredProjectTimeline(project, [
+      {
+        id: "clip-1",
+        label: "10.0s",
+        startSec: 0,
+        endSec: 10,
+        kind: "slideshow",
+        slideshow: {
+          imageAssetIds: ["a1", "a2"],
+          mode: "beat_drums",
+          random: true,
+          seed: 1,
+        },
+        bakeKey: null,
+        bakePath: null,
+      },
+    ]);
+    // Bake completion: new seed/audio fields + fresh bakePath in one write.
+    project = setStoredProjectTimeline(project, [
+      {
+        ...project.timeline![0],
+        slideshow: {
+          imageAssetIds: ["a1", "a2"],
+          mode: "beat_drums",
+          random: true,
+          seed: 99,
+          audioAssetId: "audio-1",
+          audioInSec: 0,
+          audioStartSec: 21,
+          audioEndSec: 43,
+        },
+        bakeKey: "v3-fresh",
+        bakePath: "/tmp/fresh-bake.mp4",
+      },
+    ]);
+
+    expect(project.timeline?.[0].bakeKey).toBe("v3-fresh");
+    expect(project.timeline?.[0].bakePath).toBe("/tmp/fresh-bake.mp4");
+    expect(project.timeline?.[0].slideshow?.seed).toBe(99);
+  });
+
   it("persists Lab still and animate prompts with the project", () => {
     let a = createStoredProject("Demo");
     expect(a.labStillPrompt).toBeNull();

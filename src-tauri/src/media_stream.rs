@@ -1,8 +1,11 @@
-//! Range-capable local media protocol for HTML `<video>` playback.
+//! Range-capable local media protocol for HTML `<video>` / `<audio>` playback.
 //!
 //! WebKit on macOS often corrupts mid-stream when serving large MP4s over
 //! Tauri's built-in `asset://` protocol. A dedicated scheme that answers
 //! HTTP Range requests keeps Publisher (and other) scrubbers stable.
+//!
+//! Audio probes without a Range header must get HTTP 200 (full body) — an
+//! unsolicited 206 leaves WKWebView `<audio>` stuck buffering with `--:--`.
 
 use http::{header::*, response::Builder as ResponseBuilder, status::StatusCode};
 use http_range::HttpRange;
@@ -186,11 +189,13 @@ pub fn media_response(
             resp.body(buf)
         }
     } else {
-        // Prefer ranged replies for video/audio — full-body loads of 80MB+ MP4s
-        // are what WebKit + asset:// stumble on mid-playback. Hand back the first
-        // MAX_RANGE_LEN as 206 so the element continues with Range requests.
-        if mime.starts_with("video/") || mime.starts_with("audio/") {
-            let end = (MAX_RANGE_LEN - 1).min(len.saturating_sub(1));
+        // No Range header: HTTP requires 200 with the full entity (RFC 7233).
+        // WebKit <audio> often probes without Range and hangs forever on an
+        // unsolicited 206 (spinner + "--:--" in the library lightbox).
+        // Large <video> is the exception — return a 206 prefix so WebKit
+        // switches to Range requests instead of pulling an 80MB+ body at once.
+        if mime.starts_with("video/") && len > MAX_RANGE_LEN {
+            let end = MAX_RANGE_LEN - 1;
             let mut buf = Vec::with_capacity((end + 1) as usize);
             file.seek(SeekFrom::Start(0))?;
             file.take(end + 1).read_to_end(&mut buf)?;
@@ -208,4 +213,80 @@ pub fn media_response(
     };
 
     http_response.map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::Request;
+
+    fn fixture_mp3() -> PathBuf {
+        let paths = resolve_paths(default_root().expect("default_root"));
+        std::fs::create_dir_all(&paths.media).expect("media dir");
+        let path = paths.media.join("_media_stream_test_fixture.mp3");
+        // Minimal ID3-less MPEG frame payload is enough for protocol tests.
+        std::fs::write(&path, b"ID3\x03\x00\x00\x00\x00\x00\x00fake-mp3-body-bytes!!")
+            .expect("write fixture");
+        path
+    }
+
+    fn get(path: &Path) -> Request<Vec<u8>> {
+        Request::builder()
+            .uri(format!(
+                "https://media.localhost{}",
+                path.to_string_lossy()
+            ))
+            .body(Vec::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn audio_without_range_returns_200_full_body() {
+        let path = fixture_mp3();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let response = media_response(get(&path)).expect("media_response");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "audio/mpeg"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_LENGTH)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap(),
+            len
+        );
+        assert_eq!(response.body().len() as u64, len);
+        assert!(response.headers().get(CONTENT_RANGE).is_none());
+    }
+
+    #[test]
+    fn audio_with_range_returns_206() {
+        let path = fixture_mp3();
+        let request = Request::builder()
+            .uri(format!(
+                "https://media.localhost{}",
+                path.to_string_lossy()
+            ))
+            .header("range", "bytes=0-1")
+            .body(Vec::new())
+            .unwrap();
+        let response = media_response(request).expect("media_response");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.body().len(), 2);
+        assert!(response
+            .headers()
+            .get(CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("bytes 0-1/"));
+    }
 }

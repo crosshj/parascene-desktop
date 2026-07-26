@@ -987,8 +987,10 @@ export function EditorLayout() {
           next.set(clip.id, { status: "ready", error: null });
           return next;
         });
-        setOpenProjectTimeline(
-          timelineRef.current.map((row) =>
+        // Attach bake onto the latest store timeline (not a possibly-stale ref
+        // snapshot) and keep the recipe that was actually encoded.
+        setOpenProjectTimeline((prev) =>
+          prev.map((row) =>
             row.id === clip.id
               ? {
                   ...row,
@@ -1147,6 +1149,7 @@ export function EditorLayout() {
       if (
         clip.kind !== "slideshow" ||
         clip.bakePath?.trim() ||
+        bakeInflightRef.current.has(clip.id) ||
         !isBeatSlideshowMode(clip.slideshow?.mode)
       ) {
         return clip;
@@ -1173,6 +1176,9 @@ export function EditorLayout() {
       };
     });
     if (changed) {
+      // Never cancel an in-flight bake here — that flipped the toolbar back to
+      // "Render" while ffmpeg was still running, then the completion write lost
+      // its bakePath to recipe-invalidate.
       setBakeInfoByClipId((prev) => {
         const next = new Map(prev);
         for (let i = 0; i < rebound.length; i += 1) {
@@ -1182,10 +1188,10 @@ export function EditorLayout() {
             before &&
             after &&
             before.id === after.id &&
+            !bakeInflightRef.current.has(after.id) &&
             !slideshowRecipesEqual(before.slideshow, after.slideshow)
           ) {
             next.delete(after.id);
-            bakeInflightRef.current.delete(after.id);
           }
         }
         return next;
@@ -1193,6 +1199,7 @@ export function EditorLayout() {
       setOpenProjectTimeline(rebound);
       setClipStagingSeed((prev) => {
         if (!prev) return prev;
+        if (bakeInflightRef.current.has(prev.clipId)) return prev;
         const updated = rebound.find((c) => c.id === prev.clipId);
         if (!updated) return prev;
         const draft = timelineClipToStagedDraft(updated);

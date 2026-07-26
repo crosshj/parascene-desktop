@@ -841,6 +841,17 @@ export function setStoredProjectLookEnabled(
   };
 }
 
+function slideshowRecipesJsonEqual(
+  a: SlideshowRecipe | null | undefined,
+  b: SlideshowRecipe | null | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  // Both sides are already normalizeStoredSlideshow outputs when called from
+  // setStoredProjectTimeline — compare canonical JSON.
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export function setStoredProjectTimeline(
   project: StoredProject,
   timeline: TimelineClip[],
@@ -856,8 +867,17 @@ export function setStoredProjectTimeline(
     // Only edits that change the baked pixels make that source stale.
     const pixelsChanged =
       (prev.framing ?? "fit") !== (clip.framing ?? "fit") ||
-      JSON.stringify(prev.slideshow) !== JSON.stringify(clip.slideshow);
+      !slideshowRecipesJsonEqual(prev.slideshow, clip.slideshow);
     if (!pixelsChanged) return clip;
+    // A write that attaches a *new* bakePath is the bake-completion path —
+    // keep it even when the recipe also changed (e.g. Random reseed + audio
+    // rebind during encode). Stripping here left the UI on "Hit Render" after
+    // a successful ffmpeg bake.
+    const incomingBake = clip.bakePath?.trim() || null;
+    const previousBake = prev.bakePath?.trim() || null;
+    if (incomingBake && incomingBake !== previousBake) {
+      return clip;
+    }
     return { ...clip, bakeKey: null, bakePath: null };
   });
   return {
