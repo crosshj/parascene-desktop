@@ -38,3 +38,9 @@ tauri-plugin-process = "2.3.1"
 wgpu = "30"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
+
+# Force gpu-allocator onto the same windows version as wgpu-hal (0.62).
+# Without this, Cargo can resolve gpu-allocator to windows 0.61 while wgpu-hal
+# uses 0.62, which breaks the Windows D3D12 build with ID3D12Device type mismatches.
+[target.'cfg(windows)'.dependencies]
+windows = "0.62"
