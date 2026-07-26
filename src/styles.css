@@ -5411,6 +5411,102 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   background: transparent;
 }
 
+.preview-intent-pane .preview-intent-header {
+  margin-bottom: 0.15rem;
+}
+
+.preview-intent-pane .preview-intent-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+.preview-intent-pane .preview-intent-lede {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  max-width: none;
+}
+
+.preview-intent-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr));
+  gap: 0.55rem;
+}
+
+.preview-intent-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  width: 100%;
+  min-height: 5.5rem;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 80%, var(--bg));
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.preview-intent-choice:hover {
+  border-color: color-mix(in srgb, var(--text) 28%, var(--border));
+  background: color-mix(in srgb, var(--text) 4%, var(--bg));
+}
+
+.preview-intent-choice.is-selected {
+  border-color: var(--select);
+  background: color-mix(in srgb, var(--select) 12%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--select) 35%, transparent);
+}
+
+.preview-intent-choice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.preview-intent-choice-desc {
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.preview-intent-badge {
+  display: inline-block;
+  padding: 0.05rem 0.35rem;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 12%, var(--bg));
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.preview-intent-footer {
+  flex: 0 0 auto;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border);
+  gap: 0.5rem;
+}
+
+.preview-intent-footer .editor-cartridge-grip {
+  flex: 0 0 auto;
+}
+
+.preview-intent-pane .editor-staging-controls {
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+}
+
 .editor-cartridge-grip.is-placeholder {
   visibility: hidden;
   pointer-events: none;

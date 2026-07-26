@@ -131,6 +131,10 @@ export type AddAssetDraft = {
   prompt?: string;
   audioMode?: "vocals" | "full_mix";
   continuityMode?: AddAssetGenerationMode;
+  /** Pre-drop intent: generation provider (e.g. parascene_blue). */
+  provider?: string;
+  /** Pre-drop intent: method id within the provider catalog. */
+  methodId?: string;
 };
 
 /** Persisted provenance for add-asset generated timeline clips. */

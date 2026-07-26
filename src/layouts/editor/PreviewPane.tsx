@@ -52,7 +52,6 @@ import {
 import {
   defaultSlideshowDraft,
   defaultStagedClipDraft,
-  ADD_ASSET_DRAG_DRAFT,
   ADD_ASSET_TIMELINE_DURATION_SEC,
   addAssetClipDurationSec,
   framingClassName,
@@ -87,10 +86,14 @@ import {
   AddAssetGeneratePanel,
   type StartAddAssetGenerationRequest,
 } from "./AddAssetGeneratePanel";
+import { AddAssetIntentPanel } from "./AddAssetIntentPanel";
+import { SelectionIntentPanel } from "./SelectionIntentPanel";
+import { UnsupportedSelectionPanel } from "./UnsupportedSelectionPanel";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import { isAddAssetPlaceholderClip } from "./stagedClip";
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
 import { GeneratedClipBadge } from "./GeneratedClipBadge";
+import type { AddAssetIntent, SelectionIntentModeId } from "./previewIntent";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -98,6 +101,9 @@ type PreviewPaneProps = {
   addAssetMode?: boolean;
   /** True when the assets-pane generate (+) slot is selected (drag staging). */
   addAssetSlotActive?: boolean;
+  /** Pre-drop generation intent while the + slot is active. */
+  addAssetIntent?: AddAssetIntent | null;
+  onAddAssetIntentChange?: (intent: AddAssetIntent) => void;
   /** Placeholder clip on the timeline for add-asset generation. */
   addAssetPlaceholderClip?: TimelineClip | null;
   addAssetGenerationSession?: AddAssetGenerationSession | null;
@@ -289,6 +295,8 @@ export function PreviewPane({
   assetId,
   addAssetMode = false,
   addAssetSlotActive = false,
+  addAssetIntent = null,
+  onAddAssetIntentChange,
   addAssetPlaceholderClip = null,
   addAssetGenerationSession = null,
   lyricAlignment = null,
@@ -417,34 +425,27 @@ export function PreviewPane({
   // Drop stale multi-select classification immediately on selection change so
   // the previous composite/unsupported class cannot own the preview for a beat.
   const [loadedSelectionKey, setLoadedSelectionKey] = useState(selectionKey);
+  const [selectionIntentMode, setSelectionIntentMode] =
+    useState<SelectionIntentModeId | null>(null);
   if (selectionKey !== loadedSelectionKey) {
     setLoadedSelectionKey(selectionKey);
     setSelectionClass(null);
     setSelectionLoading(sourceSelectionIds.length > 0);
+    const restoreSlideshow =
+      !editingClip &&
+      sourceSelectionIds.length >= 2 &&
+      restoredSourceDraft &&
+      pendingDraftMatchesSelection(restoredSourceDraft, sourceSelectionIds) &&
+      restoredSourceDraft.kind === "slideshow";
+    setSelectionIntentMode(restoreSlideshow ? "slideshow" : null);
     if (!editingClip && sourceSelectionIds.length >= 2) {
-      // Optimistic slideshow staging so Mode/Random appear immediately,
-      // before async classify finishes. Prefer a restored project draft.
-      setStagedDraft((prev) => {
-        const ids = sourceSelectionIds;
-        if (
-          prev?.kind === "slideshow" &&
-          prev.slideshow &&
-          prev.slideshow.imageAssetIds.length === ids.length &&
-          prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
-        ) {
-          return prev;
-        }
-        if (
-          restoredSourceDraft &&
-          pendingDraftMatchesSelection(restoredSourceDraft, ids)
-        ) {
+      // Restore a prior slideshow draft for this selection; otherwise wait for
+      // the user to pick a mode in the intent pane before staging.
+      setStagedDraft(() => {
+        if (restoreSlideshow && restoredSourceDraft) {
           return restoredSourceDraft;
         }
-        return defaultSlideshowDraft({
-          imageAssetIds: ids,
-          label: `Slideshow (${ids.length})`,
-          thumbUrl: prev?.thumbUrl ?? null,
-        });
+        return null;
       });
     }
     // Single selection (including a group cover): leave the draft alone until
@@ -514,9 +515,12 @@ export function PreviewPane({
           const thumb = first ?? null;
           const ids = classified.imageAssetIds;
           setStagedDraft((prev) => {
+            // Only stage a slideshow once the user picks that mode (or a
+            // restored slideshow draft already applied for this selection).
+            if (prev?.kind !== "slideshow" || !prev.slideshow) {
+              return prev;
+            }
             if (
-              prev?.kind === "slideshow" &&
-              prev.slideshow &&
               prev.slideshow.imageAssetIds.length === ids.length &&
               prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
             ) {
@@ -529,11 +533,7 @@ export function PreviewPane({
                 ? { ...restored, thumbUrl: thumb }
                 : restored;
             }
-            return defaultSlideshowDraft({
-              imageAssetIds: ids,
-              label: `Slideshow (${ids.length})`,
-              thumbUrl: thumb,
-            });
+            return prev;
           });
           for (const id of classified.imageAssetIds) {
             const row = byId.get(id);
@@ -1180,6 +1180,60 @@ export function PreviewPane({
     !addAssetSlotActive &&
     addAssetPlaceholderClip != null &&
     isAddAssetPlaceholderClip(addAssetPlaceholderClip);
+  const showAddAssetIntent = addAssetMode && addAssetSlotActive;
+  const showSelectionIntent =
+    !addAssetMode &&
+    !editingClip &&
+    monitorMode === "source" &&
+    isCompositeSelection;
+  const showUnsupportedSelection =
+    !addAssetMode &&
+    !editingClip &&
+    monitorMode === "source" &&
+    unsupportedSelection != null;
+  const fillPreviewSurface =
+    showAddAssetGenerate ||
+    showAddAssetIntent ||
+    showSelectionIntent ||
+    showUnsupportedSelection;
+  const compositeImageIds =
+    selectionClass?.type === "compositeImages"
+      ? selectionClass.imageAssetIds
+      : [];
+  const onSelectionIntentModeChange = (modeId: SelectionIntentModeId) => {
+    setSelectionIntentMode(modeId);
+    if (modeId !== "slideshow") {
+      setStagedDraft(null);
+      return;
+    }
+    const ids =
+      compositeImageIds.length > 0 ? compositeImageIds : sourceSelectionIds;
+    if (ids.length < 2) return;
+    const prev = stagedDraft;
+    let next: StagedClipDraft;
+    if (
+      prev?.kind === "slideshow" &&
+      prev.slideshow &&
+      prev.slideshow.imageAssetIds.length === ids.length &&
+      prev.slideshow.imageAssetIds.every((id, i) => id === ids[i])
+    ) {
+      next = prev;
+    } else if (
+      restoredSourceDraft &&
+      pendingDraftMatchesSelection(restoredSourceDraft, ids) &&
+      restoredSourceDraft.kind === "slideshow"
+    ) {
+      next = restoredSourceDraft;
+    } else {
+      next = defaultSlideshowDraft({
+        imageAssetIds: ids,
+        label: `Slideshow (${ids.length})`,
+        thumbUrl: prev?.thumbUrl ?? null,
+      });
+    }
+    setStagedDraft(next);
+    if (!stagingSeedKey) onSourceDraftChange?.(next);
+  };
   const sourceKind: "timeline" | "asset" | "clip" | null = addAssetMode
     ? null
     : monitorMode === "timeline"
@@ -1194,18 +1248,26 @@ export function PreviewPane({
   const sourceLabelText = addAssetMode
     ? showAddAssetGenerate
       ? "Generate video"
-      : null
+      : showAddAssetIntent
+        ? "New asset"
+        : null
     : sourceKind === "timeline"
       ? "Timeline"
       : sourceKind === "clip"
         ? stagedDraft?.kind === "slideshow"
           ? `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s • ${slideshowCount} images`
           : `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s`
-        : stagedDraft?.kind === "slideshow" || isCompositeSelection
-          ? `Slideshow • ${slideshowCount || sourceSelectionIds.length} images`
-          : sourceKind === "asset"
-            ? `Asset • ${assetDisplayName}`
-            : null;
+        : showSelectionIntent
+          ? selectionIntentMode === "slideshow"
+            ? `Slideshow • ${slideshowCount || sourceSelectionIds.length} images`
+            : `Selection • ${compositeImageIds.length || sourceSelectionIds.length} images`
+          : showUnsupportedSelection
+            ? `Selection · ${sourceSelectionIds.length} items`
+            : stagedDraft?.kind === "slideshow"
+              ? `Slideshow • ${slideshowCount} images`
+              : sourceKind === "asset"
+                ? `Asset • ${assetDisplayName}`
+                : null;
 
   const onStagingDraftChange = (draft: StagedClipDraft) => {
     const next =
@@ -1446,6 +1508,7 @@ export function PreviewPane({
   }, [audioExcluded, volume]);
 
   const showAspectOverlay =
+    !fillPreviewSurface &&
     !addAssetMode &&
     (monitorMode === "timeline" ||
       (Boolean(assetId) && !catalogError));
@@ -1453,8 +1516,14 @@ export function PreviewPane({
   const projectAr = aspectParts(aspectRatio);
   const matte = fitAspect(stage.w, stage.h, projectAr.w, projectAr.h);
 
-  const surfaceStyle: CSSProperties | undefined =
-    stage.w > 0 ? { width: stage.w, height: stage.h } : undefined;
+  // Intent / generate forms use the full frame; media preview stays 16:9.
+  const surfaceStyle: CSSProperties | undefined = fillPreviewSurface
+    ? frameSize.w > 0
+      ? { width: frameSize.w, height: frameSize.h }
+      : undefined
+    : stage.w > 0
+      ? { width: stage.w, height: stage.h }
+      : undefined;
 
   const matteStyle: CSSProperties | undefined =
     matte.w > 0 ? { width: matte.w, height: matte.h } : undefined;
@@ -1492,6 +1561,9 @@ export function PreviewPane({
       status = "Slideshow bake unavailable";
     } else if (editingClip) {
       status = "Hit Render to generate this slideshow";
+    } else if (showSelectionIntent) {
+      // Intent pane fills the surface — no void status copy.
+      status = null;
     } else {
       status = "Drop on the timeline, then hit Render";
     }
@@ -1560,7 +1632,7 @@ export function PreviewPane({
         <div ref={frameRef} className="editor-preview-frame">
           <div
             className={`editor-preview-surface${
-              showAddAssetGenerate ? " is-add-asset-generate" : ""
+              fillPreviewSurface ? " is-add-asset-generate" : ""
             }`}
             style={surfaceStyle}
           >
@@ -1577,33 +1649,51 @@ export function PreviewPane({
                 matteW={matte.w}
                 matteH={matte.h}
               />
-            ) : unsupportedMessage ? (
-              <div className="editor-preview-unsupported" role="status">
-                <strong>{unsupportedMessage.title}</strong>
-                <p className="muted">{unsupportedMessage.body}</p>
-              </div>
-            ) : addAssetMode ? (
-              showAddAssetGenerate ? (
-                <AddAssetGeneratePanel
-                  key={addAssetPlaceholderClip.id}
-                  clip={addAssetPlaceholderClip}
-                  aspectRatio={aspectRatio}
-                  timeline={timelineClips}
-                  lyricAlignment={lyricAlignment}
-                  mainAudioCreationId={mainAudioCreationId}
-                  session={addAssetGenerationSession}
-                  onStartGeneration={(request) =>
-                    onStartAddAssetGeneration?.(request)
-                  }
-                  onDurationChange={onAddAssetDurationChange}
-                  onDraftChange={onAddAssetDraftChange}
-                  onClearError={onClearAddAssetGenerationError}
-                />
-              ) : (
-                <div className="editor-preview-add-slot-message muted">
-                  <p>Drop the clip on the timeline to generate a video.</p>
-                </div>
-              )
+            ) : showUnsupportedSelection && unsupportedSelection ? (
+              <UnsupportedSelectionPanel
+                classification={unsupportedSelection}
+                selectionCount={sourceSelectionIds.length}
+              />
+            ) : showAddAssetIntent ? (
+              <AddAssetIntentPanel
+                intent={addAssetIntent}
+                onIntentChange={(next) => onAddAssetIntentChange?.(next)}
+              />
+            ) : showAddAssetGenerate ? (
+              <AddAssetGeneratePanel
+                key={addAssetPlaceholderClip.id}
+                clip={addAssetPlaceholderClip}
+                aspectRatio={aspectRatio}
+                timeline={timelineClips}
+                lyricAlignment={lyricAlignment}
+                mainAudioCreationId={mainAudioCreationId}
+                session={addAssetGenerationSession}
+                onStartGeneration={(request) =>
+                  onStartAddAssetGeneration?.(request)
+                }
+                onDurationChange={onAddAssetDurationChange}
+                onDraftChange={onAddAssetDraftChange}
+                onClearError={onClearAddAssetGenerationError}
+              />
+            ) : showSelectionIntent ? (
+              <SelectionIntentPanel
+                imageCount={
+                  compositeImageIds.length || sourceSelectionIds.length
+                }
+                modeId={selectionIntentMode}
+                onModeChange={onSelectionIntentModeChange}
+                draft={
+                  selectionIntentMode === "slideshow" &&
+                  stagedDraft?.kind === "slideshow"
+                    ? stagedDraft
+                    : null
+                }
+                sourceDurationSec={durationSec}
+                onDraftChange={onStagingDraftChange}
+                bakeInfo={
+                  stagedDraft?.kind === "slideshow" ? bakeInfo : null
+                }
+              />
             ) : status ? (
               <span className="editor-preview-status muted">{status}</span>
             ) : slideshowBakeUrl && !detailFailed ? (
@@ -1717,7 +1807,13 @@ export function PreviewPane({
                   className="editor-preview-source-label"
                   data-source={
                     sourceKind ??
-                    (showAddAssetGenerate ? "generate" : undefined)
+                    (showAddAssetGenerate
+                      ? "generate"
+                      : showAddAssetIntent ||
+                          showSelectionIntent ||
+                          showUnsupportedSelection
+                        ? "asset"
+                        : undefined)
                   }
                 >
                   <SourceLabelIcon kind={sourceKind} />
@@ -1732,7 +1828,7 @@ export function PreviewPane({
             </div>
           ) : null}
         </div>
-        {monitorMode !== "timeline" && !showAddAssetGenerate ? (
+        {monitorMode !== "timeline" && !fillPreviewSurface ? (
         <div className="editor-preview-deck" aria-label="Preview controls">
           <PreviewScrubber
             currentSec={Math.min(transportSec, scrubMax)}
@@ -1871,16 +1967,7 @@ export function PreviewPane({
             </div>
 
             <div className="editor-preview-deck-row">
-              {addAssetMode ? (
-                <p className="muted editor-staging-empty">
-                  Place or drag the clip onto the timeline to generate a video.
-                </p>
-              ) : unsupportedMessage ? (
-                <p className="muted editor-staging-empty">
-                  Unsupported multi-selection — choose images only for a
-                  slideshow, or select a single asset.
-                </p>
-              ) : canStage && stagedDraft ? (
+              {canStage && stagedDraft ? (
                 <StagingFields
                   draft={stagedDraft}
                   sourceDurationSec={durationSec}
@@ -1905,12 +1992,7 @@ export function PreviewPane({
                   Select an asset to prepare a clip
                 </p>
               )}
-              {addAssetMode && !editingClip ? (
-                <div className="editor-cartridge-actions">
-                  <ClipPlaceHandle draft={ADD_ASSET_DRAG_DRAFT} />
-                  <ClipDragHandle draft={ADD_ASSET_DRAG_DRAFT} />
-                </div>
-              ) : canStage &&
+              {canStage &&
               stagedDraft &&
               !editingClip &&
               !unsupportedMessage ? (

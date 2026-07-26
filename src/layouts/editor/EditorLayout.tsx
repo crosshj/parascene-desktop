@@ -47,6 +47,7 @@ import {
   pendingDraftMatchesSelection,
 } from "./editorSelection";
 import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
+import type { AddAssetIntent } from "./previewIntent";
 import {
   clearAddAssetGenerationError,
   clearAddAssetGenerationIfClipMissing,
@@ -209,6 +210,9 @@ export function EditorLayout() {
   const [previewVolume, setPreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
   const [addAssetSlotActive, setAddAssetSlotActive] = useState(false);
+  const [addAssetIntent, setAddAssetIntent] = useState<AddAssetIntent | null>(
+    null,
+  );
   const [projectFolders, setProjectFolders] = useState<LibraryFolder[]>([]);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
@@ -253,6 +257,7 @@ export function EditorLayout() {
 
   const applyPrimaryClip = (clip: TimelineClip) => {
     setAddAssetSlotActive(false);
+    setAddAssetIntent(null);
     setSelectedAssetId(null);
     setSelectedAssetIds([]);
     clearPendingStagedDraft();
@@ -840,6 +845,7 @@ export function EditorLayout() {
   const selectAssets = (ids: string[], primaryId: string | null) => {
     pauseTimelinePlayback();
     setAddAssetSlotActive(false);
+    setAddAssetIntent(null);
     setSelectedClipId(null);
     setSelectedClipIds([]);
     setClipStagingSeed(null);
@@ -864,6 +870,7 @@ export function EditorLayout() {
     setOpenProjectSelectedTimelineClipId(null);
     setOpenProjectTimelineMonitorActive(false);
     clearPendingStagedDraft();
+    setAddAssetIntent(null);
     setAddAssetSlotActive(true);
   };
 
@@ -914,6 +921,7 @@ export function EditorLayout() {
     setSelectedAssetId(null);
     setSelectedAssetIds([]);
     setAddAssetSlotActive(false);
+    setAddAssetIntent(null);
     clearPendingStagedDraft();
     setOpenProjectTimelineMonitorActive(true);
   };
@@ -1877,6 +1885,8 @@ export function EditorLayout() {
         assetId={previewAssetId}
         addAssetMode={addAssetMode}
         addAssetSlotActive={addAssetSlotActive}
+        addAssetIntent={addAssetIntent}
+        onAddAssetIntentChange={setAddAssetIntent}
         addAssetPlaceholderClip={generateTargetClip}
         addAssetGenerationSession={addAssetGenerationSession}
         lyricAlignment={project.lyricAlignment}

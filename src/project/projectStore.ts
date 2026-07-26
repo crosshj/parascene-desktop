@@ -232,14 +232,24 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
       : row.continuityMode === "start_frame"
         ? "start_frame"
         : undefined;
+  const provider =
+    typeof row.provider === "string" && row.provider.trim()
+      ? row.provider.trim()
+      : undefined;
+  const methodId =
+    typeof row.methodId === "string" && row.methodId.trim()
+      ? row.methodId.trim()
+      : undefined;
   if (
     prompt === undefined &&
     audioMode === undefined &&
-    continuityMode === undefined
+    continuityMode === undefined &&
+    provider === undefined &&
+    methodId === undefined
   ) {
     return undefined;
   }
-  return { prompt, audioMode, continuityMode };
+  return { prompt, audioMode, continuityMode, provider, methodId };
 }
 
 function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undefined {

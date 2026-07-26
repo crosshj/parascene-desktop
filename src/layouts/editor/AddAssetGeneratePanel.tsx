@@ -99,7 +99,9 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
   return (
     (a.prompt ?? "") === (b?.prompt ?? "") &&
     (a.audioMode ?? "") === (b?.audioMode ?? "") &&
-    (a.continuityMode ?? "") === (b?.continuityMode ?? "")
+    (a.continuityMode ?? "") === (b?.continuityMode ?? "") &&
+    (a.provider ?? "") === (b?.provider ?? "") &&
+    (a.methodId ?? "") === (b?.methodId ?? "")
   );
 }
 
@@ -322,6 +324,8 @@ export function AddAssetGeneratePanel({
       prompt,
       audioMode,
       continuityMode: continuityMode ?? undefined,
+      provider: clip.addAssetDraft?.provider,
+      methodId: clip.addAssetDraft?.methodId,
     };
     if (draftsEqual(next, clip.addAssetDraft)) return;
     onDraftChange?.(next);

@@ -224,12 +224,16 @@ describe("projectStore", () => {
         prompt: "Pasted bridge prompt",
         audioMode: "vocals",
         continuityMode: "first_last",
+        provider: "parascene_blue",
+        methodId: "blue_timeline_fill",
       },
     });
     expect(clip?.addAssetDraft).toEqual({
       prompt: "Pasted bridge prompt",
       audioMode: "vocals",
       continuityMode: "first_last",
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
     });
   });
 

@@ -1,11 +1,13 @@
 import {
   clampSensitivity,
   normalizeSlideshowMode,
+  type AddAssetDraft,
   type AddAssetGeneration,
   type SlideshowMode,
   type SlideshowRecipe,
 } from "../../project/types";
 import { mergeExtendBakeFields } from "./clipExtendBake";
+import type { AddAssetIntent } from "./previewIntent";
 
 export const STAGED_CLIP_MIME = "application/x-parascene-staged-clip";
 
@@ -82,6 +84,20 @@ export const ADD_ASSET_DRAG_DRAFT: StagedClipDraft = {
   thumbUrl: null,
   isAddAssetPlaceholder: true,
 };
+
+/** Build an add-asset Place/Drag draft that carries the selected generation intent. */
+export function addAssetDragDraftFromIntent(
+  intent: AddAssetIntent | null | undefined,
+): StagedClipDraft {
+  if (!intent) return ADD_ASSET_DRAG_DRAFT;
+  return {
+    ...ADD_ASSET_DRAG_DRAFT,
+    addAssetDraft: {
+      provider: intent.provider,
+      methodId: intent.methodId,
+    },
+  };
+}
 
 export function isAddAssetPlaceholderClip(clip: {
   isAddAssetPlaceholder?: boolean;
@@ -212,6 +228,8 @@ export type StagedClipDraft = {
   bakePath?: string | null;
   /** Placeholder clip staged from the add-asset slot (no library asset yet). */
   isAddAssetPlaceholder?: boolean;
+  /** Carried onto the timeline placeholder when Place/Drag creates the clip. */
+  addAssetDraft?: AddAssetDraft;
   timelineLocked?: boolean;
   /** Playback rate for video (default 1). Omitted / 1 = realtime. */
   speed?: number;
@@ -656,6 +674,7 @@ export function timelineClipToStagedDraft(clip: {
   bakeKey?: string | null;
   bakePath?: string | null;
   isAddAssetPlaceholder?: boolean;
+  addAssetDraft?: AddAssetDraft;
   timelineLocked?: boolean;
   speed?: number;
   extendPingPong?: boolean;
@@ -679,6 +698,7 @@ export function timelineClipToStagedDraft(clip: {
       framing: normalizeFraming(clip.framing),
       thumbUrl: typeof clip.thumbUrl === "string" ? clip.thumbUrl : null,
       isAddAssetPlaceholder: true,
+      addAssetDraft: clip.addAssetDraft,
     };
   }
 

@@ -269,6 +269,9 @@ function draftToClip(
     bakePath: draft.bakePath ?? null,
     isAddAssetPlaceholder:
       draft.isAddAssetPlaceholder === true ? true : undefined,
+    addAssetDraft: draft.isAddAssetPlaceholder
+      ? draft.addAssetDraft
+      : undefined,
     timelineLocked:
       lane === "audio"
         ? true
