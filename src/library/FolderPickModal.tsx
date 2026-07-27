@@ -1,27 +1,48 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { FolderCard } from "./FolderCard";
 import type { LibraryFolder } from "./folderClient";
+import type { Creation } from "./types";
 
 type FolderPickModalProps = {
   folders: LibraryFolder[];
+  creationsById?: ReadonlyMap<string, Creation>;
+  selectedCount?: number;
   onCancel: () => void;
   onPick: (folder: LibraryFolder) => void;
 };
 
 export function FolderPickModal({
   folders,
+  creationsById,
+  selectedCount,
   onCancel,
   onPick,
 }: FolderPickModalProps) {
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  const chosen = folders.find((folder) => folder.id === chosenId) ?? null;
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         onCancel();
+        return;
+      }
+      if (event.key === "Enter" && chosen) {
+        event.preventDefault();
+        onPick(chosen);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [chosen, onCancel, onPick]);
+
+  const selectionLabel =
+    selectedCount != null && selectedCount > 0
+      ? `Choose a folder for ${selectedCount} selected ${
+          selectedCount === 1 ? "item" : "items"
+        }.`
+      : "Choose a folder.";
 
   return (
     <div
@@ -40,27 +61,35 @@ export function FolderPickModal({
         {folders.length === 0 ? (
           <p className="muted">No folders yet. Create one from a selection.</p>
         ) : (
-          <ul className="folder-pick-list">
-            {folders.map((folder) => (
-              <li key={folder.id}>
-                <button
-                  type="button"
-                  className="folder-pick-item"
-                  onClick={() => onPick(folder)}
-                >
-                  <span>{folder.title}</span>
-                  <span className="muted">
-                    {folder.memberCount}{" "}
-                    {folder.memberCount === 1 ? "item" : "items"}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="folder-pick-subtitle muted">{selectionLabel}</p>
+            <ul className="folder-pick-grid">
+              {folders.map((folder) => (
+                <li key={folder.id}>
+                  <FolderCard
+                    folder={folder}
+                    selected={folder.id === chosenId}
+                    creationsById={creationsById}
+                    onOpen={(next) => setChosenId(next.id)}
+                  />
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         <div className="confirm-dialog-actions">
           <button type="button" className="btn ghost" onClick={onCancel}>
             Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!chosen}
+            onClick={() => {
+              if (chosen) onPick(chosen);
+            }}
+          >
+            Add
           </button>
         </div>
       </div>

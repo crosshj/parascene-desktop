@@ -2172,6 +2172,8 @@ function CreationsPanel({
             {pickFolderOpen ? (
               <FolderPickModal
                 folders={folders}
+                creationsById={folderFilterCreationsById}
+                selectedCount={selectedIds.size}
                 onCancel={() => setPickFolderOpen(false)}
                 onPick={(folder) => {
                   void onAddSelectionToFolder(folder);

@@ -698,9 +698,15 @@ input[type="checkbox"].control,
   font-size: 0.72rem;
 }
 
-.folder-edit-dialog,
-.folder-pick-dialog {
+.folder-edit-dialog {
   width: min(26rem, 100%);
+}
+
+.confirm-dialog.folder-pick-dialog {
+  width: min(44rem, 100%);
+  max-height: min(40rem, calc(100vh - 3rem));
+  display: flex;
+  flex-direction: column;
 }
 
 .folder-edit-field {
@@ -721,32 +727,46 @@ input[type="checkbox"].control,
   font: inherit;
 }
 
-.folder-pick-list {
+.folder-pick-subtitle {
+  margin: 0 0 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.folder-pick-grid {
   list-style: none;
-  margin: 0 0 0.75rem;
-  padding: 0;
+  margin: 0 0 0.85rem;
+  padding: 0.1rem 0.15rem 0.25rem;
   display: grid;
-  gap: 0.3rem;
-  max-height: 16rem;
+  grid-template-columns: repeat(auto-fill, minmax(8.75rem, 1fr));
+  gap: 0.7rem;
+  max-height: min(28rem, calc(100vh - 12rem));
   overflow: auto;
+  flex: 1;
+  min-height: 0;
 }
 
-.folder-pick-item {
+.folder-pick-grid > li {
+  min-width: 0;
+}
+
+.folder-pick-grid .folder-card {
   width: 100%;
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  padding: 0.55rem 0.65rem;
-  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
 }
 
-.folder-pick-item:hover {
+.folder-pick-grid .folder-card:hover {
   border-color: var(--select);
+  box-shadow: 0 0 0 1px var(--select-soft);
+  transform: translateY(-1px);
+}
+
+.folder-pick-grid .folder-card:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
 }
 
 .creations-grid-blank {
