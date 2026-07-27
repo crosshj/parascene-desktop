@@ -114,7 +114,13 @@ describe("addAssetGenerationStore", () => {
     ).toBe(false);
 
     const applySuccess = vi.fn();
-    bindAddAssetGenerationApplier({ applySuccess });
+    const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess,
+      applyFailure,
+      clearFailure,
+    });
 
     resolveJob({
       creationId: "vid-1",
@@ -182,7 +188,15 @@ describe("addAssetGenerationStore", () => {
     expect(isAddAssetGenerationInflight()).toBe(false);
   });
 
-  it("keeps error sessions until cleared", async () => {
+  it("keeps error sessions until cleared and persists via applier", async () => {
+    const applySuccess = vi.fn();
+    const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess,
+      applyFailure,
+      clearFailure,
+    });
     runMock.mockRejectedValue(new Error("boom"));
     startAddAssetGenerationJob({
       projectId: "proj-1",
@@ -201,7 +215,14 @@ describe("addAssetGenerationStore", () => {
     await Promise.resolve();
     expect(getAddAssetGenerationSession()?.phase).toBe("error");
     expect(getAddAssetGenerationSession()?.errorMessage).toBe("boom");
+    expect(applyFailure).toHaveBeenCalledWith({
+      projectId: "proj-1",
+      clipId: "ph-1",
+      errorMessage: "boom",
+      replicatePredictionId: null,
+    });
     clearAddAssetGenerationError();
     expect(getAddAssetGenerationSession()).toBeNull();
+    expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-1");
   });
 });

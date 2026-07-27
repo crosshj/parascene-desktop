@@ -7,6 +7,7 @@ export type AddAssetProviderId = "parascene_blue" | "replicate" | "parascene";
 export type AddAssetMethodId =
   | "blue_timeline_fill"
   | "blue_text_to_video"
+  | "replicate_timeline_fill"
   | "replicate_text_to_image"
   | "replicate_image_to_image"
   | "parascene_placeholder";
@@ -80,6 +81,15 @@ export const ADD_ASSET_METHODS: readonly AddAssetMethodDef[] = [
     description: "Generate a video from a text prompt.",
     placement: "none",
     wired: false,
+  },
+  {
+    id: "replicate_timeline_fill",
+    provider: "replicate",
+    label: "Timeline video fill",
+    description:
+      "Place a blank clip, then generate with gap bridge, continue, or motion match on enabled Replicate models.",
+    placement: "timeline",
+    wired: true,
   },
   {
     id: "replicate_text_to_image",

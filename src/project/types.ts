@@ -135,10 +135,34 @@ export type AddAssetDraft = {
   provider?: string;
   /** Pre-drop intent: method id within the provider catalog. */
   methodId?: string;
+  /** Replicate model id `owner/name` when provider is replicate. */
+  replicateModel?: string;
+  /** User opted into nearest allowed Replicate duration. */
+  useNearestDuration?: boolean;
+  /** Last generation failure message (persists across panel navigation). */
+  lastError?: string;
+  /**
+   * Replicate prediction id when generation succeeded remotely but local
+   * download/import failed — enables retry-download without re-running.
+   */
+  replicatePredictionId?: string;
+  /** Optional Replicate model params (resolution, audio, seed, …). */
+  replicateTweaks?: {
+    resolution?: string;
+    mode?: string;
+    generateAudio?: boolean;
+    negativePrompt?: string;
+    seed?: number | null;
+    characterOrientation?: string;
+    keepOriginalSound?: boolean;
+  };
 };
 
 /** Persisted provenance for add-asset generated timeline clips. */
-export type AddAssetGenerationMode = "start_frame" | "first_last";
+export type AddAssetGenerationMode =
+  | "start_frame"
+  | "first_last"
+  | "motion_match";
 
 export type AddAssetGeneration = {
   prompt: string;
@@ -149,7 +173,7 @@ export type AddAssetGeneration = {
   creationId: string;
   /** Continuity path used for this generation. Defaults to start_frame when omitted. */
   mode?: AddAssetGenerationMode;
-  /** Model id passed to Parascene create (e.g. ltx_a2v, wan_i2v). */
+  /** Model id (Parascene create id or Replicate owner/name). */
   model?: string;
 };
 

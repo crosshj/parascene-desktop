@@ -113,6 +113,7 @@ type PreviewPaneProps = {
   onAddAssetDurationChange?: (durationSec: number) => void;
   onAddAssetDraftChange?: (draft: AddAssetDraft) => void;
   onClearAddAssetGenerationError?: () => void;
+  onRetryAddAssetDownload?: () => void;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
   /**
@@ -305,6 +306,7 @@ export function PreviewPane({
   onAddAssetDurationChange,
   onAddAssetDraftChange,
   onClearAddAssetGenerationError,
+  onRetryAddAssetDownload,
   selectedAssetIds = [],
   projectCabinets = null,
   aspectRatio,
@@ -1674,6 +1676,7 @@ export function PreviewPane({
                 onDurationChange={onAddAssetDurationChange}
                 onDraftChange={onAddAssetDraftChange}
                 onClearError={onClearAddAssetGenerationError}
+                onRetryDownload={onRetryAddAssetDownload}
               />
             ) : showSelectionIntent ? (
               <SelectionIntentPanel

@@ -180,8 +180,8 @@ export function SettingsModal({ open, onClose }: Props) {
             />
           </label>
           <p className="muted settings-hint">
-            Stored in the system keychain. Used only for direct Replicate Lab
-            calls — not sent through Parascene.
+            Stored in the system keychain. Used for Replicate Lab and Editor
+            timeline video fill — not sent through Parascene.
           </p>
           {replicateConfigured ? (
             <button

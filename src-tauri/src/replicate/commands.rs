@@ -162,6 +162,14 @@ pub fn replicate_pick_local_file(kind: Option<String>) -> Result<Option<String>,
 }
 
 #[tauri::command]
+pub async fn replicate_prediction_download(
+    app: AppHandle,
+    prediction_id: String,
+) -> Result<RunResult, String> {
+    predict::download_prediction_outputs(app, prediction_id).await
+}
+
+#[tauri::command]
 pub async fn replicate_predictions_list(
     status: Option<String>,
     query: Option<String>,

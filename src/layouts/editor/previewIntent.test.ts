@@ -29,6 +29,12 @@ describe("previewIntent catalog", () => {
     expect(
       addAssetIntentAllowsTimelinePlacement({
         provider: "replicate",
+        methodId: "replicate_timeline_fill",
+      }),
+    ).toBe(true);
+    expect(
+      addAssetIntentAllowsTimelinePlacement({
+        provider: "replicate",
         methodId: "replicate_text_to_image",
       }),
     ).toBe(false);

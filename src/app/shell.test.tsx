@@ -252,12 +252,8 @@ describe("auth shell", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("navigation", { name: "Library" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Creations" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
     expect(screen.getByRole("button", { name: "Sync" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Project" })).toBeInTheDocument();
     expect(
       await screen.findByRole("button", { name: "Sync from cloud" }),
     ).toBeInTheDocument();
@@ -274,7 +270,7 @@ describe("auth shell", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides mode tabs until a project is open on the Project tab", async () => {
+  it("hides mode tabs until a project is open", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -290,9 +286,9 @@ describe("auth shell", () => {
     expect(screen.getByRole("button", { name: "Director" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Editor" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publisher" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Lab" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Labs" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Lab" }));
+    await user.click(screen.getByRole("button", { name: "Labs" }));
     expect(screen.getByLabelText("Lab")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Project groups" }),
@@ -303,11 +299,19 @@ describe("auth shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Library" }));
     expect(screen.getByLabelText("Creations")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Director" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Editor" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
 
-    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Editor" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Project" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -336,7 +340,7 @@ describe("auth shell", () => {
     unmount();
     render(<App />);
 
-    // Auth + shell session restore — land on Library Creations with project still open.
+    // Auth + shell session restore — land on Library with project still open.
     await waitFor(() => {
       expect(screen.getByLabelText("Creations")).toBeInTheDocument();
     });
@@ -344,8 +348,9 @@ describe("auth shell", () => {
       "aria-pressed",
       "true",
     );
+    expect(screen.getByRole("button", { name: "Editor" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Editor" })).toHaveAttribute(
       "aria-pressed",
@@ -353,7 +358,7 @@ describe("auth shell", () => {
     );
   }, 20_000);
 
-  it("switches Library Creations and Sync surfaces", async () => {
+  it("switches Library and Sync surfaces", async () => {
     const user = userEvent.setup();
     render(<App />);
 

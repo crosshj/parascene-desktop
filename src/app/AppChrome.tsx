@@ -20,31 +20,27 @@ import { SettingsModal } from "../settings/SettingsModal";
 import { UiDiagnosticsModal } from "./UiDiagnosticsModal";
 import { UpdateCheckModal } from "./UpdateCheckModal";
 import { installPointerCaptureSpy, unlockUi } from "./uiDiagnostics";
-import {
-  useShell,
-  type LibrarySurface,
-  type PrimaryTab,
-} from "./ShellProvider";
+import { useShell, type LibrarySurface } from "./ShellProvider";
 import type { LayoutMode } from "../project/types";
 import { WindowControls } from "./WindowControls";
 import { isWindowsDesktop } from "./windowPlatform";
 import { ParasceneMark } from "../ui/ParasceneMark";
 
-const PRIMARY_TABS: { id: PrimaryTab; label: string }[] = [
-  { id: "library", label: "Library" },
-  { id: "project", label: "Project" },
-];
+type ShellTab =
+  | { kind: "library"; surface: LibrarySurface; label: string }
+  | { kind: "project"; label: string };
 
-const LIBRARY_TABS: { id: LibrarySurface; label: string }[] = [
-  { id: "creations", label: "Creations" },
-  { id: "sync", label: "Sync" },
+const SHELL_TABS: ShellTab[] = [
+  { kind: "library", surface: "creations", label: "Library" },
+  { kind: "library", surface: "sync", label: "Sync" },
+  { kind: "project", label: "Project" },
 ];
 
 const MODES: { id: LayoutMode; label: string }[] = [
   { id: "director", label: "Director" },
   { id: "editor", label: "Editor" },
   { id: "hook", label: "Publisher" },
-  { id: "lab", label: "Lab" },
+  { id: "lab", label: "Labs" },
 ];
 
 function displayName(
@@ -88,13 +84,30 @@ export function AppChrome({ children }: { children: ReactNode }) {
     null,
   );
 
-  const showLibraryTabs = primaryTab === "library";
-  const showModeTabs = Boolean(openProjectId && primaryTab === "project");
-  const showContextTabs = showLibraryTabs || showModeTabs;
+  const showModeTabs = Boolean(openProjectId);
   const showChromeStatus =
     Boolean(chromeStatus) &&
     primaryTab === "library" &&
     librarySurface === "creations";
+
+  const shellTabActive = (tab: ShellTab) => {
+    if (tab.kind === "project") return primaryTab === "project";
+    return primaryTab === "library" && librarySurface === tab.surface;
+  };
+
+  const goShellTab = (tab: ShellTab) => {
+    if (tab.kind === "project") {
+      setPrimaryTab("project");
+      return;
+    }
+    setLibrarySurface(tab.surface);
+    setPrimaryTab("library");
+  };
+
+  const goMode = (next: LayoutMode) => {
+    setMode(next);
+    setPrimaryTab("project");
+  };
 
   useEffect(() => {
     if (!menuOpen || !accountRef.current) {
@@ -267,59 +280,46 @@ export function AppChrome({ children }: { children: ReactNode }) {
         </span>
         <div className="chrome-nav">
           <nav className="primary-tabs" aria-label="Primary">
-            {PRIMARY_TABS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className={
-                  primaryTab === t.id ? "mode-btn active" : "mode-btn"
-                }
-                aria-pressed={primaryTab === t.id}
-                onClick={() => setPrimaryTab(t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
+            {SHELL_TABS.map((tab) => {
+              const key =
+                tab.kind === "project" ? "project" : `library-${tab.surface}`;
+              const active = shellTabActive(tab);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={active ? "mode-btn active" : "mode-btn"}
+                  aria-pressed={active}
+                  onClick={() => goShellTab(tab)}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
           </nav>
 
-          {showContextTabs ? (
-            <span className="chrome-spacer" aria-hidden>
-              <span className="chrome-divider" />
-            </span>
-          ) : null}
-
-          {showLibraryTabs ? (
-            <nav className="context-tabs" aria-label="Library">
-              {LIBRARY_TABS.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={
-                    librarySurface === t.id ? "mode-btn active" : "mode-btn"
-                  }
-                  aria-pressed={librarySurface === t.id}
-                  onClick={() => setLibrarySurface(t.id)}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </nav>
-          ) : null}
-
           {showModeTabs ? (
-            <nav className="context-tabs" aria-label="Layout mode">
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  className={mode === m.id ? "mode-btn active" : "mode-btn"}
-                  aria-pressed={mode === m.id}
-                  onClick={() => setMode(m.id)}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </nav>
+            <>
+              <span className="chrome-spacer" aria-hidden>
+                <span className="chrome-divider" />
+              </span>
+              <nav className="context-tabs" aria-label="Layout mode">
+                {MODES.map((m) => {
+                  const active = primaryTab === "project" && mode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={active ? "mode-btn active" : "mode-btn"}
+                      aria-pressed={active}
+                      onClick={() => goMode(m.id)}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </nav>
+            </>
           ) : null}
         </div>
         {isWindows ? (

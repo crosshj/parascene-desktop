@@ -62,8 +62,45 @@ fn ext_from_url(url: &str) -> &str {
     Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
-        .filter(|e| e.len() <= 5)
-        .unwrap_or("bin")
+        .filter(|e| {
+            let lower = e.to_ascii_lowercase();
+            // Reject query-ish / opaque tokens; keep common media extensions.
+            e.len() <= 5
+                && matches!(
+                    lower.as_str(),
+                    "mp4" | "mov" | "webm" | "m4v" | "mkv" | "avi" | "png"
+                        | "jpg" | "jpeg" | "webp" | "gif" | "wav" | "mp3"
+                        | "m4a" | "aac" | "flac" | "ogg"
+                )
+        })
+        .unwrap_or("")
+}
+
+/// Prefer a real media extension so Library import does not silently skip `.bin`.
+fn ext_for_output(url: &str, owner: &str, name: &str) -> String {
+    let from_url = ext_from_url(url);
+    if !from_url.is_empty() {
+        return from_url.to_ascii_lowercase();
+    }
+    let blob = format!("{owner}/{name}").to_ascii_lowercase();
+    if blob.contains("video")
+        || blob.contains("seedance")
+        || blob.contains("veo")
+        || blob.contains("kling")
+        || blob.contains("vidu")
+        || blob.contains("wan")
+        || blob.contains("aleph")
+        || blob.contains("motion")
+    {
+        return "mp4".into();
+    }
+    if blob.contains("music") || blob.contains("audio") || blob.contains("lyria") {
+        return "mp3".into();
+    }
+    if blob.contains("image") || blob.contains("flux") || blob.contains("banana") {
+        return "png".into();
+    }
+    "mp4".into()
 }
 
 fn collect_output_urls(output: &Value) -> Vec<String> {
@@ -154,6 +191,180 @@ fn persist(
         local_paths,
         error,
     );
+}
+
+async fn download_urls_to_run_dir(
+    token: &str,
+    owner: &str,
+    name: &str,
+    run_dir: &Path,
+    output_urls: &[String],
+    local_paths: &mut Vec<String>,
+) -> Result<(), String> {
+    local_paths.clear();
+    for (i, url) in output_urls.iter().enumerate() {
+        let ext = ext_for_output(url, owner, name);
+        let dest = run_dir.join(format!("out_{i}.{ext}"));
+        client::download_to_path(url, &dest, Some(token)).await?;
+        local_paths.push(dest.to_string_lossy().to_string());
+    }
+    Ok(())
+}
+
+/// Re-download outputs for an existing prediction (e.g. after a CDN failure).
+/// Refreshes output URLs from the Replicate API when the local record has none
+/// or a prior download attempt failed.
+pub async fn download_prediction_outputs(
+    app: AppHandle,
+    prediction_id: String,
+) -> Result<RunResult, String> {
+    clear_cancel();
+    let token = token::require_token()?;
+    let detail = history::get_prediction(&prediction_id)?
+        .ok_or_else(|| format!("No local record for prediction {prediction_id}"))?;
+    let mut record = detail.record;
+    let owner = record.owner.clone();
+    let name = record.name.clone();
+    let version = record.version.clone().unwrap_or_default();
+
+    // Prefer fresh URLs from the API — delivery links can expire.
+    let api_url = format!("https://api.replicate.com/v1/predictions/{prediction_id}");
+    let prediction = client::get_json(&token, &api_url).await?;
+    let status = prediction
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if status != "succeeded" {
+        let err = prediction
+            .get("error")
+            .and_then(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| (!v.is_null()).then(|| v.to_string()))
+            })
+            .unwrap_or_else(|| format!("Prediction status is {status}"));
+        return Err(err);
+    }
+    let output = prediction.get("output").cloned().unwrap_or(Value::Null);
+    let mut output_urls = collect_output_urls(&output);
+    if output_urls.is_empty() {
+        output_urls = record.output_urls.clone();
+    }
+    if output_urls.is_empty() {
+        return Err("Prediction has no downloadable output URLs.".into());
+    }
+    let preview = output_preview(&output).or(record.output_preview.clone());
+    let input = prediction
+        .get("input")
+        .cloned()
+        .unwrap_or_else(|| record.input.clone());
+
+    let run_dir = history::runs_dir()?.join(&prediction_id);
+    std::fs::create_dir_all(&run_dir)
+        .map_err(|e| format!("Could not create run dir: {e}"))?;
+
+    emit_run(
+        &app,
+        RunProgressEvent {
+            prediction_id: Some(prediction_id.clone()),
+            owner: owner.clone(),
+            name: name.clone(),
+            status: "downloading".into(),
+            message: Some(format!("Retrying download of {} output(s)…", output_urls.len())),
+            error: None,
+            local_paths: Vec::new(),
+            done: false,
+        },
+    );
+    persist(
+        &owner,
+        &name,
+        &version,
+        &input,
+        &prediction,
+        Some("downloading"),
+        &output_urls,
+        &[],
+        None,
+    );
+
+    let mut local_paths: Vec<String> = Vec::new();
+    if let Err(e) = download_urls_to_run_dir(
+        &token,
+        &owner,
+        &name,
+        &run_dir,
+        &output_urls,
+        &mut local_paths,
+    )
+    .await
+    {
+        let _ = persist(
+            &owner,
+            &name,
+            &version,
+            &input,
+            &prediction,
+            Some("failed"),
+            &output_urls,
+            &local_paths,
+            Some(&e),
+        );
+        emit_run(
+            &app,
+            RunProgressEvent {
+                prediction_id: Some(prediction_id),
+                owner,
+                name,
+                status: "failed".into(),
+                message: None,
+                error: Some(e.clone()),
+                local_paths,
+                done: true,
+            },
+        );
+        return Err(e);
+    }
+
+    let saved = history::upsert_from_prediction_with_preview(
+        &owner,
+        &name,
+        &version,
+        &input,
+        &prediction,
+        Some("succeeded"),
+        &output_urls,
+        &local_paths,
+        preview.as_deref(),
+        None,
+    )?;
+    record = saved;
+
+    let result = RunResult {
+        prediction_id: prediction_id.clone(),
+        owner: owner.clone(),
+        name: name.clone(),
+        status: "succeeded".into(),
+        output_urls,
+        local_paths: local_paths.clone(),
+        output_preview: preview,
+        run_dir: record.run_dir,
+        error: None,
+    };
+    emit_run(
+        &app,
+        RunProgressEvent {
+            prediction_id: Some(prediction_id),
+            owner,
+            name,
+            status: "succeeded".into(),
+            message: Some("Download complete.".into()),
+            error: None,
+            local_paths,
+            done: true,
+        },
+    );
+    Ok(result)
 }
 
 pub async fn run_prediction(
@@ -557,11 +768,44 @@ pub async fn run_prediction(
             },
         );
 
-        for (i, url) in output_urls.iter().enumerate() {
-            let ext = ext_from_url(url);
-            let dest = run_dir.join(format!("out_{i}.{ext}"));
-            client::download_to_path(url, &dest).await?;
-            local_paths.push(dest.to_string_lossy().to_string());
+        match download_urls_to_run_dir(
+            &token,
+            &owner,
+            &name,
+            &run_dir,
+            &output_urls,
+            &mut local_paths,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                let _ = persist(
+                    &owner,
+                    &name,
+                    &version,
+                    &input,
+                    &prediction,
+                    Some("failed"),
+                    &output_urls,
+                    &local_paths,
+                    Some(&e),
+                );
+                emit_run(
+                    &app,
+                    RunProgressEvent {
+                        prediction_id: Some(prediction_id.clone()),
+                        owner: owner.clone(),
+                        name: name.clone(),
+                        status: "failed".into(),
+                        message: None,
+                        error: Some(e.clone()),
+                        local_paths: local_paths.clone(),
+                        done: true,
+                    },
+                );
+                return Err(e);
+            }
         }
     }
 

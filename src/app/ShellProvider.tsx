@@ -235,6 +235,24 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     setChromeStatusState((prev) => (prev === status ? prev : status));
   }, []);
 
+  // Heal empty in-memory state when localStorage still has projects (HMR /
+  // failed-load races). Runs once after mount.
+  useEffect(() => {
+    if (storedProjects.length > 0) return;
+    const again = sortByUpdatedDesc(loadStoredProjects());
+    if (again.length === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount heal from localStorage
+    setStoredProjects(again);
+    const session = loadShellSession(new Set(again.map((p) => p.id)));
+    if (session.openProjectId) {
+      setOpenProjectId(session.openProjectId);
+      setMode(session.mode);
+      setSelectedSceneId(session.selectedSceneId);
+      setPrimaryTab(session.primaryTab);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount heal only
+  }, []);
+
   useEffect(() => {
     saveShellSession({
       primaryTab,
@@ -270,7 +288,15 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const updateStoredProjects = useCallback(
     (updater: (prev: StoredProject[]) => StoredProject[]) => {
       setStoredProjects((prev) => {
-        const sorted = sortByUpdatedDesc(updater(prev));
+        const next = updater(prev);
+        // Guard against accidental wipe from a stale empty prev after a failed load.
+        if (prev.length > 0 && next.length === 0) {
+          console.error(
+            "[updateStoredProjects] Refusing to replace non-empty projects with []",
+          );
+          return prev;
+        }
+        const sorted = sortByUpdatedDesc(next);
         saveStoredProjects(sorted);
         return sorted;
       });
@@ -348,11 +374,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                 addAssetGeneration: {
                   prompt: result.prompt,
                   audioMode:
-                    result.mode === "first_last"
+                    result.mode === "first_last" ||
+                    result.mode === "motion_match"
                       ? undefined
                       : result.audioMode,
                   lyricsText:
-                    result.mode === "first_last"
+                    result.mode === "first_last" ||
+                    result.mode === "motion_match"
                       ? undefined
                       : result.lyricsText.trim() || undefined,
                   generatedAt: new Date().toISOString(),
@@ -363,6 +391,66 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               },
             );
             return setStoredProjectTimeline(next, nextTimeline);
+          }),
+        );
+      },
+      applyFailure: (result) => {
+        updateStoredProjects((prev) =>
+          prev.map((project) => {
+            if (project.id !== result.projectId) return project;
+            const timeline = storedProjectToUi(project).timeline;
+            const nextTimeline = timeline.map((clip) => {
+              if (clip.id !== result.clipId) return clip;
+              const draft = { ...clip.addAssetDraft };
+              const err = result.errorMessage.trim();
+              if (err) draft.lastError = err;
+              else delete draft.lastError;
+              if (result.replicatePredictionId !== undefined) {
+                if (result.replicatePredictionId?.trim()) {
+                  draft.replicatePredictionId =
+                    result.replicatePredictionId.trim();
+                } else {
+                  delete draft.replicatePredictionId;
+                }
+              }
+              const keys = Object.keys(draft).filter(
+                (k) => draft[k as keyof typeof draft] !== undefined,
+              );
+              return {
+                ...clip,
+                addAssetDraft: keys.length > 0 ? draft : undefined,
+              };
+            });
+            return setStoredProjectTimeline(project, nextTimeline);
+          }),
+        );
+      },
+      clearFailure: (projectId, clipId) => {
+        updateStoredProjects((prev) =>
+          prev.map((project) => {
+            if (project.id !== projectId) return project;
+            const timeline = storedProjectToUi(project).timeline;
+            let changed = false;
+            const nextTimeline = timeline.map((clip) => {
+              if (
+                clip.id !== clipId ||
+                (!clip.addAssetDraft?.lastError &&
+                  !clip.addAssetDraft?.replicatePredictionId)
+              ) {
+                return clip;
+              }
+              changed = true;
+              const rest = { ...clip.addAssetDraft };
+              delete rest.lastError;
+              delete rest.replicatePredictionId;
+              return {
+                ...clip,
+                addAssetDraft: Object.keys(rest).length > 0 ? rest : undefined,
+              };
+            });
+            return changed
+              ? setStoredProjectTimeline(project, nextTimeline)
+              : project;
           }),
         );
       },

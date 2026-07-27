@@ -300,6 +300,13 @@ export async function replicatePredictionGet(
   return invoke("replicate_prediction_get", { predictionId });
 }
 
+/** Re-download outputs for a prediction that already succeeded on Replicate. */
+export async function replicatePredictionDownload(
+  predictionId: string,
+): Promise<ReplicateRunResult> {
+  return invoke("replicate_prediction_download", { predictionId });
+}
+
 export async function listenReplicateModelsProgress(
   handler: (ev: ReplicateProgressEvent) => void,
 ): Promise<UnlistenFn> {

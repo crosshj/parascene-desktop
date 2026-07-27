@@ -8,7 +8,14 @@ import {
   type AddAssetGenerationSession,
   type RunAddAssetGenerationOpts,
 } from "./addAssetGenerate";
+import {
+  initialReplicateDownloadRetrySteps,
+  initialReplicateGenerationSteps,
+  ReplicatePendingDownloadError,
+  resumeReplicateAddAssetDownload,
+} from "./addAssetReplicateGenerate";
 import { addAssetClipDurationSec } from "./stagedClip";
+import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 
 /**
  * Module-level add-asset generation session.
@@ -34,8 +41,23 @@ export type AddAssetGenerationSuccess = {
   model: string;
 };
 
+export type AddAssetGenerationFailure = {
+  projectId: string;
+  clipId: string;
+  errorMessage: string;
+  /**
+   * string = set, null = clear, undefined = leave existing draft value.
+   * Set when Replicate succeeded and only download/import needs retry.
+   */
+  replicatePredictionId?: string | null;
+};
+
 export type AddAssetGenerationApplier = {
   applySuccess: (result: AddAssetGenerationSuccess) => void;
+  /** Persist failure on the placeholder so the timeline ! survives navigation. */
+  applyFailure: (result: AddAssetGenerationFailure) => void;
+  /** Clear persisted failure when the user dismisses / retries. */
+  clearFailure: (projectId: string, clipId: string) => void;
 };
 
 let session: AddAssetGenerationStoreSession | null = null;
@@ -82,9 +104,17 @@ export function isAddAssetGenerationInflight(): boolean {
   return inflight;
 }
 
-export function clearAddAssetGenerationError(): void {
+export function clearAddAssetGenerationError(opts?: {
+  projectId: string;
+  clipId: string;
+}): void {
   if (session?.phase === "error") {
+    applier?.clearFailure(session.projectId, session.clipId);
     setSession(null);
+    return;
+  }
+  if (opts?.projectId && opts.clipId) {
+    applier?.clearFailure(opts.projectId, opts.clipId);
   }
 }
 
@@ -100,6 +130,46 @@ export function clearAddAssetGenerationIfClipMissing(
   if (!ids.has(session.clipId)) {
     inflight = false;
     setSession(null);
+  }
+}
+
+function applyJobFailure(
+  projectId: string,
+  clipId: string,
+  audioMode: AddAssetAudioMode,
+  durationSec: number,
+  continuityMode: AddAssetContinuityMode,
+  error: unknown,
+): void {
+  const message = error instanceof Error ? error.message : String(error);
+  applier?.applyFailure({
+    projectId,
+    clipId,
+    errorMessage: message,
+    replicatePredictionId:
+      error instanceof ReplicatePendingDownloadError
+        ? error.predictionId
+        : null,
+  });
+  if (session?.clipId === clipId) {
+    patchSession(clipId, {
+      phase: "error",
+      progressNote: "Generation failed",
+      errorMessage: message,
+    });
+  } else {
+    setSession({
+      ...createRunningAddAssetGenerationSession(
+        clipId,
+        audioMode,
+        durationSec,
+        continuityMode,
+      ),
+      projectId,
+      phase: "error",
+      progressNote: "Generation failed",
+      errorMessage: message,
+    });
   }
 }
 
@@ -121,15 +191,23 @@ export function startAddAssetGenerationJob(
   const clipId = request.clip.id;
   const continuityMode = request.continuityMode ?? "start_frame";
   inflight = true;
+  const baseSession = createRunningAddAssetGenerationSession(
+    clipId,
+    request.audioMode,
+    addAssetClipDurationSec(request.clip),
+    continuityMode,
+  );
+  if (request.replicate) {
+    baseSession.steps = initialReplicateGenerationSteps(
+      continuityMode as ReplicateVideoContinuity,
+    );
+  }
   setSession({
-    ...createRunningAddAssetGenerationSession(
-      clipId,
-      request.audioMode,
-      addAssetClipDurationSec(request.clip),
-      continuityMode,
-    ),
+    ...baseSession,
     projectId,
   });
+  // Clear any prior persisted failure on this placeholder.
+  applier?.clearFailure(projectId, clipId);
 
   void runAddAssetGeneration({
     ...runOpts,
@@ -140,6 +218,7 @@ export function startAddAssetGenerationJob(
     continuityMode,
     startFrame: request.startFrame,
     endFrame: request.endFrame,
+    replicate: request.replicate,
     onSteps: (steps) => {
       patchSession(clipId, { steps });
     },
@@ -168,28 +247,113 @@ export function startAddAssetGenerationJob(
       }
     })
     .catch((error) => {
-      const message =
-        error instanceof Error ? error.message : String(error);
+      applyJobFailure(
+        projectId,
+        clipId,
+        request.audioMode,
+        addAssetClipDurationSec(request.clip),
+        continuityMode,
+        error,
+      );
+    })
+    .finally(() => {
+      inflight = false;
+    });
+
+  return true;
+}
+
+export type RetryAddAssetDownloadJobOpts = {
+  projectId: string;
+  clipId: string;
+  predictionId: string;
+  imagesGroupId: string | null;
+  prompt: string;
+  lyricsText: string;
+  audioMode: AddAssetAudioMode;
+  continuityMode: AddAssetContinuityMode;
+  durationSec: number;
+  modelId: string;
+};
+
+/** Retry download/import only for a prediction that already succeeded on Replicate. */
+export function retryAddAssetDownloadJob(
+  opts: RetryAddAssetDownloadJobOpts,
+): boolean {
+  if (inflight) return false;
+  const {
+    projectId,
+    clipId,
+    predictionId,
+    imagesGroupId,
+    prompt,
+    lyricsText,
+    audioMode,
+    continuityMode,
+    durationSec,
+    modelId,
+  } = opts;
+  inflight = true;
+  const baseSession = createRunningAddAssetGenerationSession(
+    clipId,
+    audioMode,
+    durationSec,
+    continuityMode,
+  );
+  baseSession.steps = initialReplicateDownloadRetrySteps();
+  baseSession.progressNote = "Retrying download…";
+  setSession({
+    ...baseSession,
+    projectId,
+  });
+  // Keep prediction id on the draft; clear only the error text while retrying.
+  applier?.applyFailure({
+    projectId,
+    clipId,
+    errorMessage: "",
+    replicatePredictionId: predictionId,
+  });
+
+  void resumeReplicateAddAssetDownload({
+    predictionId,
+    imagesGroupId,
+    continuityMode: continuityMode as ReplicateVideoContinuity,
+    modelId,
+    onSteps: (steps) => {
+      patchSession(clipId, { steps });
+    },
+    onProgress: (progressNote) => {
+      patchSession(clipId, { progressNote });
+    },
+  })
+    .then((result) => {
+      const success: AddAssetGenerationSuccess = {
+        projectId,
+        clipId,
+        creationId: result.creationId,
+        projectCreationIds: result.projectCreationIds,
+        videosGroupId: result.videosGroupId,
+        imagesGroupId: result.imagesGroupId,
+        prompt,
+        lyricsText,
+        audioMode,
+        mode: result.mode,
+        model: result.model,
+      };
+      applier?.applySuccess(success);
       if (session?.clipId === clipId) {
-        patchSession(clipId, {
-          phase: "error",
-          progressNote: "Generation failed",
-          errorMessage: message,
-        });
-      } else {
-        setSession({
-          ...createRunningAddAssetGenerationSession(
-            clipId,
-            request.audioMode,
-            addAssetClipDurationSec(request.clip),
-            continuityMode,
-          ),
-          projectId,
-          phase: "error",
-          progressNote: "Generation failed",
-          errorMessage: message,
-        });
+        setSession(null);
       }
+    })
+    .catch((error) => {
+      applyJobFailure(
+        projectId,
+        clipId,
+        audioMode,
+        durationSec,
+        continuityMode,
+        error,
+      );
     })
     .finally(() => {
       inflight = false;

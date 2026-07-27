@@ -5242,10 +5242,6 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 .add-asset-generate-pane .add-asset-generate-field {
   box-sizing: border-box;
   width: 100%;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--bg);
   color: var(--text);
   font-size: 0.92rem;
   line-height: 1.45;
@@ -5254,8 +5250,12 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 
 .add-asset-generate-pane label.add-asset-generate-field {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
 .add-asset-generate-pane label.add-asset-generate-field > span {
@@ -5267,21 +5267,20 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   text-transform: uppercase;
 }
 
-.add-asset-generate-pane label.add-asset-generate-field > input {
-  flex: 1 1 auto;
+.add-asset-generate-pane label.add-asset-generate-field > .control {
+  flex: none;
+  width: 100%;
   min-width: 0;
-  margin: 0;
-  padding: 0.2rem 0.35rem;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-variant-numeric: tabular-nums;
 }
 
-.add-asset-generate-pane .add-asset-generate-field:focus-within {
-  border-color: color-mix(in srgb, var(--text) 35%, var(--border));
+.add-asset-generate-pane .add-asset-generate-tweak-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.add-asset-generate-pane label.add-asset-generate-field:focus-within {
+  border-color: transparent;
 }
 
 .add-asset-generate-pane .add-asset-generate-callout {
@@ -5461,37 +5460,39 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   border-radius: 999px;
   background: var(--select);
   transition: width 200ms linear;
+  transform-origin: left center;
 }
 
+/* Transform-based pulse — soft fades via mask (color-mix gradients vanish in WKWebView). */
 .add-asset-generate-progress.is-indeterminate .add-asset-generate-progress-bar {
-  width: 100%;
-  min-width: 100%;
+  width: 46%;
+  min-width: 46%;
   transition: none;
   border-radius: 999px;
-  background-color: transparent;
-  background-image: linear-gradient(
+  background: var(--select);
+  -webkit-mask-image: linear-gradient(
     90deg,
     transparent 0%,
-    color-mix(in srgb, var(--select) 12%, transparent) 22%,
-    color-mix(in srgb, var(--select) 28%, transparent) 34%,
-    color-mix(in srgb, var(--select) 58%, transparent) 43%,
-    color-mix(in srgb, var(--select) 78%, transparent) 50%,
-    color-mix(in srgb, var(--select) 58%, transparent) 57%,
-    color-mix(in srgb, var(--select) 28%, transparent) 66%,
-    color-mix(in srgb, var(--select) 12%, transparent) 78%,
+    #000 22%,
+    #000 78%,
     transparent 100%
   );
-  background-size: 240% 100%;
-  background-repeat: no-repeat;
-  animation: add-asset-generate-progress-cycle 5.5s linear infinite;
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    #000 22%,
+    #000 78%,
+    transparent 100%
+  );
+  animation: add-asset-generate-progress-pulse 4.5s ease-in-out infinite;
 }
 
-@keyframes add-asset-generate-progress-cycle {
+@keyframes add-asset-generate-progress-pulse {
   0% {
-    background-position: 100% 0;
+    transform: translateX(-120%);
   }
   100% {
-    background-position: -100% 0;
+    transform: translateX(280%);
   }
 }
 

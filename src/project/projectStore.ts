@@ -26,6 +26,42 @@ import {
   isProjectAspectRatio,
   type ProjectAspectRatio,
 } from "./aspectRatios";
+
+/** Parse draft.replicateTweaks without importing editor modules (avoids init cycles). */
+function parseReplicateVideoTweaks(
+  value: unknown,
+): NonNullable<AddAssetDraft["replicateTweaks"]> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const out: NonNullable<AddAssetDraft["replicateTweaks"]> = {};
+  if (typeof row.resolution === "string" && row.resolution.trim()) {
+    out.resolution = row.resolution.trim();
+  }
+  if (typeof row.mode === "string" && row.mode.trim()) {
+    out.mode = row.mode.trim();
+  }
+  if (typeof row.generateAudio === "boolean") {
+    out.generateAudio = row.generateAudio;
+  }
+  if (typeof row.negativePrompt === "string") {
+    out.negativePrompt = row.negativePrompt;
+  }
+  if (typeof row.seed === "number" && Number.isFinite(row.seed)) {
+    out.seed = Math.floor(row.seed);
+  } else if (row.seed === null) {
+    out.seed = null;
+  }
+  if (
+    typeof row.characterOrientation === "string" &&
+    row.characterOrientation.trim()
+  ) {
+    out.characterOrientation = row.characterOrientation.trim();
+  }
+  if (typeof row.keepOriginalSound === "boolean") {
+    out.keepOriginalSound = row.keepOriginalSound;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 import {
   isProjectLookId,
   normalizeProjectLooks,
@@ -98,8 +134,22 @@ export function loadStoredProjects(): StoredProject[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isStoredProject).map(normalizeStoredProject);
-  } catch {
+    const out: StoredProject[] = [];
+    for (const row of parsed) {
+      if (!isStoredProject(row)) continue;
+      try {
+        out.push(normalizeStoredProject(row));
+      } catch (error) {
+        console.error(
+          "[loadStoredProjects] Skipping corrupt project",
+          row.id,
+          error,
+        );
+      }
+    }
+    return out;
+  } catch (error) {
+    console.error("[loadStoredProjects] Failed to read projects", error);
     return [];
   }
 }
@@ -229,9 +279,11 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
   const continuityMode =
     row.continuityMode === "first_last"
       ? "first_last"
-      : row.continuityMode === "start_frame"
-        ? "start_frame"
-        : undefined;
+      : row.continuityMode === "motion_match"
+        ? "motion_match"
+        : row.continuityMode === "start_frame"
+          ? "start_frame"
+          : undefined;
   const provider =
     typeof row.provider === "string" && row.provider.trim()
       ? row.provider.trim()
@@ -240,16 +292,47 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     typeof row.methodId === "string" && row.methodId.trim()
       ? row.methodId.trim()
       : undefined;
+  const replicateModel =
+    typeof row.replicateModel === "string" && row.replicateModel.trim()
+      ? row.replicateModel.trim()
+      : undefined;
+  const useNearestDuration = row.useNearestDuration === true ? true : undefined;
+  const lastError =
+    typeof row.lastError === "string" && row.lastError.trim()
+      ? row.lastError.trim()
+      : undefined;
+  const replicatePredictionId =
+    typeof row.replicatePredictionId === "string" &&
+    row.replicatePredictionId.trim()
+      ? row.replicatePredictionId.trim()
+      : undefined;
+  const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
   if (
     prompt === undefined &&
     audioMode === undefined &&
     continuityMode === undefined &&
     provider === undefined &&
-    methodId === undefined
+    methodId === undefined &&
+    replicateModel === undefined &&
+    useNearestDuration === undefined &&
+    lastError === undefined &&
+    replicatePredictionId === undefined &&
+    replicateTweaks === undefined
   ) {
     return undefined;
   }
-  return { prompt, audioMode, continuityMode, provider, methodId };
+  return {
+    prompt,
+    audioMode,
+    continuityMode,
+    provider,
+    methodId,
+    replicateModel,
+    useNearestDuration,
+    lastError,
+    replicatePredictionId,
+    replicateTweaks,
+  };
 }
 
 function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undefined {
@@ -263,13 +346,17 @@ function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undef
     return undefined;
   }
   const mode: AddAssetGeneration["mode"] =
-    row.mode === "first_last" ? "first_last" : "start_frame";
+    row.mode === "first_last"
+      ? "first_last"
+      : row.mode === "motion_match"
+        ? "motion_match"
+        : "start_frame";
   const audioMode =
     row.audioMode === "full_mix"
       ? "full_mix"
       : row.audioMode === "vocals"
         ? "vocals"
-        : mode === "first_last"
+        : mode === "first_last" || mode === "motion_match"
           ? undefined
           : "vocals";
   const lyricsText =
@@ -599,9 +686,21 @@ function normalizeOptionalPrompt(value: unknown): string | null {
 
 export function saveStoredProjects(projects: StoredProject[]): void {
   try {
+    // Never clobber a non-empty store with an empty write — usually means a
+    // failed load / HMR race, not an intentional delete-all.
+    if (projects.length === 0) {
+      const existing = localStorage.getItem(PROJECTS_STORAGE_KEY);
+      if (existing && existing !== "[]") {
+        console.error(
+          "[saveStoredProjects] Refusing to overwrite non-empty projects with []",
+        );
+        return;
+      }
+    }
     localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects));
-  } catch {
+  } catch (error) {
     // ignore quota / private mode
+    console.error("[saveStoredProjects] Failed to persist projects", error);
   }
 }
 

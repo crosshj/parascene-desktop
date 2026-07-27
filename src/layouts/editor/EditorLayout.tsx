@@ -51,11 +51,15 @@ import type { AddAssetIntent } from "./previewIntent";
 import {
   clearAddAssetGenerationError,
   clearAddAssetGenerationIfClipMissing,
+  retryAddAssetDownloadJob,
   startAddAssetGenerationJob,
   useAddAssetGenerationSession,
 } from "./addAssetGenerationStore";
+import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import { resolveEditorMainAudioCreationId } from "./addAssetStartFrame";
+import { replicatePredictionsList } from "../../replicate/replicateClient";
 import {
+  addAssetClipDurationSec,
   applyDraftToTimelineClip,
   isAddAssetPlaceholderClip,
   newSlideshowSeed,
@@ -1791,19 +1795,24 @@ export function EditorLayout() {
   }, [addAssetGenerationSession, project.timeline]);
 
   const addAssetGenerationByClipId = useMemo(() => {
-    if (!addAssetGenerationSession) return new Map<string, BakeInfo>();
-    const status =
-      addAssetGenerationSession.phase === "running" ? "generating" : "failed";
-    return new Map<string, BakeInfo>([
-      [
-        addAssetGenerationSession.clipId,
-        {
-          status,
-          error: addAssetGenerationSession.errorMessage,
-        },
-      ],
-    ]);
-  }, [addAssetGenerationSession]);
+    const map = new Map<string, BakeInfo>();
+    for (const clip of project.timeline) {
+      const err = clip.addAssetDraft?.lastError?.trim();
+      if (!err || !isAddAssetPlaceholderClip(clip)) continue;
+      map.set(clip.id, { status: "failed", error: err });
+    }
+    if (addAssetGenerationSession) {
+      const status =
+        addAssetGenerationSession.phase === "running"
+          ? "generating"
+          : "failed";
+      map.set(addAssetGenerationSession.clipId, {
+        status,
+        error: addAssetGenerationSession.errorMessage,
+      });
+    }
+    return map;
+  }, [addAssetGenerationSession, project.timeline]);
 
   const startAddAssetGeneration = (request: StartAddAssetGenerationRequest) => {
     startAddAssetGenerationJob({
@@ -1820,6 +1829,59 @@ export function EditorLayout() {
         videosGroupId: project.videosGroupId,
       },
     });
+  };
+
+  const retryAddAssetDownload = () => {
+    const clip = generateTargetClip;
+    if (!clip) return;
+    const draft = clip.addAssetDraft;
+    const modelId = draft?.replicateModel?.trim() || "";
+    const errorText =
+      addAssetGenerationSession?.errorMessage?.trim() ||
+      draft?.lastError?.trim() ||
+      "";
+
+    void (async () => {
+      let predictionId = draft?.replicatePredictionId?.trim() || "";
+      if (!predictionId && isDownloadRetryableError(errorText)) {
+        try {
+          const rows = await replicatePredictionsList({});
+          const match = rows.find((row) => {
+            if (row.hasLocalOutputs) return false;
+            const id = `${row.owner}/${row.name}`;
+            if (modelId && id !== modelId) return false;
+            const st = row.status.toLowerCase();
+            return (
+              st === "failed" ||
+              st === "downloading" ||
+              st === "succeeded"
+            );
+          });
+          predictionId = match?.predictionId?.trim() || "";
+        } catch {
+          predictionId = "";
+        }
+      }
+      if (!predictionId) {
+        clearAddAssetGenerationError({
+          projectId: project.id,
+          clipId: clip.id,
+        });
+        return;
+      }
+      retryAddAssetDownloadJob({
+        projectId: project.id,
+        clipId: clip.id,
+        predictionId,
+        imagesGroupId: project.imagesGroupId,
+        prompt: draft?.prompt?.trim() || "",
+        lyricsText: "",
+        audioMode: draft?.audioMode === "full_mix" ? "full_mix" : "vocals",
+        continuityMode: draft?.continuityMode ?? "start_frame",
+        durationSec: addAssetClipDurationSec(clip),
+        modelId: modelId || "replicate",
+      });
+    })();
   };
 
   const previewAssetId =
@@ -1932,7 +1994,13 @@ export function EditorLayout() {
             return next;
           });
         }}
-        onClearAddAssetGenerationError={clearAddAssetGenerationError}
+        onClearAddAssetGenerationError={() =>
+          clearAddAssetGenerationError({
+            projectId: project.id,
+            clipId: generateTargetClip?.id ?? "",
+          })
+        }
+        onRetryAddAssetDownload={retryAddAssetDownload}
         selectedAssetIds={
           monitorMode === "source" && !clipStagingSeed
             ? selectedAssetIds

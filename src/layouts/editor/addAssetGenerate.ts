@@ -10,6 +10,7 @@ import { createAuthedSdk } from "../../auth/session";
 import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
 import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
 import { getCreations } from "../../library/catalogClient";
+import type { ReplicateInputField } from "../../replicate/replicateClient";
 import type {
   AddAssetGeneration,
   AddAssetGenerationMode,
@@ -23,6 +24,8 @@ import {
 } from "./stagedClip";
 import { resolveAddAssetGenerationTiming } from "./addAssetStartFrame";
 import type { StartFramePreview } from "./addAssetStartFrame";
+import { runReplicateAddAssetGeneration } from "./addAssetReplicateGenerate";
+import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 
 export type AddAssetGenerationStepId =
   | "vocals"
@@ -120,6 +123,14 @@ export function initialAddAssetGenerationSteps(
   audioMode: AddAssetAudioMode = "vocals",
   continuityMode: AddAssetContinuityMode = "start_frame",
 ): AddAssetGenerationStep[] {
+  if (continuityMode === "motion_match") {
+    return [
+      { id: "still", label: "Prepare character still", status: "pending" },
+      { id: "end-still", label: "Prepare motion reference", status: "pending" },
+      { id: "generate", label: "Generate video", status: "pending" },
+      { id: "file", label: "Add to project", status: "pending" },
+    ];
+  }
   if (continuityMode === "first_last") {
     return [
       { id: "still", label: "Prepare first frame still", status: "pending" },
@@ -315,6 +326,16 @@ export type RunAddAssetGenerationOpts = {
   continuityMode?: AddAssetContinuityMode;
   startFrame: StartFramePreview;
   endFrame?: StartFramePreview | null;
+  /** When set, run via Replicate instead of Parascene Blue. */
+  replicate?: {
+    owner: string;
+    name: string;
+    inputs: ReplicateInputField[];
+    useNearestDuration?: boolean;
+    motionVideoPath?: string | null;
+    characterFrame?: StartFramePreview | null;
+    tweaks?: import("./replicateVideoTweaks").ReplicateVideoTweaks;
+  };
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
 };
@@ -329,7 +350,37 @@ export async function runAddAssetGeneration(
   mode: AddAssetContinuityMode;
   model: string;
 }> {
+  if (opts.replicate) {
+    const continuityMode = (opts.continuityMode ??
+      "start_frame") as ReplicateVideoContinuity;
+    return runReplicateAddAssetGeneration({
+      placeholder: opts.placeholder,
+      timeline: opts.timeline,
+      aspectRatio: opts.aspectRatio,
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+      prompt: opts.prompt,
+      continuityMode,
+      modelOwner: opts.replicate.owner,
+      modelName: opts.replicate.name,
+      modelInputs: opts.replicate.inputs,
+      durationSec: addAssetClipDurationSec(opts.placeholder),
+      useNearestDuration: opts.replicate.useNearestDuration,
+      startFrame: opts.startFrame,
+      endFrame: opts.endFrame,
+      characterFrame: opts.replicate.characterFrame,
+      motionVideoPath: opts.replicate.motionVideoPath,
+      tweaks: opts.replicate.tweaks,
+      onSteps: opts.onSteps,
+      onProgress: opts.onProgress,
+    });
+  }
   const continuityMode = opts.continuityMode ?? "start_frame";
+  if (continuityMode === "motion_match") {
+    throw new Error("Motion match requires a Replicate model.");
+  }
   if (continuityMode === "first_last") {
     return runFirstLastAddAssetGeneration(opts);
   }

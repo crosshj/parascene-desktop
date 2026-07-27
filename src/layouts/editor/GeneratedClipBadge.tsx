@@ -84,10 +84,13 @@ export function GeneratedClipBadge({
             <br />
             {generation.mode === "first_last"
               ? "First + last frame"
-              : "Start frame"}
+              : generation.mode === "motion_match"
+                ? "Motion match"
+                : "Start frame"}
             {generation.model?.trim() ? ` (${generation.model.trim()})` : ""}
           </p>
-          {generation.mode === "first_last" ? null : (
+          {generation.mode === "first_last" ||
+          generation.mode === "motion_match" ? null : (
             <p>
               <strong>Audio</strong>
               <br />
