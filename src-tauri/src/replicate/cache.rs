@@ -1,9 +1,9 @@
 use crate::library::paths::{default_root, ensure_directories, resolve_paths};
-use crate::replicate::enabled_models::is_enabled;
+use crate::replicate::enabled_models::{self, is_enabled};
 use crate::replicate::features::{features_from_model, input_summary, InputFieldSummary};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -467,6 +467,7 @@ pub fn list_cached(
     query: Option<String>,
     features: Option<Vec<String>>,
     sort: Option<String>,
+    enabled: Option<String>,
     offset: u64,
     limit: Option<u64>,
 ) -> Result<ModelListPage, String> {
@@ -477,6 +478,21 @@ pub fn list_cached(
         .filter(|s| !s.is_empty());
     let feat = features.unwrap_or_default();
     let sort_key = sort.as_deref().unwrap_or("runs_desc").to_string();
+    let enabled_filter = match enabled
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .as_deref()
+    {
+        Some("enabled") => Some(true),
+        Some("disabled") => Some(false),
+        _ => None,
+    };
+    // Resolve allowlist before taking the index lock (separate mutex).
+    let enabled_keys: Option<HashSet<String>> = if enabled_filter.is_some() {
+        Some(enabled_models::list_enabled()?.into_iter().collect())
+    } else {
+        None
+    };
 
     let (mut guard, index_load_ms, cache_hit) = cached_index(&dir)?;
     let cache = guard
@@ -484,56 +500,72 @@ pub fn list_cached(
         .ok_or_else(|| "Index cache missing after load".to_string())?;
 
     // Unfiltered: reuse a cached sorted snapshot and only clone the page slice.
-    let (total, page_rows, page_limit, sort_ms) = if q.is_none() && feat.is_empty() {
-        let sort_ms = ensure_sorted(cache, &sort_key);
-        let sorted = cache
-            .sorted
-            .get(&sort_key)
-            .ok_or_else(|| "Sorted index missing".to_string())?;
-        let total = sorted.len() as u64;
-        let off = offset as usize;
-        let lim = match limit {
-            None | Some(0) => sorted.len().saturating_sub(off),
-            Some(n) => (n as usize).clamp(1, 100_000),
-        };
-        let page_rows: Vec<ModelIndexRow> = sorted.iter().skip(off).take(lim).cloned().collect();
-        (total, page_rows, lim as u64, sort_ms)
-    } else {
-        let t_sort = std::time::Instant::now();
-        let mut rows: Vec<ModelIndexRow> = cache.map.values().cloned().collect();
-        rows.retain(|r| {
-            if let Some(ref q) = q {
-                let hay = format!(
-                    "{}/{} {}",
-                    r.owner,
-                    r.name,
-                    r.description.as_deref().unwrap_or("")
-                )
-                .to_lowercase();
-                if !hay.contains(q) {
-                    return false;
-                }
-            }
-            if !feat.is_empty() {
-                for f in &feat {
-                    if !r.features.iter().any(|x| x == f) {
-                        return false;
+    let (total, page_rows, page_limit, sort_ms) =
+        if q.is_none() && feat.is_empty() && enabled_filter.is_none() {
+            let sort_ms = ensure_sorted(cache, &sort_key);
+            let sorted = cache
+                .sorted
+                .get(&sort_key)
+                .ok_or_else(|| "Sorted index missing".to_string())?;
+            let total = sorted.len() as u64;
+            let off = offset as usize;
+            let lim = match limit {
+                None | Some(0) => sorted.len().saturating_sub(off),
+                Some(n) => (n as usize).clamp(1, 100_000),
+            };
+            let page_rows: Vec<ModelIndexRow> =
+                sorted.iter().skip(off).take(lim).cloned().collect();
+            (total, page_rows, lim as u64, sort_ms)
+        } else {
+            let t_sort = std::time::Instant::now();
+            let mut rows: Vec<ModelIndexRow> = if q.is_none() && feat.is_empty() {
+                // Enabled-only filter: keep cached sort order, then retain.
+                let _ = ensure_sorted(cache, &sort_key);
+                cache
+                    .sorted
+                    .get(&sort_key)
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                let mut rows: Vec<ModelIndexRow> = cache.map.values().cloned().collect();
+                rows.retain(|r| {
+                    if let Some(ref q) = q {
+                        let hay = format!(
+                            "{}/{} {}",
+                            r.owner,
+                            r.name,
+                            r.description.as_deref().unwrap_or("")
+                        )
+                        .to_lowercase();
+                        if !hay.contains(q) {
+                            return false;
+                        }
                     }
-                }
+                    if !feat.is_empty() {
+                        for f in &feat {
+                            if !r.features.iter().any(|x| x == f) {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                });
+                sort_rows(&mut rows, &sort_key);
+                rows
+            };
+            if let (Some(want), Some(keys)) = (enabled_filter, enabled_keys.as_ref()) {
+                rows.retain(|r| keys.contains(&r.key()) == want);
             }
-            true
-        });
-        sort_rows(&mut rows, &sort_key);
-        let sort_ms = t_sort.elapsed().as_millis() as u64;
-        let total = rows.len() as u64;
-        let off = offset as usize;
-        let lim = match limit {
-            None | Some(0) => rows.len().saturating_sub(off),
-            Some(n) => (n as usize).clamp(1, 100_000),
+            let sort_ms = t_sort.elapsed().as_millis() as u64;
+            let total = rows.len() as u64;
+            let off = offset as usize;
+            let lim = match limit {
+                None | Some(0) => rows.len().saturating_sub(off),
+                Some(n) => (n as usize).clamp(1, 100_000),
+            };
+            let page_rows = rows.into_iter().skip(off).take(lim).collect();
+            (total, page_rows, lim as u64, sort_ms)
         };
-        let page_rows = rows.into_iter().skip(off).take(lim).collect();
-        (total, page_rows, lim as u64, sort_ms)
-    };
 
     // Drop the lock before touching enabled-models (separate mutex).
     drop(guard);

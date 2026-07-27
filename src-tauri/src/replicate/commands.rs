@@ -36,6 +36,7 @@ pub fn replicate_models_list_cached(
     query: Option<String>,
     features: Option<Vec<String>>,
     sort: Option<String>,
+    enabled: Option<String>,
     offset: Option<u64>,
     limit: Option<u64>,
 ) -> Result<ModelListPage, String> {
@@ -43,6 +44,7 @@ pub fn replicate_models_list_cached(
         query,
         features,
         sort,
+        enabled,
         offset.unwrap_or(0),
         limit,
     )

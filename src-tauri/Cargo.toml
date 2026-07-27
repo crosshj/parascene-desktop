@@ -1,6 +1,6 @@
 [package]
 name = "parascene-desktop"
-version = "1.1.10"
+version = "1.1.11"
 description = "Parascene Desktop"
 authors = ["Parascene"]
 edition = "2021"
@@ -38,6 +38,7 @@ tauri-plugin-process = "2.3.1"
 wgpu = "30"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
+arboard = "3"
 
 # Force gpu-allocator onto the same windows version as wgpu-hal (0.62).
 # Without this, Cargo can resolve gpu-allocator to windows 0.61 while wgpu-hal

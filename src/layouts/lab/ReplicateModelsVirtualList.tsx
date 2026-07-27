@@ -22,6 +22,17 @@ type Props = {
   loading?: boolean;
 };
 
+function formatVersionCreatedAt(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function ReplicateModelsVirtualList({
   totalCount,
   getRow,
@@ -115,6 +126,7 @@ export function ReplicateModelsVirtualList({
           }
           const key = `${r.owner}/${r.name}`;
           const active = selectedKey === key;
+          const versionAt = formatVersionCreatedAt(r.latestVersionCreatedAt);
           return (
             <button
               key={key}
@@ -165,6 +177,14 @@ export function ReplicateModelsVirtualList({
                   <span className="muted">
                     runs {r.runCount.toLocaleString()}
                   </span>
+                  {versionAt ? (
+                    <span
+                      className="muted"
+                      title={`Latest version created ${versionAt}`}
+                    >
+                      v {versionAt}
+                    </span>
+                  ) : null}
                 </span>
                 {r.description ? (
                   <span className="muted lab-replicate-row-desc">

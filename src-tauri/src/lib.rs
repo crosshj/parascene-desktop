@@ -1,4 +1,5 @@
 mod auth_store;
+mod clipboard;
 mod http_client;
 mod library;
 mod media_stream;
@@ -6,6 +7,7 @@ mod oauth_listener;
 mod replicate;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
+use clipboard::clipboard_write_text;
 use http_client::{
     http_delete_bearer, http_get_bearer, http_post_bearer, http_post_bytes_bearer, http_post_json,
 };
@@ -267,6 +269,7 @@ pub fn run() {
             publisher_render_timeline,
             publisher_delete_render,
             publisher_export_render,
+            clipboard_write_text,
             replicate_token_status,
             replicate_token_set,
             replicate_token_clear,

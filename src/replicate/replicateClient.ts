@@ -156,6 +156,8 @@ export async function replicateModelsListCached(opts?: {
   features?: string[];
   /** BE sort: runs_desc | runs_asc | owner_asc | owner_desc | name_asc | name_desc | owner_name_asc */
   sort?: string;
+  /** BE enabled filter: all (omit) | enabled | disabled */
+  enabled?: "all" | "enabled" | "disabled";
   offset?: number;
   /** Omit or 0 = return all matching rows (for virtual lists). */
   limit?: number | null;
@@ -164,6 +166,8 @@ export async function replicateModelsListCached(opts?: {
     query: opts?.query ?? null,
     features: opts?.features ?? null,
     sort: opts?.sort ?? null,
+    enabled:
+      !opts?.enabled || opts.enabled === "all" ? null : opts.enabled,
     offset: opts?.offset ?? 0,
     limit: opts?.limit === undefined ? null : opts.limit,
   });

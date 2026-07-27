@@ -42,6 +42,12 @@ import {
 } from "../../replicate/replicateClient";
 import { ReplicateLocalOutput } from "../../replicate/replicateLocalOutput";
 import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
+import {
+  aspectChooserOptionsFromSupported,
+  pickAspectChooserValue,
+} from "../../project/aspectRatios";
+import { AspectRatioChooser } from "../../ui/AspectRatioChooser";
+import { copyTextToClipboard } from "../../ui/clipboard";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import { ReplicateModelsVirtualList } from "./ReplicateModelsVirtualList";
 
@@ -69,6 +75,8 @@ type SortId =
   | "name_desc"
   | "owner_name_asc";
 
+type EnabledFilterId = "all" | "enabled" | "disabled";
+
 const SORT_OPTIONS: { id: SortId; label: string }[] = [
   { id: "runs_desc", label: "Runs (high → low)" },
   { id: "runs_asc", label: "Runs (low → high)" },
@@ -77,6 +85,12 @@ const SORT_OPTIONS: { id: SortId; label: string }[] = [
   { id: "name_asc", label: "Model name (A → Z)" },
   { id: "name_desc", label: "Model name (Z → A)" },
   { id: "owner_name_asc", label: "owner/name (A → Z)" },
+];
+
+const ENABLED_FILTER_OPTIONS: { id: EnabledFilterId; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "enabled", label: "Enabled" },
+  { id: "disabled", label: "Disabled" },
 ];
 
 const DETAIL_WIDTH_KEY = "parascene.lab.replicateDetailWidth";
@@ -316,7 +330,40 @@ function runnableFields(inputs: ReplicateInputField[]): ReplicateInputField[] {
 }
 
 function isFileField(field: ReplicateInputField): boolean {
-  return Boolean(field.fileLike);
+  if (field.fileLike) return true;
+  // Stale catalog / schemas that omit format:uri but still want a media URL.
+  if (field.typeName !== "string") return false;
+  if (field.enumValues?.length) return false;
+  return looksLikeMediaUrlField(field);
+}
+
+function looksLikeMediaUrlField(field: ReplicateInputField): boolean {
+  const n = field.name.toLowerCase();
+  const blob = fieldBlob(field);
+  const urlish =
+    n.endsWith("_url") ||
+    n.endsWith("_uri") ||
+    n.endsWith("_file") ||
+    n === "url" ||
+    n === "uri" ||
+    n === "audio" ||
+    n === "video" ||
+    n === "image" ||
+    blob.includes("publicly accessible") ||
+    blob.includes("http") ||
+    (field.title ?? "").toLowerCase().includes("url");
+  const media =
+    blob.includes("audio") ||
+    blob.includes("video") ||
+    blob.includes("image") ||
+    blob.includes("song") ||
+    blob.includes("music") ||
+    blob.includes("mp3") ||
+    blob.includes("wav") ||
+    blob.includes("mask") ||
+    blob.includes("photo") ||
+    blob.includes("picture");
+  return urlish && media;
 }
 
 function isFileArrayField(field: ReplicateInputField): boolean {
@@ -364,7 +411,25 @@ async function localPathForCreation(creation: Creation): Promise<string> {
   return path;
 }
 
+function isAspectRatioField(field: ReplicateInputField): boolean {
+  const n = field.name.toLowerCase().replace(/-/g, "_");
+  return n === "aspect_ratio" || n === "aspectratio";
+}
+
+function aspectChooserOptionsForField(field: ReplicateInputField) {
+  if (!isAspectRatioField(field)) return [];
+  return aspectChooserOptionsFromSupported(field.enumValues);
+}
+
 function defaultFormValue(field: ReplicateInputField): string {
+  const aspectOpts = aspectChooserOptionsForField(field);
+  if (aspectOpts.length > 0) {
+    const preferred =
+      field.defaultValue === null || field.defaultValue === undefined
+        ? ""
+        : String(field.defaultValue);
+    return pickAspectChooserValue(aspectOpts, preferred);
+  }
   const d = field.defaultValue;
   if (d === null || d === undefined) {
     if (field.typeName === "boolean") return "false";
@@ -437,7 +502,11 @@ function buildRunInput(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const field of fields) {
-    const raw = values[field.name] ?? "";
+    const aspectOpts = aspectChooserOptionsForField(field);
+    const raw =
+      aspectOpts.length > 0
+        ? pickAspectChooserValue(aspectOpts, values[field.name])
+        : (values[field.name] ?? "");
     const trimmed = raw.trim();
     if (!trimmed && !field.required) continue;
     const typeName =
@@ -490,10 +559,16 @@ export function ReplicateModelsPanel({
   const [rowCacheVersion, setRowCacheVersion] = useState(0);
   const rowCacheRef = useRef<Map<number, ReplicateModelRow>>(new Map());
   const pendingPagesRef = useRef<Set<number>>(new Set());
-  const listQueryRef = useRef({ q: "", sort: "runs_desc" as SortId });
+  const listQueryRef = useRef({
+    q: "",
+    sort: "runs_desc" as SortId,
+    enabled: "all" as EnabledFilterId,
+  });
   const [query, setQuery] = useState("");
   const [queryApplied, setQueryApplied] = useState("");
   const [sort, setSort] = useState<SortId>("runs_desc");
+  const [enabledFilter, setEnabledFilter] =
+    useState<EnabledFilterId>("all");
   const [selected, setSelected] = useState<{
     owner: string;
     name: string;
@@ -502,6 +577,8 @@ export function ReplicateModelsPanel({
   const [progress, setProgress] = useState<ReplicateProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copyNamesBusy, setCopyNamesBusy] = useState(false);
+  const [copyNamesNote, setCopyNamesNote] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(true);
   const [listTiming, setListTiming] = useState<{
     total: number;
@@ -624,8 +701,15 @@ export function ReplicateModelsPanel({
   }, [needsLibraryMedia]);
 
   const ensureVisibleRange = useCallback(
-    async (start: number, end: number, q: string, sortId: SortId, gen: number) => {
-      listQueryRef.current = { q, sort: sortId };
+    async (
+      start: number,
+      end: number,
+      q: string,
+      sortId: SortId,
+      enabledId: EnabledFilterId,
+      gen: number,
+    ) => {
+      listQueryRef.current = { q, sort: sortId, enabled: enabledId };
       const knownTotal = totalRef.current;
       const firstPage = Math.floor(Math.max(0, start) / LIST_PAGE_SIZE);
       const lastIndex = Math.max(start, end - 1, 0);
@@ -651,13 +735,15 @@ export function ReplicateModelsPanel({
             const page = await replicateModelsListCached({
               query: q || undefined,
               sort: sortId,
+              enabled: enabledId,
               offset: pageStart,
               limit: LIST_PAGE_SIZE,
             });
             if (
               gen !== listGenRef.current ||
               listQueryRef.current.q !== q ||
-              listQueryRef.current.sort !== sortId
+              listQueryRef.current.sort !== sortId ||
+              listQueryRef.current.enabled !== enabledId
             ) {
               return;
             }
@@ -678,7 +764,8 @@ export function ReplicateModelsPanel({
             if (
               gen === listGenRef.current &&
               listQueryRef.current.q === q &&
-              listQueryRef.current.sort === sortId
+              listQueryRef.current.sort === sortId &&
+              listQueryRef.current.enabled === enabledId
             ) {
               setError(err instanceof Error ? err.message : String(err));
             }
@@ -702,7 +789,9 @@ export function ReplicateModelsPanel({
     loadedPagesRef.current = new Set();
     // Keep a provisional total from stats so we show skeletons instead of "no match".
     const provisional =
-      !queryApplied && (statsRef.current?.modelCount ?? 0) > 0
+      !queryApplied &&
+      enabledFilter === "all" &&
+      (statsRef.current?.modelCount ?? 0) > 0
         ? statsRef.current!.modelCount
         : 0;
     totalRef.current = provisional;
@@ -710,8 +799,15 @@ export function ReplicateModelsPanel({
     setListLoading(true);
     setListTiming(null);
     setRowCacheVersion((v) => v + 1);
-    void ensureVisibleRange(0, LIST_PAGE_SIZE, queryApplied, sort, gen);
-  }, [ensureVisibleRange, queryApplied, sort]);
+    void ensureVisibleRange(
+      0,
+      LIST_PAGE_SIZE,
+      queryApplied,
+      sort,
+      enabledFilter,
+      gen,
+    );
+  }, [ensureVisibleRange, queryApplied, sort, enabledFilter]);
 
   const getRow = useCallback(
     (index: number) => {
@@ -728,10 +824,11 @@ export function ReplicateModelsPanel({
         end,
         queryApplied,
         sort,
+        enabledFilter,
         listGenRef.current,
       );
     },
-    [ensureVisibleRange, queryApplied, sort],
+    [ensureVisibleRange, queryApplied, sort, enabledFilter],
   );
 
   useEffect(() => {
@@ -956,12 +1053,46 @@ export function ReplicateModelsPanel({
   }, [applyDetail, selected]);
 
   const commitSearch = useCallback((raw: string) => {
+    setCopyNamesNote(null);
     setQuery(raw);
     setQueryApplied(raw.trim());
   }, []);
 
   const applySearch = () => {
     commitSearch(query);
+  };
+
+  const onCopyMatchingNames = async () => {
+    setError(null);
+    setCopyNamesNote(null);
+    setCopyNamesBusy(true);
+    try {
+      const page = await replicateModelsListCached({
+        query: queryApplied || undefined,
+        sort,
+        enabled: enabledFilter,
+        offset: 0,
+        limit: null,
+      });
+      const lines = page.rows.map((r) => `${r.owner}/${r.name}`);
+      const text = lines.join("\n");
+      if (!text) {
+        setCopyNamesNote("Nothing to copy");
+        return;
+      }
+      await copyTextToClipboard(text);
+      setCopyNamesNote(`Copied ${lines.length.toLocaleString()}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Clipboard denials are noisy — keep them out of the global status error.
+      if (/not allowed|denied|rejected|clipboard/i.test(message)) {
+        setCopyNamesNote("Copy failed — try again");
+      } else {
+        setError(message);
+      }
+    } finally {
+      setCopyNamesBusy(false);
+    }
   };
 
   const onCrawl = async (resume: boolean) => {
@@ -1042,12 +1173,17 @@ export function ReplicateModelsPanel({
         !detail.enabled,
       );
       setDetail(d);
-      for (const [index, row] of rowCacheRef.current) {
-        if (row.owner === d.owner && row.name === d.name) {
-          rowCacheRef.current.set(index, { ...row, enabled: d.enabled });
+      if (enabledFilter !== "all") {
+        // Row may leave the current filter — reload instead of patching.
+        invalidateList();
+      } else {
+        for (const [index, row] of rowCacheRef.current) {
+          if (row.owner === d.owner && row.name === d.name) {
+            rowCacheRef.current.set(index, { ...row, enabled: d.enabled });
+          }
         }
+        setRowCacheVersion((v) => v + 1);
       }
-      setRowCacheVersion((v) => v + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1243,6 +1379,25 @@ export function ReplicateModelsPanel({
                 ) : null}
               </>
             ) : null}
+
+            {hasCatalog ? (
+              <>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={copyNamesBusy || listLoading || total === 0}
+                  title="Copy owner/name for every model in the current search and Show filter"
+                  onClick={() => void onCopyMatchingNames()}
+                >
+                  {copyNamesBusy ? "Copying…" : "Copy names"}
+                </button>
+                {copyNamesNote ? (
+                  <span className="muted lab-replicate-copy-note">
+                    {copyNamesNote}
+                  </span>
+                ) : null}
+              </>
+            ) : null}
           </div>
         ) : null}
       </header>
@@ -1256,6 +1411,7 @@ export function ReplicateModelsPanel({
             const next = e.target.value;
             setQuery(next);
             if (!next.trim() && queryApplied) {
+              setCopyNamesNote(null);
               setQueryApplied("");
             }
           }}
@@ -1269,11 +1425,32 @@ export function ReplicateModelsPanel({
           Search
         </button>
         <label className="lab-replicate-sort">
+          <span className="muted">Show</span>
+          <select
+            className="control"
+            value={enabledFilter}
+            onChange={(e) => {
+              setCopyNamesNote(null);
+              setEnabledFilter(e.target.value as EnabledFilterId);
+            }}
+            aria-label="Filter by enabled"
+          >
+            {ENABLED_FILTER_OPTIONS.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="lab-replicate-sort">
           <span className="muted">Sort</span>
           <select
             className="control"
             value={sort}
-            onChange={(e) => setSort(e.target.value as SortId)}
+            onChange={(e) => {
+              setCopyNamesNote(null);
+              setSort(e.target.value as SortId);
+            }}
             aria-label="Sort catalog"
           >
             {SORT_OPTIONS.map((o) => (
@@ -1303,7 +1480,7 @@ export function ReplicateModelsPanel({
               totalCount={total}
               getRow={getRow}
               selectedKey={selectedKey}
-              resetKey={`${queryApplied}|${sort}`}
+              resetKey={`${queryApplied}|${enabledFilter}|${sort}`}
               loading={listLoading || !statsReady}
               onVisibleRange={onVisibleRange}
               onSelect={(r) => {
@@ -1826,6 +2003,50 @@ export function ReplicateModelsPanel({
                               );
                             }
 
+                            const aspectOptions =
+                              aspectChooserOptionsForField(field);
+                            if (aspectOptions.length > 0) {
+                              const aspectValue = pickAspectChooserValue(
+                                aspectOptions,
+                                value,
+                              );
+                              return (
+                                <div
+                                  key={field.name}
+                                  className="lab-replicate-run-field"
+                                >
+                                  <div className="lab-replicate-run-field-head">
+                                    <span>
+                                      <span className="lab-replicate-run-field-name">
+                                        {field.name}
+                                      </span>
+                                      <span className="muted">
+                                        {" "}
+                                        {field.typeName}
+                                        {field.required ? " · required" : ""}
+                                      </span>
+                                    </span>
+                                  </div>
+                                  <AspectRatioChooser
+                                    value={aspectValue}
+                                    options={aspectOptions}
+                                    disabled={runBusy}
+                                    onChange={setValue}
+                                  />
+                                  {field.description ? (
+                                    <p className="muted lab-replicate-run-help">
+                                      {field.description}
+                                    </p>
+                                  ) : null}
+                                  {defaultLabel != null ? (
+                                    <p className="muted lab-replicate-run-default">
+                                      Default: {defaultLabel}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              );
+                            }
+
                             return (
                               <div
                                 key={field.name}
@@ -2089,7 +2310,8 @@ export function ReplicateModelsPanel({
         <div className="lab-replicate-status muted">
           <span>
             Models: <strong>{stats?.modelCount ?? "—"}</strong>
-            {queryApplied && total !== (stats?.modelCount ?? -1) ? (
+            {(queryApplied || enabledFilter !== "all") &&
+            total !== (stats?.modelCount ?? -1) ? (
               <> · matching {total.toLocaleString()}</>
             ) : null}
             {listLoading ? " · loading…" : null}

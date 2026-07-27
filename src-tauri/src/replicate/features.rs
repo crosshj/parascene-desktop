@@ -154,11 +154,14 @@ pub fn input_summary(model: &Value) -> Vec<InputFieldSummary> {
                 item_schema(schema, schemas)
                     .map(|item| schema_file_like(item, schemas))
                     .unwrap_or(false)
+                    || looks_like_media_url_field(name, schema)
             } else {
                 false
             };
-            // URI / file inputs — scalar or array-of-uri.
-            let file_like = format.as_deref() == Some("uri");
+            // URI / file inputs — format:uri, or string fields that clearly want a media URL
+            // (e.g. minimax audio_url without format:uri).
+            let file_like = schema_file_like(schema, schemas)
+                || (typ == "string" && looks_like_media_url_field(name, schema));
             (
                 order,
                 InputFieldSummary {
@@ -285,6 +288,48 @@ fn schema_file_like(schema: &Value, schemas: Option<&serde_json::Map<String, Val
         }
     }
     false
+}
+
+/// Heuristic for string inputs that expect a publicly reachable media URL but omit `format: uri`.
+fn looks_like_media_url_field(name: &str, schema: &Value) -> bool {
+    if schema.get("enum").is_some() {
+        return false;
+    }
+    let n = name.to_lowercase();
+    let title = schema
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let desc = schema
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let blob = format!("{n} {title} {desc}");
+
+    let urlish = n.ends_with("_url")
+        || n.ends_with("_uri")
+        || n.ends_with("_file")
+        || n == "url"
+        || n == "uri"
+        || n == "audio"
+        || n == "video"
+        || n == "image"
+        || desc.contains("publicly accessible")
+        || desc.contains("http")
+        || title.contains("url");
+    let media = blob.contains("audio")
+        || blob.contains("video")
+        || blob.contains("image")
+        || blob.contains("song")
+        || blob.contains("music")
+        || blob.contains("mp3")
+        || blob.contains("wav")
+        || blob.contains("mask")
+        || blob.contains("photo")
+        || blob.contains("picture");
+    urlish && media
 }
 
 fn local_schema_ref_name(r: &str) -> Option<&str> {
