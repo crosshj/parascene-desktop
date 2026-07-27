@@ -18,6 +18,8 @@ type Props = {
   onVisibleRange: (start: number, end: number) => void;
   /** Change to reset scroll to top (e.g. sort/filter). */
   resetKey?: string;
+  /** True while the first page (or a full list reset) is in flight. */
+  loading?: boolean;
 };
 
 export function ReplicateModelsVirtualList({
@@ -27,6 +29,7 @@ export function ReplicateModelsVirtualList({
   onSelect,
   onVisibleRange,
   resetKey,
+  loading = false,
 }: Props) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -149,9 +152,19 @@ export function ReplicateModelsVirtualList({
                 <span className="lab-replicate-row-title">
                   {r.owner}/{r.name}
                 </span>
-                <span className="muted lab-replicate-row-meta">
-                  {r.enabled ? "Enabled" : "Not enabled"} · runs{" "}
-                  {r.runCount.toLocaleString()}
+                <span className="lab-replicate-row-meta">
+                  <span
+                    className={
+                      r.enabled
+                        ? "lab-replicate-status-tag is-enabled"
+                        : "lab-replicate-status-tag is-disabled"
+                    }
+                  >
+                    {r.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                  <span className="muted">
+                    runs {r.runCount.toLocaleString()}
+                  </span>
                 </span>
                 {r.description ? (
                   <span className="muted lab-replicate-row-desc">
@@ -164,7 +177,9 @@ export function ReplicateModelsVirtualList({
         })}
       </div>
       {totalCount === 0 ? (
-        <p className="muted lab-replicate-empty">No models match.</p>
+        <p className="muted lab-replicate-empty">
+          {loading ? "Loading catalog…" : "No models match."}
+        </p>
       ) : null}
     </div>
   );

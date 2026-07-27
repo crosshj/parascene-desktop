@@ -121,6 +121,9 @@ pub fn input_summary(model: &Value) -> Vec<InputFieldSummary> {
     else {
         return Vec::new();
     };
+    let schemas = model
+        .pointer("/latest_version/openapi_schema/components/schemas")
+        .and_then(|v| v.as_object());
     let required: Vec<String> = model
         .pointer("/latest_version/openapi_schema/components/schemas/Input/required")
         .and_then(|v| v.as_array())
@@ -138,19 +141,24 @@ pub fn input_summary(model: &Value) -> Vec<InputFieldSummary> {
                 .get("x-order")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(999);
-            let typ = schema
-                .get("type")
+            let enum_values = extract_enum_values(schema, schemas);
+            let typ = resolve_field_type(schema, schemas, enum_values.as_ref());
+            let format = schema
+                .get("format")
                 .and_then(|v| v.as_str())
-                .unwrap_or(
-                    if schema.get("allOf").is_some() {
-                        "enum"
-                    } else if schema.get("anyOf").is_some() {
-                        "union"
-                    } else {
-                        "unknown"
-                    },
-                )
-                .to_string();
+                .map(|s| s.to_string());
+            let default_value = schema.get("default").cloned();
+            let minimum = schema_number(schema, "minimum");
+            let maximum = schema_number(schema, "maximum");
+            let array_item_file_like = if typ == "array" {
+                item_schema(schema, schemas)
+                    .map(|item| schema_file_like(item, schemas))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            // URI / file inputs — scalar or array-of-uri.
+            let file_like = format.as_deref() == Some("uri");
             (
                 order,
                 InputFieldSummary {
@@ -165,12 +173,194 @@ pub fn input_summary(model: &Value) -> Vec<InputFieldSummary> {
                         .get("description")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
+                    format,
+                    default_value,
+                    enum_values,
+                    minimum,
+                    maximum,
+                    file_like,
+                    array_item_file_like,
                 },
             )
         })
         .collect();
     fields.sort_by_key(|(o, _)| *o);
     fields.into_iter().map(|(_, f)| f).collect()
+}
+
+fn resolve_field_type(
+    schema: &Value,
+    schemas: Option<&serde_json::Map<String, Value>>,
+    enum_values: Option<&Vec<String>>,
+) -> String {
+    if let Some(t) = schema.get("type").and_then(|v| v.as_str()) {
+        return t.to_string();
+    }
+    if let Some(t) = resolve_type_from_schema(schema, schemas) {
+        return t;
+    }
+    if let Some(vals) = enum_values {
+        if !vals.is_empty() && vals.iter().all(|v| v.parse::<i64>().is_ok()) {
+            return "integer".to_string();
+        }
+        if !vals.is_empty() && vals.iter().all(|v| v.parse::<f64>().is_ok()) {
+            return "number".to_string();
+        }
+        if !vals.is_empty() {
+            return "string".to_string();
+        }
+    }
+    if schema.get("allOf").is_some() || schema.get("enum").is_some() {
+        return "enum".to_string();
+    }
+    if schema.get("anyOf").is_some() || schema.get("oneOf").is_some() {
+        return "union".to_string();
+    }
+    "unknown".to_string()
+}
+
+fn resolve_type_from_schema(
+    schema: &Value,
+    schemas: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
+    if let Some(t) = schema.get("type").and_then(|v| v.as_str()) {
+        return Some(t.to_string());
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        let Some(items) = schema.get(key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for item in items {
+            if let Some(t) = resolve_type_from_schema(item, schemas) {
+                return Some(t);
+            }
+        }
+    }
+    if let Some(name) = schema
+        .get("$ref")
+        .and_then(|v| v.as_str())
+        .and_then(local_schema_ref_name)
+    {
+        if let Some(resolved) = schemas.and_then(|m| m.get(name)) {
+            return resolve_type_from_schema(resolved, schemas);
+        }
+    }
+    None
+}
+
+fn schema_number(schema: &Value, key: &str) -> Option<f64> {
+    schema.get(key).and_then(|v| {
+        v.as_f64()
+            .or_else(|| v.as_i64().map(|n| n as f64))
+            .or_else(|| v.as_u64().map(|n| n as f64))
+    })
+}
+
+fn item_schema<'a>(
+    schema: &'a Value,
+    schemas: Option<&'a serde_json::Map<String, Value>>,
+) -> Option<&'a Value> {
+    let items = schema.get("items")?;
+    if let Some(name) = items
+        .get("$ref")
+        .and_then(|v| v.as_str())
+        .and_then(local_schema_ref_name)
+    {
+        return schemas.and_then(|m| m.get(name));
+    }
+    Some(items)
+}
+
+fn schema_file_like(schema: &Value, schemas: Option<&serde_json::Map<String, Value>>) -> bool {
+    if schema.get("format").and_then(|v| v.as_str()) == Some("uri") {
+        return true;
+    }
+    if let Some(name) = schema
+        .get("$ref")
+        .and_then(|v| v.as_str())
+        .and_then(local_schema_ref_name)
+    {
+        if let Some(resolved) = schemas.and_then(|m| m.get(name)) {
+            return schema_file_like(resolved, schemas);
+        }
+    }
+    false
+}
+
+fn local_schema_ref_name(r: &str) -> Option<&str> {
+    r.strip_prefix("#/components/schemas/")
+}
+
+fn schema_enum_array(schema: &Value) -> Option<&Vec<Value>> {
+    schema.get("enum").and_then(|v| v.as_array())
+}
+
+/// Resolve inline `enum`, `allOf`/`anyOf` enums, and local `$ref`s under components/schemas.
+fn extract_enum_values(
+    schema: &Value,
+    schemas: Option<&serde_json::Map<String, Value>>,
+) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+
+    if let Some(arr) = schema_enum_array(schema) {
+        push_enum_strings(arr, &mut out);
+    }
+
+    for key in ["allOf", "anyOf", "oneOf"] {
+        let Some(items) = schema.get(key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for item in items {
+            if let Some(arr) = schema_enum_array(item) {
+                push_enum_strings(arr, &mut out);
+            }
+            if let Some(name) = item
+                .get("$ref")
+                .and_then(|v| v.as_str())
+                .and_then(local_schema_ref_name)
+            {
+                if let Some(resolved) = schemas.and_then(|m| m.get(name)) {
+                    if let Some(arr) = schema_enum_array(resolved) {
+                        push_enum_strings(arr, &mut out);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(name) = schema
+        .get("$ref")
+        .and_then(|v| v.as_str())
+        .and_then(local_schema_ref_name)
+    {
+        if let Some(resolved) = schemas.and_then(|m| m.get(name)) {
+            if let Some(arr) = schema_enum_array(resolved) {
+                push_enum_strings(arr, &mut out);
+            }
+        }
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        let mut deduped = Vec::new();
+        for v in out {
+            if !deduped.iter().any(|x| x == &v) {
+                deduped.push(v);
+            }
+        }
+        Some(deduped)
+    }
+}
+
+fn push_enum_strings(arr: &[Value], out: &mut Vec<String>) {
+    for x in arr {
+        if let Some(s) = x.as_str() {
+            out.push(s.to_string());
+        } else if !x.is_null() {
+            out.push(x.to_string());
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -181,4 +371,13 @@ pub struct InputFieldSummary {
     pub type_name: String,
     pub required: bool,
     pub description: Option<String>,
+    pub format: Option<String>,
+    pub default_value: Option<Value>,
+    pub enum_values: Option<Vec<String>>,
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+    /// True when the field expects a URI/file scalar.
+    pub file_like: bool,
+    /// True when `type` is array and items are URI/file.
+    pub array_item_file_like: bool,
 }

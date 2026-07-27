@@ -22,7 +22,7 @@ http = "1"
 http-range = "0.1"
 percent-encoding = "2"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 tokio = { version = "1", features = ["fs", "io-util", "time"] }
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }

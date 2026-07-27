@@ -36,8 +36,8 @@ export function labModuleGate(
   id: LabModuleId,
   ctx: LabGateContext,
 ): LabGate | null {
-  // Replicate models is never hard-gated: local catalog browse works without a
-  // token; the panel shows Settings only after BE confirms token is missing.
+  // Replicate models / predictions are never hard-gated: local catalog and run
+  // history work without a token; panels surface Settings when needed.
 
   const needsGroups =
     id === "create" || id === "mutate" || id === "a2v" || id === "frame";

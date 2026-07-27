@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
@@ -141,6 +142,18 @@ pub struct ModelListPage {
     pub total: u64,
     pub offset: u64,
     pub limit: u64,
+    /// Wall-clock ms for this list call (index load / sort / page). For Lab status.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing_ms: Option<ListTimingMs>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTimingMs {
+    pub total: u64,
+    pub index_load: u64,
+    pub sort: u64,
+    pub cache_hit: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,17 +218,135 @@ pub fn save_checkpoint(dir: &Path, cp: &CrawlCheckpoint) -> Result<(), String> {
 }
 
 pub fn load_index_map(dir: &Path) -> Result<HashMap<String, ModelIndexRow>, String> {
-    let Some(v) = read_json_file(&index_path(dir))? else {
-        return Ok(HashMap::new());
+    let (guard, _, _) = cached_index(dir)?;
+    let cache = guard
+        .as_ref()
+        .ok_or_else(|| "Index cache missing after load".to_string())?;
+    Ok(cache.map.clone())
+}
+
+struct IndexMemCache {
+    /// Absolute path of the index file this cache was built from.
+    path: PathBuf,
+    map: HashMap<String, ModelIndexRow>,
+    /// Lazily filled sorted snapshots keyed by sort id.
+    sorted: HashMap<String, Vec<ModelIndexRow>>,
+}
+
+fn index_mem() -> &'static Mutex<Option<IndexMemCache>> {
+    static CACHE: OnceLock<Mutex<Option<IndexMemCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+#[derive(Deserialize)]
+struct IndexFile {
+    #[serde(default)]
+    models: Vec<ModelIndexRow>,
+}
+
+fn read_index_rows(dir: &Path) -> Result<Vec<ModelIndexRow>, String> {
+    let path = index_path(dir);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    // Direct typed deserialize — avoid Value DOM + clone + second pass on ~6MB.
+    match serde_json::from_str::<IndexFile>(&raw) {
+        Ok(file) => Ok(file.models),
+        Err(_) => {
+            // Legacy: bare array.
+            match serde_json::from_str::<Vec<ModelIndexRow>>(&raw) {
+                Ok(rows) => Ok(rows),
+                Err(e) => Err(format!("Could not parse models-index.json: {e}")),
+            }
+        }
+    }
+}
+
+fn ensure_sorted(cache: &mut IndexMemCache, sort_key: &str) -> u64 {
+    if cache.sorted.contains_key(sort_key) {
+        return 0;
+    }
+    let t0 = std::time::Instant::now();
+    let mut rows: Vec<ModelIndexRow> = cache.map.values().cloned().collect();
+    sort_rows(&mut rows, sort_key);
+    cache.sorted.insert(sort_key.to_string(), rows);
+    t0.elapsed().as_millis() as u64
+}
+
+fn cached_index(
+    dir: &Path,
+) -> Result<(std::sync::MutexGuard<'static, Option<IndexMemCache>>, u64, bool), String> {
+    let path = index_path(dir);
+    let mut guard = index_mem()
+        .lock()
+        .map_err(|_| "Index cache lock poisoned".to_string())?;
+    let needs_load = match guard.as_ref() {
+        Some(c) => c.path != path,
+        None => true,
     };
-    let rows: Vec<ModelIndexRow> = if let Some(arr) = v.get("models").and_then(|x| x.as_array()) {
-        serde_json::from_value(Value::Array(arr.clone())).unwrap_or_default()
-    } else if v.is_array() {
-        serde_json::from_value(v).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    Ok(rows.into_iter().map(|r| (r.key(), r)).collect())
+    let mut load_ms = 0u64;
+    if needs_load {
+        let t0 = std::time::Instant::now();
+        let rows = read_index_rows(dir)?;
+        let map: HashMap<String, ModelIndexRow> =
+            rows.into_iter().map(|r| (r.key(), r)).collect();
+        let mut cache = IndexMemCache {
+            path,
+            map,
+            sorted: HashMap::new(),
+        };
+        // Default Lab sort — pay once on cold load, not on first page request.
+        ensure_sorted(&mut cache, "runs_desc");
+        load_ms = t0.elapsed().as_millis() as u64;
+        eprintln!(
+            "[replicate] index cold load: {load_ms}ms · {} models",
+            cache.map.len()
+        );
+        *guard = Some(cache);
+    }
+    Ok((guard, load_ms, !needs_load))
+}
+
+fn sort_rows(rows: &mut [ModelIndexRow], sort_key: &str) {
+    match sort_key {
+        "runs_asc" => rows.sort_by(|a, b| {
+            a.run_count
+                .cmp(&b.run_count)
+                .then_with(|| a.key().cmp(&b.key()))
+        }),
+        "owner_asc" => rows.sort_by(|a, b| {
+            a.owner
+                .to_lowercase()
+                .cmp(&b.owner.to_lowercase())
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }),
+        "owner_desc" => rows.sort_by(|a, b| {
+            b.owner
+                .to_lowercase()
+                .cmp(&a.owner.to_lowercase())
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }),
+        "name_asc" => rows.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.owner.to_lowercase().cmp(&b.owner.to_lowercase()))
+        }),
+        "name_desc" => rows.sort_by(|a, b| {
+            b.name
+                .to_lowercase()
+                .cmp(&a.name.to_lowercase())
+                .then_with(|| a.owner.to_lowercase().cmp(&b.owner.to_lowercase()))
+        }),
+        "owner_name_asc" => rows.sort_by(|a, b| a.key().to_lowercase().cmp(&b.key().to_lowercase())),
+        // default: runs_desc
+        _ => rows.sort_by(|a, b| {
+            b.run_count
+                .cmp(&a.run_count)
+                .then_with(|| a.key().cmp(&b.key()))
+        }),
+    }
 }
 
 pub fn save_index_map(dir: &Path, map: &HashMap<String, ModelIndexRow>) -> Result<(), String> {
@@ -231,7 +362,20 @@ pub fn save_index_map(dir: &Path, map: &HashMap<String, ModelIndexRow>) -> Resul
         "models": rows,
     });
     let raw = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    atomic_write(&index_path(dir), &raw)
+    atomic_write(&index_path(dir), &raw)?;
+    // Refresh memory cache from the map we just wrote (avoid re-parse).
+    let path = index_path(dir);
+    let owned: HashMap<String, ModelIndexRow> = map.clone();
+    if let Ok(mut guard) = index_mem().lock() {
+        let mut cache = IndexMemCache {
+            path,
+            map: owned,
+            sorted: HashMap::new(),
+        };
+        ensure_sorted(&mut cache, "runs_desc");
+        *guard = Some(cache);
+    }
+    Ok(())
 }
 
 pub fn row_from_api_model(dir: &Path, model: &Value) -> Option<ModelIndexRow> {
@@ -326,96 +470,99 @@ pub fn list_cached(
     offset: u64,
     limit: Option<u64>,
 ) -> Result<ModelListPage, String> {
+    let t_all = std::time::Instant::now();
     let dir = replicate_dir()?;
-    let map = load_index_map(&dir)?;
     let q = query
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
     let feat = features.unwrap_or_default();
-    let mut rows: Vec<ModelIndexRow> = map.into_values().collect();
-    rows.retain(|r| {
-        if let Some(ref q) = q {
-            let hay = format!(
-                "{}/{} {}",
-                r.owner,
-                r.name,
-                r.description.as_deref().unwrap_or("")
-            )
-            .to_lowercase();
-            if !hay.contains(q) {
-                return false;
-            }
-        }
-        if !feat.is_empty() {
-            for f in &feat {
-                if !r.features.iter().any(|x| x == f) {
+    let sort_key = sort.as_deref().unwrap_or("runs_desc").to_string();
+
+    let (mut guard, index_load_ms, cache_hit) = cached_index(&dir)?;
+    let cache = guard
+        .as_mut()
+        .ok_or_else(|| "Index cache missing after load".to_string())?;
+
+    // Unfiltered: reuse a cached sorted snapshot and only clone the page slice.
+    let (total, page_rows, page_limit, sort_ms) = if q.is_none() && feat.is_empty() {
+        let sort_ms = ensure_sorted(cache, &sort_key);
+        let sorted = cache
+            .sorted
+            .get(&sort_key)
+            .ok_or_else(|| "Sorted index missing".to_string())?;
+        let total = sorted.len() as u64;
+        let off = offset as usize;
+        let lim = match limit {
+            None | Some(0) => sorted.len().saturating_sub(off),
+            Some(n) => (n as usize).clamp(1, 100_000),
+        };
+        let page_rows: Vec<ModelIndexRow> = sorted.iter().skip(off).take(lim).cloned().collect();
+        (total, page_rows, lim as u64, sort_ms)
+    } else {
+        let t_sort = std::time::Instant::now();
+        let mut rows: Vec<ModelIndexRow> = cache.map.values().cloned().collect();
+        rows.retain(|r| {
+            if let Some(ref q) = q {
+                let hay = format!(
+                    "{}/{} {}",
+                    r.owner,
+                    r.name,
+                    r.description.as_deref().unwrap_or("")
+                )
+                .to_lowercase();
+                if !hay.contains(q) {
                     return false;
                 }
             }
-        }
-        true
-    });
-
-    let sort_key = sort.as_deref().unwrap_or("runs_desc");
-    match sort_key {
-        "runs_asc" => rows.sort_by(|a, b| {
-            a.run_count
-                .cmp(&b.run_count)
-                .then_with(|| a.key().cmp(&b.key()))
-        }),
-        "owner_asc" => rows.sort_by(|a, b| {
-            a.owner
-                .to_lowercase()
-                .cmp(&b.owner.to_lowercase())
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        }),
-        "owner_desc" => rows.sort_by(|a, b| {
-            b.owner
-                .to_lowercase()
-                .cmp(&a.owner.to_lowercase())
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        }),
-        "name_asc" => rows.sort_by(|a, b| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.owner.to_lowercase().cmp(&b.owner.to_lowercase()))
-        }),
-        "name_desc" => rows.sort_by(|a, b| {
-            b.name
-                .to_lowercase()
-                .cmp(&a.name.to_lowercase())
-                .then_with(|| a.owner.to_lowercase().cmp(&b.owner.to_lowercase()))
-        }),
-        "owner_name_asc" => rows.sort_by(|a, b| a.key().to_lowercase().cmp(&b.key().to_lowercase())),
-        // default: runs_desc
-        _ => rows.sort_by(|a, b| {
-            b.run_count
-                .cmp(&a.run_count)
-                .then_with(|| a.key().cmp(&b.key()))
-        }),
-    }
-
-    let total = rows.len() as u64;
-    let off = offset as usize;
-    let lim = match limit {
-        None | Some(0) => rows.len().saturating_sub(off),
-        Some(n) => (n as usize).clamp(1, 100_000),
+            if !feat.is_empty() {
+                for f in &feat {
+                    if !r.features.iter().any(|x| x == f) {
+                        return false;
+                    }
+                }
+            }
+            true
+        });
+        sort_rows(&mut rows, &sort_key);
+        let sort_ms = t_sort.elapsed().as_millis() as u64;
+        let total = rows.len() as u64;
+        let off = offset as usize;
+        let lim = match limit {
+            None | Some(0) => rows.len().saturating_sub(off),
+            Some(n) => (n as usize).clamp(1, 100_000),
+        };
+        let page_rows = rows.into_iter().skip(off).take(lim).collect();
+        (total, page_rows, lim as u64, sort_ms)
     };
-    let page: Vec<ModelListRow> = rows
+
+    // Drop the lock before touching enabled-models (separate mutex).
+    drop(guard);
+
+    let page: Vec<ModelListRow> = page_rows
         .into_iter()
-        .skip(off)
-        .take(lim)
         .map(|row| {
             let enabled = is_enabled(&row.owner, &row.name);
             ModelListRow { row, enabled }
         })
         .collect();
+    let total_ms = t_all.elapsed().as_millis() as u64;
+    if index_load_ms > 50 || sort_ms > 50 || total_ms > 100 {
+        eprintln!(
+            "[replicate] list_cached: total={total_ms}ms index_load={index_load_ms}ms sort={sort_ms}ms cache_hit={cache_hit} rows={}",
+            page.len()
+        );
+    }
     Ok(ModelListPage {
         rows: page,
         total,
         offset,
-        limit: lim as u64,
+        limit: page_limit,
+        timing_ms: Some(ListTimingMs {
+            total: total_ms,
+            index_load: index_load_ms,
+            sort: sort_ms,
+            cache_hit,
+        }),
     })
 }
 

@@ -1,7 +1,12 @@
 use crate::replicate::cache::{self, CacheStats, ModelDetailDto, ModelListPage};
 use crate::replicate::enabled_models;
+use crate::replicate::files;
+use crate::replicate::history::{self, PredictionDetail, PredictionListRow};
 use crate::replicate::jobs;
+use crate::replicate::predict::{self, RunResult};
 use crate::replicate::token::{self, TokenStatus};
+use serde_json::Value;
+use std::collections::HashMap;
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -122,4 +127,53 @@ pub async fn replicate_model_update(
     name: String,
 ) -> Result<ModelDetailDto, String> {
     jobs::update_model(app, owner, name).await
+}
+
+#[tauri::command]
+pub async fn replicate_model_run(
+    app: AppHandle,
+    owner: String,
+    name: String,
+    input: Value,
+    local_files: Option<HashMap<String, Value>>,
+) -> Result<RunResult, String> {
+    predict::run_prediction(
+        app,
+        owner,
+        name,
+        input,
+        local_files.unwrap_or_default(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn replicate_model_run_cancel() -> Result<(), String> {
+    predict::request_cancel_run();
+    Ok(())
+}
+
+/// OS file dialog for a Replicate URI input. `kind`: image | audio | video | any.
+#[tauri::command]
+pub fn replicate_pick_local_file(kind: Option<String>) -> Result<Option<String>, String> {
+    files::pick_local_file(kind.as_deref().unwrap_or("any"))
+}
+
+#[tauri::command]
+pub async fn replicate_predictions_list(
+    status: Option<String>,
+    query: Option<String>,
+) -> Result<Vec<PredictionListRow>, String> {
+    tokio::task::spawn_blocking(move || history::list_predictions(status, query))
+        .await
+        .map_err(|e| format!("Predictions list task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn replicate_prediction_get(
+    prediction_id: String,
+) -> Result<Option<PredictionDetail>, String> {
+    tokio::task::spawn_blocking(move || history::get_prediction(&prediction_id))
+        .await
+        .map_err(|e| format!("Prediction get task failed: {e}"))?
 }
