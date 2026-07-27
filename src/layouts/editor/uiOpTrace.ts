@@ -11,7 +11,7 @@ export type UiOpTraceEvent = {
   ids?: string;
 };
 
-const MAX_EVENTS = 60;
+const MAX_EVENTS = 100;
 const events: UiOpTraceEvent[] = [];
 
 export function recordUiOpTrace(

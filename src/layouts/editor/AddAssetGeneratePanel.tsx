@@ -24,6 +24,7 @@ import {
   resolveAddAssetBridgeFrames,
   resolveAddAssetGenerationTiming,
   resolveAddAssetStartFrame,
+  framePathBasename,
   type BridgeFrames,
   type StartFramePreview,
 } from "./addAssetStartFrame";
@@ -35,6 +36,7 @@ import {
   withAddAssetDuration,
 } from "./stagedClip";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
+import { recordUiOpTrace } from "./uiOpTrace";
 import {
   nearestAllowedDuration,
   durationConstraintFromField,
@@ -256,6 +258,7 @@ function FramePreview({
   const aspect = PROJECT_ASPECT_OPTIONS.find((o) => o.id === aspectRatio);
   const w = aspect?.w ?? 16;
   const h = aspect?.h ?? 9;
+  const hasUsableFrame = Boolean(preview?.framePath?.trim());
   return (
     <div
       className={`add-asset-generate-frame-preview${loading ? " is-loading" : ""}`}
@@ -273,8 +276,15 @@ function FramePreview({
         <p className="muted add-asset-generate-field-placeholder">
           {loadingLabel}
         </p>
-      ) : preview?.previewUrl ? (
+      ) : hasUsableFrame && preview?.previewUrl ? (
         <img src={preview.previewUrl} alt={alt} draggable={false} />
+      ) : preview?.previewUrl ? (
+        <>
+          <img src={preview.previewUrl} alt={alt} draggable={false} />
+          <p className="muted add-asset-generate-field-placeholder">
+            Preview only — no local still file to send as start image.
+          </p>
+        </>
       ) : (
         <p className="muted add-asset-generate-field-placeholder">{emptyLabel}</p>
       )}
@@ -617,6 +627,19 @@ export function AddAssetGeneratePanel({
   const handleGenerate = () => {
     if (phase !== "form" || !prompt.trim()) return;
 
+    const abortGenerate = (reason: string, message: string) => {
+      recordUiOpTrace({
+        type: "add_asset_generate_abort",
+        clipId: clip.id,
+        kind: isReplicate ? "replicate" : "blue",
+        reason: reason.slice(0, 200),
+      });
+      onDraftChange?.({
+        ...(clip.addAssetDraft ?? {}),
+        lastError: message,
+      });
+    };
+
     void (async () => {
       const timing = resolveAddAssetGenerationTiming(
         timeline,
@@ -627,7 +650,14 @@ export function AddAssetGeneratePanel({
       const clipWithDuration = withAddAssetDuration(clip, timing.durationSec);
 
       if (isReplicate) {
-        if (!selectedReplicateModel || !replicateValidation?.ok) return;
+        if (!selectedReplicateModel || !replicateValidation?.ok) {
+          abortGenerate(
+            "validation_blocked",
+            replicateValidation?.blockers[0] ??
+              "Replicate run is not ready — check model and start frame.",
+          );
+          return;
+        }
         // Defense in depth — identical check before any network.
         const recheck = validateReplicateRun({
           inputs: selectedReplicateModel.inputs,
@@ -642,7 +672,13 @@ export function AddAssetGeneratePanel({
           hasMotionVideo: Boolean(motionVideoPath),
           prompt,
         });
-        if (!recheck.ok) return;
+        if (!recheck.ok) {
+          abortGenerate(
+            "recheck_blocked",
+            recheck.blockers[0] ?? "Replicate run is not valid.",
+          );
+          return;
+        }
 
         const freshStart = await resolveAddAssetStartFrame(
           timeline,
@@ -660,9 +696,20 @@ export function AddAssetGeneratePanel({
             !freshBridge?.first.framePath?.trim() ||
             !freshBridge.last.framePath?.trim()
           ) {
+            abortGenerate(
+              "missing_bridge_frames",
+              "Could not resolve local first/last frame stills. Place image or video clips on both sides, ensure they are downloaded, then Refresh.",
+            );
             return;
           }
           endFrame = freshBridge.last;
+          recordUiOpTrace({
+            type: "add_asset_generate_start",
+            clipId: clip.id,
+            kind: "first_last",
+            ids: selectedReplicateModel.id,
+            reason: `first=${framePathBasename(freshBridge.first.framePath)} last=${framePathBasename(freshBridge.last.framePath)}`,
+          });
           onStartGeneration({
             clip: clipWithDuration,
             prompt,
@@ -686,7 +733,20 @@ export function AddAssetGeneratePanel({
         }
 
         if (resolvedContinuityMode === "motion_match") {
-          if (!freshStart.framePath?.trim() || !motionVideoPath) return;
+          if (!freshStart.framePath?.trim() || !motionVideoPath) {
+            abortGenerate(
+              "missing_motion_inputs",
+              "Motion match needs a character still and a previous video clip on the timeline.",
+            );
+            return;
+          }
+          recordUiOpTrace({
+            type: "add_asset_generate_start",
+            clipId: clip.id,
+            kind: "motion_match",
+            ids: selectedReplicateModel.id,
+            reason: `still=${framePathBasename(freshStart.framePath)}`,
+          });
           onStartGeneration({
             clip: clipWithDuration,
             prompt,
@@ -709,7 +769,20 @@ export function AddAssetGeneratePanel({
           return;
         }
 
-        if (!freshStart.framePath?.trim()) return;
+        if (!freshStart.framePath?.trim()) {
+          abortGenerate(
+            "missing_start_frame",
+            "Could not resolve a local start-frame still from the previous clip. Download the clip, use an image or video prior, then Refresh.",
+          );
+          return;
+        }
+        recordUiOpTrace({
+          type: "add_asset_generate_start",
+          clipId: clip.id,
+          kind: "start_frame",
+          ids: selectedReplicateModel.id,
+          reason: `start=${framePathBasename(freshStart.framePath)}`,
+        });
         onStartGeneration({
           clip: clipWithDuration,
           prompt,
@@ -743,6 +816,10 @@ export function AddAssetGeneratePanel({
           !freshBridge?.first.framePath?.trim() ||
           !freshBridge.last.framePath?.trim()
         ) {
+          abortGenerate(
+            "missing_bridge_frames",
+            "Could not resolve local first/last frame stills for generation.",
+          );
           return;
         }
         onStartGeneration({
@@ -763,7 +840,13 @@ export function AddAssetGeneratePanel({
         clip,
         aspectRatio,
       );
-      if (!freshStart.framePath?.trim()) return;
+      if (!freshStart.framePath?.trim()) {
+        abortGenerate(
+          "missing_start_frame",
+          "Could not resolve a local start-frame still from the previous clip.",
+        );
+        return;
+      }
       onStartGeneration({
         clip: clipWithDuration,
         prompt,
@@ -1307,7 +1390,7 @@ export function AddAssetGeneratePanel({
                 loading={framesLoading}
                 loadingLabel="Loading start frame…"
                 preview={startFrame}
-                emptyLabel="No prior video clip — generation will start without a still."
+                emptyLabel="No prior clip with a local still — place an image or video before this gap."
                 alt="Start frame from previous clip"
               />
             </div>

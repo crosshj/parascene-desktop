@@ -35,11 +35,11 @@ describe("uiOpTrace", () => {
 
   it("caps the ring buffer", () => {
     clearUiOpTrace();
-    for (let i = 0; i < 70; i += 1) {
+    for (let i = 0; i < 110; i += 1) {
       recordUiOpTrace({ type: `e${i}` });
     }
     const rows = getUiOpTrace();
-    expect(rows).toHaveLength(60);
+    expect(rows).toHaveLength(100);
     expect(rows[0]?.type).toBe("e10");
     clearUiOpTrace();
   });

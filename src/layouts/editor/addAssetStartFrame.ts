@@ -17,6 +17,7 @@ import {
   normalizeFraming,
   type StagedClipFraming,
 } from "./stagedClip";
+import { recordUiOpTrace } from "./uiOpTrace";
 
 export type StartFramePreview = {
   previewUrl: string | null;
@@ -236,12 +237,43 @@ export function timelineSecToSongSec(
   return clipSourceSec(audio, timelineSec);
 }
 
+/** True when a filesystem path looks like a still (not a video). */
+export function looksLikeImagePath(path: string | null | undefined): boolean {
+  const trimmed = path?.trim() ?? "";
+  if (!trimmed) return false;
+  const base = trimmed.split(/[/\\]/).pop() ?? trimmed;
+  const dot = base.lastIndexOf(".");
+  if (dot < 0 || dot === base.length - 1) return false;
+  const ext = base.slice(dot + 1).toLowerCase();
+  return (
+    ext === "png" ||
+    ext === "jpg" ||
+    ext === "jpeg" ||
+    ext === "webp" ||
+    ext === "gif" ||
+    ext === "bmp" ||
+    ext === "tif" ||
+    ext === "tiff" ||
+    ext === "heic" ||
+    ext === "avif"
+  );
+}
+
 function isImagePriorClip(
   clip: TimelineClip,
   creation: Creation | undefined,
 ): boolean {
   if (clip.kind === "image") return true;
-  return creation?.mediaType === "image";
+  if (creation?.mediaType === "image") return true;
+  // Defense: catalog type can be wrong/missing; extension still routes to framing.
+  return looksLikeImagePath(creation?.localPath);
+}
+
+/** Basename only — safe for UI diagnostics Copy. */
+export function framePathBasename(path: string | null | undefined): string {
+  const trimmed = path?.trim() ?? "";
+  if (!trimmed) return "";
+  return trimmed.split(/[/\\]/).pop() ?? trimmed;
 }
 
 type FrameRole = "start" | "end";
@@ -321,6 +353,13 @@ async function resolveFrameFromNeighborClip(opts: {
   const [creation] = await getCreations([assetId]);
   let sourcePath = creation?.localPath?.trim() || null;
   if (!sourcePath) {
+    recordUiOpTrace({
+      type: "add_asset_frame_missing_local",
+      clipId: neighbor.id,
+      kind: neighbor.kind ?? creation?.mediaType ?? "?",
+      ids: assetId,
+      reason: `${role}:no_local_path`,
+    });
     return {
       previewUrl: null,
       note: opts.missingLocalNote,
@@ -330,7 +369,7 @@ async function resolveFrameFromNeighborClip(opts: {
   }
 
   if (creation && isImagePriorClip(neighbor, creation)) {
-    return applyNeighborFraming({
+    const framed = await applyNeighborFraming({
       sourcePath,
       framing,
       aspectRatio,
@@ -340,6 +379,14 @@ async function resolveFrameFromNeighborClip(opts: {
       fallbackPreviewUrl:
         creationDetailUrl(creation) ?? creationPreviewUrl(creation),
     });
+    recordUiOpTrace({
+      type: "add_asset_frame_resolved",
+      clipId: neighbor.id,
+      kind: "image",
+      ids: assetId,
+      reason: `${role}:image path=${framePathBasename(framed.framePath) || "none"} framing=${framed.framing ?? framing}`,
+    });
+    return framed;
   }
 
   const frameTimeSec =
@@ -373,7 +420,7 @@ async function resolveFrameFromNeighborClip(opts: {
       sourcePath,
       timeSec: frameTimeSec,
     });
-    return applyNeighborFraming({
+    const framed = await applyNeighborFraming({
       sourcePath: frame.path,
       framing,
       aspectRatio,
@@ -382,14 +429,69 @@ async function resolveFrameFromNeighborClip(opts: {
       frameTimeSec,
       fallbackPreviewUrl: frame.mediaUrl ?? previewUrl,
     });
-  } catch {
+    recordUiOpTrace({
+      type: "add_asset_frame_resolved",
+      clipId: neighbor.id,
+      kind: "video",
+      ids: assetId,
+      reason: `${role}:video path=${framePathBasename(framed.framePath) || "none"} t=${frameTimeSec?.toFixed(2) ?? "?"}`,
+    });
+    return framed;
+  } catch (extractError) {
+    // Stills mis-typed as video fail Duration probe; frame as image instead.
+    if (
+      looksLikeImagePath(sourcePath) ||
+      creation?.mediaType === "image" ||
+      neighbor.kind === "image"
+    ) {
+      recordUiOpTrace({
+        type: "add_asset_frame_image_fallback",
+        clipId: neighbor.id,
+        kind: neighbor.kind ?? creation?.mediaType ?? "image",
+        ids: assetId,
+        reason: `${role}:extract_failed→image ${extractError instanceof Error ? extractError.message : String(extractError)}`.slice(
+          0,
+          180,
+        ),
+      });
+      const framed = await applyNeighborFraming({
+        sourcePath,
+        framing,
+        aspectRatio,
+        fromImage: true,
+        role,
+        frameTimeSec: null,
+        fallbackPreviewUrl: creation
+          ? (creationDetailUrl(creation) ??
+            creationPreviewUrl(creation) ??
+            previewUrl)
+          : previewUrl,
+      });
+      recordUiOpTrace({
+        type: "add_asset_frame_resolved",
+        clipId: neighbor.id,
+        kind: "image_fallback",
+        ids: assetId,
+        reason: `${role}:image_fallback path=${framePathBasename(framed.framePath) || "none"}`,
+      });
+      return framed;
+    }
+    // Thumb-only is NOT a usable start_image — never claim success in the note.
+    recordUiOpTrace({
+      type: "add_asset_frame_extract_fail",
+      clipId: neighbor.id,
+      kind: neighbor.kind ?? creation?.mediaType ?? "video",
+      ids: assetId,
+      reason: `${role}:${extractError instanceof Error ? extractError.message : String(extractError)}`.slice(
+        0,
+        180,
+      ),
+    });
     return {
       previewUrl,
-      note: previewUrl
-        ? framingFallbackNote(false, role)
-        : opts.extractFailedNote,
+      note: opts.extractFailedNote,
       framePath: null,
-      frameTimeSec: previewUrl ? frameTimeSec : null,
+      frameTimeSec: null,
       framing,
     };
   }

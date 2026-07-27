@@ -409,6 +409,8 @@ pub async fn run_prediction(
         let mut upload_index = 0usize;
         let mut sorted: Vec<(String, Value)> = local_files.into_iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        let obj_keys_from_local: Vec<String> =
+            sorted.iter().map(|(k, _)| k.clone()).collect();
         let mut obj = input.as_object().cloned().unwrap_or_default();
 
         async fn upload_one(
@@ -451,7 +453,9 @@ pub async fn run_prediction(
                 Value::String(path) => {
                     let path_trim = path.trim();
                     if path_trim.is_empty() {
-                        continue;
+                        return Err(format!(
+                            "Replicate local file for “{field}” is empty. Refusing to create a prediction without a real file (models treat missing image inputs as '')."
+                        ));
                     }
                     upload_index += 1;
                     let uri = upload_one(
@@ -465,17 +469,26 @@ pub async fn run_prediction(
                         &name,
                     )
                     .await?;
+                    if uri.trim().is_empty() {
+                        return Err(format!(
+                            "Replicate upload for “{field}” returned an empty URI."
+                        ));
+                    }
                     obj.insert(field, Value::String(uri));
                 }
                 Value::Array(paths) => {
                     let mut uris: Vec<Value> = Vec::new();
                     for path_v in paths {
                         let Some(path) = path_v.as_str() else {
-                            continue;
+                            return Err(format!(
+                                "Replicate localFiles[“{field}”] array entry must be a path string."
+                            ));
                         };
                         let path_trim = path.trim();
                         if path_trim.is_empty() {
-                            continue;
+                            return Err(format!(
+                                "Replicate localFiles[“{field}”] contains an empty path."
+                            ));
                         }
                         upload_index += 1;
                         let uri = upload_one(
@@ -489,13 +502,40 @@ pub async fn run_prediction(
                             &name,
                         )
                         .await?;
+                        if uri.trim().is_empty() {
+                            return Err(format!(
+                                "Replicate upload for “{field}” returned an empty URI."
+                            ));
+                        }
                         uris.push(Value::String(uri));
                     }
-                    if !uris.is_empty() {
-                        obj.insert(field, Value::Array(uris));
+                    if uris.is_empty() {
+                        return Err(format!(
+                            "Replicate localFiles[“{field}”] produced no uploaded URIs."
+                        ));
                     }
+                    obj.insert(field, Value::Array(uris));
                 }
-                _ => {}
+                other => {
+                    return Err(format!(
+                        "Replicate localFiles[“{field}”] has unsupported value type ({other}). Expected a path string or array of paths."
+                    ));
+                }
+            }
+        }
+        // Defense: every localFiles key must now be a non-empty URI in input.
+        for field in obj_keys_from_local.iter() {
+            let ok = match obj.get(field) {
+                Some(Value::String(s)) => !s.trim().is_empty(),
+                Some(Value::Array(arr)) => arr.iter().any(|v| {
+                    v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)
+                }),
+                _ => false,
+            };
+            if !ok {
+                return Err(format!(
+                    "Replicate input “{field}” is missing after local file upload. Refusing to create prediction (would send empty image to the model)."
+                ));
             }
         }
         input = Value::Object(obj);

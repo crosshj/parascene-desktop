@@ -82,8 +82,9 @@ export function UiDiagnosticsModal({ open, onClose }: Props) {
       >
         <h2 id="ui-diagnostics-title">UI diagnostics</h2>
         <p className="muted ui-diagnostics-lead">
-          Snapshot of pointer capture, drag state, and what is on top of the
-          screen. Use this when clicks or panel resize stop working.
+          Snapshot of pointer capture, drag state, add-asset/Replicate traces,
+          and what is on top of the screen. Use this when clicks freeze or
+          timeline fill fails without a clear reason.
         </p>
         {report ? (
           <ul className="ui-diagnostics-notes">

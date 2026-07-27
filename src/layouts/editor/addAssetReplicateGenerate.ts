@@ -19,8 +19,9 @@ import {
   validateReplicateRun,
   type ReplicateVideoContinuity,
 } from "./replicateRunConstraints";
-import type { StartFramePreview } from "./addAssetStartFrame";
 import {
+  framePathBasename,
+  type StartFramePreview,
   visualLayerBeforePlaceholder,
 } from "./addAssetStartFrame";
 import {
@@ -29,6 +30,7 @@ import {
   normalizeReplicateTweaks,
   type ReplicateVideoTweaks,
 } from "./replicateVideoTweaks";
+import { recordUiOpTrace } from "./uiOpTrace";
 
 /** Thrown when Replicate succeeded but the local download/import did not. */
 export class ReplicatePendingDownloadError extends Error {
@@ -52,6 +54,37 @@ export function isDownloadRetryableError(message: string): boolean {
     m.includes("could not be imported") ||
     m.includes("import produced no")
   );
+}
+
+/**
+ * Require non-empty local paths for image/video Replicate fields.
+ * Prevents omit → model default `''` (Vidu E006 start_image got '').
+ */
+export function assertReplicateLocalFiles(
+  localFiles: Record<string, string>,
+  requiredFields: readonly string[],
+): void {
+  for (const field of requiredFields) {
+    const name = field.trim();
+    if (!name) continue;
+    const path = localFiles[name]?.trim() ?? "";
+    if (!path) {
+      throw new Error(
+        `Missing local file for Replicate input “${name}”. Refusing to create a prediction without it.`,
+      );
+    }
+  }
+}
+
+/** Basename summary for UI diagnostics (no full paths). */
+export function summarizeLocalFilesForTrace(
+  localFiles: Record<string, string>,
+): string {
+  const keys = Object.keys(localFiles).sort();
+  if (keys.length === 0) return "(none)";
+  return keys
+    .map((k) => `${k}=${framePathBasename(localFiles[k]) || "empty"}`)
+    .join(",");
 }
 
 function setStep(
@@ -307,6 +340,23 @@ export async function runReplicateAddAssetGeneration(
     pushSteps(completeStep(steps, "still"));
   }
 
+  const requiredFileFields =
+    continuity === "motion_match"
+      ? [map.characterImage, map.motionVideo].filter(
+          (v): v is string => Boolean(v),
+        )
+      : continuity === "first_last"
+        ? [map.startImage, map.endImage].filter((v): v is string => Boolean(v))
+        : [map.startImage].filter((v): v is string => Boolean(v));
+  assertReplicateLocalFiles(localFiles, requiredFileFields);
+
+  recordUiOpTrace({
+    type: "add_asset_replicate_local_files",
+    kind: continuity,
+    ids: modelId,
+    reason: summarizeLocalFilesForTrace(localFiles),
+  });
+
   pushSteps(advanceStep(steps, "generate"));
   opts.onProgress(`Running ${modelId}…`);
   let predictionId: string | null = null;
@@ -325,6 +375,12 @@ export async function runReplicateAddAssetGeneration(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    recordUiOpTrace({
+      type: "add_asset_replicate_run_fail",
+      kind: continuity,
+      ids: modelId,
+      reason: message.slice(0, 200),
+    });
     if (predictionId && isDownloadRetryableError(message)) {
       throw new ReplicatePendingDownloadError(message, predictionId);
     }
@@ -335,12 +391,24 @@ export async function runReplicateAddAssetGeneration(
   if (result.error || result.status === "failed" || result.status === "canceled") {
     const message =
       result.error?.trim() || `Replicate run ${result.status || "failed"}`;
+    recordUiOpTrace({
+      type: "add_asset_replicate_run_fail",
+      kind: continuity,
+      ids: result.predictionId?.trim() || predictionId || modelId,
+      reason: message.slice(0, 200),
+    });
     const id = result.predictionId?.trim() || predictionId;
     if (id && isDownloadRetryableError(message)) {
       throw new ReplicatePendingDownloadError(message, id);
     }
     throw new Error(message);
   }
+  recordUiOpTrace({
+    type: "add_asset_replicate_run_ok",
+    kind: continuity,
+    ids: result.predictionId?.trim() || predictionId || modelId,
+    reason: `files=${summarizeLocalFilesForTrace(localFiles)}`,
+  });
   const outputPath = result.localPaths.find((p) => p.trim())?.trim();
   if (!outputPath) {
     const id = result.predictionId?.trim() || predictionId;

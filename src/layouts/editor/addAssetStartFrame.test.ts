@@ -3,7 +3,9 @@ import type { TimelineClip } from "../../project/types";
 import {
   clipSongTimeRangeFromTimeline,
   firstFrameSourceSec,
+  framePathBasename,
   lastFrameSourceSec,
+  looksLikeImagePath,
   nextVideoClipAfter,
   priorVideoClipBefore,
   resolveAddAssetGenerationTiming,
@@ -415,5 +417,27 @@ describe("clipSongTimeRangeFromTimeline", () => {
     expect(range.startSec).toBeCloseTo(96, 2);
     expect(range.endSec).toBeCloseTo(105, 2);
     expect(timelineSecToSongSec(timeline, 101, "mix")).toBeCloseTo(96, 2);
+  });
+});
+
+describe("looksLikeImagePath", () => {
+  it("detects common still extensions", () => {
+    expect(looksLikeImagePath("/tmp/a.png")).toBe(true);
+    expect(looksLikeImagePath("C:\\media\\still.JPEG")).toBe(true);
+    expect(looksLikeImagePath("/cache/x.webp")).toBe(true);
+  });
+
+  it("rejects video and empty paths", () => {
+    expect(looksLikeImagePath("/tmp/a.mp4")).toBe(false);
+    expect(looksLikeImagePath("")).toBe(false);
+    expect(looksLikeImagePath(null)).toBe(false);
+  });
+});
+
+describe("framePathBasename", () => {
+  it("returns basename for posix and windows paths", () => {
+    expect(framePathBasename("/Users/me/media/17995.png")).toBe("17995.png");
+    expect(framePathBasename("C:\\Cache\\framed\\a-v2.jpg")).toBe("a-v2.jpg");
+    expect(framePathBasename("  ")).toBe("");
   });
 });

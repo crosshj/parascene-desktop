@@ -256,6 +256,39 @@ function buildNotes(report: Omit<UiDiagnosticsReport, "notes">): string[] {
     if (trace.some((row) => row.type === "render_media_ensure_ok")) {
       notes.push("Scratch render media ensure succeeded before FFmpeg.");
     }
+    if (
+      trace.some(
+        (row) =>
+          row.type === "add_asset_frame_extract_fail" ||
+          row.type === "add_asset_frame_missing_local" ||
+          row.type === "add_asset_generate_abort",
+      )
+    ) {
+      notes.push(
+        "Add-asset start-frame resolve failed or generate aborted (see UI op trace for path/basename details).",
+      );
+    }
+    if (trace.some((row) => row.type === "add_asset_frame_image_fallback")) {
+      notes.push(
+        "Start frame used image framing fallback after video extract failed (still mis-typed as video?).",
+      );
+    }
+    if (trace.some((row) => row.type === "add_asset_replicate_run_fail")) {
+      const fail = [...trace]
+        .reverse()
+        .find((row) => row.type === "add_asset_replicate_run_fail");
+      notes.push(
+        `Replicate timeline fill failed${fail?.reason ? `: ${fail.reason}` : "."}`,
+      );
+    }
+    if (trace.some((row) => row.type === "add_asset_replicate_local_files")) {
+      const files = [...trace]
+        .reverse()
+        .find((row) => row.type === "add_asset_replicate_local_files");
+      if (files?.reason) {
+        notes.push(`Last Replicate localFiles: ${files.reason}`);
+      }
+    }
   }
 
   if (report.openModals.length > 0) {
@@ -389,7 +422,7 @@ export function formatUiDiagnosticsReport(report: UiDiagnosticsReport): string {
       ? report.viewportOverlays.map((row) => `  ${row}`).join("\n")
       : "  (none)",
     "",
-    "UI op trace (place / timeline / render media)",
+    "UI op trace (place / timeline / render / add-asset)",
     formatUiOpTrace(report.uiOpTrace),
     "",
     "Gesture providers",
