@@ -260,7 +260,6 @@ function buildNotes(report: Omit<UiDiagnosticsReport, "notes">): string[] {
       trace.some(
         (row) =>
           row.type === "add_asset_frame_extract_fail" ||
-          row.type === "add_asset_frame_missing_local" ||
           row.type === "add_asset_generate_abort",
       )
     ) {
@@ -268,10 +267,23 @@ function buildNotes(report: Omit<UiDiagnosticsReport, "notes">): string[] {
         "Add-asset start-frame resolve failed or generate aborted (see UI op trace for path/basename details).",
       );
     }
+    if (trace.some((row) => row.type === "add_asset_frame_missing_local")) {
+      notes.push(
+        "A neighbor clip has no local media path yet (download may still be pending).",
+      );
+    }
     if (trace.some((row) => row.type === "add_asset_frame_image_fallback")) {
       notes.push(
         "Start frame used image framing fallback after video extract failed (still mis-typed as video?).",
       );
+    }
+    if (trace.some((row) => row.type === "add_asset_replicate_rust_attach")) {
+      const attach = [...trace]
+        .reverse()
+        .find((row) => row.type === "add_asset_replicate_rust_attach");
+      if (attach?.reason) {
+        notes.push(`Replicate Rust attach: ${attach.reason}`);
+      }
     }
     if (trace.some((row) => row.type === "add_asset_replicate_run_fail")) {
       const fail = [...trace]

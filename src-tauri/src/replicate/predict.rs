@@ -25,6 +25,62 @@ fn clear_cancel() {
     CANCEL_RUN.store(false, Ordering::SeqCst);
 }
 
+/// Merge HashMap IPC + JSON string backup (Windows has dropped empty HashMaps).
+pub fn merge_local_files(
+    local_files: Option<HashMap<String, Value>>,
+    local_files_json: Option<String>,
+) -> Result<HashMap<String, Value>, String> {
+    let mut map = local_files.unwrap_or_default();
+    if !map.is_empty() {
+        return Ok(map);
+    }
+    let Some(raw) = local_files_json else {
+        return Ok(map);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+        return Ok(map);
+    }
+    let parsed: HashMap<String, Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("Invalid localFilesJson: {e}"))?;
+    map = parsed;
+    Ok(map)
+}
+
+fn summarize_media_field(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                "EMPTY".into()
+            } else if let Some(rest) = t.strip_prefix("data:") {
+                let mime = rest.split(';').next().unwrap_or("?");
+                let len = t.len();
+                format!("data:{mime}:{len}b")
+            } else if t.starts_with("http://") || t.starts_with("https://") {
+                format!("https:{}b", t.len())
+            } else {
+                format!("other:{}b", t.len())
+            }
+        }
+        Some(Value::Array(arr)) => format!("array:{}", arr.len()),
+        Some(_) => "non-string".into(),
+        None => "MISSING".into(),
+    }
+}
+
+fn summarize_required_media(input: &Value, fields: &[String]) -> String {
+    let obj = input.as_object();
+    fields
+        .iter()
+        .map(|f| {
+            let summary = summarize_media_field(obj.and_then(|o| o.get(f)));
+            format!("{f}={summary}")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunProgressEvent {
@@ -373,6 +429,7 @@ pub async fn run_prediction(
     name: String,
     input: Value,
     local_files: HashMap<String, Value>,
+    required_file_fields: Vec<String>,
 ) -> Result<RunResult, String> {
     clear_cancel();
     let token = token::require_token()?;
@@ -390,6 +447,42 @@ pub async fn run_prediction(
     if !detail.schema_cached {
         return Err(format!(
             "No schema cached for {owner}/{name}. Use Update model first."
+        ));
+    }
+
+    let required_fields: Vec<String> = required_file_fields
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let received_keys: Vec<String> = {
+        let mut keys: Vec<String> = local_files.keys().cloned().collect();
+        keys.sort();
+        keys
+    };
+    emit_run(
+        &app,
+        RunProgressEvent {
+            prediction_id: None,
+            owner: owner.clone(),
+            name: name.clone(),
+            status: "uploading".into(),
+            message: Some(if received_keys.is_empty() {
+                "localFiles received: (none)".into()
+            } else {
+                format!("localFiles received: {}", received_keys.join(","))
+            }),
+            error: None,
+            local_paths: Vec::new(),
+            done: false,
+        },
+    );
+
+    if !required_fields.is_empty() && local_files.is_empty() {
+        return Err(format!(
+            "localFiles empty at Rust boundary but required [{}]. Likely IPC drop — retry; diagnostics should show localFilesJson recovery.",
+            required_fields.join(", ")
         ));
     }
 
@@ -541,6 +634,27 @@ pub async fn run_prediction(
         input = Value::Object(obj);
     }
 
+    // Editor requires start_image (etc.) even if localFiles map was wrong somehow.
+    for field in &required_fields {
+        let ok = match input.get(field) {
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(Value::Array(arr)) => arr.iter().any(|v| {
+                v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)
+            }),
+            _ => false,
+        };
+        if !ok {
+            return Err(format!(
+                "Required Replicate media field “{field}” is missing or empty before create. Refusing to call the model (Vidu would report start_image got '')."
+            ));
+        }
+    }
+
+    let media_summary = if required_fields.is_empty() {
+        String::new()
+    } else {
+        summarize_required_media(&input, &required_fields)
+    };
     emit_run(
         &app,
         RunProgressEvent {
@@ -548,7 +662,11 @@ pub async fn run_prediction(
             owner: owner.clone(),
             name: name.clone(),
             status: "starting".into(),
-            message: Some("Creating prediction…".into()),
+            message: Some(if media_summary.is_empty() {
+                "Creating prediction…".into()
+            } else {
+                format!("Predict input media: {media_summary}")
+            }),
             error: None,
             local_paths: Vec::new(),
             done: false,
@@ -889,4 +1007,39 @@ pub async fn run_prediction(
     );
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_local_files;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn merge_prefers_hashmap_when_present() {
+        let mut map = HashMap::new();
+        map.insert("start_image".into(), json!("/tmp/a.jpg"));
+        let out = merge_local_files(Some(map), Some(r#"{"start_image":"/tmp/b.jpg"}"#.to_string()))
+            .expect("merge");
+        assert_eq!(out.get("start_image").and_then(|v| v.as_str()), Some("/tmp/a.jpg"));
+    }
+
+    #[test]
+    fn merge_falls_back_to_json_when_hashmap_empty() {
+        let out = merge_local_files(
+            Some(HashMap::new()),
+            Some(r#"{"start_image":"C:\\Cache\\still.jpg"}"#.to_string()),
+        )
+        .expect("merge");
+        assert_eq!(
+            out.get("start_image").and_then(|v| v.as_str()),
+            Some(r"C:\Cache\still.jpg")
+        );
+    }
+
+    #[test]
+    fn merge_empty_when_both_missing() {
+        let out = merge_local_files(None, None).expect("merge");
+        assert!(out.is_empty());
+    }
 }

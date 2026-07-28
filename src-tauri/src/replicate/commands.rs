@@ -138,13 +138,19 @@ pub async fn replicate_model_run(
     name: String,
     input: Value,
     local_files: Option<HashMap<String, Value>>,
+    // JSON object backup of local file paths — used when HashMap IPC arrives empty.
+    local_files_json: Option<String>,
+    // Field names that must be present as non-empty URIs after upload (e.g. start_image).
+    required_file_fields: Option<Vec<String>>,
 ) -> Result<RunResult, String> {
+    let files = predict::merge_local_files(local_files, local_files_json)?;
     predict::run_prediction(
         app,
         owner,
         name,
         input,
-        local_files.unwrap_or_default(),
+        files,
+        required_file_fields.unwrap_or_default(),
     )
     .await
 }

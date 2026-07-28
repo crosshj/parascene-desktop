@@ -362,8 +362,23 @@ export async function runReplicateAddAssetGeneration(
   let predictionId: string | null = null;
   const unlisten = await listenReplicateRunProgress((ev) => {
     if (ev.predictionId?.trim()) predictionId = ev.predictionId.trim();
-    if (ev.message) opts.onProgress(ev.message);
-    else if (ev.status) opts.onProgress(`${modelId}: ${ev.status}`);
+    const msg = ev.message?.trim();
+    if (msg) {
+      if (
+        msg.startsWith("localFiles received:") ||
+        msg.startsWith("Predict input media:")
+      ) {
+        recordUiOpTrace({
+          type: "add_asset_replicate_rust_attach",
+          kind: continuity,
+          ids: modelId,
+          reason: msg.slice(0, 220),
+        });
+      }
+      opts.onProgress(msg);
+    } else if (ev.status) {
+      opts.onProgress(`${modelId}: ${ev.status}`);
+    }
   });
   let result;
   try {
@@ -372,6 +387,7 @@ export async function runReplicateAddAssetGeneration(
       opts.modelName,
       input,
       localFiles,
+      requiredFileFields,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

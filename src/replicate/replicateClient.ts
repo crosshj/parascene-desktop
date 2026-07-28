@@ -222,12 +222,17 @@ export async function replicateModelRun(
   name: string,
   input: Record<string, unknown>,
   localFiles?: Record<string, string | string[]>,
+  requiredFileFields?: string[],
 ): Promise<ReplicateRunResult> {
+  const files = localFiles ?? null;
   return invoke("replicate_model_run", {
     owner,
     name,
     input,
-    localFiles: localFiles ?? null,
+    localFiles: files,
+    // JSON backup — some Windows builds arrive with an empty HashMap over IPC.
+    localFilesJson: files ? JSON.stringify(files) : null,
+    requiredFileFields: requiredFileFields?.filter((f) => f.trim()) ?? null,
   });
 }
 
