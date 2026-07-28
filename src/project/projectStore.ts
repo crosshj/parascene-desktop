@@ -2,7 +2,6 @@ import {
   clampSensitivity,
   normalizeSlideshowMode,
   type AddAssetDraft,
-  type AddAssetGeneration,
   type AlignedLyricLine,
   type LyricAlignment,
   type LyricTranscript,
@@ -26,6 +25,7 @@ import {
   isProjectAspectRatio,
   type ProjectAspectRatio,
 } from "./aspectRatios";
+import { normalizeAddAssetGeneration } from "./desktopAddAssetGeneration";
 
 /** Parse draft.replicateTweaks without importing editor modules (avoids init cycles). */
 function parseReplicateVideoTweaks(
@@ -311,6 +311,12 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     typeof row.startFrameAssetId === "string" && row.startFrameAssetId.trim()
       ? row.startFrameAssetId.trim()
       : undefined;
+  const startFrameFraming =
+    row.startFrameFraming === "fill" || row.startFrameFraming === "stretch"
+      ? row.startFrameFraming
+      : row.startFrameFraming === "fit"
+        ? "fit"
+        : undefined;
   if (
     prompt === undefined &&
     audioMode === undefined &&
@@ -322,7 +328,8 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     lastError === undefined &&
     replicatePredictionId === undefined &&
     replicateTweaks === undefined &&
-    startFrameAssetId === undefined
+    startFrameAssetId === undefined &&
+    startFrameFraming === undefined
   ) {
     return undefined;
   }
@@ -338,49 +345,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     replicatePredictionId,
     replicateTweaks,
     startFrameAssetId,
-  };
-}
-
-function normalizeAddAssetGeneration(value: unknown): AddAssetGeneration | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const row = value as Record<string, unknown>;
-  if (typeof row.prompt !== "string") return undefined;
-  if (typeof row.generatedAt !== "string" || !row.generatedAt.trim()) {
-    return undefined;
-  }
-  if (typeof row.creationId !== "string" || !row.creationId.trim()) {
-    return undefined;
-  }
-  const mode: AddAssetGeneration["mode"] =
-    row.mode === "first_last"
-      ? "first_last"
-      : row.mode === "motion_match"
-        ? "motion_match"
-        : "start_frame";
-  const audioMode =
-    row.audioMode === "full_mix"
-      ? "full_mix"
-      : row.audioMode === "vocals"
-        ? "vocals"
-        : mode === "first_last" || mode === "motion_match"
-          ? undefined
-          : "vocals";
-  const lyricsText =
-    typeof row.lyricsText === "string" && row.lyricsText.trim()
-      ? row.lyricsText.trim()
-      : undefined;
-  const model =
-    typeof row.model === "string" && row.model.trim()
-      ? row.model.trim()
-      : undefined;
-  return {
-    prompt: row.prompt,
-    audioMode,
-    lyricsText,
-    generatedAt: row.generatedAt.trim(),
-    creationId: row.creationId.trim(),
-    mode,
-    model,
+    startFrameFraming,
   };
 }
 

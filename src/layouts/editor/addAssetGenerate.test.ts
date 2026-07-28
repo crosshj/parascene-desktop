@@ -5,6 +5,7 @@ import {
   buildAddAssetGenerationPrompt,
   addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
+  findTimelineGenerationForAsset,
   initialAddAssetGenerationSteps,
   replaceAddAssetPlaceholderWithVideo,
   resolveAddAssetAudioMode,
@@ -136,6 +137,33 @@ describe("replaceAddAssetPlaceholderWithVideo", () => {
     );
     expect(next[0]?.addAssetGeneration).toBeUndefined();
     expect(next[0]?.timelineLocked).toBe(true);
+  });
+});
+
+describe("findTimelineGenerationForAsset", () => {
+  it("finds generation by creationId or clip assetId", () => {
+    const timeline = [
+      {
+        id: "c1",
+        lane: "video" as const,
+        kind: "video" as const,
+        label: "4.0s",
+        startSec: 0,
+        endSec: 4,
+        assetId: "gen-video",
+        addAssetGeneration: {
+          prompt: "creature walks",
+          generatedAt: "2026-07-28T00:00:00.000Z",
+          creationId: "gen-video",
+          mode: "start_frame" as const,
+          model: "vidu/q3-turbo",
+        },
+      },
+    ];
+    expect(findTimelineGenerationForAsset(timeline, "gen-video")?.generation.prompt).toBe(
+      "creature walks",
+    );
+    expect(findTimelineGenerationForAsset(timeline, "missing")).toBeNull();
   });
 });
 

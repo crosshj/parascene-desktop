@@ -310,6 +310,29 @@ export function replaceAddAssetPlaceholderWithVideo(
   });
 }
 
+/**
+ * Find generation provenance for an Assets-pane creation id by scanning timeline
+ * clips. Prefer {@link addAssetGenerationFromCreation} on the catalog row when
+ * present — that stamp survives clip deletion.
+ */
+export function findTimelineGenerationForAsset(
+  timeline: readonly TimelineClip[],
+  assetId: string | null | undefined,
+): { clip: TimelineClip; generation: AddAssetGeneration } | null {
+  const id = assetId?.trim();
+  if (!id) return null;
+  for (const clip of timeline) {
+    const generation = clip.addAssetGeneration;
+    if (!generation) continue;
+    const creationId = generation.creationId?.trim();
+    const clipAssetId = clip.assetId?.trim();
+    if (creationId === id || clipAssetId === id) {
+      return { clip, generation };
+    }
+  }
+  return null;
+}
+
 export type RunAddAssetGenerationOpts = {
   placeholder: TimelineClip;
   timeline: readonly TimelineClip[];

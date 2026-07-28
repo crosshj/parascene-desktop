@@ -59,4 +59,30 @@ describe("previewIntent catalog", () => {
       methodId: "blue_timeline_fill",
     });
   });
+
+  it("seeds start-frame asset on add-asset drag drafts", () => {
+    const draft = addAssetDragDraftFromIntent(
+      {
+        provider: "parascene_blue",
+        methodId: "blue_timeline_fill",
+      },
+      { startFrameAssetId: "img-1", thumbUrl: "asset://t" },
+    );
+    expect(draft.thumbUrl).toBe("asset://t");
+    expect(draft.addAssetDraft).toEqual({
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
+      startFrameAssetId: "img-1",
+    });
+  });
+
+  it("marks generate-from-selection as wired without timeline placement", () => {
+    const mode = SELECTION_INTENT_MODES.find(
+      (m) => m.id === "generate_from_selection",
+    );
+    expect(mode?.wired).toBe(true);
+    expect(selectionModeAllowsTimelinePlacement("generate_from_selection")).toBe(
+      false,
+    );
+  });
 });

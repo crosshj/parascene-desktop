@@ -6,6 +6,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { ensureAccessToken } from "../auth/session";
+import { preserveDesktopAddAssetGeneration } from "../project/desktopAddAssetGeneration";
 import type {
   Creation,
   CatalogFilterCounts,
@@ -85,7 +86,16 @@ export async function cloudIdsSince(
 export async function applyManifest(
   creations: CreationUpsert[],
 ): Promise<SyncStatus> {
-  return invoke<SyncStatus>("library_apply_manifest", { creations });
+  if (creations.length === 0) {
+    return invoke<SyncStatus>("library_apply_manifest", { creations });
+  }
+  // Preserve locally stamped desktop generation meta across cloud sync upserts.
+  const existing = await getCreations(creations.map((row) => row.id));
+  const byId = new Map(existing.map((row) => [row.id, row]));
+  const merged = creations.map((row) =>
+    preserveDesktopAddAssetGeneration(row, byId.get(row.id)),
+  );
+  return invoke<SyncStatus>("library_apply_manifest", { creations: merged });
 }
 
 export async function downloadPending(limit?: number): Promise<DownloadSummary> {

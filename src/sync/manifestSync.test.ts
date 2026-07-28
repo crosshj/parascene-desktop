@@ -106,6 +106,9 @@ function mockDownloadPending() {
     if (cmd === "library_list_creations") {
       return [];
     }
+    if (cmd === "library_get_creations") {
+      return [];
+    }
     throw new Error(`unexpected invoke: ${cmd}`);
   });
 }
@@ -372,6 +375,9 @@ describe("manifestSync", () => {
       if (cmd === "library_sync_status") {
         return emptyStatus;
       }
+      if (cmd === "library_get_creations") {
+        return [];
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -435,6 +441,9 @@ describe("manifestSync", () => {
         return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
       }
       if (cmd === "library_sync_status") return emptyStatus;
+      if (cmd === "library_get_creations") {
+        return [];
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -495,6 +504,9 @@ describe("manifestSync", () => {
       if (cmd === "library_sync_status") {
         return emptyStatus;
       }
+      if (cmd === "library_get_creations") {
+        return [];
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -535,6 +547,9 @@ describe("manifestSync", () => {
       }
       if (cmd === "library_sync_status") {
         return { ...emptyStatus, total: 1 };
+      }
+      if (cmd === "library_get_creations") {
+        return [];
       }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
@@ -600,6 +615,9 @@ describe("manifestSync", () => {
       if (cmd === "library_sync_status") {
         return emptyStatus;
       }
+      if (cmd === "library_get_creations") {
+        return [];
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -638,6 +656,9 @@ describe("manifestSync", () => {
       }
       if (cmd === "library_sync_status") {
         return emptyStatus;
+      }
+      if (cmd === "library_get_creations") {
+        return [];
       }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
@@ -690,6 +711,9 @@ describe("manifestSync", () => {
       if (cmd === "library_sync_status") {
         return emptyStatus;
       }
+      if (cmd === "library_get_creations") {
+        return [];
+      }
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -739,6 +763,9 @@ describe("manifestSync", () => {
       }
       if (cmd === "library_sync_status") {
         return emptyStatus;
+      }
+      if (cmd === "library_get_creations") {
+        return [];
       }
       throw new Error(`unexpected invoke: ${cmd}`);
     });

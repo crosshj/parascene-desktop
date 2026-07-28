@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clipNeedsExtendBake } from "./clipExtendBake";
 import {
   applyDraftToTimelineClip,
+  addAssetDraftFromGeneration,
   clipTimelineMoveEnabled,
   defaultSlideshowDraft,
   defaultStagedClipDraft,
@@ -20,6 +21,7 @@ import {
   slideshowOrderIndices,
   slideshowRecipesEqual,
   stagedClipDuration,
+  stagedDraftForDuplicateGenerate,
   targetLaneForDraft,
   timelineClipToStagedDraft,
   videoStretchStyle,
@@ -796,5 +798,49 @@ describe("stagedClip", () => {
     expect(clipTimelineMoveEnabled({ timelineLocked: true })).toBe(false);
     expect(clipTimelineMoveEnabled({ timelineLocked: undefined })).toBe(true);
     expect(clipTimelineMoveEnabled({})).toBe(true);
+  });
+
+  it("seeds a duplicate-generate draft from generation provenance", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "creature walks",
+      generatedAt: "2026-07-28T00:00:00.000Z",
+      creationId: "c1",
+      mode: "start_frame",
+      model: "vidu/q3-turbo",
+      provider: "replicate",
+      methodId: "replicate_timeline_fill",
+      audioMode: "full_mix",
+      startFrameAssetId: "img-1",
+      startFrameFraming: "fill",
+      useNearestDuration: true,
+      replicateTweaks: { resolution: "720p", seed: 42 },
+    });
+    expect(draft).toMatchObject({
+      prompt: "creature walks",
+      continuityMode: "start_frame",
+      provider: "replicate",
+      methodId: "replicate_timeline_fill",
+      replicateModel: "vidu/q3-turbo",
+      audioMode: "full_mix",
+      startFrameAssetId: "img-1",
+      startFrameFraming: "fill",
+      useNearestDuration: true,
+      replicateTweaks: { resolution: "720p", seed: 42 },
+    });
+
+    const staged = stagedDraftForDuplicateGenerate(
+      {
+        prompt: "x",
+        generatedAt: "2026-07-28T00:00:00.000Z",
+        creationId: "c1",
+        model: "owner/name",
+      },
+      4,
+    );
+    expect(staged.isAddAssetPlaceholder).toBe(true);
+    expect(staged.outSec).toBe(4);
+    expect(staged.addAssetDraft?.provider).toBe("replicate");
+    expect(staged.addAssetDraft?.methodId).toBe("replicate_timeline_fill");
+    expect(staged.addAssetDraft?.replicateModel).toBe("owner/name");
   });
 });

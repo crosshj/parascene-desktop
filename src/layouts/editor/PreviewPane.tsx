@@ -87,13 +87,17 @@ import {
   type StartAddAssetGenerationRequest,
 } from "./AddAssetGeneratePanel";
 import { AddAssetIntentPanel } from "./AddAssetIntentPanel";
-import { SelectionIntentPanel } from "./SelectionIntentPanel";
+import {
+  SelectionIntentPanel,
+  type SelectionImageItem,
+} from "./SelectionIntentPanel";
 import { UnsupportedSelectionPanel } from "./UnsupportedSelectionPanel";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import { isAddAssetPlaceholderClip } from "./stagedClip";
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
 import { GeneratedClipBadge } from "./GeneratedClipBadge";
 import type { AddAssetIntent, SelectionIntentModeId } from "./previewIntent";
+import { addAssetGenerationFromCreation } from "../../project/desktopAddAssetGeneration";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -143,6 +147,10 @@ type PreviewPaneProps = {
   stagingSeedKey?: string | null;
   /** Add-asset generation metadata for the selected timeline clip. */
   selectedClipAddAssetGeneration?: AddAssetGeneration | null;
+  /** Place a new generate placeholder seeded from the selected generated clip. */
+  onDuplicateGeneratedAsNewGenerate?:
+    | ((generation: AddAssetGeneration) => void)
+    | null;
   /** Persist staging edits onto the selected timeline clip. */
   onClipDraftChange?: (
     clipId: string,
@@ -324,6 +332,7 @@ export function PreviewPane({
   stagingSeed = null,
   stagingSeedKey = null,
   selectedClipAddAssetGeneration = null,
+  onDuplicateGeneratedAsNewGenerate = null,
   onClipDraftChange,
   restoredSourceDraft = null,
   onSourceDraftChange,
@@ -435,9 +444,18 @@ export function PreviewPane({
   const [loadedSelectionKey, setLoadedSelectionKey] = useState(selectionKey);
   const [selectionIntentMode, setSelectionIntentMode] =
     useState<SelectionIntentModeId | null>(null);
+  const [selectionItems, setSelectionItems] = useState<SelectionImageItem[]>(
+    [],
+  );
+  const [pickedImageIds, setPickedImageIds] = useState<string[]>([]);
+  const [selectionGenerateIntent, setSelectionGenerateIntent] =
+    useState<AddAssetIntent | null>(null);
   if (selectionKey !== loadedSelectionKey) {
     setLoadedSelectionKey(selectionKey);
     setSelectionClass(null);
+    setSelectionItems([]);
+    setPickedImageIds([]);
+    setSelectionGenerateIntent(null);
     setSelectionLoading(sourceSelectionIds.length > 0);
     const restoreSlideshow =
       !editingClip &&
@@ -513,6 +531,23 @@ export function PreviewPane({
         const classified = classifyAssetSelection(uniqueExpandedIds, byId);
         setSelectionClass(classified);
         if (classified?.type === "compositeImages") {
+          const items: SelectionImageItem[] = classified.imageAssetIds.map(
+            (id) => {
+              const row = byId.get(id);
+              return {
+                id,
+                title: row ? creationCardTitle(row).text : id,
+                thumbUrl: row ? creationPreviewUrl(row) : null,
+              };
+            },
+          );
+          setSelectionItems(items);
+          setPickedImageIds((prev) => {
+            if (prev.length === 0) return classified.imageAssetIds;
+            const allowed = new Set(classified.imageAssetIds);
+            const kept = prev.filter((id) => allowed.has(id));
+            return kept.length > 0 ? kept : classified.imageAssetIds;
+          });
           // Only need a representative thumb for the staged-clip cartridge.
           const first = classified.imageAssetIds
             .map((id) => {
@@ -555,6 +590,8 @@ export function PreviewPane({
             }
           }
         } else {
+          setSelectionItems([]);
+          setPickedImageIds([]);
           setStagedDraft((prev) =>
             prev?.kind === "slideshow" ? null : prev,
           );
@@ -562,6 +599,8 @@ export function PreviewPane({
       } catch {
         if (!cancelled) {
           setSelectionClass(null);
+          setSelectionItems([]);
+          setPickedImageIds([]);
         }
       } finally {
         if (!cancelled) setSelectionLoading(false);
@@ -634,6 +673,11 @@ export function PreviewPane({
   const creationMatchesAsset = Boolean(
     creation && assetId && creation.id === assetId,
   );
+  const catalogAddAssetGeneration = creationMatchesAsset
+    ? addAssetGenerationFromCreation(creation)
+    : null;
+  const resolvedAddAssetGeneration =
+    selectedClipAddAssetGeneration ?? catalogAddAssetGeneration;
   const detail = creationMatchesAsset ? creationDetailUrl(creation!) : null;
   const catalogThumb = creationMatchesAsset
     ? creationPreviewUrl(creation!)
@@ -1208,14 +1252,25 @@ export function PreviewPane({
     selectionClass?.type === "compositeImages"
       ? selectionClass.imageAssetIds
       : [];
+  const activeImageIds =
+    pickedImageIds.length > 0 ? pickedImageIds : compositeImageIds;
   const onSelectionIntentModeChange = (modeId: SelectionIntentModeId) => {
     setSelectionIntentMode(modeId);
+    if (modeId === "generate_from_selection") {
+      setStagedDraft(null);
+      if (!selectionGenerateIntent) {
+        setSelectionGenerateIntent({
+          provider: "parascene_blue",
+          methodId: "blue_timeline_fill",
+        });
+      }
+      return;
+    }
     if (modeId !== "slideshow") {
       setStagedDraft(null);
       return;
     }
-    const ids =
-      compositeImageIds.length > 0 ? compositeImageIds : sourceSelectionIds;
+    const ids = activeImageIds;
     if (ids.length < 2) return;
     const prev = stagedDraft;
     let next: StagedClipDraft;
@@ -1233,14 +1288,50 @@ export function PreviewPane({
     ) {
       next = restoredSourceDraft;
     } else {
+      const thumb =
+        selectionItems.find((item) => item.id === ids[0])?.thumbUrl ??
+        prev?.thumbUrl ??
+        null;
       next = defaultSlideshowDraft({
         imageAssetIds: ids,
         label: `Slideshow (${ids.length})`,
-        thumbUrl: prev?.thumbUrl ?? null,
+        thumbUrl: thumb,
       });
     }
     setStagedDraft(next);
     if (!stagingSeedKey) onSourceDraftChange?.(next);
+  };
+  const onPickedImageIdsChange = (ids: string[]) => {
+    setPickedImageIds(ids);
+    if (selectionIntentMode !== "slideshow") return;
+    if (ids.length < 2) {
+      setStagedDraft(null);
+      return;
+    }
+    const thumb =
+      selectionItems.find((item) => item.id === ids[0])?.thumbUrl ?? null;
+    const prev = stagedDraft;
+    const next = defaultSlideshowDraft({
+      imageAssetIds: ids,
+      label: `Slideshow (${ids.length})`,
+      thumbUrl: thumb ?? prev?.thumbUrl ?? null,
+    });
+    // Preserve staging fields when only the image set changes.
+    const merged =
+      prev?.kind === "slideshow" && prev.slideshow
+        ? {
+            ...prev,
+            assetId: next.assetId,
+            label: `Slideshow (${ids.length})`,
+            thumbUrl: thumb ?? prev.thumbUrl,
+            slideshow: {
+              ...prev.slideshow,
+              imageAssetIds: ids,
+            },
+          }
+        : next;
+    setStagedDraft(merged);
+    if (!stagingSeedKey) onSourceDraftChange?.(merged);
   };
   const sourceKind: "timeline" | "asset" | "clip" | null = addAssetMode
     ? null
@@ -1267,8 +1358,10 @@ export function PreviewPane({
           : `Clip • ${clipTrack} • ${clipDurationSec.toFixed(1)}s`
         : showSelectionIntent
           ? selectionIntentMode === "slideshow"
-            ? `Slideshow • ${slideshowCount || sourceSelectionIds.length} images`
-            : `Selection • ${compositeImageIds.length || sourceSelectionIds.length} images`
+            ? `Slideshow • ${slideshowCount || activeImageIds.length} images`
+            : selectionIntentMode === "generate_from_selection"
+              ? `Generate • ${activeImageIds.length} images`
+              : `Selection • ${activeImageIds.length || sourceSelectionIds.length} images`
           : showUnsupportedSelection
             ? `Selection · ${sourceSelectionIds.length} items`
             : stagedDraft?.kind === "slideshow"
@@ -1688,11 +1781,13 @@ export function PreviewPane({
               />
             ) : showSelectionIntent ? (
               <SelectionIntentPanel
-                imageCount={
-                  compositeImageIds.length || sourceSelectionIds.length
-                }
+                items={selectionItems}
+                pickedIds={pickedImageIds}
+                onPickedIdsChange={onPickedImageIdsChange}
                 modeId={selectionIntentMode}
                 onModeChange={onSelectionIntentModeChange}
+                generateIntent={selectionGenerateIntent}
+                onGenerateIntentChange={setSelectionGenerateIntent}
                 draft={
                   selectionIntentMode === "slideshow" &&
                   stagedDraft?.kind === "slideshow"
@@ -1811,7 +1906,7 @@ export function PreviewPane({
             ) : null}
           </div>
 
-          {sourceLabelText || selectedClipAddAssetGeneration ? (
+          {sourceLabelText || resolvedAddAssetGeneration ? (
             <div className="editor-preview-source-row">
               {sourceLabelText ? (
                 <div
@@ -1831,9 +1926,17 @@ export function PreviewPane({
                   <span>{sourceLabelText}</span>
                 </div>
               ) : null}
-              {selectedClipAddAssetGeneration ? (
+              {resolvedAddAssetGeneration ? (
                 <GeneratedClipBadge
-                  generation={selectedClipAddAssetGeneration}
+                  generation={resolvedAddAssetGeneration}
+                  onDuplicateAsNewGenerate={
+                    onDuplicateGeneratedAsNewGenerate
+                      ? () =>
+                          onDuplicateGeneratedAsNewGenerate(
+                            resolvedAddAssetGeneration,
+                          )
+                      : undefined
+                  }
                 />
               ) : null}
             </div>

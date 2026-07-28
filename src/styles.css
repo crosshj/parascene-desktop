@@ -4132,6 +4132,7 @@ input[type="checkbox"].control,
   align-items: center;
   gap: 0.55rem;
   max-width: calc(100% - 1rem);
+  overflow: visible;
 }
 
 .editor-preview-source-row .editor-generated-clip-badge {
@@ -4334,19 +4335,128 @@ input[type="checkbox"].control,
 .editor-generated-clip-popover {
   position: absolute;
   left: 0;
-  top: calc(100% + 4px);
-  z-index: 20;
-  width: min(240px, calc(100vw - 2rem));
-  max-width: min(240px, 36vw);
-  padding: 0.45rem 0.55rem;
-  border-radius: 6px;
+  top: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: min(36rem, calc(100vw - 2rem));
+  max-width: min(36rem, calc(100vw - 2rem));
+  max-height: min(70vh, 34rem);
+  padding: 0;
+  border-radius: 8px;
   border: 1px solid rgba(147, 197, 253, 0.35);
   background: rgba(15, 23, 42, 0.98);
   color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.editor-generated-clip-popover-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem 0.55rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.editor-generated-clip-popover-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.editor-generated-clip-popover-meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.editor-generated-clip-popover-close {
+  flex: 0 0 auto;
+  min-width: 1.75rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 1.1rem;
+  line-height: 1.2;
+}
+
+.editor-generated-clip-popover-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.65rem 0.9rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.editor-generated-clip-popover-section h4 {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.editor-generated-clip-popover-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.editor-generated-clip-popover-section-head .btn {
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.editor-generated-clip-popover-section p {
+  margin: 0;
+}
+
+.editor-generated-clip-prompt {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  background: color-mix(in srgb, #000 35%, transparent);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.editor-generated-clip-prompt.is-lyrics {
+  max-height: 8rem;
+}
+
+.editor-generated-clip-popover-foot {
+  margin: 0;
   font-size: 0.72rem;
   line-height: 1.4;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  pointer-events: auto;
+}
+
+.editor-generated-clip-popover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  padding: 0.65rem 0.9rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, #000 22%, transparent);
+}
+
+.editor-generated-clip-popover-actions .btn {
+  margin: 0;
 }
 
 .editor-generated-clip-popover p {
@@ -5503,6 +5613,13 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   resize: vertical;
 }
 
+.add-asset-generate-pane .add-asset-generate-prompt.is-auto-size {
+  min-height: 2.75rem;
+  max-height: min(40vh, 22rem);
+  overflow-y: auto;
+  resize: none;
+}
+
 .add-asset-generate-pane .add-asset-generate-prompt:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--text) 35%, var(--border));
@@ -5629,6 +5746,16 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   background: color-mix(in srgb, var(--text) 4%, var(--bg));
 }
 
+.preview-intent-choice:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.preview-intent-choice:disabled:hover {
+  border-color: var(--border);
+  background: transparent;
+}
+
 .preview-intent-choice.is-selected {
   border-color: var(--select);
   background: color-mix(in srgb, var(--select) 12%, var(--bg));
@@ -5666,6 +5793,21 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   padding-top: 0.65rem;
   border-top: 1px solid var(--border);
   gap: 0.5rem;
+}
+
+.selection-intent-pick-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.selection-intent-pick-actions .btn {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.78rem;
+}
+
+.selection-intent-images-grid {
+  max-height: 14rem;
 }
 
 .preview-intent-footer .editor-cartridge-grip {

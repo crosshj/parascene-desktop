@@ -158,6 +158,11 @@ export type AddAssetDraft = {
   };
   /** Project image asset id used as start frame instead of the prior timeline clip. */
   startFrameAssetId?: string;
+  /**
+   * How start/bridge stills are mapped into the project frame before upload
+   * (Fit / Fill / Stretch). Defaults to Fit.
+   */
+  startFrameFraming?: "fit" | "fill" | "stretch";
 };
 
 /** Persisted provenance for add-asset generated timeline clips. */
@@ -177,6 +182,26 @@ export type AddAssetGeneration = {
   mode?: AddAssetGenerationMode;
   /** Model id (Parascene create id or Replicate owner/name). */
   model?: string;
+  /** Provider used for the run — seed for “Duplicate as new generate”. */
+  provider?: string;
+  /** Method id within the provider catalog. */
+  methodId?: string;
+  /** Project image used as start frame, when applicable. */
+  startFrameAssetId?: string;
+  /** Framing applied to start/bridge stills. */
+  startFrameFraming?: "fit" | "fill" | "stretch";
+  /** User opted into nearest allowed Replicate duration. */
+  useNearestDuration?: boolean;
+  /** Optional Replicate model params captured at generate time. */
+  replicateTweaks?: {
+    resolution?: string;
+    mode?: string;
+    generateAudio?: boolean;
+    negativePrompt?: string;
+    seed?: number | null;
+    characterOrientation?: string;
+    keepOriginalSound?: boolean;
+  };
 };
 
 export type HookSuggestion = {

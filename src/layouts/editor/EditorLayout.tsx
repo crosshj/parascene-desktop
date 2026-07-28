@@ -55,15 +55,18 @@ import {
   startAddAssetGenerationJob,
   useAddAssetGenerationSession,
 } from "./addAssetGenerationStore";
+import { findTimelineGenerationForAsset } from "./addAssetGenerate";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import { resolveEditorMainAudioCreationId } from "./addAssetStartFrame";
 import { replicatePredictionsList } from "../../replicate/replicateClient";
 import {
   addAssetClipDurationSec,
+  ADD_ASSET_TIMELINE_DURATION_SEC,
   applyDraftToTimelineClip,
   isAddAssetPlaceholderClip,
   newSlideshowSeed,
   slideshowRecipesEqual,
+  stagedDraftForDuplicateGenerate,
   timelineClipToStagedDraft,
   withAddAssetDuration,
   type StagedClipDraft,
@@ -94,6 +97,7 @@ import {
 } from "./TimelineMergeModal";
 import {
   isBeatSlideshowMode,
+  type AddAssetGeneration,
   type TimelineClip,
 } from "../../project/types";
 import { useConfirm } from "../../ui/ConfirmDialog";
@@ -1870,6 +1874,60 @@ export function EditorLayout() {
     })();
   };
 
+  const duplicateGeneratedAsNewGenerate = (generation: AddAssetGeneration) => {
+    const creationId = generation.creationId?.trim() || "";
+    const matchedClip =
+      (selectedTimelineClip?.addAssetGeneration?.creationId === creationId
+        ? selectedTimelineClip
+        : null) ??
+      findTimelineGenerationForAsset(displayTimeline, creationId)?.clip ??
+      findTimelineGenerationForAsset(displayTimeline, selectedAssetId)?.clip ??
+      null;
+    const draft = stagedDraftForDuplicateGenerate(
+      generation,
+      matchedClip
+        ? addAssetClipDurationSec(matchedClip)
+        : ADD_ASSET_TIMELINE_DURATION_SEC,
+    );
+    recordUiOpTrace({
+      type: "place_at_end_click",
+      kind: "image",
+      reason: "duplicate_generated_as_new_generate",
+    });
+    window.dispatchEvent(
+      new CustomEvent("parascene-staged-clip-place", {
+        detail: { draft },
+      }),
+    );
+  };
+
+  const selectedAddAssetGeneration = useMemo(() => {
+    if (selectedTimelineClip?.addAssetGeneration) {
+      return selectedTimelineClip.addAssetGeneration;
+    }
+    // Assets-pane selection clears the clip, but provenance still lives on the
+    // timeline clip that produced this creation.
+    if (
+      monitorMode === "source" &&
+      selectedAssetId &&
+      !clipStagingSeed &&
+      !addAssetSlotActive
+    ) {
+      return (
+        findTimelineGenerationForAsset(displayTimeline, selectedAssetId)
+          ?.generation ?? null
+      );
+    }
+    return null;
+  }, [
+    selectedTimelineClip,
+    monitorMode,
+    selectedAssetId,
+    clipStagingSeed,
+    addAssetSlotActive,
+    displayTimeline,
+  ]);
+
   const previewAssetId =
     monitorMode === "source"
       ? (selectedAssetId ??
@@ -2010,9 +2068,8 @@ export function EditorLayout() {
         stagingSeedKey={
           monitorMode === "source" ? (clipStagingSeed?.clipId ?? null) : null
         }
-        selectedClipAddAssetGeneration={
-          selectedTimelineClip?.addAssetGeneration ?? null
-        }
+        selectedClipAddAssetGeneration={selectedAddAssetGeneration}
+        onDuplicateGeneratedAsNewGenerate={duplicateGeneratedAsNewGenerate}
         onClipDraftChange={onClipDraftChange}
         restoredSourceDraft={
           monitorMode === "source" && !clipStagingSeed

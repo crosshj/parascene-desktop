@@ -129,9 +129,10 @@ export const SELECTION_INTENT_MODES: readonly SelectionIntentModeDef[] = [
   {
     id: "generate_from_selection",
     label: "Generate from selection",
-    description: "Use these images as inputs for a generation run.",
+    description:
+      "Use the picked images with Parascene Blue, Replicate, or Parascene.",
     placement: "none",
-    wired: false,
+    wired: true,
   },
   {
     id: "composite",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
 import { getCreations } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
@@ -37,7 +37,9 @@ import {
   ADD_ASSET_MIN_DURATION_SEC,
   addAssetClipDurationSec,
   clampAddAssetDurationSec,
+  normalizeFraming,
   withAddAssetDuration,
+  type StagedClipFraming,
 } from "./stagedClip";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import { recordUiOpTrace } from "./uiOpTrace";
@@ -155,7 +157,9 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
     (a.lastError ?? "") === (b?.lastError ?? "") &&
     (a.replicatePredictionId ?? "") === (b?.replicatePredictionId ?? "") &&
     replicateTweaksEqual(a.replicateTweaks, b?.replicateTweaks) &&
-    (a.startFrameAssetId ?? "") === (b?.startFrameAssetId ?? "")
+    (a.startFrameAssetId ?? "") === (b?.startFrameAssetId ?? "") &&
+    normalizeFraming(a.startFrameFraming) ===
+      normalizeFraming(b?.startFrameFraming)
   );
 }
 
@@ -425,7 +429,11 @@ export function AddAssetGeneratePanel({
   const isReplicate = isReplicateTimelineFill(clip);
   const startFrameAssetId =
     clip.addAssetDraft?.startFrameAssetId?.trim() || null;
+  const startFrameFraming = normalizeFraming(
+    clip.addAssetDraft?.startFrameFraming,
+  );
   const [prompt, setPrompt] = useState(initial.prompt);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(
     initial.audioMode,
   );
@@ -451,6 +459,13 @@ export function AddAssetGeneratePanel({
   const [assetPreviews, setAssetPreviews] = useState<Record<string, string | null>>(
     {},
   );
+
+  useLayoutEffect(() => {
+    const el = promptRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [prompt]);
   const [loadedFrames, setLoadedFrames] = useState<{
     key: string;
     start: StartFramePreview | null;
@@ -464,7 +479,7 @@ export function AddAssetGeneratePanel({
     setLoadedFrames(null);
   }
 
-  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v4:${pullEpoch}:${startFrameAssetId ?? ""}`;
+  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v5:${pullEpoch}:${startFrameAssetId ?? ""}:${startFrameFraming}`;
   const activeSession = session?.clipId === clip.id ? session : null;
   const draftError = clip.addAssetDraft?.lastError?.trim() || null;
   const phase: PanelPhase =
@@ -671,6 +686,8 @@ export function AddAssetGeneratePanel({
       replicatePredictionId: clip.addAssetDraft?.replicatePredictionId,
       replicateTweaks: isReplicate ? normalizedTweaks : undefined,
       startFrameAssetId: startFrameAssetId ?? undefined,
+      startFrameFraming:
+        startFrameFraming === "fit" ? undefined : startFrameFraming,
     };
     if (draftsEqual(next, clip.addAssetDraft)) return;
     onDraftChange?.(next);
@@ -684,6 +701,7 @@ export function AddAssetGeneratePanel({
     isReplicate,
     clip.addAssetDraft,
     startFrameAssetId,
+    startFrameFraming,
     onDraftChange,
   ]);
 
@@ -691,11 +709,15 @@ export function AddAssetGeneratePanel({
     if (phase !== "form") return;
     let cancelled = false;
     void (async () => {
+      const frameOpts = {
+        startFrameAssetId,
+        framing: startFrameFraming,
+      };
       const [start, resolvedBridge] = await Promise.all([
-        resolveStartFrameForAddAsset(timeline, clip, aspectRatio, {
-          startFrameAssetId,
+        resolveStartFrameForAddAsset(timeline, clip, aspectRatio, frameOpts),
+        resolveAddAssetBridgeFrames(timeline, clip, aspectRatio, {
+          framing: startFrameFraming,
         }),
-        resolveAddAssetBridgeFrames(timeline, clip, aspectRatio),
       ]);
       if (cancelled) return;
       setLoadedFrames({
@@ -728,6 +750,15 @@ export function AddAssetGeneratePanel({
     onDraftChange?.({
       ...(clip.addAssetDraft ?? {}),
       startFrameAssetId: assetId ?? undefined,
+    });
+    setLoadedFrames(null);
+    setPullEpoch((epoch) => epoch + 1);
+  };
+
+  const setStartFrameFraming = (framing: StagedClipFraming) => {
+    onDraftChange?.({
+      ...(clip.addAssetDraft ?? {}),
+      startFrameFraming: framing === "fit" ? undefined : framing,
     });
     setLoadedFrames(null);
     setPullEpoch((epoch) => epoch + 1);
@@ -793,7 +824,7 @@ export function AddAssetGeneratePanel({
           timeline,
           clip,
           aspectRatio,
-          { startFrameAssetId },
+          { startFrameAssetId, framing: startFrameFraming },
         );
         let endFrame: StartFramePreview | null = null;
         if (resolvedContinuityMode === "first_last") {
@@ -801,6 +832,7 @@ export function AddAssetGeneratePanel({
             timeline,
             clip,
             aspectRatio,
+            { framing: startFrameFraming },
           );
           if (
             !freshBridge?.first.framePath?.trim() ||
@@ -923,6 +955,7 @@ export function AddAssetGeneratePanel({
           timeline,
           clip,
           aspectRatio,
+          { framing: startFrameFraming },
         );
         if (
           !freshBridge?.first.framePath?.trim() ||
@@ -951,7 +984,7 @@ export function AddAssetGeneratePanel({
         timeline,
         clip,
         aspectRatio,
-        { startFrameAssetId },
+        { startFrameAssetId, framing: startFrameFraming },
       );
       if (!startFrameIsReady(freshStart)) {
         abortGenerate(
@@ -1445,6 +1478,28 @@ export function AddAssetGeneratePanel({
                 ? "First & last frames"
                 : "Start frame"}
           </h3>
+          <label className="add-asset-generate-field">
+            <span>Framing</span>
+            <select
+              className="control"
+              value={startFrameFraming}
+              disabled={phase !== "form" || framesLoading}
+              onChange={(event) =>
+                setStartFrameFraming(
+                  normalizeFraming(event.target.value as StagedClipFraming),
+                )
+              }
+            >
+              <option value="fit">Fit — letterbox into project frame</option>
+              <option value="fill">Fill — cover and crop to project frame</option>
+              <option value="stretch">
+                Stretch — distort to fill project frame
+              </option>
+            </select>
+          </label>
+          <p className="muted add-asset-generate-note">
+            How the still is mapped into the project aspect before generation.
+          </p>
           {showMotionMatch ? (
             <div className="add-asset-generate-frame-pair">
               <div className="add-asset-generate-field add-asset-generate-frame-field">
@@ -1646,8 +1701,9 @@ export function AddAssetGeneratePanel({
             <span>Prompt</span>
             <textarea
               id="add-asset-prompt"
-              className="add-asset-generate-prompt"
-              rows={4}
+              ref={promptRef}
+              className="add-asset-generate-prompt is-auto-size"
+              rows={2}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               placeholder={`Describe what happens in these ${clipDurationSec.toFixed(1)} seconds…`}

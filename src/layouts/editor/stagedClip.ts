@@ -88,14 +88,83 @@ export const ADD_ASSET_DRAG_DRAFT: StagedClipDraft = {
 /** Build an add-asset Place/Drag draft that carries the selected generation intent. */
 export function addAssetDragDraftFromIntent(
   intent: AddAssetIntent | null | undefined,
+  opts?: {
+    startFrameAssetId?: string | null;
+    thumbUrl?: string | null;
+  },
 ): StagedClipDraft {
   if (!intent) return ADD_ASSET_DRAG_DRAFT;
+  const startFrameAssetId = opts?.startFrameAssetId?.trim() || undefined;
   return {
     ...ADD_ASSET_DRAG_DRAFT,
+    thumbUrl: opts?.thumbUrl ?? null,
     addAssetDraft: {
       provider: intent.provider,
       methodId: intent.methodId,
+      ...(startFrameAssetId ? { startFrameAssetId } : {}),
     },
+  };
+}
+
+/**
+ * Rebuild an add-asset draft from a finished clip’s generation provenance so
+ * “Duplicate as new generate” can re-open the form with the same params.
+ */
+export function addAssetDraftFromGeneration(
+  generation: AddAssetGeneration,
+): AddAssetDraft {
+  const model = generation.model?.trim() || undefined;
+  const looksReplicate = Boolean(model && model.includes("/"));
+  const provider =
+    generation.provider?.trim() ||
+    (looksReplicate ? "replicate" : "parascene_blue");
+  const methodId =
+    generation.methodId?.trim() ||
+    (provider === "replicate"
+      ? "replicate_timeline_fill"
+      : provider === "parascene"
+        ? "parascene_placeholder"
+        : "blue_timeline_fill");
+  const draft: AddAssetDraft = {
+    prompt: generation.prompt,
+    continuityMode: generation.mode ?? "start_frame",
+    provider,
+    methodId,
+  };
+  if (generation.audioMode === "full_mix" || generation.audioMode === "vocals") {
+    draft.audioMode = generation.audioMode;
+  }
+  if (provider === "replicate" && model) {
+    draft.replicateModel = model;
+  }
+  if (generation.startFrameAssetId?.trim()) {
+    draft.startFrameAssetId = generation.startFrameAssetId.trim();
+  }
+  if (
+    generation.startFrameFraming === "fill" ||
+    generation.startFrameFraming === "stretch" ||
+    generation.startFrameFraming === "fit"
+  ) {
+    draft.startFrameFraming = generation.startFrameFraming;
+  }
+  if (generation.useNearestDuration) {
+    draft.useNearestDuration = true;
+  }
+  if (generation.replicateTweaks) {
+    draft.replicateTweaks = generation.replicateTweaks;
+  }
+  return draft;
+}
+
+/** Place-ready placeholder draft seeded from a prior generation + duration. */
+export function stagedDraftForDuplicateGenerate(
+  generation: AddAssetGeneration,
+  durationSec: number,
+): StagedClipDraft {
+  return {
+    ...ADD_ASSET_DRAG_DRAFT,
+    outSec: clampAddAssetDurationSec(durationSec),
+    addAssetDraft: addAssetDraftFromGeneration(generation),
   };
 }
 

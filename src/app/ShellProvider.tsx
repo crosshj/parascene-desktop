@@ -53,6 +53,8 @@ import {
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
+import { applyManifest, getCreation } from "../library/catalogClient";
+import { creationUpsertWithAddAssetGeneration } from "../project/desktopAddAssetGeneration";
 import {
   loadShellSession,
   saveShellSession,
@@ -363,33 +365,57 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               });
             }
             const timeline = storedProjectToUi(next).timeline;
-            if (!timeline.some((clip) => clip.id === result.clipId)) {
+            const placeholder = timeline.find(
+              (clip) => clip.id === result.clipId,
+            );
+            if (!placeholder) {
               return next;
             }
+            const draft = placeholder.addAssetDraft;
+            const addAssetGeneration = {
+              prompt: result.prompt,
+              audioMode:
+                result.mode === "first_last" ||
+                result.mode === "motion_match"
+                  ? undefined
+                  : result.audioMode,
+              lyricsText:
+                result.mode === "first_last" ||
+                result.mode === "motion_match"
+                  ? undefined
+                  : result.lyricsText.trim() || undefined,
+              generatedAt: new Date().toISOString(),
+              creationId: result.creationId,
+              mode: result.mode,
+              model: result.model,
+              provider: draft?.provider,
+              methodId: draft?.methodId,
+              startFrameAssetId: draft?.startFrameAssetId,
+              startFrameFraming: draft?.startFrameFraming,
+              useNearestDuration: draft?.useNearestDuration,
+              replicateTweaks: draft?.replicateTweaks,
+            };
             const nextTimeline = replaceAddAssetPlaceholderWithVideo(
               timeline,
               result.clipId,
               result.creationId,
-              {
-                addAssetGeneration: {
-                  prompt: result.prompt,
-                  audioMode:
-                    result.mode === "first_last" ||
-                    result.mode === "motion_match"
-                      ? undefined
-                      : result.audioMode,
-                  lyricsText:
-                    result.mode === "first_last" ||
-                    result.mode === "motion_match"
-                      ? undefined
-                      : result.lyricsText.trim() || undefined,
-                  generatedAt: new Date().toISOString(),
-                  creationId: result.creationId,
-                  mode: result.mode,
-                  model: result.model,
-                },
-              },
+              { addAssetGeneration },
             );
+            // Catalog stamp so Assets-pane selection can show Generated details
+            // even after the timeline clip is removed.
+            void (async () => {
+              try {
+                const creation = await getCreation(result.creationId);
+                await applyManifest([
+                  creationUpsertWithAddAssetGeneration(
+                    creation,
+                    addAssetGeneration,
+                  ),
+                ]);
+              } catch {
+                // Clip provenance remains; catalog stamp is best-effort.
+              }
+            })();
             return setStoredProjectTimeline(next, nextTimeline);
           }),
         );

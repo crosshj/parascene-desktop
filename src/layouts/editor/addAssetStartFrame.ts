@@ -294,6 +294,10 @@ export function framePathBasename(path: string | null | undefined): string {
 
 type FrameRole = "start" | "end";
 
+function framingLabel(framing: StagedClipFraming): string {
+  return framing === "fill" ? "Fill" : framing === "stretch" ? "Stretch" : "Fit";
+}
+
 function framingNote(
   framing: StagedClipFraming,
   fromImage: boolean,
@@ -302,10 +306,12 @@ function framingNote(
   const neighbor = role === "start" ? "previous" : "next";
   const source =
     fromImage ? "image" : role === "start" ? "last frame" : "first frame";
-  const label =
-    framing === "fill" ? "Fill" : framing === "stretch" ? "Stretch" : "Fit";
   const which = role === "start" ? "start" : "end";
-  return `The ${which} frame is the ${neighbor} clip’s ${source} with ${label} framing.`;
+  return `The ${which} frame is the ${neighbor} clip’s ${source} with ${framingLabel(framing)} framing.`;
+}
+
+function assetFramingNote(framing: StagedClipFraming): string {
+  return `Start frame from project image with ${framingLabel(framing)} framing into the project frame.`;
 }
 
 function framingFallbackNote(
@@ -362,9 +368,11 @@ async function resolveFrameFromNeighborClip(opts: {
   role: FrameRole;
   missingLocalNote: string;
   extractFailedNote: string;
+  /** When set, overrides the neighbor clip’s own framing. */
+  framing?: StagedClipFraming;
 }): Promise<StartFramePreview> {
   const { neighbor, aspectRatio, role } = opts;
-  const framing = normalizeFraming(neighbor.framing);
+  const framing = normalizeFraming(opts.framing ?? neighbor.framing);
   const assetId = neighbor.assetId!.trim();
   const [creation] = await getCreations([assetId]);
   let sourcePath = creation?.localPath?.trim() || null;
@@ -517,6 +525,7 @@ export async function resolveAddAssetStartFrame(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
+  opts?: { framing?: StagedClipFraming },
 ): Promise<StartFramePreview> {
   const layer = visualLayerBeforePlaceholder(timeline, placeholder);
   const prior = layer?.clip ?? priorVideoClipBefore(
@@ -540,6 +549,7 @@ export async function resolveAddAssetStartFrame(
     role: "start",
     missingLocalNote: "Previous clip is not available locally yet.",
     extractFailedNote: "Could not extract the last frame from the previous clip.",
+    framing: opts?.framing,
   });
 }
 
@@ -547,8 +557,10 @@ export async function resolveAddAssetStartFrame(
 export async function resolveAddAssetStartFrameFromAsset(
   assetId: string,
   aspectRatio: string = "16:9",
+  framing: StagedClipFraming = "fit",
 ): Promise<StartFramePreview> {
   const id = assetId.trim();
+  const resolvedFraming = normalizeFraming(framing);
   if (!id) {
     return {
       previewUrl: null,
@@ -573,26 +585,26 @@ export async function resolveAddAssetStartFrameFromAsset(
     };
   }
 
-  if (remoteImageUrl) {
-    recordUiOpTrace({
-      type: "add_asset_frame_resolved",
-      clipId: "",
-      kind: "image",
-      ids: id,
-      reason: "start:asset:remote_url",
-    });
-    return {
-      previewUrl: previewUrl ?? remoteImageUrl,
-      note: "Start frame from project image on Parascene (no re-upload).",
-      framePath: sourcePath,
-      frameTimeSec: null,
-      framing: "fit",
-      sourceAssetId: id,
-      remoteImageUrl,
-    };
-  }
-
   if (!sourcePath) {
+    // No local file to bake framing into — last-resort remote URL (unframed).
+    if (remoteImageUrl) {
+      recordUiOpTrace({
+        type: "add_asset_frame_resolved",
+        clipId: "",
+        kind: "image",
+        ids: id,
+        reason: "start:asset:remote_url_no_local",
+      });
+      return {
+        previewUrl: previewUrl ?? remoteImageUrl,
+        note: "Start frame from project image on Parascene (local file missing — framing not applied).",
+        framePath: null,
+        frameTimeSec: null,
+        framing: resolvedFraming,
+        sourceAssetId: id,
+        remoteImageUrl,
+      };
+    }
     recordUiOpTrace({
       type: "add_asset_frame_missing_local",
       clipId: "",
@@ -619,7 +631,7 @@ export async function resolveAddAssetStartFrameFromAsset(
 
   const framed = await applyNeighborFraming({
     sourcePath,
-    framing: "fit",
+    framing: resolvedFraming,
     aspectRatio,
     fromImage: true,
     role: "start",
@@ -631,11 +643,14 @@ export async function resolveAddAssetStartFrameFromAsset(
     clipId: "",
     kind: "image",
     ids: id,
-    reason: `start:asset path=${framePathBasename(framed.framePath) || "none"}`,
+    reason: `start:asset path=${framePathBasename(framed.framePath) || "none"} framing=${resolvedFraming}`,
   });
   return {
     ...framed,
-    note: "Start frame from project image asset.",
+    // Prefer the framed local still for upload — never skip bake via remote URL.
+    note: assetFramingNote(resolvedFraming),
+    sourceAssetId: id,
+    remoteImageUrl: undefined,
   };
 }
 
@@ -644,19 +659,26 @@ export async function resolveStartFrameForAddAsset(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
-  opts?: { startFrameAssetId?: string | null },
+  opts?: {
+    startFrameAssetId?: string | null;
+    framing?: StagedClipFraming;
+  },
 ): Promise<StartFramePreview> {
   const assetId = opts?.startFrameAssetId?.trim();
+  const framing = normalizeFraming(opts?.framing);
   if (assetId) {
-    return resolveAddAssetStartFrameFromAsset(assetId, aspectRatio);
+    return resolveAddAssetStartFrameFromAsset(assetId, aspectRatio, framing);
   }
-  return resolveAddAssetStartFrame(timeline, placeholder, aspectRatio);
+  return resolveAddAssetStartFrame(timeline, placeholder, aspectRatio, {
+    framing,
+  });
 }
 
 export async function resolveAddAssetEndFrame(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
+  opts?: { framing?: StagedClipFraming },
 ): Promise<StartFramePreview> {
   const durationSec = addAssetClipDurationSec(placeholder);
   const placeholderSpan = {
@@ -683,6 +705,7 @@ export async function resolveAddAssetEndFrame(
     role: "end",
     missingLocalNote: "Next clip is not available locally yet.",
     extractFailedNote: "Could not extract the first frame from the next clip.",
+    framing: opts?.framing,
   });
 }
 
@@ -699,10 +722,12 @@ export async function resolveAddAssetBridgeFrames(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
+  opts?: { framing?: StagedClipFraming },
 ): Promise<BridgeFrames | null> {
+  const framing = opts?.framing;
   const [first, last] = await Promise.all([
-    resolveAddAssetStartFrame(timeline, placeholder, aspectRatio),
-    resolveAddAssetEndFrame(timeline, placeholder, aspectRatio),
+    resolveAddAssetStartFrame(timeline, placeholder, aspectRatio, { framing }),
+    resolveAddAssetEndFrame(timeline, placeholder, aspectRatio, { framing }),
   ]);
   if (!first.framePath?.trim() || !last.framePath?.trim()) return null;
   return { first, last };
