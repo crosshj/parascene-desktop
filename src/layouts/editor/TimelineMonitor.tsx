@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ensureLocal, getCreation } from "../../library/catalogClient";
 import {
   canFetchLocal,
@@ -8,6 +8,7 @@ import {
   isParasceneUnavailable,
 } from "../../library/previewUrl";
 import {
+  ensureReversedMedia,
   getCachedReversedMedia,
   subscribeReversedMediaCache,
 } from "../../library/reversedMedia";
@@ -216,28 +217,44 @@ function useAssetMedia(assetId: string): MediaUrls {
 function useReversedDetail(
   assetId: string,
   enabled: boolean,
-  sourceReady: boolean,
 ): { detail: string | null; busy: boolean; error: string | null; needsBake: boolean } {
   const [cacheEpoch, setCacheEpoch] = useState(0);
+  const [failedAssetId, setFailedAssetId] = useState<string | null>(null);
+
   useEffect(() => subscribeReversedMediaCache(() => setCacheEpoch((n) => n + 1)), []);
 
-  const cached =
-    enabled && sourceReady ? getCachedReversedMedia(assetId) : null;
-  // cacheEpoch keeps this hook reactive after an explicit Bake fills the cache.
-  void cacheEpoch;
+  useEffect(() => {
+    if (!enabled || !assetId.trim()) return;
+    if (getCachedReversedMedia(assetId)) return;
 
-  if (!enabled || !sourceReady) {
+    let cancelled = false;
+    void ensureReversedMedia(assetId).catch(() => {
+      if (!cancelled) setFailedAssetId(assetId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, assetId, cacheEpoch]);
+
+  if (!enabled || !assetId.trim()) {
     return { detail: null, busy: false, error: null, needsBake: false };
   }
+
+  const cached = getCachedReversedMedia(assetId);
+  // cacheEpoch keeps this hook reactive after ensureReversedMedia fills the cache.
+  void cacheEpoch;
   if (cached) {
+    return { detail: cached.mediaUrl, busy: false, error: null, needsBake: false };
+  }
+  if (failedAssetId === assetId) {
     return {
-      detail: cached.mediaUrl,
+      detail: null,
       busy: false,
-      error: null,
-      needsBake: false,
+      error: "Reversed media unavailable",
+      needsBake: true,
     };
   }
-  return { detail: null, busy: false, error: null, needsBake: true };
+  return { detail: null, busy: true, error: null, needsBake: false };
 }
 
 /** Resolves true when a seek was issued, false when already at the target. */
@@ -331,6 +348,21 @@ function waitForCanPlay(el: HTMLMediaElement): Promise<void> {
   });
 }
 
+/** One-shot seek for cut handoff — never chase a moving playhead. */
+async function alignToSourceSec(
+  el: HTMLVideoElement,
+  targetSec: number,
+  cancelled: () => boolean,
+): Promise<boolean> {
+  const didSeek = await seekMedia(el, targetSec);
+  if (cancelled()) return false;
+  if (didSeek) {
+    await waitForPaintedFrame(el);
+    if (cancelled()) return false;
+  }
+  return true;
+}
+
 /**
  * Program monitor: one persistent <video>/<img> per backing asset×direction
  * present on the timeline. Playback is visibility + seek + play/pause among
@@ -360,22 +392,43 @@ export function TimelineMonitor({
 
   const decoders = useMemo(() => listVisualDecoders(clips), [clips]);
 
+  // Resolve baked reverse URLs while idle so the reverse decoder can warm before
+  // the playhead reaches it (in-memory cache is empty after app restart).
+  useEffect(() => {
+    const reverseAssetIds = new Set<string>();
+    for (const clip of clips) {
+      if (
+        clip.reverse &&
+        clip.assetId?.trim() &&
+        clip.kind === "video" &&
+        clip.lane !== "audio"
+      ) {
+        reverseAssetIds.add(clip.assetId.trim());
+      }
+    }
+    for (const id of reverseAssetIds) {
+      if (getCachedReversedMedia(id)) continue;
+      void ensureReversedMedia(id).catch(() => {});
+    }
+  }, [clips]);
+
   const activeKey =
     visual?.clip.kind === "slideshow" || visual?.clip.assetId?.trim()
       ? assetDecoderKey(visual.clip)
       : null;
 
   const [visibleKey, setVisibleKey] = useState<AssetDecoderKey | null>(null);
+  const activeKeyRef = useRef(activeKey);
+  useLayoutEffect(() => {
+    activeKeyRef.current = activeKey;
+  }, [activeKey]);
 
   if (!activeKey && visibleKey) {
     setVisibleKey(null);
   }
 
-  // Decoders only report ready from active effects, whose cleanup cancels
-  // pending async video work. Accepting that signal directly avoids the
-  // parent/child effect-order race on immediate image handoffs.
   const onDecoderReady = useCallback((key: AssetDecoderKey) => {
-    setVisibleKey(key);
+    if (activeKeyRef.current === key) setVisibleKey(key);
   }, []);
 
   const nextClip = useMemo(() => {
@@ -735,16 +788,17 @@ function AssetDecoder({
   const reverse = isReverseKey(decoderKey);
   const media = useAssetMedia(assetId);
   const wantsReverse = reverse && kind === "video";
-  const reversed = useReversedDetail(
-    assetId,
-    wantsReverse,
-    Boolean(media.detail),
-  );
+  const reversed = useReversedDetail(assetId, wantsReverse);
 
   const videoSrc = wantsReverse ? reversed.detail : media.detail;
   const imageSrc =
     kind === "image" ? media.detail ?? media.thumb : null;
 
+  if (active && wantsReverse && reversed.busy) {
+    return (
+      <span className="editor-preview-wait muted">Loading reversed media…</span>
+    );
+  }
   if (active && wantsReverse && reversed.needsBake) {
     return (
       <span className="editor-preview-wait muted">Hit Bake to reverse</span>
@@ -1047,15 +1101,25 @@ function PersistentVideo({
     };
   }, [clockSync, active, warm, playing, sourceSec, clipId, mediaSeekEpoch, decoderKey]);
 
-  // Cut / activate while playing: one align at the commanded in-point, then
-  // free-run. Intentionally omits sourceSec so playhead ticks don't re-seek.
+  // Cut / activate while playing: one seek at the in-point, then free-run.
+  // Intentionally omits sourceSec so playhead ticks don't re-fire this effect.
   useEffect(() => {
     if (clockSync || !active || !warm || !playing) return;
     const el = ref.current;
     if (!el) return;
     let cancelled = false;
     void (async () => {
-      const ok = await alignToCommand(el, () => cancelled);
+      const target = sourceSecRef.current;
+      // Same decoder still free-running at the cut — don't disrupt playback.
+      if (
+        !el.paused &&
+        !el.ended &&
+        Math.abs(el.currentTime - target) < 0.12
+      ) {
+        onReadyRef.current(decoderKey);
+        return;
+      }
+      const ok = await alignToSourceSec(el, target, () => cancelled);
       if (cancelled || !ok) return;
       onReadyRef.current(decoderKey);
       await waitForCanPlay(el);
@@ -1133,11 +1197,7 @@ function AudioLayer({
 }) {
   const media = useAssetMedia(assetId);
   const wantsReverse = Boolean(layer.clip.reverse);
-  const reversed = useReversedDetail(
-    assetId,
-    wantsReverse,
-    Boolean(media.detail),
-  );
+  const reversed = useReversedDetail(assetId, wantsReverse);
   const src = wantsReverse ? reversed.detail : media.detail;
   const ref = useRef<HTMLAudioElement | null>(null);
   const sourceSecRef = useRef(layer.sourceSec);
