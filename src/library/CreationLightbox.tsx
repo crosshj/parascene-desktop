@@ -66,8 +66,13 @@ export function CreationLightbox({
   } | null>(null);
   const groupMembers =
     loadedGroup?.ownerId === creation.id ? loadedGroup.members : [];
+  // Prefer loaded members; fall back to declared ids so nav appears as soon as
+  // we know this is a multi-member group (images and videos).
+  const carouselCount = Math.max(groupMembers.length, groupIds.length);
+  const isGroupCarousel = carouselCount > 1;
   const [groupIndex, setGroupIndex] = useState(0);
-  const isGroupCarousel = groupMembers.length > 1;
+  const safeIndex =
+    carouselCount > 0 ? ((groupIndex % carouselCount) + carouselCount) % carouselCount : 0;
   const [liveCreation, setLiveCreation] = useState(creation);
   useEffect(() => {
     // Intentional: mirror the latest `creation` prop into local state so live
@@ -75,7 +80,7 @@ export function CreationLightbox({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLiveCreation(creation);
   }, [creation]);
-  const displayedCreation = groupMembers[groupIndex] ?? liveCreation;
+  const displayedCreation = groupMembers[safeIndex] ?? liveCreation;
   const detail = creationDetailUrl(displayedCreation);
   const thumb = creationPreviewUrl(displayedCreation);
   const aspectCss = creationAspectCss(displayedCreation);
@@ -95,12 +100,10 @@ export function CreationLightbox({
 
   const stepGroup = useCallback((direction: -1 | 1) => {
     setGroupIndex((current) => {
-      if (groupMembers.length <= 1) return current;
-      return (
-        (current + direction + groupMembers.length) % groupMembers.length
-      );
+      if (carouselCount <= 1) return current;
+      return (current + direction + carouselCount) % carouselCount;
     });
-  }, [groupMembers.length]);
+  }, [carouselCount]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -320,81 +323,94 @@ export function CreationLightbox({
         {actionError ? <p className="library-error">{actionError}</p> : null}
         <div
           className={[
-            "creation-lightbox-stage",
-            isAudio ? "is-audio" : "",
-            isAudio && thumb ? "has-cover" : "",
+            "creation-lightbox-stage-wrap",
+            isGroupCarousel ? "has-group-nav" : "",
           ]
             .filter(Boolean)
             .join(" ")}
-          style={isAudio && !thumb ? undefined : { aspectRatio: aspectCss }}
         >
-          {detail ? (
-            isVideo ? (
-              <video
-                className="creation-lightbox-media"
-                src={detail}
-                controls
-                autoPlay
-                loop
-                muted
-              />
-            ) : isAudio ? (
-              <div className="creation-lightbox-audio">
+          <div
+            className={[
+              "creation-lightbox-stage",
+              isAudio ? "is-audio" : "",
+              isAudio && thumb ? "has-cover" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            style={isAudio && !thumb ? undefined : { aspectRatio: aspectCss }}
+          >
+            {detail ? (
+              isVideo ? (
+                <video
+                  key={displayedCreation.id}
+                  className="creation-lightbox-media"
+                  src={detail}
+                  controls
+                  autoPlay
+                  loop
+                  playsInline
+                  muted
+                />
+              ) : isAudio ? (
+                <div className="creation-lightbox-audio">
+                  {thumb ? (
+                    <img
+                      className="creation-lightbox-media creation-lightbox-audio-cover"
+                      src={thumb}
+                      alt=""
+                    />
+                  ) : (
+                    <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
+                  )}
+                  <audio
+                    key={displayedCreation.id}
+                    className="creation-lightbox-audio-el"
+                    src={detail}
+                    controls
+                    autoPlay
+                    preload="auto"
+                  />
+                </div>
+              ) : (
+                <img
+                  key={displayedCreation.id}
+                  className="creation-lightbox-media"
+                  src={detail}
+                  alt={displayedCreation.title}
+                />
+              )
+            ) : (
+              <>
                 {thumb ? (
                   <img
-                    className="creation-lightbox-media creation-lightbox-audio-cover"
+                    className="creation-lightbox-placeholder-thumb"
                     src={thumb}
                     alt=""
                   />
                 ) : (
-                  <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
+                  <div className="creation-lightbox-placeholder" aria-hidden />
                 )}
-                <audio
-                  className="creation-lightbox-audio-el"
-                  src={detail}
-                  controls
-                  autoPlay
-                  preload="auto"
-                />
-              </div>
-            ) : (
-              <img
-                className="creation-lightbox-media"
-                src={detail}
-                alt={displayedCreation.title}
-              />
-            )
-          ) : (
-            <>
-              {thumb ? (
-                <img
-                  className="creation-lightbox-placeholder-thumb"
-                  src={thumb}
-                  alt=""
-                />
-              ) : (
-                <div className="creation-lightbox-placeholder" aria-hidden />
-              )}
-              {waiting ? (
-                <>
-                  <span className="creation-lightbox-shimmer" aria-hidden />
+                {waiting ? (
+                  <>
+                    <span className="creation-lightbox-shimmer" aria-hidden />
+                    <p className="creation-lightbox-wait muted">
+                      Saving locally…
+                    </p>
+                  </>
+                ) : (
                   <p className="creation-lightbox-wait muted">
-                    Saving locally…
+                    No local media available.
                   </p>
-                </>
-              ) : (
-                <p className="creation-lightbox-wait muted">
-                  No local media available.
-                </p>
-              )}
-            </>
-          )}
+                )}
+              </>
+            )}
+          </div>
           {isGroupCarousel ? (
             <>
               <button
                 type="button"
                 className="creation-lightbox-group-nav creation-lightbox-group-nav-prev"
-                aria-label="Previous grouped image"
+                aria-label="Previous in group"
                 onClick={() => stepGroup(-1)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden focusable="false">
@@ -404,7 +420,7 @@ export function CreationLightbox({
               <button
                 type="button"
                 className="creation-lightbox-group-nav creation-lightbox-group-nav-next"
-                aria-label="Next grouped image"
+                aria-label="Next in group"
                 onClick={() => stepGroup(1)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden focusable="false">
@@ -422,7 +438,7 @@ export function CreationLightbox({
             {displayedCreation.downloadState}
             {displayedCreation.published ? " · published" : ""}
             {isGroupCarousel
-              ? ` · ${groupIndex + 1} of ${groupMembers.length}`
+              ? ` · ${safeIndex + 1} of ${carouselCount}`
               : ""}
           </p>
           {displayedCreation.prompt ? (

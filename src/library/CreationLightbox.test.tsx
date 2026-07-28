@@ -91,10 +91,10 @@ describe("CreationLightbox group carousel", () => {
 
     await screen.findByRole("heading", { name: "First" });
     const previous = screen.getByRole("button", {
-      name: "Previous grouped image",
+      name: "Previous in group",
     });
     const next = screen.getByRole("button", {
-      name: "Next grouped image",
+      name: "Next in group",
     });
 
     await user.click(next);
@@ -113,5 +113,62 @@ describe("CreationLightbox group carousel", () => {
         screen.getByRole("heading", { name: "Second" }),
       ).toBeInTheDocument();
     });
+  });
+
+  it("carousels video group members with looping playback", async () => {
+    const members = [
+      creation("10", "Clip A", {
+        mediaType: "video",
+        localPath: "/tmp/10.mp4",
+        filename: "10.mp4",
+      }),
+      creation("11", "Clip B", {
+        mediaType: "video",
+        localPath: "/tmp/11.mp4",
+        filename: "11.mp4",
+      }),
+    ];
+    const group = creation("vg", "Videos", {
+      mediaType: "video",
+      filename: "group/cover.mp4",
+      localPath: "/tmp/cover.mp4",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: [10, 11],
+          },
+          desktop: {
+            role: "project_videos",
+            client: "parascene-desktop",
+            projectId: "p1",
+          },
+        },
+      }),
+    });
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "library_get_creations") return members;
+      if (command === "library_ensure_local") return undefined;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const user = userEvent.setup();
+    render(
+      <ConfirmProvider>
+        <CreationLightbox creation={group} onClose={vi.fn()} />
+      </ConfirmProvider>,
+    );
+
+    await screen.findByRole("heading", { name: "Clip A" });
+    const video = document.querySelector("video");
+    expect(video).toBeTruthy();
+    expect(video?.hasAttribute("loop")).toBe(true);
+    expect(video?.hasAttribute("autoplay")).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Next in group" }));
+    expect(screen.getByRole("heading", { name: "Clip B" })).toBeInTheDocument();
+    const nextVideo = document.querySelector("video");
+    expect(nextVideo?.getAttribute("src") ?? "").toContain("11.mp4");
+    expect(nextVideo?.hasAttribute("loop")).toBe(true);
   });
 });

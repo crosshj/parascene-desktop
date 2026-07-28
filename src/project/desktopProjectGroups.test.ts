@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  desktopCabinetProjectKey,
   desktopProjectGroupMeta,
   desktopProjectGroupMetaFromCreation,
   desktopProjectGroupPartyName,
+  identifyDesktopCabinet,
   isDesktopProjectGroup,
   isEditorProjectCabinet,
   isProjectCabinetId,
+  matchesDesktopCabinetProject,
+  parseDesktopCabinetPartyName,
+  projectGroupKindForRole,
 } from "./desktopProjectGroups";
 
 describe("desktopProjectGroups", () => {
@@ -20,6 +25,76 @@ describe("desktopProjectGroups", () => {
         projectId: "p1",
       },
     });
+  });
+
+  it("parses desktop cabinet party names", () => {
+    expect(parseDesktopCabinetPartyName("Parascene Desktop · Replicate · Images")).toEqual({
+      projectTitle: "Replicate",
+      role: "project_images",
+    });
+    expect(parseDesktopCabinetPartyName("Parascene Desktop · Fred Not Fam · Videos")).toEqual({
+      projectTitle: "Fred Not Fam",
+      role: "project_videos",
+    });
+    expect(parseDesktopCabinetPartyName("Ordinary group")).toBeNull();
+  });
+
+  it("identifies cabinets from meta and/or party name", () => {
+    const stamped = {
+      filename: "group/cover.json",
+      title: "Parascene Desktop · Fred · Images",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: { kind: "group_creations" },
+          desktop: {
+            role: "project_images",
+            client: "parascene-desktop",
+            projectId: "abc",
+          },
+        },
+      }),
+    };
+    expect(identifyDesktopCabinet(stamped)).toEqual({
+      role: "project_images",
+      projectId: "abc",
+      projectTitle: "Fred",
+    });
+
+    const partyOnly = {
+      filename: "group/cover.json",
+      title: "Parascene Desktop · Replicate · Videos",
+      remoteJson: JSON.stringify({
+        meta: { group: { kind: "group_creations" } },
+      }),
+    };
+    expect(identifyDesktopCabinet(partyOnly)).toEqual({
+      role: "project_videos",
+      projectTitle: "Replicate",
+    });
+  });
+
+  it("matches cabinets to a project by id or title", () => {
+    expect(
+      matchesDesktopCabinetProject(
+        { role: "project_images", projectId: "abc", projectTitle: "Fred" },
+        { role: "project_images", projectId: "abc", projectTitle: "Fred" },
+      ),
+    ).toBe(true);
+    expect(
+      matchesDesktopCabinetProject(
+        { role: "project_images", projectTitle: "Replicate" },
+        { role: "project_images", projectId: "other", projectTitle: "Replicate" },
+      ),
+    ).toBe(true);
+    expect(
+      matchesDesktopCabinetProject(
+        { role: "project_images", projectId: "abc" },
+        { role: "project_images", projectId: "other", projectTitle: "Fred" },
+      ),
+    ).toBe(false);
+    expect(projectGroupKindForRole("project_videos")).toBe("videos");
+    expect(desktopCabinetProjectKey({ projectId: "abc" })).toBe("id:abc");
+    expect(desktopCabinetProjectKey({ projectTitle: "Fred" })).toBe("title:Fred");
   });
 
   it("detects stamped meta on a creation", () => {

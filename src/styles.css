@@ -1944,6 +1944,12 @@ input[type="checkbox"].control,
   background: #0a0a0b;
 }
 
+.creation-lightbox-stage-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+}
+
 .creation-lightbox-stage.is-audio {
   min-height: 220px;
   aspect-ratio: 16 / 10;
@@ -1962,7 +1968,8 @@ input[type="checkbox"].control,
   background: #000;
 }
 
-/* Match parascene chat inline gallery lightbox controls. */
+/* Match parascene chat inline gallery lightbox controls.
+   Sit above native <video controls> (WebKit paints controls over in-stage siblings). */
 .creation-lightbox-group-nav {
   position: absolute;
   top: 50%;
@@ -1978,9 +1985,10 @@ input[type="checkbox"].control,
   justify-content: center;
   padding: 0;
   cursor: pointer;
-  z-index: 4;
+  z-index: 20;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  pointer-events: auto;
 }
 
 .creation-lightbox-group-nav svg {

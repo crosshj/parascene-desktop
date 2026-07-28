@@ -7,7 +7,7 @@
 
 use super::catalog::{
     default_paths, delete_creation_local, get_creation_by_id, ingest_remote_creation_json,
-    ready_connection,
+    list_creations, ready_connection, Creation,
 };
 use super::download::{emit_creation_updated, enqueue_media, enqueue_thumbs};
 use super::parascene_api::{
@@ -450,30 +450,200 @@ async fn verify_live_group(
     id: Option<String>,
     label: &str,
 ) -> Result<Option<String>, String> {
-    let Some(id) = id else {
-        return Ok(None);
+    let kind = if label.eq_ignore_ascii_case("images") {
+        "images"
+    } else {
+        "videos"
     };
-    match get_creation(&id).await {
-        Ok(row) => {
-            ingest_and_warm(app, &row).await;
-            note(
-                app,
-                ctx,
-                &format!("{label}: verified {id} still on Parascene."),
-            )
-            .await?;
-            Ok(creation_id(&row))
-        }
-        Err(_) => {
-            note(
-                app,
-                ctx,
-                &format!("{label}: stored group {id} is missing (deleted?) — starting fresh."),
-            )
-            .await?;
-            Ok(None)
+    if let Some(id) = id.clone() {
+        match get_creation(&id).await {
+            Ok(row) => {
+                ingest_and_warm(app, &row).await;
+                note(
+                    app,
+                    ctx,
+                    &format!("{label}: verified {id} still on Parascene."),
+                )
+                .await?;
+                return Ok(creation_id(&row));
+            }
+            Err(_) => {
+                note(
+                    app,
+                    ctx,
+                    &format!(
+                        "{label}: stored group {id} is missing — recovering from catalog…"
+                    ),
+                )
+                .await?;
+            }
         }
     }
+
+    if let Some(recovered) = recover_cabinet_from_catalog(
+        ctx.project_id.as_deref(),
+        &ctx.project_title,
+        kind,
+        id.as_deref(),
+    ) {
+        note(
+            app,
+            ctx,
+            &format!("{label}: recovered existing cabinet {recovered} from catalog."),
+        )
+        .await?;
+        return Ok(Some(recovered));
+    }
+
+    note(
+        app,
+        ctx,
+        &format!("{label}: no existing cabinet — will create."),
+    )
+    .await?;
+    Ok(None)
+}
+
+/// Scan local catalog for a desktop Images/Videos cabinet matching this project.
+fn recover_cabinet_from_catalog(
+    project_id: Option<&str>,
+    project_title: &str,
+    kind: &str,
+    preferred_id: Option<&str>,
+) -> Option<String> {
+    let paths = default_paths().ok()?;
+    let conn = ready_connection(&paths).ok()?;
+    let rows = list_creations(&conn).ok()?;
+    let want_role = if kind == "images" {
+        "project_images"
+    } else {
+        "project_videos"
+    };
+    let want_id = project_id.map(str::trim).filter(|s| !s.is_empty());
+    let want_title = {
+        let t = project_title.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    };
+
+    let mut candidates: Vec<(String, usize, String)> = Vec::new();
+    for row in &rows {
+        let Some((role, stamped_project_id, party_title)) = identify_desktop_cabinet_row(row)
+        else {
+            continue;
+        };
+        if role != want_role {
+            continue;
+        }
+        let matches = match (stamped_project_id.as_deref(), want_id, party_title.as_deref(), want_title)
+        {
+            (Some(sid), Some(wid), _, _) => sid == wid,
+            (_, _, Some(pt), Some(wt)) => pt == wt,
+            _ => false,
+        };
+        if !matches {
+            continue;
+        }
+        let members = load_local_group_member_ids(&row.id)
+            .into_iter()
+            .filter(|m| m != &row.id)
+            .count();
+        candidates.push((row.id.clone(), members, row.created_at.clone()));
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+    if let Some(pref) = preferred_id.map(str::trim).filter(|s| !s.is_empty()) {
+        if candidates.iter().any(|(id, _, _)| id == pref) {
+            return Some(pref.to_string());
+        }
+    }
+    candidates.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    candidates.into_iter().next().map(|(id, _, _)| id)
+}
+
+fn identify_desktop_cabinet_row(
+    row: &Creation,
+) -> Option<(String, Option<String>, Option<String>)> {
+    let is_group = row
+        .filename
+        .as_deref()
+        .map(|f| f.to_ascii_lowercase().starts_with("group/"))
+        .unwrap_or(false)
+        || row
+            .remote_json
+            .as_deref()
+            .map(|raw| {
+                raw.contains("\"kind\":\"group_creations\"")
+                    || raw.contains("\"kind\": \"group_creations\"")
+            })
+            .unwrap_or(false);
+    if !is_group {
+        return None;
+    }
+
+    let mut role: Option<String> = None;
+    let mut project_id: Option<String> = None;
+    if let Some(raw) = row.remote_json.as_deref() {
+        if let Ok(value) = serde_json::from_str::<Value>(raw) {
+            let desktop = value
+                .pointer("/meta/desktop")
+                .or_else(|| value.get("desktop"));
+            if let Some(d) = desktop {
+                if let Some(r) = d.get("role").and_then(|v| v.as_str()) {
+                    if r == "project_images" || r == "project_videos" {
+                        role = Some(r.to_string());
+                    }
+                }
+                if let Some(pid) = d
+                    .get("projectId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    project_id = Some(pid.to_string());
+                }
+            }
+        }
+    }
+
+    let party = parse_desktop_party_name(&row.title);
+    if role.is_none() {
+        role = party.as_ref().map(|(r, _)| r.clone());
+    }
+    let party_title = party.map(|(_, t)| t);
+    let role = role?;
+    Some((role, project_id, party_title))
+}
+
+fn parse_desktop_party_name(title: &str) -> Option<(String, String)> {
+    let raw = title.trim();
+    let images_suffix = " · Images";
+    let videos_suffix = " · Videos";
+    let prefix = "Parascene Desktop · ";
+    if !raw.starts_with(prefix) {
+        return None;
+    }
+    let (role, suffix) = if raw.ends_with(images_suffix) {
+        ("project_images", images_suffix)
+    } else if raw.ends_with(videos_suffix) {
+        ("project_videos", videos_suffix)
+    } else {
+        return None;
+    };
+    let mid = &raw[prefix.len()..raw.len() - suffix.len()];
+    let project_title = mid.trim();
+    if project_title.is_empty() {
+        return None;
+    }
+    Some((role.to_string(), project_title.to_string()))
 }
 
 async fn group_members(

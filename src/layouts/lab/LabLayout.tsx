@@ -17,6 +17,7 @@ import { listJobs } from "../../jobs/jobsClient";
 import {
   cancelProjectGroupsJob,
   cleanupProjectGroups,
+  dedupeDesktopProjectCabinets,
   ensureProjectGroups,
   fileCreationIntoProjectGroup,
   isCancelledError,
@@ -1218,6 +1219,53 @@ export function LabLayout({ active = true }: { active?: boolean }) {
     ],
   );
 
+  const runDedupeCabinets = useCallback(
+    async (onProgress: (note: string) => void): Promise<LastResult> => {
+      const result = await dedupeDesktopProjectCabinets({
+        preferredImagesGroupId: project.imagesGroupId,
+        preferredVideosGroupId: project.videosGroupId,
+        onProgress,
+      });
+      const openUpdate = result.projectUpdates.find(
+        (u) => u.projectId === project.id,
+      );
+      if (openUpdate) {
+        setOpenProjectGroupIds({
+          ...(openUpdate.imagesGroupId !== undefined
+            ? { imagesGroupId: openUpdate.imagesGroupId }
+            : {}),
+          ...(openUpdate.videosGroupId !== undefined
+            ? { videosGroupId: openUpdate.videosGroupId }
+            : {}),
+        });
+      }
+      // Drop orphan covers from the open project asset list.
+      if (result.mergedOrphanIds.length > 0) {
+        removeCreationsFromOpenProject(result.mergedOrphanIds);
+      }
+      // Ensure keepers stay on the project.
+      if (result.keeperIds.length > 0) {
+        addCreationsToOpenProject(result.keeperIds);
+      }
+      const orphanCount = result.mergedOrphanIds.length;
+      return {
+        summary:
+          orphanCount > 0
+            ? `Merged ${orphanCount} duplicate cabinet cover(s)`
+            : "No duplicate cabinets to merge",
+        detail: result.messages.join("\n"),
+      };
+    },
+    [
+      addCreationsToOpenProject,
+      project.id,
+      project.imagesGroupId,
+      project.videosGroupId,
+      removeCreationsFromOpenProject,
+      setOpenProjectGroupIds,
+    ],
+  );
+
   // Auto-resume Ensure after returning to Lab mid-run.
   useEffect(() => {
     if (!resumeGroupsRef.current) return;
@@ -1375,6 +1423,16 @@ export function LabLayout({ active = true }: { active?: boolean }) {
                 });
                 if (!ok) throw new Error("Cancelled");
                 return runCleanupGroups(onProgress);
+              }}
+              onDedupe={async (onProgress) => {
+                const ok = await confirm({
+                  title: "Dedupe desktop cabinets?",
+                  message:
+                    "Scans the Library for duplicate Parascene Desktop Images/Videos group covers, merges orphan members into one keeper per media type, and updates project pointers. Creative (non-desktop) packs are left alone.",
+                  confirmLabel: "Dedupe cabinets",
+                });
+                if (!ok) throw new Error("Cancelled");
+                return runDedupeCabinets(onProgress);
               }}
             />
           )}
@@ -1744,6 +1802,7 @@ function GroupsModule(
     ) => Promise<LastResult>;
     onCancel: () => void;
     onCleanup: (onProgress: (note: string) => void) => Promise<LastResult>;
+    onDedupe: (onProgress: (note: string) => void) => Promise<LastResult>;
   } & ModuleChrome,
 ) {
   const [kind, setKind] = useState<"image" | "video">("image");
@@ -1832,6 +1891,16 @@ function GroupsModule(
           </button>
         ) : null}
       </div>
+      <button
+        type="button"
+        className="btn"
+        disabled={props.busy}
+        onClick={() =>
+          props.onRun(async ({ onProgress }) => props.onDedupe(onProgress))
+        }
+      >
+        Dedupe cabinets
+      </button>
       <button
         type="button"
         className="btn btn-danger"

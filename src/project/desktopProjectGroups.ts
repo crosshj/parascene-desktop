@@ -55,10 +55,100 @@ export function desktopProjectGroupPartyName(
     : `Parascene Desktop · ${base} · Videos`;
 }
 
+const DESKTOP_PARTY_NAME_RE =
+  /^Parascene Desktop · (.+) · (Images|Videos)$/;
+
+/** Parse a Parascene Desktop cabinet party name into title + role. */
+export function parseDesktopCabinetPartyName(
+  title: string | null | undefined,
+): { projectTitle: string; role: DesktopProjectGroupRole } | null {
+  const raw = String(title ?? "").trim();
+  if (!raw) return null;
+  const match = DESKTOP_PARTY_NAME_RE.exec(raw);
+  if (!match) return null;
+  const projectTitle = match[1]?.trim();
+  if (!projectTitle) return null;
+  const role: DesktopProjectGroupRole =
+    match[2] === "Videos" ? "project_videos" : "project_images";
+  return { projectTitle, role };
+}
+
 export function roleForProjectGroupKind(
   kind: "images" | "videos",
 ): DesktopProjectGroupRole {
   return kind === "images" ? "project_images" : "project_videos";
+}
+
+export function projectGroupKindForRole(
+  role: DesktopProjectGroupRole,
+): "images" | "videos" {
+  return role === "project_images" ? "images" : "videos";
+}
+
+/**
+ * Identify a desktop cabinet from meta stamp and/or party-name pattern.
+ * Meta wins for role/projectId; party name fills gaps when the API dropped meta.
+ */
+export function identifyDesktopCabinet(
+  creation: Pick<Creation, "remoteJson" | "filename" | "title"> | null | undefined,
+): {
+  role: DesktopProjectGroupRole;
+  projectId?: string;
+  projectTitle?: string;
+} | null {
+  if (!creation || !isGroupCreation(creation)) return null;
+  const meta = desktopProjectGroupMetaFromCreation(creation);
+  const fromTitle = parseDesktopCabinetPartyName(creation.title);
+  if (!meta && !fromTitle) return null;
+  const role = meta?.role ?? fromTitle!.role;
+  const projectId = meta?.projectId?.trim() || undefined;
+  const projectTitle = fromTitle?.projectTitle;
+  return {
+    role,
+    ...(projectId ? { projectId } : {}),
+    ...(projectTitle ? { projectTitle } : {}),
+  };
+}
+
+/**
+ * Bucket key for dedupe: prefer stamped projectId, else `title:{party title}`.
+ */
+export function desktopCabinetProjectKey(opts: {
+  projectId?: string | null;
+  projectTitle?: string | null;
+}): string | null {
+  const pid = opts.projectId?.trim();
+  if (pid) return `id:${pid}`;
+  const title = opts.projectTitle?.trim();
+  if (title) return `title:${title}`;
+  return null;
+}
+
+/** True when this cover belongs to the given project + role. */
+export function matchesDesktopCabinetProject(
+  identity: {
+    role: DesktopProjectGroupRole;
+    projectId?: string;
+    projectTitle?: string;
+  },
+  opts: {
+    role: DesktopProjectGroupRole;
+    projectId?: string | null;
+    projectTitle?: string | null;
+  },
+): boolean {
+  if (identity.role !== opts.role) return false;
+  const wantId = opts.projectId?.trim() || "";
+  const wantTitle = opts.projectTitle?.trim() || "";
+  // Prefer stamped projectId when both sides have it.
+  if (identity.projectId && wantId) {
+    return identity.projectId === wantId;
+  }
+  // Party-name title match when meta projectId is missing.
+  if (wantTitle && identity.projectTitle) {
+    return identity.projectTitle === wantTitle;
+  }
+  return false;
 }
 
 export function isProjectCabinetId(

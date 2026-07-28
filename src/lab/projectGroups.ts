@@ -22,8 +22,10 @@ import {
   downloadIds,
   downloadThumbs,
   getCreations,
+  listCreations,
 } from "../library/catalogClient";
 import { groupSourceCreationIds } from "../library/creationFlags";
+import type { Creation } from "../library/types";
 import {
   DEFAULT_PROJECT_ASPECT_RATIO,
   isProjectAspectRatio,
@@ -32,10 +34,20 @@ import {
 import type { ParasceneSdk, RemoteCreateImage } from "../sdk/parascene";
 import { absolutizeAssetUrl } from "../sdk/parascene";
 import {
+  desktopCabinetProjectKey,
   desktopProjectGroupMeta,
   desktopProjectGroupPartyName,
+  identifyDesktopCabinet,
+  matchesDesktopCabinetProject,
+  projectGroupKindForRole,
   roleForProjectGroupKind,
+  type DesktopProjectGroupRole,
 } from "../project/desktopProjectGroups";
+import {
+  loadStoredProjects,
+  saveStoredProjects,
+  setStoredProjectGroupIds,
+} from "../project/projectStore";
 import { ingestRemoteCreation } from "./ingestCreation";
 import {
   resolveLabAnimatePrompt,
@@ -682,6 +694,113 @@ export async function cancelProjectGroupsJob(jobId: string | null | undefined): 
   }
 }
 
+export type CabinetCandidate = {
+  id: string;
+  memberCount: number;
+  createdAt: string;
+};
+
+/**
+ * Pick a single keeper among duplicate cabinet covers.
+ * Prefer `preferredId` when present; else most members; else oldest createdAt.
+ */
+export function pickCabinetKeeper(
+  candidates: readonly CabinetCandidate[],
+  preferredId?: string | null,
+): string | null {
+  if (candidates.length === 0) return null;
+  const preferred = preferredId?.trim() || "";
+  if (preferred && candidates.some((c) => c.id === preferred)) {
+    return preferred;
+  }
+  const sorted = [...candidates].sort((a, b) => {
+    if (b.memberCount !== a.memberCount) return b.memberCount - a.memberCount;
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+  return sorted[0]?.id ?? null;
+}
+
+/** Catalog covers that look like desktop cabinets for a project + role. */
+export function findCabinetCandidatesInCatalog(
+  creations: readonly Creation[],
+  opts: {
+    role: DesktopProjectGroupRole;
+    projectId?: string | null;
+    projectTitle?: string | null;
+  },
+): CabinetCandidate[] {
+  const out: CabinetCandidate[] = [];
+  for (const creation of creations) {
+    const identity = identifyDesktopCabinet(creation);
+    if (!identity) continue;
+    if (!matchesDesktopCabinetProject(identity, opts)) continue;
+    const members = groupSourceCreationIds(creation).filter(
+      (id) => id !== creation.id,
+    );
+    out.push({
+      id: creation.id,
+      memberCount: members.length,
+      createdAt: creation.createdAt || "",
+    });
+  }
+  return out;
+}
+
+/**
+ * Resolve the single Images/Videos cabinet for a project.
+ * Prefers a live stored id; otherwise recovers from the local catalog.
+ * Returns null only when no cabinet exists yet (safe to create the first one).
+ */
+export async function resolveProjectCabinetId(opts: {
+  sdk: ParasceneSdk;
+  kind: ProjectGroupKind;
+  projectId: string;
+  projectTitle: string;
+  storedGroupId: string | null;
+  onProgress?: (note: string) => void;
+  /** Optional preloaded catalog (avoids a second list during dedupe). */
+  catalog?: Creation[];
+}): Promise<string | null> {
+  const label = opts.kind === "images" ? "Images" : "Videos";
+  const role = roleForProjectGroupKind(opts.kind);
+  const stored = opts.storedGroupId?.trim() || "";
+
+  if (stored) {
+    try {
+      const row = await opts.sdk.getCreation(stored);
+      opts.onProgress?.(`${label}: verified ${stored} still on Parascene.`);
+      return String(row.id);
+    } catch {
+      opts.onProgress?.(
+        `${label}: stored group ${stored} missing — recovering from catalog…`,
+      );
+    }
+  }
+
+  let catalog = opts.catalog;
+  if (!catalog) {
+    try {
+      catalog = await listCreations();
+    } catch {
+      catalog = [];
+    }
+  }
+  const candidates = findCabinetCandidatesInCatalog(catalog, {
+    role,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+  });
+  const recovered = pickCabinetKeeper(candidates, stored || null);
+  if (recovered) {
+    opts.onProgress?.(
+      `${label}: recovered existing cabinet ${recovered} from catalog.`,
+    );
+    return recovered;
+  }
+  opts.onProgress?.(`${label}: no existing cabinet — will create.`);
+  return null;
+}
+
 /**
  * After a create completes, file into the matching project group when possible.
  * Still runs in the webview (single group call) — can move to `group_creations` later.
@@ -703,12 +822,13 @@ export async function fileCreationIntoProjectGroup(opts: {
   const stored =
     opts.mediaType === "image" ? opts.imagesGroupId : opts.videosGroupId;
   const sdk = createAuthedSdk();
-  const existing = await verifyLiveGroupId(
+  const existing = await resolveProjectCabinetId({
     sdk,
-    stored,
-    () => {},
-    kind === "images" ? "Images" : "Videos",
-  );
+    kind,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    storedGroupId: stored,
+  });
   const groupId = await groupMembers({
     sdk,
     kind,
@@ -727,22 +847,292 @@ export async function fileCreationIntoProjectGroup(opts: {
   };
 }
 
-async function verifyLiveGroupId(
-  sdk: ParasceneSdk,
-  id: string | null,
-  progress: (note: string) => void,
-  label: string,
-): Promise<string | null> {
-  if (!id) return null;
-  try {
-    const row = await sdk.getCreation(id);
-    progress(`${label}: verified ${id} still on Parascene.`);
-    return String(row.id);
-  } catch {
-    progress(
-      `${label}: stored group ${id} is missing (deleted?) — starting fresh.`,
+export type DedupeCabinetBucket = {
+  projectKey: string;
+  role: DesktopProjectGroupRole;
+  projectId: string | null;
+  projectTitle: string | null;
+  coverIds: string[];
+};
+
+/** Group catalog desktop cabinets by (projectKey, role) for dedupe. */
+export function bucketDesktopCabinets(
+  creations: readonly Creation[],
+): DedupeCabinetBucket[] {
+  const identified: Array<{
+    id: string;
+    identity: NonNullable<ReturnType<typeof identifyDesktopCabinet>>;
+  }> = [];
+  for (const creation of creations) {
+    const identity = identifyDesktopCabinet(creation);
+    if (!identity) continue;
+    identified.push({ id: creation.id, identity });
+  }
+
+  // Prefer a stamped projectId for a given party title when any cover has it.
+  const titleToProjectId = new Map<string, string>();
+  for (const { identity } of identified) {
+    const title = identity.projectTitle?.trim();
+    const pid = identity.projectId?.trim();
+    if (title && pid && !titleToProjectId.has(title)) {
+      titleToProjectId.set(title, pid);
+    }
+  }
+
+  const map = new Map<string, DedupeCabinetBucket>();
+  for (const { id, identity } of identified) {
+    const projectId =
+      identity.projectId?.trim() ||
+      (identity.projectTitle
+        ? titleToProjectId.get(identity.projectTitle.trim())
+        : undefined) ||
+      null;
+    const projectTitle = identity.projectTitle?.trim() || null;
+    const projectKey = desktopCabinetProjectKey({
+      projectId,
+      projectTitle,
+    });
+    if (!projectKey) continue;
+    const key = `${projectKey}::${identity.role}`;
+    let bucket = map.get(key);
+    if (!bucket) {
+      bucket = {
+        projectKey,
+        role: identity.role,
+        projectId,
+        projectTitle,
+        coverIds: [],
+      };
+      map.set(key, bucket);
+    }
+    if (!bucket.coverIds.includes(id)) {
+      bucket.coverIds.push(id);
+    }
+    if (!bucket.projectId && projectId) {
+      bucket.projectId = projectId;
+    }
+    if (!bucket.projectTitle && projectTitle) {
+      bucket.projectTitle = projectTitle;
+    }
+  }
+  return [...map.values()];
+}
+
+export type DedupeDesktopCabinetsResult = {
+  messages: string[];
+  /** Keeper cover ids after merge (one per bucket that had cabinets). */
+  keeperIds: string[];
+  /** Orphan covers that were merged away. */
+  mergedOrphanIds: string[];
+  /** Project store pointers updated to keepers. */
+  projectUpdates: Array<{
+    projectId: string;
+    imagesGroupId?: string;
+    videosGroupId?: string;
+  }>;
+};
+
+/**
+ * Merge duplicate Parascene Desktop Images/Videos cabinets in the Library.
+ * Keeps one cover per (project, role); ungroups orphans and appends members
+ * into the keeper. Updates local project store pointers when project ids match.
+ */
+export async function dedupeDesktopProjectCabinets(opts?: {
+  /** Prefer these as keepers when present in a bucket. */
+  preferredImagesGroupId?: string | null;
+  preferredVideosGroupId?: string | null;
+  onProgress?: (note: string) => void;
+}): Promise<DedupeDesktopCabinetsResult> {
+  const onProgress = opts?.onProgress ?? (() => {});
+  const messages: string[] = [];
+  const keeperIds: string[] = [];
+  const mergedOrphanIds: string[] = [];
+  const projectUpdates: DedupeDesktopCabinetsResult["projectUpdates"] = [];
+
+  onProgress("Scanning Library for desktop cabinets…");
+  const catalog = await listCreations();
+  const buckets = bucketDesktopCabinets(catalog);
+  const duplicateBuckets = buckets.filter((b) => b.coverIds.length > 1);
+  onProgress(
+    `Found ${buckets.length} cabinet bucket(s); ${duplicateBuckets.length} with duplicates.`,
+  );
+
+  if (duplicateBuckets.length === 0) {
+    messages.push("No duplicate desktop cabinets found.");
+    applyCabinetPointersFromBuckets(buckets, projectUpdates, messages);
+    persistProjectCabinetUpdates(projectUpdates, messages);
+    return {
+      messages,
+      keeperIds: buckets.flatMap((b) => b.coverIds),
+      mergedOrphanIds,
+      projectUpdates,
+    };
+  }
+
+  const sdk = createAuthedSdk();
+  const byId = new Map(catalog.map((c) => [c.id, c]));
+
+  for (const bucket of duplicateBuckets) {
+    const kind = projectGroupKindForRole(bucket.role);
+    const preferred =
+      bucket.role === "project_images"
+        ? opts?.preferredImagesGroupId
+        : opts?.preferredVideosGroupId;
+    const candidates: CabinetCandidate[] = bucket.coverIds.map((id) => {
+      const row = byId.get(id);
+      const members = row
+        ? groupSourceCreationIds(row).filter((mid) => mid !== id)
+        : [];
+      return {
+        id,
+        memberCount: members.length,
+        createdAt: row?.createdAt || "",
+      };
+    });
+    const keeper = pickCabinetKeeper(candidates, preferred);
+    if (!keeper) continue;
+
+    const orphans = bucket.coverIds.filter((id) => id !== keeper);
+    const projectTitle =
+      bucket.projectTitle?.trim() ||
+      deriveTitleFromParty(byId.get(keeper)?.title, bucket.role) ||
+      "Project";
+    const projectId = bucket.projectId?.trim() || "";
+
+    onProgress(
+      `Merging ${orphans.length} orphan ${kind} cover(s) into ${keeper}…`,
     );
-    return null;
+
+    for (const orphan of orphans) {
+      onProgress(`Ungrouping orphan ${orphan}…`);
+      let restored: string[] = [];
+      try {
+        const result = await sdk.ungroupCreations(orphan);
+        restored = result.restoredCreationIds;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        messages.push(`Failed to ungroup ${orphan}: ${msg}`);
+        continue;
+      }
+      try {
+        await deleteLocal(orphan);
+      } catch {
+        /* already gone */
+      }
+      mergedOrphanIds.push(orphan);
+
+      const members = restored.filter(
+        (id) => id && id !== orphan && id !== keeper,
+      );
+      if (members.length === 0) {
+        messages.push(`Orphan ${orphan} had no members to merge.`);
+        continue;
+      }
+      onProgress(
+        `Appending ${members.length} member(s) from ${orphan} into ${keeper}…`,
+      );
+      try {
+        await groupMembers({
+          sdk,
+          kind,
+          existingGroupId: keeper,
+          memberIds: members,
+          projectId: projectId || "unknown",
+          projectTitle,
+        });
+        messages.push(
+          `Merged ${members.length} member(s) from ${orphan} into ${keeper}.`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        messages.push(`Failed merging ${orphan} → ${keeper}: ${msg}`);
+      }
+    }
+
+    keeperIds.push(keeper);
+    if (projectId) {
+      const update: DedupeDesktopCabinetsResult["projectUpdates"][number] = {
+        projectId,
+      };
+      if (kind === "images") update.imagesGroupId = keeper;
+      else update.videosGroupId = keeper;
+      projectUpdates.push(update);
+    }
+  }
+
+  const singles = buckets.filter((b) => b.coverIds.length === 1);
+  applyCabinetPointersFromBuckets(singles, projectUpdates, messages);
+  persistProjectCabinetUpdates(projectUpdates, messages);
+  onProgress(
+    `Dedupe finished: ${mergedOrphanIds.length} orphan(s) merged, ${keeperIds.length} keeper(s).`,
+  );
+  return { messages, keeperIds, mergedOrphanIds, projectUpdates };
+}
+
+function deriveTitleFromParty(
+  title: string | null | undefined,
+  role: DesktopProjectGroupRole,
+): string | null {
+  const suffix = role === "project_images" ? " · Images" : " · Videos";
+  const prefix = "Parascene Desktop · ";
+  const raw = String(title ?? "").trim();
+  if (!raw.startsWith(prefix) || !raw.endsWith(suffix)) return null;
+  return raw.slice(prefix.length, raw.length - suffix.length).trim() || null;
+}
+
+function applyCabinetPointersFromBuckets(
+  buckets: readonly DedupeCabinetBucket[],
+  projectUpdates: DedupeDesktopCabinetsResult["projectUpdates"],
+  messages: string[],
+): void {
+  for (const bucket of buckets) {
+    const coverId = bucket.coverIds[0];
+    const projectId = bucket.projectId?.trim();
+    if (!coverId || !projectId) continue;
+    const existing = projectUpdates.find((u) => u.projectId === projectId);
+    const update = existing ?? { projectId };
+    if (bucket.role === "project_images") update.imagesGroupId = coverId;
+    else update.videosGroupId = coverId;
+    if (!existing) projectUpdates.push(update);
+    messages.push(`Point ${projectId} ${bucket.role} → ${coverId}.`);
+  }
+}
+
+function persistProjectCabinetUpdates(
+  updates: DedupeDesktopCabinetsResult["projectUpdates"],
+  messages: string[],
+): void {
+  if (updates.length === 0) return;
+  const byProject = new Map<
+    string,
+    DedupeDesktopCabinetsResult["projectUpdates"][number]
+  >();
+  for (const u of updates) {
+    const prev = byProject.get(u.projectId) ?? { projectId: u.projectId };
+    byProject.set(u.projectId, {
+      projectId: u.projectId,
+      imagesGroupId: u.imagesGroupId ?? prev.imagesGroupId,
+      videosGroupId: u.videosGroupId ?? prev.videosGroupId,
+    });
+  }
+  const projects = loadStoredProjects();
+  let changed = false;
+  const next = projects.map((project) => {
+    const patch = byProject.get(project.id);
+    if (!patch) return project;
+    changed = true;
+    return setStoredProjectGroupIds(project, {
+      ...(patch.imagesGroupId !== undefined
+        ? { imagesGroupId: patch.imagesGroupId }
+        : {}),
+      ...(patch.videosGroupId !== undefined
+        ? { videosGroupId: patch.videosGroupId }
+        : {}),
+    });
+  });
+  if (changed) {
+    saveStoredProjects(next);
+    messages.push(`Updated group ids on ${byProject.size} project(s).`);
   }
 }
 

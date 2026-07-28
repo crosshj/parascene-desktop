@@ -1,13 +1,50 @@
 import { describe, expect, it } from "vitest";
+import type { Creation } from "../library/types";
 import {
+  bucketDesktopCabinets,
   coverSourceIdFromRemoteGroup,
   expectedMembersAfterAppend,
+  findCabinetCandidatesInCatalog,
   idsForGroupApiCall,
   memberIdsFromRemoteGroup,
+  pickCabinetKeeper,
   remainingMembersAfterRemoval,
   stillCandidateIdsFromGroup,
   withGroupMembership,
 } from "./projectGroups";
+
+function fakeCreation(
+  partial: Partial<Creation> & Pick<Creation, "id" | "title">,
+): Creation {
+  return {
+    mediaType: "image",
+    remoteUrl: null,
+    thumbnailUrl: null,
+    fitThumbnailUrl: null,
+    videoUrl: null,
+    localPath: null,
+    localThumbPath: null,
+    published: false,
+    publishedAt: null,
+    createdAt: "2024-01-01T00:00:00.000Z",
+    downloadState: "remote",
+    checksum: null,
+    prompt: null,
+    expiresAt: null,
+    updatedAt: "2024-01-01T00:00:00.000Z",
+    filename: "group/cover.json",
+    description: null,
+    color: null,
+    status: "complete",
+    width: null,
+    height: null,
+    aspectRatio: null,
+    nsfw: false,
+    isModeratedError: false,
+    remoteJson: null,
+    ...partial,
+  };
+}
 
 describe("idsForGroupApiCall", () => {
   it("starts a new group from members only", () => {
@@ -135,5 +172,150 @@ describe("withGroupMembership", () => {
       },
       args: { aspect_ratio: "9:16" },
     });
+  });
+});
+
+describe("pickCabinetKeeper", () => {
+  it("prefers the stored id when present", () => {
+    expect(
+      pickCabinetKeeper(
+        [
+          { id: "a", memberCount: 2, createdAt: "2024-01-01" },
+          { id: "b", memberCount: 10, createdAt: "2024-02-01" },
+        ],
+        "a",
+      ),
+    ).toBe("a");
+  });
+
+  it("picks most members then oldest when no preferred id", () => {
+    expect(
+      pickCabinetKeeper([
+        { id: "small", memberCount: 2, createdAt: "2024-01-01" },
+        { id: "big-new", memberCount: 10, createdAt: "2024-03-01" },
+        { id: "big-old", memberCount: 10, createdAt: "2024-02-01" },
+      ]),
+    ).toBe("big-old");
+  });
+
+  it("returns null for an empty candidate list", () => {
+    expect(pickCabinetKeeper([])).toBeNull();
+  });
+});
+
+describe("findCabinetCandidatesInCatalog / bucketDesktopCabinets", () => {
+  const imagesA = fakeCreation({
+    id: "img-a",
+    title: "Parascene Desktop · Replicate · Images",
+    createdAt: "2024-01-01T00:00:00.000Z",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creation_ids: [1, 2, 3],
+        },
+        desktop: {
+          role: "project_images",
+          client: "parascene-desktop",
+          projectId: "proj-1",
+        },
+      },
+    }),
+  });
+  const imagesB = fakeCreation({
+    id: "img-b",
+    title: "Parascene Desktop · Replicate · Images",
+    createdAt: "2024-02-01T00:00:00.000Z",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creation_ids: [4],
+        },
+        desktop: {
+          role: "project_images",
+          client: "parascene-desktop",
+          projectId: "proj-1",
+        },
+      },
+    }),
+  });
+  const videos = fakeCreation({
+    id: "vid-a",
+    title: "Parascene Desktop · Replicate · Videos",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: { kind: "group_creations", source_creation_ids: [9] },
+        desktop: {
+          role: "project_videos",
+          client: "parascene-desktop",
+          projectId: "proj-1",
+        },
+      },
+    }),
+  });
+  const otherProject = fakeCreation({
+    id: "other",
+    title: "Parascene Desktop · Other · Images",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: { kind: "group_creations", source_creation_ids: [8] },
+        desktop: {
+          role: "project_images",
+          client: "parascene-desktop",
+          projectId: "proj-2",
+        },
+      },
+    }),
+  });
+
+  it("finds matching cabinets for resolve recovery", () => {
+    const found = findCabinetCandidatesInCatalog(
+      [imagesA, imagesB, videos, otherProject],
+      {
+        role: "project_images",
+        projectId: "proj-1",
+        projectTitle: "Replicate",
+      },
+    );
+    expect(found.map((c) => c.id).sort()).toEqual(["img-a", "img-b"]);
+    expect(pickCabinetKeeper(found, null)).toBe("img-a");
+  });
+
+  it("buckets duplicates by project + role for dedupe", () => {
+    const buckets = bucketDesktopCabinets([
+      imagesA,
+      imagesB,
+      videos,
+      otherProject,
+    ]);
+    const imagesBucket = buckets.find(
+      (b) => b.role === "project_images" && b.projectId === "proj-1",
+    );
+    expect(imagesBucket?.coverIds.sort()).toEqual(["img-a", "img-b"]);
+    const videosBucket = buckets.find(
+      (b) => b.role === "project_videos" && b.projectId === "proj-1",
+    );
+    expect(videosBucket?.coverIds).toEqual(["vid-a"]);
+  });
+
+  it("merges party-name-only covers into stamped projectId buckets", () => {
+    const partyOnly = fakeCreation({
+      id: "img-party",
+      title: "Parascene Desktop · Replicate · Images",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: [5],
+          },
+        },
+      }),
+    });
+    const buckets = bucketDesktopCabinets([imagesA, partyOnly]);
+    const imagesBucket = buckets.find(
+      (b) => b.role === "project_images" && b.projectId === "proj-1",
+    );
+    expect(imagesBucket?.coverIds.sort()).toEqual(["img-a", "img-party"]);
   });
 });
