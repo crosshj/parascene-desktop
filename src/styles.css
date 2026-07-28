@@ -5297,6 +5297,63 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   text-align: center;
 }
 
+.add-asset-start-frame-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+}
+
+.add-asset-start-frame-assets-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.add-asset-start-frame-assets-header .btn {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.78rem;
+}
+
+.add-asset-start-frame-assets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+  gap: 0.4rem;
+  max-height: 10rem;
+  overflow: auto;
+}
+
+.add-asset-start-frame-asset {
+  appearance: none;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: #1a1e28;
+  cursor: pointer;
+  overflow: hidden;
+  aspect-ratio: 1;
+}
+
+.add-asset-start-frame-asset img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.add-asset-start-frame-asset.is-selected {
+  border-color: var(--select, #6af);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--select, #6af) 45%, transparent);
+}
+
+.add-asset-start-frame-asset:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .add-asset-generate-pane .add-asset-generate-frame-field {
   display: flex;
   flex-direction: column;
@@ -7248,6 +7305,49 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   margin: 0.5rem 0;
 }
 
+.lab-krea-previews {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin: 0.65rem 0 0.85rem;
+}
+
+.lab-krea-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #1a1e28;
+}
+
+.lab-krea-id-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0;
+}
+
+.lab-krea-id {
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #2a2f3a;
+  background: #0e1016;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+}
+
+.lab-krea-profile {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: #c5cad6;
+}
+
 .lab-replicate-inputs {
   margin: 0.35rem 0 0;
   padding-left: 1.1rem;
@@ -7518,8 +7618,24 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   margin-top: 0.75rem;
 }
 
-.lab-replicate-run-outputs h4 {
+.lab-replicate-run-outputs > h4 {
   margin: 0 0 0.45rem;
+}
+
+.lab-replicate-output-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.lab-replicate-output-heading h4 {
+  margin: 0;
+}
+
+.lab-replicate-save-status {
+  margin: 0.45rem 0 0;
 }
 
 .lab-replicate-run-output {

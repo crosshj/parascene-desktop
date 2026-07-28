@@ -95,6 +95,7 @@ export type LabSessionSnapshot = {
 const ALL_MODULE_IDS: LabModuleId[] = [
   "replicateModels",
   "replicatePredictions",
+  "kreaMoodboards",
   "groups",
   "create",
   "seeds",

@@ -34,7 +34,7 @@ import {
   PROJECT_ASPECT_OPTIONS,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
-import type { LyricAlignment, TimelineClip } from "../../project/types";
+import type { LyricAlignment, ProjectAsset, TimelineClip } from "../../project/types";
 import { kindFromMediaType } from "./stagingKind";
 import { PreviewScrubber } from "./PreviewScrubber";
 import {
@@ -116,6 +116,8 @@ type PreviewPaneProps = {
   onRetryAddAssetDownload?: () => void;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
+  /** Project image assets for Parascene Blue start-frame picker. */
+  imageAssets?: ProjectAsset[];
   /**
    * Desktop project cabinets — do not expand into slideshow composites
    * (members are shown as flat assets in the Assets pane instead).
@@ -308,6 +310,7 @@ export function PreviewPane({
   onClearAddAssetGenerationError,
   onRetryAddAssetDownload,
   selectedAssetIds = [],
+  imageAssets = [],
   projectCabinets = null,
   aspectRatio,
   monitorMode = "source",
@@ -1677,6 +1680,7 @@ export function PreviewPane({
                 onDraftChange={onAddAssetDraftChange}
                 onClearError={onClearAddAssetGenerationError}
                 onRetryDownload={onRetryAddAssetDownload}
+                imageAssets={imageAssets}
               />
             ) : showSelectionIntent ? (
               <SelectionIntentPanel

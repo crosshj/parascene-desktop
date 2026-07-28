@@ -2001,6 +2001,7 @@ export function EditorLayout() {
           })
         }
         onRetryAddAssetDownload={retryAddAssetDownload}
+        imageAssets={project.assets.filter((asset) => asset.kind === "image")}
         selectedAssetIds={
           monitorMode === "source" && !clipStagingSeed
             ? selectedAssetIds

@@ -307,6 +307,10 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
       ? row.replicatePredictionId.trim()
       : undefined;
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
+  const startFrameAssetId =
+    typeof row.startFrameAssetId === "string" && row.startFrameAssetId.trim()
+      ? row.startFrameAssetId.trim()
+      : undefined;
   if (
     prompt === undefined &&
     audioMode === undefined &&
@@ -317,7 +321,8 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     useNearestDuration === undefined &&
     lastError === undefined &&
     replicatePredictionId === undefined &&
-    replicateTweaks === undefined
+    replicateTweaks === undefined &&
+    startFrameAssetId === undefined
   ) {
     return undefined;
   }
@@ -332,6 +337,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     lastError,
     replicatePredictionId,
     replicateTweaks,
+    startFrameAssetId,
   };
 }
 

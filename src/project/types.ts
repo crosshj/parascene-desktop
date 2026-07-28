@@ -156,6 +156,8 @@ export type AddAssetDraft = {
     characterOrientation?: string;
     keepOriginalSound?: boolean;
   };
+  /** Project image asset id used as start frame instead of the prior timeline clip. */
+  startFrameAssetId?: string;
 };
 
 /** Persisted provenance for add-asset generated timeline clips. */

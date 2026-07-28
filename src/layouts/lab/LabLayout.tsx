@@ -97,6 +97,7 @@ import { labModuleGate } from "./labGates";
 import { LAB_MODULES, type LabModuleId } from "./labTypes";
 import { ReplicateModelsPanel } from "./ReplicateModelsPanel";
 import { ReplicatePredictionsPanel } from "./ReplicatePredictionsPanel";
+import { KreaMoodboardsPanel } from "./KreaMoodboardsPanel";
 
 function remoteMediaUrl(c: Creation): string | null {
   if (c.remoteUrl?.trim()) return c.remoteUrl.trim();
@@ -1306,7 +1307,8 @@ export function LabLayout({ active = true }: { active?: boolean }) {
 
       <section className="lab-main">
         {(moduleId !== "replicateModels" &&
-          moduleId !== "replicatePredictions") ||
+          moduleId !== "replicatePredictions" &&
+          moduleId !== "kreaMoodboards") ||
         activeGate ? (
           <header className="lab-main-header">
             <h2>{LAB_MODULES.find((m) => m.id === moduleId)?.label}</h2>
@@ -1332,6 +1334,9 @@ export function LabLayout({ active = true }: { active?: boolean }) {
           )}
           {moduleId === "replicatePredictions" && !activeGate && (
             <ReplicatePredictionsPanel />
+          )}
+          {moduleId === "kreaMoodboards" && !activeGate && (
+            <KreaMoodboardsPanel />
           )}
           {moduleId === "groups" && (
             <GroupsModule

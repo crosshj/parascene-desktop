@@ -25,7 +25,23 @@ export type StartFramePreview = {
   framePath: string | null;
   frameTimeSec: number | null;
   framing?: StagedClipFraming;
+  /** Project image asset id when the start frame came from the asset picker. */
+  sourceAssetId?: string | null;
+  /**
+   * Existing Parascene image URL — generation can use this directly instead of
+   * uploading a derived still when the asset is already on the cloud.
+   */
+  remoteImageUrl?: string | null;
 };
+
+/** True when a start frame can be sent to generation (local still or cloud URL). */
+export function startFrameIsReady(
+  preview: StartFramePreview | null | undefined,
+): boolean {
+  if (!preview) return false;
+  if (preview.remoteImageUrl?.trim()) return true;
+  return Boolean(preview.framePath?.trim());
+}
 
 /** Source media time within the visible timeline span of a clip. */
 export function clipVisibleSourceSec(
@@ -525,6 +541,116 @@ export async function resolveAddAssetStartFrame(
     missingLocalNote: "Previous clip is not available locally yet.",
     extractFailedNote: "Could not extract the last frame from the previous clip.",
   });
+}
+
+/** Use a project image asset as the Parascene Blue / Replicate start frame. */
+export async function resolveAddAssetStartFrameFromAsset(
+  assetId: string,
+  aspectRatio: string = "16:9",
+): Promise<StartFramePreview> {
+  const id = assetId.trim();
+  if (!id) {
+    return {
+      previewUrl: null,
+      note: "No image asset selected.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+
+  const [creation] = await getCreations([id]);
+  const previewUrl =
+    creationDetailUrl(creation) ?? creationPreviewUrl(creation);
+  const remoteImageUrl = creation?.remoteUrl?.trim() || null;
+  const sourcePath = creation?.localPath?.trim() || null;
+
+  if (creation?.mediaType !== "image" && sourcePath && !looksLikeImagePath(sourcePath)) {
+    return {
+      previewUrl,
+      note: "Only image assets can be used as a start frame.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+
+  if (remoteImageUrl) {
+    recordUiOpTrace({
+      type: "add_asset_frame_resolved",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: "start:asset:remote_url",
+    });
+    return {
+      previewUrl: previewUrl ?? remoteImageUrl,
+      note: "Start frame from project image on Parascene (no re-upload).",
+      framePath: sourcePath,
+      frameTimeSec: null,
+      framing: "fit",
+      sourceAssetId: id,
+      remoteImageUrl,
+    };
+  }
+
+  if (!sourcePath) {
+    recordUiOpTrace({
+      type: "add_asset_frame_missing_local",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: "start:asset:no_local_path",
+    });
+    return {
+      previewUrl,
+      note: "Image asset is not available locally yet — sync or download it first.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+
+  if (creation?.mediaType !== "image" && !looksLikeImagePath(sourcePath)) {
+    return {
+      previewUrl,
+      note: "Only image assets can be used as a start frame.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+
+  const framed = await applyNeighborFraming({
+    sourcePath,
+    framing: "fit",
+    aspectRatio,
+    fromImage: true,
+    role: "start",
+    frameTimeSec: null,
+    fallbackPreviewUrl: previewUrl,
+  });
+  recordUiOpTrace({
+    type: "add_asset_frame_resolved",
+    clipId: "",
+    kind: "image",
+    ids: id,
+    reason: `start:asset path=${framePathBasename(framed.framePath) || "none"}`,
+  });
+  return {
+    ...framed,
+    note: "Start frame from project image asset.",
+  };
+}
+
+/** Timeline neighbor first; optional project image asset overrides when set. */
+export async function resolveStartFrameForAddAsset(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
+  opts?: { startFrameAssetId?: string | null },
+): Promise<StartFramePreview> {
+  const assetId = opts?.startFrameAssetId?.trim();
+  if (assetId) {
+    return resolveAddAssetStartFrameFromAsset(assetId, aspectRatio);
+  }
+  return resolveAddAssetStartFrame(timeline, placeholder, aspectRatio);
 }
 
 export async function resolveAddAssetEndFrame(

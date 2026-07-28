@@ -567,25 +567,40 @@ async function runStartFrameAddAssetGeneration(
   pushSteps(completeStep(steps, "upload-audio"));
 
   pushSteps(advanceStep(steps, "still"));
-  opts.onProgress("Preparing framed start still…");
-  if (!opts.startFrame.framePath?.trim()) {
-    throw new Error(
-      "Place this clip after another clip on the timeline.",
-    );
+  const existingImageUrl = opts.startFrame.remoteImageUrl?.trim();
+  const sourceAssetId = opts.startFrame.sourceAssetId?.trim();
+  let imageUrl: string;
+  let stillProjectCreationIds: string[] = [];
+  let imagesGroupId = opts.imagesGroupId;
+
+  if (existingImageUrl && sourceAssetId) {
+    opts.onProgress("Using project image on Parascene…");
+    imageUrl = existingImageUrl;
+    pushSteps(completeStep(steps, "still"));
+  } else {
+    opts.onProgress("Preparing framed start still…");
+    if (!opts.startFrame.framePath?.trim()) {
+      throw new Error(
+        "Place this clip after another clip on the timeline, or choose an image from assets.",
+      );
+    }
+    const startStill = await uploadFramedStill({
+      framePath: opts.startFrame.framePath,
+      framing: opts.startFrame.framing,
+      aspectRatio: opts.aspectRatio,
+      filenamePrefix: "editor-a2v-start",
+      progressLabel: "start image",
+      onProgress: opts.onProgress,
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+    });
+    imageUrl = startStill.imageUrl;
+    stillProjectCreationIds = startStill.projectCreationIds;
+    imagesGroupId = startStill.groupId ?? opts.imagesGroupId;
+    pushSteps(completeStep(steps, "still"));
   }
-  const startStill = await uploadFramedStill({
-    framePath: opts.startFrame.framePath,
-    framing: opts.startFrame.framing,
-    aspectRatio: opts.aspectRatio,
-    filenamePrefix: "editor-a2v-start",
-    progressLabel: "start image",
-    onProgress: opts.onProgress,
-    projectId: opts.projectId,
-    projectTitle: opts.projectTitle,
-    imagesGroupId: opts.imagesGroupId,
-    videosGroupId: opts.videosGroupId,
-  });
-  pushSteps(completeStep(steps, "still"));
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
 
@@ -593,7 +608,7 @@ async function runStartFrameAddAssetGeneration(
   const { creationId } = await runA2vGeneration({
     prompt: fullPrompt,
     aspectRatio: opts.aspectRatio,
-    imageUrl: startStill.imageUrl,
+    imageUrl,
     audioClipId: clipId,
     durationSeconds,
     onProgress: opts.onProgress,
@@ -607,7 +622,7 @@ async function runStartFrameAddAssetGeneration(
     mediaType: "video",
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
-    imagesGroupId: startStill.groupId ?? opts.imagesGroupId,
+    imagesGroupId: imagesGroupId ?? opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
   });
   pushSteps(completeStep(steps, "file"));
@@ -615,13 +630,10 @@ async function runStartFrameAddAssetGeneration(
   return {
     creationId,
     projectCreationIds: [
-      ...new Set([
-        ...startStill.projectCreationIds,
-        ...filed.projectCreationIds,
-      ]),
+      ...new Set([...stillProjectCreationIds, ...filed.projectCreationIds]),
     ],
     videosGroupId: filed.groupId,
-    imagesGroupId: startStill.groupId,
+    imagesGroupId,
     mode: "start_frame",
     model: "ltx_a2v",
   };

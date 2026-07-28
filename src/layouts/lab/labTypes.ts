@@ -1,6 +1,7 @@
 export type LabModuleId =
   | "replicateModels"
   | "replicatePredictions"
+  | "kreaMoodboards"
   | "groups"
   | "create"
   | "seeds"
@@ -30,6 +31,11 @@ export const LAB_MODULES: {
     id: "replicatePredictions",
     label: "Replicate predictions",
     blurb: "In-progress and completed Lab runs",
+  },
+  {
+    id: "kreaMoodboards",
+    label: "Krea moodboards",
+    blurb: "Browse preset moodboards · copy UUID",
   },
   { id: "groups", label: "Project groups", blurb: "Ensure Images or Videos group" },
   { id: "create", label: "Parascene create", blurb: "Image (or video) create → Library" },

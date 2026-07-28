@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
+import { getCreations } from "../../library/catalogClient";
+import { creationPreviewUrl } from "../../library/previewUrl";
 import type {
   AddAssetDraft,
   LyricAlignment,
+  ProjectAsset,
   TimelineClip,
 } from "../../project/types";
 import {
@@ -23,8 +26,9 @@ import { resolveLyricsForTimeRange, matchingLyricAlignment } from "./addAssetLyr
 import {
   resolveAddAssetBridgeFrames,
   resolveAddAssetGenerationTiming,
-  resolveAddAssetStartFrame,
+  resolveStartFrameForAddAsset,
   framePathBasename,
+  startFrameIsReady,
   type BridgeFrames,
   type StartFramePreview,
 } from "./addAssetStartFrame";
@@ -89,6 +93,8 @@ type AddAssetGeneratePanelProps = {
   onClearError?: () => void;
   /** Retry download for a prediction that already succeeded on Replicate. */
   onRetryDownload?: () => void;
+  /** Project image assets available as an explicit start frame. */
+  imageAssets?: ProjectAsset[];
 };
 
 type PanelPhase = "form" | "running" | "error";
@@ -148,7 +154,8 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
     Boolean(a.useNearestDuration) === Boolean(b?.useNearestDuration) &&
     (a.lastError ?? "") === (b?.lastError ?? "") &&
     (a.replicatePredictionId ?? "") === (b?.replicatePredictionId ?? "") &&
-    replicateTweaksEqual(a.replicateTweaks, b?.replicateTweaks)
+    replicateTweaksEqual(a.replicateTweaks, b?.replicateTweaks) &&
+    (a.startFrameAssetId ?? "") === (b?.startFrameAssetId ?? "")
   );
 }
 
@@ -258,7 +265,7 @@ function FramePreview({
   const aspect = PROJECT_ASPECT_OPTIONS.find((o) => o.id === aspectRatio);
   const w = aspect?.w ?? 16;
   const h = aspect?.h ?? 9;
-  const hasUsableFrame = Boolean(preview?.framePath?.trim());
+  const hasUsableFrame = startFrameIsReady(preview);
   return (
     <div
       className={`add-asset-generate-frame-preview${loading ? " is-loading" : ""}`}
@@ -292,6 +299,73 @@ function FramePreview({
   );
 }
 
+function StartFrameAssetPicker({
+  assets,
+  selectedId,
+  previewsById,
+  disabled,
+  onSelect,
+  onClear,
+}: {
+  assets: ProjectAsset[];
+  selectedId: string | null;
+  previewsById: Record<string, string | null>;
+  disabled?: boolean;
+  onSelect: (assetId: string) => void;
+  onClear: () => void;
+}) {
+  if (assets.length === 0) return null;
+  return (
+    <div className="add-asset-start-frame-assets">
+      <div className="add-asset-start-frame-assets-header">
+        <span className="muted">Or choose from assets</span>
+        {selectedId ? (
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={disabled}
+            onClick={onClear}
+          >
+            Use timeline clip
+          </button>
+        ) : null}
+      </div>
+      <div
+        className="add-asset-start-frame-assets-grid"
+        role="listbox"
+        aria-label="Project image assets"
+      >
+        {assets.map((asset) => {
+          const selected = asset.id === selectedId;
+          const thumb = previewsById[asset.id];
+          return (
+            <button
+              key={asset.id}
+              type="button"
+              role="option"
+              aria-selected={selected}
+              className={
+                selected
+                  ? "add-asset-start-frame-asset is-selected"
+                  : "add-asset-start-frame-asset"
+              }
+              title={asset.name}
+              disabled={disabled}
+              onClick={() => onSelect(asset.id)}
+            >
+              {thumb ? (
+                <img src={thumb} alt="" draggable={false} />
+              ) : (
+                <span className="muted">Image</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function AddAssetGeneratePanel({
   clip,
   aspectRatio,
@@ -304,6 +378,7 @@ export function AddAssetGeneratePanel({
   onDraftChange,
   onClearError,
   onRetryDownload,
+  imageAssets = [],
 }: AddAssetGeneratePanelProps) {
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
   const [pullEpoch, setPullEpoch] = useState(0);
@@ -348,6 +423,8 @@ export function AddAssetGeneratePanel({
 
   const initial = draftFromClip(clip, lyricsText);
   const isReplicate = isReplicateTimelineFill(clip);
+  const startFrameAssetId =
+    clip.addAssetDraft?.startFrameAssetId?.trim() || null;
   const [prompt, setPrompt] = useState(initial.prompt);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(
     initial.audioMode,
@@ -371,6 +448,9 @@ export function AddAssetGeneratePanel({
     null,
   );
   const [motionVideoPath, setMotionVideoPath] = useState<string | null>(null);
+  const [assetPreviews, setAssetPreviews] = useState<Record<string, string | null>>(
+    {},
+  );
   const [loadedFrames, setLoadedFrames] = useState<{
     key: string;
     start: StartFramePreview | null;
@@ -384,7 +464,7 @@ export function AddAssetGeneratePanel({
     setLoadedFrames(null);
   }
 
-  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v3:${pullEpoch}`;
+  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v4:${pullEpoch}:${startFrameAssetId ?? ""}`;
   const activeSession = session?.clipId === clip.id ? session : null;
   const draftError = clip.addAssetDraft?.lastError?.trim() || null;
   const phase: PanelPhase =
@@ -451,11 +531,8 @@ export function AddAssetGeneratePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fingerprint covers geometry
   }, [isReplicate, resolvedContinuityMode, framesKey]);
 
-  const hasStartFrame = Boolean(
-    (resolvedContinuityMode === "first_last"
-      ? bridge?.first.framePath
-      : startFrame?.framePath
-    )?.trim(),
+  const hasStartFrame = startFrameIsReady(
+    resolvedContinuityMode === "first_last" ? bridge?.first : startFrame,
   );
   const hasEndFrame = Boolean(bridge?.last.framePath?.trim());
   const hasImageInput = hasStartFrame;
@@ -561,6 +638,25 @@ export function AddAssetGeneratePanel({
     prompt,
   ]);
 
+  // Load thumbnails for the start-frame asset picker.
+  useEffect(() => {
+    if (isReplicate || imageAssets.length === 0) return;
+    let cancelled = false;
+    const ids = imageAssets.map((asset) => asset.id);
+    void (async () => {
+      const rows = await getCreations(ids);
+      if (cancelled) return;
+      const next: Record<string, string | null> = {};
+      for (const row of rows) {
+        next[row.id] = creationPreviewUrl(row);
+      }
+      setAssetPreviews(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [imageAssets, isReplicate]);
+
   // Persist form choices on the placeholder so they survive clip switches.
   useEffect(() => {
     const next: AddAssetDraft = {
@@ -574,6 +670,7 @@ export function AddAssetGeneratePanel({
       lastError: clip.addAssetDraft?.lastError,
       replicatePredictionId: clip.addAssetDraft?.replicatePredictionId,
       replicateTweaks: isReplicate ? normalizedTweaks : undefined,
+      startFrameAssetId: startFrameAssetId ?? undefined,
     };
     if (draftsEqual(next, clip.addAssetDraft)) return;
     onDraftChange?.(next);
@@ -586,6 +683,7 @@ export function AddAssetGeneratePanel({
     normalizedTweaks,
     isReplicate,
     clip.addAssetDraft,
+    startFrameAssetId,
     onDraftChange,
   ]);
 
@@ -594,7 +692,9 @@ export function AddAssetGeneratePanel({
     let cancelled = false;
     void (async () => {
       const [start, resolvedBridge] = await Promise.all([
-        resolveAddAssetStartFrame(timeline, clip, aspectRatio),
+        resolveStartFrameForAddAsset(timeline, clip, aspectRatio, {
+          startFrameAssetId,
+        }),
         resolveAddAssetBridgeFrames(timeline, clip, aspectRatio),
       ]);
       if (cancelled) return;
@@ -620,6 +720,15 @@ export function AddAssetGeneratePanel({
 
   const handleRefresh = () => {
     if (phase !== "form" || framesLoading) return;
+    setLoadedFrames(null);
+    setPullEpoch((epoch) => epoch + 1);
+  };
+
+  const setStartFrameAssetId = (assetId: string | null) => {
+    onDraftChange?.({
+      ...(clip.addAssetDraft ?? {}),
+      startFrameAssetId: assetId ?? undefined,
+    });
     setLoadedFrames(null);
     setPullEpoch((epoch) => epoch + 1);
   };
@@ -680,10 +789,11 @@ export function AddAssetGeneratePanel({
           return;
         }
 
-        const freshStart = await resolveAddAssetStartFrame(
+        const freshStart = await resolveStartFrameForAddAsset(
           timeline,
           clip,
           aspectRatio,
+          { startFrameAssetId },
         );
         let endFrame: StartFramePreview | null = null;
         if (resolvedContinuityMode === "first_last") {
@@ -769,10 +879,12 @@ export function AddAssetGeneratePanel({
           return;
         }
 
-        if (!freshStart.framePath?.trim()) {
+        if (!startFrameIsReady(freshStart)) {
           abortGenerate(
             "missing_start_frame",
-            "Could not resolve a local start-frame still from the previous clip. Download the clip, use an image or video prior, then Refresh.",
+            startFrameAssetId
+              ? "Could not resolve the selected image on Parascene. Sync the asset, then Refresh."
+              : "Could not resolve a local start-frame still from the previous clip. Download the clip, use an image or video prior, then Refresh.",
           );
           return;
         }
@@ -835,15 +947,18 @@ export function AddAssetGeneratePanel({
         return;
       }
 
-      const freshStart = await resolveAddAssetStartFrame(
+      const freshStart = await resolveStartFrameForAddAsset(
         timeline,
         clip,
         aspectRatio,
+        { startFrameAssetId },
       );
-      if (!freshStart.framePath?.trim()) {
+      if (!startFrameIsReady(freshStart)) {
         abortGenerate(
           "missing_start_frame",
-          "Could not resolve a local start-frame still from the previous clip.",
+          startFrameAssetId
+            ? "Could not resolve the selected image on Parascene. Sync the asset, then Refresh."
+            : "Could not resolve a local start-frame still from the previous clip.",
         );
         return;
       }
@@ -868,7 +983,7 @@ export function AddAssetGeneratePanel({
       ? Boolean(
           bridge?.first.framePath?.trim() && bridge.last.framePath?.trim(),
         )
-      : Boolean(startFrame?.framePath?.trim()));
+      : startFrameIsReady(startFrame));
 
   const canGenerate =
     isReplicate
@@ -1390,9 +1505,28 @@ export function AddAssetGeneratePanel({
                 loading={framesLoading}
                 loadingLabel="Loading start frame…"
                 preview={startFrame}
-                emptyLabel="No prior clip with a local still — place an image or video before this gap."
-                alt="Start frame from previous clip"
+                emptyLabel={
+                  startFrameAssetId
+                    ? "Selected image is not available locally yet — sync or download it."
+                    : "No prior clip with a local still — choose an image below or place a clip before this gap."
+                }
+                alt="Start frame"
               />
+              {!isReplicate && resolvedContinuityMode === "start_frame" ? (
+                <StartFrameAssetPicker
+                  assets={imageAssets}
+                  selectedId={startFrameAssetId}
+                  previewsById={assetPreviews}
+                  disabled={phase !== "form" || framesLoading}
+                  onSelect={setStartFrameAssetId}
+                  onClear={() => setStartFrameAssetId(null)}
+                />
+              ) : null}
+              {startFrame?.note ? (
+                <p className="muted" style={{ margin: 0, fontSize: "0.82rem" }}>
+                  {startFrame.note}
+                </p>
+              ) : null}
             </div>
           )}
         </section>

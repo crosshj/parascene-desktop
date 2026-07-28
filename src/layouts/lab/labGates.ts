@@ -38,6 +38,7 @@ export function labModuleGate(
 ): LabGate | null {
   // Replicate models / predictions are never hard-gated: local catalog and run
   // history work without a token; panels surface Settings when needed.
+  // Krea moodboards use a checked-in catalog — always open.
 
   const needsGroups =
     id === "create" || id === "mutate" || id === "a2v" || id === "frame";

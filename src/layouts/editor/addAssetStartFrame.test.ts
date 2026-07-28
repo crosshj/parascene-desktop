@@ -10,6 +10,7 @@ import {
   priorVideoClipBefore,
   resolveAddAssetGenerationTiming,
   resolveEditorMainAudioCreationId,
+  startFrameIsReady,
   timelineSecToSongSec,
   visualLayerAfterPlaceholder,
   visualLayerBeforePlaceholder,
@@ -431,6 +432,30 @@ describe("looksLikeImagePath", () => {
     expect(looksLikeImagePath("/tmp/a.mp4")).toBe(false);
     expect(looksLikeImagePath("")).toBe(false);
     expect(looksLikeImagePath(null)).toBe(false);
+  });
+});
+
+describe("startFrameIsReady", () => {
+  it("accepts remote cloud URLs or local frame paths", () => {
+    expect(startFrameIsReady(null)).toBe(false);
+    expect(startFrameIsReady({ previewUrl: null, note: "", framePath: null, frameTimeSec: null })).toBe(false);
+    expect(
+      startFrameIsReady({
+        previewUrl: "https://x/y.png",
+        note: "",
+        framePath: null,
+        frameTimeSec: null,
+        remoteImageUrl: "https://x/y.png",
+      }),
+    ).toBe(true);
+    expect(
+      startFrameIsReady({
+        previewUrl: null,
+        note: "",
+        framePath: "/tmp/frame.jpg",
+        frameTimeSec: null,
+      }),
+    ).toBe(true);
   });
 });
 

@@ -5,15 +5,21 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { importLocalPaths } from "../../library/catalogClient";
 import {
   listenReplicateRunProgress,
+  replicatePredictionDownload,
   replicatePredictionGet,
   replicatePredictionsList,
   type ReplicatePredictionDetail,
   type ReplicatePredictionListRow,
+  type ReplicatePredictionRecord,
 } from "../../replicate/replicateClient";
 import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
-import { ReplicateLocalOutput } from "../../replicate/replicateLocalOutput";
+import {
+  outputMediaKind,
+  ReplicateLocalOutput,
+} from "../../replicate/replicateLocalOutput";
 
 const DETAIL_WIDTH_KEY = "parascene.lab.replicatePredictionsDetailWidth";
 const DETAIL_MIN = 280;
@@ -81,6 +87,23 @@ const STATUS_FILTERS = [
   { id: "canceled", label: "Canceled" },
 ] as const;
 
+function mediaPathsForLibrary(paths: string[]): string[] {
+  return paths.filter(
+    (path) => path && outputMediaKind(path) !== "other",
+  );
+}
+
+function canSavePredictionToLibrary(
+  record: ReplicatePredictionRecord,
+): boolean {
+  if (mediaPathsForLibrary(record.localPaths).length > 0) return true;
+  const status = record.status.toLowerCase();
+  return (
+    record.outputUrls.length > 0 &&
+    (status === "succeeded" || status === "downloading")
+  );
+}
+
 export function ReplicatePredictionsPanel() {
   const [rows, setRows] = useState<ReplicatePredictionListRow[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -90,6 +113,8 @@ export function ReplicatePredictionsPanel() {
   const [detail, setDetail] = useState<ReplicatePredictionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [savingToLibrary, setSavingToLibrary] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [detailWidth, setDetailWidth] = useState(loadDetailWidth);
   const [splitDragging, setSplitDragging] = useState(false);
@@ -204,12 +229,59 @@ export function ReplicatePredictionsPanel() {
   const closeDetail = useCallback(() => {
     setSelectedId(null);
     setDetail(null);
+    setSaveMessage(null);
+    setSavingToLibrary(false);
   }, []);
+
+  const savePredictionToLibrary = useCallback(
+    async (record: ReplicatePredictionRecord) => {
+      setSavingToLibrary(true);
+      setSaveMessage(null);
+      setError(null);
+      try {
+        let paths = mediaPathsForLibrary(record.localPaths);
+        if (paths.length === 0 && record.outputUrls.length > 0) {
+          setSaveMessage("Downloading outputs…");
+          const downloaded = await replicatePredictionDownload(
+            record.predictionId,
+          );
+          paths = mediaPathsForLibrary(downloaded.localPaths);
+          const refreshed = await replicatePredictionGet(record.predictionId);
+          if (refreshed) setDetail(refreshed);
+        }
+        if (paths.length === 0) {
+          throw new Error(
+            "No media files to import. Outputs may still be downloading, or are not image/video/audio.",
+          );
+        }
+        setSaveMessage("Importing to Library…");
+        const imported = await importLocalPaths(paths);
+        if (imported.creations.length === 0) {
+          throw new Error(
+            "Import produced no Library creations. Outputs may not be supported media types.",
+          );
+        }
+        const n = imported.creations.length;
+        setSaveMessage(
+          n === 1
+            ? "Saved to Library as a local-only creation."
+            : `Saved ${n} files to Library as local-only creations.`,
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setSaveMessage(null);
+      } finally {
+        setSavingToLibrary(false);
+      }
+    },
+    [],
+  );
 
   const record = detail?.record;
   const selectedRow = selectedId
     ? rows.find((r) => r.predictionId === selectedId)
     : undefined;
+  const showSaveToLibrary = record ? canSavePredictionToLibrary(record) : false;
 
   return (
     <div className="lab-replicate lab-replicate-predictions" aria-label="Replicate predictions">
@@ -300,7 +372,10 @@ export function ReplicatePredictionsPanel() {
                       <tr
                         key={row.predictionId}
                         className={active ? "is-active" : undefined}
-                        onClick={() => setSelectedId(row.predictionId)}
+                        onClick={() => {
+                          setSelectedId(row.predictionId);
+                          setSaveMessage(null);
+                        }}
                       >
                         <td>
                           <span
@@ -442,13 +517,30 @@ export function ReplicatePredictionsPanel() {
 
                   {record.localPaths.length > 0 ? (
                     <section className="lab-replicate-run-outputs">
-                      <h4>Output</h4>
+                      <div className="lab-replicate-output-heading">
+                        <h4>Output</h4>
+                        {showSaveToLibrary ? (
+                          <button
+                            type="button"
+                            className="btn primary"
+                            disabled={savingToLibrary}
+                            onClick={() => void savePredictionToLibrary(record)}
+                          >
+                            {savingToLibrary ? "Saving…" : "Save to Library"}
+                          </button>
+                        ) : null}
+                      </div>
                       {record.localPaths.map((path) => (
                         <ReplicateLocalOutput key={path} path={path} />
                       ))}
                       <p className="muted">
                         Saved under <code>{record.runDir}</code>
                       </p>
+                      {saveMessage ? (
+                        <p className="muted lab-replicate-save-status" role="status">
+                          {saveMessage}
+                        </p>
+                      ) : null}
                     </section>
                   ) : record.outputPreview ? (
                     <section className="lab-replicate-run-outputs">
@@ -458,8 +550,20 @@ export function ReplicatePredictionsPanel() {
                       </pre>
                     </section>
                   ) : record.outputUrls.length > 0 ? (
-                    <section>
-                      <h4>Output URLs</h4>
+                    <section className="lab-replicate-run-outputs">
+                      <div className="lab-replicate-output-heading">
+                        <h4>Output URLs</h4>
+                        {showSaveToLibrary ? (
+                          <button
+                            type="button"
+                            className="btn primary"
+                            disabled={savingToLibrary}
+                            onClick={() => void savePredictionToLibrary(record)}
+                          >
+                            {savingToLibrary ? "Saving…" : "Save to Library"}
+                          </button>
+                        ) : null}
+                      </div>
                       <ul className="lab-replicate-inputs">
                         {record.outputUrls.map((url) => (
                           <li key={url}>
@@ -467,6 +571,11 @@ export function ReplicatePredictionsPanel() {
                           </li>
                         ))}
                       </ul>
+                      {saveMessage ? (
+                        <p className="muted lab-replicate-save-status" role="status">
+                          {saveMessage}
+                        </p>
+                      ) : null}
                     </section>
                   ) : (
                     <p className="muted">No local outputs yet.</p>
