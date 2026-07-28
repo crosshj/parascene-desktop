@@ -80,7 +80,7 @@ import {
   type BakeInfo,
 } from "../../library/slideshowMedia";
 import { pendingDraftMatchesSelection } from "./editorSelection";
-import { TimelineMonitor } from "./TimelineMonitor";
+import { TimelineMonitorHost } from "../../playback/TimelineMonitorHost";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
 import {
   AddAssetGeneratePanel,
@@ -135,6 +135,8 @@ type PreviewPaneProps = {
   timelinePlaying?: boolean;
   /** Bumps when playhead jumps while playing (scrub / loop) so media re-primes. */
   mediaSeekEpoch?: number;
+  /** Phase 3: engine-owned clock → throttled ruler updates. */
+  onTimelineTimeUpdate?: (sec: number) => void;
   /** Staging fields when a timeline clip is selected. */
   stagingSeed?: StagedClipDraft | null;
   /** Clip id (or other key) so re-selecting refreshes seed even for same asset. */
@@ -318,6 +320,7 @@ export function PreviewPane({
   timelinePlayheadSec = 0,
   timelinePlaying = false,
   mediaSeekEpoch = 0,
+  onTimelineTimeUpdate,
   stagingSeed = null,
   stagingSeedKey = null,
   selectedClipAddAssetGeneration = null,
@@ -1642,7 +1645,7 @@ export function PreviewPane({
             style={surfaceStyle}
           >
             {monitorMode === "timeline" ? (
-              <TimelineMonitor
+              <TimelineMonitorHost
                 clips={timelineClips}
                 playheadSec={timelinePlayheadSec}
                 playing={timelinePlaying}
@@ -1653,6 +1656,7 @@ export function PreviewPane({
                 stageH={stage.h}
                 matteW={matte.w}
                 matteH={matte.h}
+                onTimeUpdate={onTimelineTimeUpdate}
               />
             ) : showUnsupportedSelection && unsupportedSelection ? (
               <UnsupportedSelectionPanel

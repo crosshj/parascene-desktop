@@ -289,16 +289,18 @@ export function EditorLayout() {
     [displayTimeline, project.mainAudioCreationId, project.assets],
   );
   /**
-   * While playing, playhead is local (avoids localStorage writes every frame).
-   * When paused, the persisted project playhead is the source of truth.
+   * While playing, the playback engine owns the playhead RAF; React only
+   * receives throttled onTimeUpdate for the ruler. When paused, the persisted
+   * project playhead is the source of truth.
    */
   const [timelinePlaying, setTimelinePlaying] = useState(false);
   const [livePlayheadSec, setLivePlayheadSec] = useState(
     project.timelinePlayheadSec,
   );
-  /** Bumped on scrub-while-playing / loop so media re-primes without pausing. */
+  /** Bumped on scrub-while-playing so media re-primes. */
   const [mediaSeekEpoch, setMediaSeekEpoch] = useState(0);
   const livePlayheadRef = useRef(project.timelinePlayheadSec);
+  const wasTimelinePlayingRef = useRef(false);
   const toggleTimelinePlayingRef = useRef<() => void>(() => {});
   const displayPlayheadSec = timelinePlaying
     ? livePlayheadSec
@@ -380,40 +382,24 @@ export function EditorLayout() {
   const pauseTimelinePlayback = () => {
     if (!timelinePlaying) return;
     setTimelinePlaying(false);
+    // Persist now so displayPlayheadSec (project playhead when paused) does not
+    // jump backward. Engine layout pause may refine via onTimeUpdate afterward.
     setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
   };
 
-  // Virtual timeline clock — only while the program monitor is active.
+  // Persist playhead after the engine emits its final time on pause.
   useEffect(() => {
-    if (!timelinePlaying || monitorMode !== "timeline") return;
-    const end = Math.max(sequenceDurationSec, 0);
-    if (end <= 0) return;
-
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      const advanced = livePlayheadRef.current + dt;
-      // Loop by default — wrap at sequence end.
-      const wrapped = advanced >= end;
-      const next = wrapped ? advanced % end : advanced;
-      livePlayheadRef.current = next;
-      setLivePlayheadSec(next);
-      if (wrapped) setMediaSeekEpoch((n) => n + 1);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(raf);
+    if (wasTimelinePlayingRef.current && !timelinePlaying) {
       setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
-    };
-  }, [
-    timelinePlaying,
-    monitorMode,
-    sequenceDurationSec,
-    setOpenProjectTimelinePlayheadSec,
-  ]);
+    }
+    wasTimelinePlayingRef.current = timelinePlaying;
+  }, [timelinePlaying, setOpenProjectTimelinePlayheadSec]);
+
+  /** Engine → React: throttled ruler updates while playing; accurate on pause. */
+  const onTimelineEngineTimeUpdate = (sec: number) => {
+    livePlayheadRef.current = sec;
+    setLivePlayheadSec(sec);
+  };
 
   const seekTimelinePlayhead = (sec: number) => {
     const end = Math.max(sequenceDurationSec, sec, 0.1);
@@ -2017,6 +2003,7 @@ export function EditorLayout() {
         timelinePlayheadSec={displayPlayheadSec}
         timelinePlaying={timelinePlaying && monitorMode === "timeline"}
         mediaSeekEpoch={mediaSeekEpoch}
+        onTimelineTimeUpdate={onTimelineEngineTimeUpdate}
         stagingSeed={
           monitorMode === "source" ? (clipStagingSeed?.draft ?? null) : null
         }
