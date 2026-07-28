@@ -23,7 +23,7 @@ part of this skill — even if asked mid-preflight. The user pushes themselves.
 ```
 Preflight:
 - [ ] 1. Typecheck
-- [ ] 2. Lint
+- [ ] 2. Lint (errors and warnings — prefer fix over disable)
 - [ ] 3. Tests
 - [ ] 4. Patch-bump version
 - [ ] 5. Create local commit (GitHub Desktop review)
@@ -43,7 +43,22 @@ Fix failures before continuing.
 npm run lint
 ```
 
-Fix failures before continuing.
+Treat **errors and warnings** as blockers. Do not continue until both are
+cleared for the changed code (and any new warnings introduced by this work).
+
+**Prefer fixing the underlying issue** over silencing the linter. Do **not**
+add `eslint-disable`, `eslint-disable-next-line`, `@ts-ignore`,
+`@ts-expect-error`, or similar bypass comments by default.
+
+If a rule truly cannot be satisfied without a disable/bypass comment:
+
+1. **Stop and ask the user** what should be done (fix properly, accept a
+   scoped disable with justification, or leave as-is).
+2. Do **not** add the bypass comment until the user chooses that path.
+3. If they approve a disable, keep it as narrow as possible (single line /
+   single rule) and include a short why comment only when they ask for one.
+
+Fix failures and warnings before continuing.
 
 ### 3. Tests
 

@@ -16,10 +16,8 @@ import {
   type ReplicatePredictionRecord,
 } from "../../replicate/replicateClient";
 import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
-import {
-  outputMediaKind,
-  ReplicateLocalOutput,
-} from "../../replicate/replicateLocalOutput";
+import { outputMediaKind } from "../../replicate/outputMediaKind";
+import { ReplicateLocalOutput } from "../../replicate/replicateLocalOutput";
 
 const DETAIL_WIDTH_KEY = "parascene.lab.replicatePredictionsDetailWidth";
 const DETAIL_MIN = 280;
