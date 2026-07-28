@@ -39,6 +39,44 @@ export async function getCatalogFilterCounts(): Promise<CatalogFilterCounts> {
   return invoke<CatalogFilterCounts>("library_filter_counts");
 }
 
+/** Sparse filters that must list from SQLite (not the newest-page window). */
+export type CatalogListFilterId = "audio" | "localOnly";
+
+export function isCatalogListFilterId(
+  id: string,
+): id is CatalogListFilterId {
+  return id === "audio" || id === "localOnly";
+}
+
+/**
+ * Full match set for Audio / Local-only — not limited to already-loaded newest pages.
+ */
+export async function listCreationsForFilter(
+  filter: CatalogListFilterId,
+): Promise<Creation[]> {
+  return invoke<Creation[]>("library_list_filter_creations", { filter });
+}
+
+/**
+ * Keep `primary` order; append any `extras` whose ids are missing
+ * (extras sorted newest-first to match catalog order).
+ */
+export function mergeCreationsById(
+  primary: readonly Creation[],
+  extras: readonly Creation[],
+): Creation[] {
+  if (extras.length === 0) return [...primary];
+  const seen = new Set(primary.map((c) => c.id));
+  const missing = extras.filter((c) => !seen.has(c.id));
+  if (missing.length === 0) return [...primary];
+  const sorted = [...missing].sort((a, b) => {
+    const byCreated = b.createdAt.localeCompare(a.createdAt);
+    if (byCreated !== 0) return byCreated;
+    return a.title.localeCompare(b.title);
+  });
+  return [...primary, ...sorted];
+}
+
 /** Creation ids that belong inside a group cover — hidden from the board / media filters. */
 export async function listGroupMemberIds(): Promise<string[]> {
   return invoke<string[]>("library_list_group_member_ids");

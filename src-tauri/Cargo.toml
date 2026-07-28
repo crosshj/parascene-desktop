@@ -1,6 +1,6 @@
 [package]
 name = "parascene-desktop"
-version = "1.1.20"
+version = "1.1.21"
 description = "Parascene Desktop"
 authors = ["Parascene"]
 edition = "2021"

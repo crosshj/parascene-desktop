@@ -76,8 +76,11 @@ import {
   getCreations,
   getSyncStatus,
   importFromDisk,
+  isCatalogListFilterId,
+  listCreationsForFilter,
   listCreationsPage,
   listGroupMemberIds,
+  mergeCreationsById,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
 import { FolderCreateModal } from "./FolderCreateModal";
@@ -1535,6 +1538,58 @@ function CreationsPanel({
 
   const sidebarFilterKey = activeFilterId(sidebarFilters);
   const gridFilterKey = activeFilterId(gridFilters);
+  const catalogListFilter = isCatalogListFilterId(gridFilterKey)
+    ? gridFilterKey
+    : null;
+
+  /** Full SQLite match set when Audio / Local-only is active. */
+  const [catalogFilterBundle, setCatalogFilterBundle] = useState<{
+    filter: "audio" | "localOnly";
+    rows: Creation[];
+  } | null>(null);
+  /** Local-only rows merged into All so buried unfiled imports stay visible. */
+  const [localOnlyForAll, setLocalOnlyForAll] = useState<Creation[]>([]);
+
+  useEffect(() => {
+    if (!catalogListFilter) return;
+    let cancelled = false;
+    void listCreationsForFilter(catalogListFilter)
+      .then((rows) => {
+        if (!cancelled) {
+          setCatalogFilterBundle({ filter: catalogListFilter, rows });
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to list filter creations", error);
+        if (!cancelled) {
+          setCatalogFilterBundle({ filter: catalogListFilter, rows: [] });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogListFilter, total, creations?.length]);
+
+  useEffect(() => {
+    if (folderView || catalogListFilter) return;
+    let cancelled = false;
+    void listCreationsForFilter("localOnly")
+      .then((rows) => {
+        if (!cancelled) setLocalOnlyForAll(rows);
+      })
+      .catch((error) => {
+        console.error("Failed to list local-only creations for All", error);
+        if (!cancelled) setLocalOnlyForAll([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderView, catalogListFilter, total, creations?.length]);
+
+  const catalogFilterCreations =
+    catalogListFilter && catalogFilterBundle?.filter === catalogListFilter
+      ? catalogFilterBundle.rows
+      : null;
 
   // Any sidebar filter change reconciles deferred dims (Selected / Not selected pins).
   const [deferredFilterKey, setDeferredFilterKey] = useState(sidebarFilterKey);
@@ -1560,8 +1615,19 @@ function CreationsPanel({
     };
   }, []);
 
+  const boardCreations = useMemo(() => {
+    if (!creations) return null;
+    if (catalogListFilter) return catalogFilterCreations;
+    return mergeCreationsById(creations, localOnlyForAll);
+  }, [
+    catalogFilterCreations,
+    catalogListFilter,
+    creations,
+    localOnlyForAll,
+  ]);
+
   const visibleCreations = useMemo(() => {
-    if (gridBlank || !creations) return [];
+    if (gridBlank || !boardCreations) return [];
     if (folderView) {
       if (!folderMembers) return [];
       // Inside a folder, show members even if they also belong to a group.
@@ -1574,7 +1640,7 @@ function CreationsPanel({
       );
     }
     const unfiled = omitGroupMemberCreations(
-      omitFiledCreations(creations, filedIds),
+      omitFiledCreations(boardCreations, filedIds),
       groupMemberIds,
     );
     return filterCreationsVisible(
@@ -1586,7 +1652,7 @@ function CreationsPanel({
       groupMemberIds,
     );
   }, [
-    creations,
+    boardCreations,
     deferredKeepIds,
     filedIds,
     folderMembers,
@@ -1600,13 +1666,11 @@ function CreationsPanel({
 
   const folderFilterCreationsById = useMemo(() => {
     const map = new Map<string, Creation>(folderFilterMembersById);
-    if (creations) {
-      for (const creation of creations) {
-        if (!map.has(creation.id)) map.set(creation.id, creation);
-      }
+    for (const creation of boardCreations ?? creations ?? []) {
+      if (!map.has(creation.id)) map.set(creation.id, creation);
     }
     return map;
-  }, [creations, folderFilterMembersById]);
+  }, [boardCreations, creations, folderFilterMembersById]);
 
   const homeFolderAspect = useMemo(
     () => folderBoardAspect(gridFilters),
@@ -1737,9 +1801,13 @@ function CreationsPanel({
     selectedIds,
   ]);
 
+  const catalogFilterLoading =
+    Boolean(catalogListFilter) && catalogFilterCreations === null;
+
   const filterEmpty =
     !gridBlank &&
     !folderMembersLoading &&
+    !catalogFilterLoading &&
     !(folderFilterMembersLoading && needsFolderMemberFilter && !showFolderSkeletons) &&
     visibleCreations.length === 0 &&
     boardFolders.length === 0;
@@ -1965,18 +2033,22 @@ function CreationsPanel({
     }
     setChromeStatus(
       creationsChromeStatus({
-        creations,
+        creations: boardCreations ?? creations,
         visibleCount: visibleCreations.length,
         filterActive: gridFilterKey !== "all",
-        total,
+        total: catalogListFilter
+          ? (boardCreations?.length ?? total)
+          : total,
         syncing,
-        loadingMore,
+        loadingMore: catalogListFilter ? false : loadingMore,
         progress,
       }),
     );
     return () => setChromeStatus(null);
   }, [
     surfaceActive,
+    boardCreations,
+    catalogListFilter,
     creations,
     gridBlank,
     gridFilterKey,
@@ -2095,6 +2167,7 @@ function CreationsPanel({
             ) : null}
             {gridBlank ||
             folderMembersLoading ||
+            catalogFilterLoading ||
             (folderFilterMembersLoading &&
               needsFolderMemberFilter &&
               !showFolderSkeletons) ||
@@ -2104,6 +2177,7 @@ function CreationsPanel({
                 aria-busy={
                   gridBlank ||
                   folderMembersLoading ||
+                  catalogFilterLoading ||
                   (folderFilterMembersLoading && needsFolderMemberFilter) ||
                   undefined
                 }
@@ -2146,6 +2220,7 @@ function CreationsPanel({
                 }}
                 onToggleFolderSelect={onToggleFolderSelect}
                 onNearEnd={() => {
+                  if (catalogListFilter) return;
                   if (gridFilterKey === "selected") return;
                   if (folderView) return;
                   onLoadMore();
@@ -2155,7 +2230,9 @@ function CreationsPanel({
             {active ? (
               <CreationLightbox
                 creation={
-                  creations.find((c) => c.id === active.id) ?? active
+                  (boardCreations ?? creations)?.find(
+                    (c) => c.id === active.id,
+                  ) ?? active
                 }
                 onClose={() => setActive(null)}
                 onDeleted={() => setActive(null)}

@@ -3,7 +3,6 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -681,6 +680,59 @@ pub(crate) fn list_all_creations(conn: &Connection) -> Result<Vec<Creation>, Str
     Ok(out)
 }
 
+/// Predicates aligned with [`catalog_filter_counts`] for sparse sidebar filters.
+fn filter_listing_predicate(filter: &str) -> Result<&'static str, String> {
+    match filter {
+        "audio" => Ok(
+            r#"
+            lower(media_type) = 'audio'
+            AND NOT (
+              lower(COALESCE(filename, '')) LIKE 'group/%'
+              OR instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0
+              OR instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0
+            )
+            "#,
+        ),
+        "localOnly" => Ok(
+            r#"
+            (remote_url IS NULL OR remote_url = '')
+            AND (remote_json IS NULL OR remote_json = '')
+            "#,
+        ),
+        other => Err(format!("Unsupported filter listing: {other}")),
+    }
+}
+
+/// All board rows matching a sparse filter (Audio / Local-only), newest first.
+/// Excludes group members the same way as [`list_creations_page`].
+pub(crate) fn list_creations_for_filter(
+    conn: &Connection,
+    filter: &str,
+) -> Result<Vec<Creation>, String> {
+    let predicate = filter_listing_predicate(filter)?;
+    let member_ids = collect_group_member_ids(conn)?;
+    let exclude = group_member_exclude_sql(member_ids.len());
+    let where_clause = if exclude.is_empty() {
+        format!("WHERE {predicate}")
+    } else {
+        format!("{exclude} AND ({predicate})")
+    };
+    let sql = format!("{CREATION_SELECT} {where_clause} ORDER BY created_at DESC, title ASC");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = if member_ids.is_empty() {
+        stmt.query_map([], map_creation_row)
+            .map_err(|e| e.to_string())?
+    } else {
+        stmt.query_map(rusqlite::params_from_iter(member_ids.iter()), map_creation_row)
+            .map_err(|e| e.to_string())?
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 pub(crate) fn list_creations_page(
     conn: &Connection,
     limit: u32,
@@ -1267,16 +1319,20 @@ fn remove_file_under_root(root: &Path, stored: Option<&str>) {
 pub(crate) fn ready_connection(paths: &ParascenePaths) -> Result<Connection, String> {
     ensure_directories(paths)?;
     let conn = open_db(&paths.catalog_db)?;
-    // Migrate + folder UUID fix once per process — Sync status polls hit this
-    // every couple seconds and were re-running the full setup path each time.
-    static READY: AtomicBool = AtomicBool::new(false);
-    if !READY.load(Ordering::Acquire) {
+    // Migrate once per catalog DB path (Sync status polls hit the same default
+    // path often). Tests use unique temp roots and must each get a full migrate.
+    static READY_DBS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let db_key = paths.catalog_db.to_string_lossy().into_owned();
+    let ready = READY_DBS.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let mut guard = ready
+        .lock()
+        .map_err(|_| "Catalog ready lock poisoned".to_string())?;
+    if guard.insert(db_key) {
         migrate(&conn)?;
         meta_set(&conn, "root_path", &paths.root.display().to_string())?;
         conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
             .map_err(|e| e.to_string())?;
         super::folders::ensure_folder_sync_ready(&conn)?;
-        READY.store(true, Ordering::Release);
     }
     Ok(conn)
 }
@@ -1660,6 +1716,14 @@ pub fn library_filter_counts() -> Result<CatalogFilterCounts, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
     catalog_filter_counts(&conn)
+}
+
+/// Full match set for sparse filters (`audio`, `localOnly`) — not limited to newest pages.
+#[tauri::command]
+pub fn library_list_filter_creations(filter: String) -> Result<Vec<Creation>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    list_creations_for_filter(&conn, filter.trim())
 }
 
 /// Plain list (no side effects). Prefer `library::library_list_creations_page` for UI,
@@ -2120,5 +2184,58 @@ mod tests {
                 "https://www.parascene.com/api/images/created/x.png?creation_id=18843&variant=fit"
             )
         );
+    }
+
+    #[test]
+    fn list_creations_for_filter_returns_buried_audio_and_local_only() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        let now = "2026-07-28T00:00:00Z";
+        for i in 0..120 {
+            conn.execute(
+                r#"
+                INSERT INTO creations (
+                  id, title, media_type, remote_url, published, created_at,
+                  download_state, updated_at, remote_json
+                ) VALUES (?1, ?2, 'image', 'https://cdn.example/x.png', 0, ?3, 'remote', ?4, '{}')
+                "#,
+                params![
+                    format!("img-{i}"),
+                    format!("Image {i}"),
+                    format!("2026-07-20T{:02}:00:{:02}Z", i / 60, i % 60),
+                    now,
+                ],
+            )
+            .expect("insert image");
+        }
+        conn.execute(
+            r#"
+            INSERT INTO creations (
+              id, title, media_type, remote_url, published, created_at,
+              download_state, updated_at, remote_json
+            ) VALUES (
+              'local-audio-1', 'Take me back', 'audio', NULL, 0,
+              '2026-07-15T21:37:00Z', 'local', ?1, NULL
+            )
+            "#,
+            params![now],
+        )
+        .expect("insert audio");
+
+        let page = list_creations_page(&conn, 80, 0).expect("page");
+        assert!(
+            page.creations.iter().all(|c| c.id != "local-audio-1"),
+            "buried audio must not be on the newest page"
+        );
+
+        let audio = list_creations_for_filter(&conn, "audio").expect("audio");
+        assert_eq!(audio.len(), 1);
+        assert_eq!(audio[0].id, "local-audio-1");
+
+        let local_only = list_creations_for_filter(&conn, "localOnly").expect("localOnly");
+        assert_eq!(local_only.len(), 1);
+        assert_eq!(local_only[0].id, "local-audio-1");
+
+        let _ = fs::remove_dir_all(&paths.root);
     }
 }

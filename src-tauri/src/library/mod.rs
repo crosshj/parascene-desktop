@@ -24,7 +24,7 @@ pub use catalog::{
     library_apply_manifest, library_cloud_ids_since, library_ensure_ready,
     library_existing_creation_ids, library_filter_counts, library_get_creation,
     library_get_creations, library_invalidate_thumbs, library_list_creations,
-    library_list_group_member_ids, library_sync_status,
+    library_list_filter_creations, library_list_group_member_ids, library_sync_status,
 };
 pub use clip_thumb::library_ensure_clip_thumb;
 pub use download::{
