@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "parascene-desktop"
-version = "1.1.22"
+version = "1.1.23"
 dependencies = [
  "arboard",
  "base64 0.22.1",

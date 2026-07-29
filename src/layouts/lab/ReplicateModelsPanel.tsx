@@ -13,8 +13,10 @@ import {
 import {
   ensureLocal,
   getCreation,
+  importLocalPaths,
   listCreations,
 } from "../../library/catalogClient";
+import { CreationLightbox } from "../../library/CreationLightbox";
 import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import {
@@ -45,7 +47,10 @@ import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
 import {
   aspectChooserOptionsFromSupported,
   pickAspectChooserValue,
+  projectAspectCss,
+  isProjectAspectRatio,
 } from "../../project/aspectRatios";
+import { parseAspectRatioString } from "../../library/aspectRatio";
 import { AspectRatioChooser } from "../../ui/AspectRatioChooser";
 import { copyTextToClipboard } from "../../ui/clipboard";
 import { useConfirm } from "../../ui/ConfirmDialog";
@@ -77,6 +82,18 @@ type SortId =
 
 type EnabledFilterId = "all" | "enabled" | "disabled";
 
+const BATCH_MAX = 20;
+const BATCH_STAGGER_MS = 600;
+const BATCH_MAX_IN_FLIGHT = 3;
+
+type RunSlotStatus = "pending" | "running" | "ready" | "error";
+
+type RunSlot = {
+  id: number;
+  status: RunSlotStatus;
+  result?: ReplicateRunResult;
+  error?: string;
+};
 const SORT_OPTIONS: { id: SortId; label: string }[] = [
   { id: "runs_desc", label: "Runs (high → low)" },
   { id: "runs_asc", label: "Runs (low → high)" },
@@ -416,6 +433,16 @@ function isAspectRatioField(field: ReplicateInputField): boolean {
   return n === "aspect_ratio" || n === "aspectratio";
 }
 
+/** CSS `aspect-ratio` from the model's current aspect_ratio form value. */
+function aspectCssFromRunValue(raw: string | null | undefined): string | null {
+  const value = raw?.trim() ?? "";
+  if (!value) return null;
+  if (isProjectAspectRatio(value)) return projectAspectCss(value);
+  const parts = parseAspectRatioString(value);
+  if (!parts) return null;
+  return `${parts.w} / ${parts.h}`;
+}
+
 function aspectChooserOptionsForField(field: ReplicateInputField) {
   if (!isAspectRatioField(field)) return [];
   return aspectChooserOptionsFromSupported(field.enumValues);
@@ -610,8 +637,14 @@ export function ReplicateModelsPanel({
   const [runBusy, setRunBusy] = useState(false);
   const [runProgress, setRunProgress] =
     useState<ReplicateRunProgressEvent | null>(null);
-  const [runResult, setRunResult] = useState<ReplicateRunResult | null>(null);
+  const [runSlots, setRunSlots] = useState<RunSlot[]>([]);
+  const [batchCount, setBatchCount] = useState(1);
   const [runError, setRunError] = useState<string | null>(null);
+  const [lightboxCreation, setLightboxCreation] = useState<Creation | null>(
+    null,
+  );
+  const [activatingPath, setActivatingPath] = useState<string | null>(null);
+  const batchDoneRef = useRef(0);
   const splitDragRef = useRef<{ startX: number; startWidth: number } | null>(
     null,
   );
@@ -623,6 +656,17 @@ export function ReplicateModelsPanel({
     () => (detail ? runnableFields(detail.inputs) : []),
     [detail],
   );
+
+  const batchSlotAspectCss = useMemo(() => {
+    const field = formFields.find((f) => isAspectRatioField(f));
+    if (!field) return null;
+    const options = aspectChooserOptionsForField(field);
+    const raw =
+      options.length > 0
+        ? pickAspectChooserValue(options, runValues[field.name])
+        : (runValues[field.name] ?? defaultFormValue(field));
+    return aspectCssFromRunValue(raw);
+  }, [formFields, runValues]);
 
   const needsLibraryMedia = useMemo(
     () => formFields.some((f) => isAnyFileField(f)),
@@ -976,7 +1020,7 @@ export function ReplicateModelsPanel({
   );
 
   const selectModel = useCallback((owner: string, name: string) => {
-    setRunResult(null);
+    setRunSlots([]);
     setRunError(null);
     setRunProgress(null);
     setDetail(null);
@@ -989,9 +1033,30 @@ export function ReplicateModelsPanel({
   const closeDetail = useCallback(() => {
     setSelected(null);
     setDetail(null);
-    setRunResult(null);
+    setRunSlots([]);
     setRunError(null);
     setRunProgress(null);
+  }, []);
+
+  const openOutputLightbox = useCallback(async (path: string) => {
+    setActivatingPath(path);
+    setRunError(null);
+    try {
+      const imported = await importLocalPaths([path]);
+      const creation = imported.creations[0];
+      if (!creation) {
+        throw new Error(
+          "Import produced no Library creation. Output may not be a supported media type.",
+        );
+      }
+      setLightboxCreation(creation);
+    } catch (err) {
+      setRunError(
+        formatRunError(err instanceof Error ? err.message : String(err)),
+      );
+    } finally {
+      setActivatingPath(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -1215,10 +1280,27 @@ export function ReplicateModelsPanel({
       );
       return;
     }
+
+    const count = Math.max(1, Math.min(BATCH_MAX, Math.round(batchCount) || 1));
+    if (count > 1) {
+      const ok = await confirm({
+        title: `Run ${count} times?`,
+        message: `Submit ${count} predictions for ${selected.owner}/${selected.name}. Outputs appear as each finishes.`,
+        confirmLabel: `Run ${count}`,
+      });
+      if (!ok) return;
+    }
+
     setRunError(null);
     setRunBusy(true);
-    setRunResult(null);
     setRunProgress(null);
+    batchDoneRef.current = 0;
+    const slots: RunSlot[] = Array.from({ length: count }, (_, id) => ({
+      id,
+      status: "pending" as const,
+    }));
+    setRunSlots(slots);
+
     try {
       const input = buildRunInput(
         formFields.filter((f) => !isAnyFileField(f)),
@@ -1245,14 +1327,75 @@ export function ReplicateModelsPanel({
           localFiles[field.name] = paths;
         }
       }
-      const result = await replicateModelRun(
-        selected.owner,
-        selected.name,
-        input,
-        localFiles,
-      );
-      setRunResult(result);
-      setRunError(null);
+
+      const patchSlot = (id: number, patch: Partial<RunSlot>) => {
+        setRunSlots((prev) =>
+          prev.map((slot) => (slot.id === id ? { ...slot, ...patch } : slot)),
+        );
+      };
+
+      const finals: RunSlot[] = slots.map((s) => ({ ...s }));
+      let nextIndex = 0;
+      let inFlight = 0;
+      let lastStartAt = 0;
+
+      await new Promise<void>((resolve) => {
+        const pump = () => {
+          while (inFlight < BATCH_MAX_IN_FLIGHT && nextIndex < count) {
+            const now = Date.now();
+            const wait = Math.max(0, BATCH_STAGGER_MS - (now - lastStartAt));
+            if (wait > 0 && inFlight > 0) {
+              window.setTimeout(pump, wait);
+              return;
+            }
+            const slotId = nextIndex;
+            nextIndex += 1;
+            inFlight += 1;
+            lastStartAt = Date.now();
+            finals[slotId] = { id: slotId, status: "running" };
+            patchSlot(slotId, { status: "running", error: undefined });
+            void replicateModelRun(
+              selected.owner,
+              selected.name,
+              input,
+              localFiles,
+            )
+              .then((result) => {
+                finals[slotId] = { id: slotId, status: "ready", result };
+                patchSlot(slotId, { status: "ready", result });
+              })
+              .catch((err) => {
+                const message = formatRunError(
+                  err instanceof Error ? err.message : String(err),
+                );
+                finals[slotId] = { id: slotId, status: "error", error: message };
+                patchSlot(slotId, { status: "error", error: message });
+              })
+              .finally(() => {
+                inFlight -= 1;
+                batchDoneRef.current += 1;
+                if (batchDoneRef.current >= count) {
+                  resolve();
+                  return;
+                }
+                pump();
+              });
+          }
+          if (nextIndex >= count && inFlight === 0) {
+            resolve();
+          }
+        };
+        pump();
+      });
+
+      const failed = finals.filter((s) => s.status === "error");
+      if (failed.length === finals.length && failed[0]?.error) {
+        setRunError(failed[0].error);
+      } else if (failed.length > 0) {
+        setRunError(
+          `${failed.length} of ${finals.length} runs failed. See slots below.`,
+        );
+      }
     } catch (err) {
       setRunError(
         formatRunError(err instanceof Error ? err.message : String(err)),
@@ -2212,6 +2355,29 @@ export function ReplicateModelsPanel({
                             );
                           })}
                           <div className="lab-replicate-run-actions">
+                            <label className="lab-replicate-batch-count">
+                              <span className="muted">Batch</span>
+                              <input
+                                className="control lab-replicate-batch-count-input"
+                                type="number"
+                                min={1}
+                                max={BATCH_MAX}
+                                step={1}
+                                value={batchCount}
+                                disabled={runBusy}
+                                aria-label="Batch count"
+                                onChange={(e) => {
+                                  const n = Number(e.target.value);
+                                  if (!Number.isFinite(n)) {
+                                    setBatchCount(1);
+                                    return;
+                                  }
+                                  setBatchCount(
+                                    Math.max(1, Math.min(BATCH_MAX, Math.round(n))),
+                                  );
+                                }}
+                              />
+                            </label>
                             <button
                               type="submit"
                               className="btn primary"
@@ -2222,7 +2388,13 @@ export function ReplicateModelsPanel({
                                 !detail.schemaCached
                               }
                             >
-                              {runBusy ? "Running…" : "Run"}
+                              {runBusy
+                                ? batchCount > 1
+                                  ? `Running ${runSlots.filter((s) => s.status === "ready" || s.status === "error").length}/${batchCount}…`
+                                  : "Running…"
+                                : batchCount > 1
+                                  ? `Run ${batchCount}`
+                                  : "Run"}
                             </button>
                             {runBusy ? (
                               <button
@@ -2249,27 +2421,99 @@ export function ReplicateModelsPanel({
                           </pre>
                         </div>
                       ) : null}
-                      {runResult?.localPaths?.length ? (
+                      {runSlots.length > 0 ? (
                         <div className="lab-replicate-run-outputs">
-                          <h4>Output</h4>
-                          {runResult.localPaths.map((path) => (
-                            <ReplicateLocalOutput key={path} path={path} />
-                          ))}
-                          <p className="muted">
-                            Saved under{" "}
-                            <code>{runResult.runDir}</code>
-                          </p>
-                        </div>
-                      ) : runResult?.outputPreview ? (
-                        <div className="lab-replicate-run-outputs">
-                          <h4>Output</h4>
-                          <pre className="lab-replicate-pred-json">
-                            {runResult.outputPreview}
-                          </pre>
-                          <p className="muted">
-                            Saved under{" "}
-                            <code>{runResult.runDir}</code>
-                          </p>
+                          <h4>
+                            Output
+                            {runSlots.length > 1
+                              ? ` (${runSlots.filter((s) => s.status === "ready").length}/${runSlots.length})`
+                              : ""}
+                          </h4>
+                          <div className="lab-replicate-batch-grid">
+                            {runSlots.map((slot) => {
+                              const slotStyle = batchSlotAspectCss
+                                ? ({
+                                    aspectRatio: batchSlotAspectCss,
+                                  } as const)
+                                : undefined;
+                              const slotClass = [
+                                "lab-replicate-batch-slot",
+                                batchSlotAspectCss ? "has-aspect" : "",
+                              ]
+                                .filter(Boolean)
+                                .join(" ");
+                              if (slot.status === "ready" && slot.result) {
+                                const paths = slot.result.localPaths;
+                                if (paths.length > 0) {
+                                  return (
+                                    <div
+                                      key={slot.id}
+                                      className={`${slotClass} is-ready`}
+                                      style={slotStyle}
+                                    >
+                                      {paths.map((path) => (
+                                        <ReplicateLocalOutput
+                                          key={path}
+                                          path={path}
+                                          showPath={false}
+                                          onActivate={() =>
+                                            void openOutputLightbox(path)
+                                          }
+                                          activating={activatingPath === path}
+                                        />
+                                      ))}
+                                    </div>
+                                  );
+                                }
+                                if (slot.result.outputPreview) {
+                                  return (
+                                    <div
+                                      key={slot.id}
+                                      className={`${slotClass} is-ready`}
+                                      style={slotStyle}
+                                    >
+                                      <pre className="lab-replicate-pred-json">
+                                        {slot.result.outputPreview}
+                                      </pre>
+                                    </div>
+                                  );
+                                }
+                              }
+                              if (slot.status === "error") {
+                                return (
+                                  <div
+                                    key={slot.id}
+                                    className={`${slotClass} is-error`}
+                                    style={slotStyle}
+                                  >
+                                    <span className="muted">
+                                      #{slot.id + 1} failed
+                                    </span>
+                                    <pre className="lab-replicate-pred-json lab-replicate-run-error">
+                                      {slot.error}
+                                    </pre>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div
+                                  key={slot.id}
+                                  className={`${slotClass} is-${slot.status}`}
+                                  style={slotStyle}
+                                  aria-busy={
+                                    slot.status === "pending" ||
+                                    slot.status === "running"
+                                  }
+                                >
+                                  <span className="lab-replicate-batch-placeholder">
+                                    {slot.status === "running"
+                                      ? `Running #${slot.id + 1}…`
+                                      : `Waiting #${slot.id + 1}`}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       ) : null}
                     </section>
@@ -2376,6 +2620,13 @@ export function ReplicateModelsPanel({
             }
             setLibraryPicker(null);
           }}
+        />
+      ) : null}
+
+      {lightboxCreation ? (
+        <CreationLightbox
+          creation={lightboxCreation}
+          onClose={() => setLightboxCreation(null)}
         />
       ) : null}
     </div>

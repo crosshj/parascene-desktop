@@ -6,23 +6,39 @@ use crate::replicate::enabled_models;
 use crate::replicate::files;
 use crate::replicate::history;
 use crate::replicate::token;
+use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tokio::time::sleep;
 
-static CANCEL_RUN: AtomicBool = AtomicBool::new(false);
+/// Bumped on cancel. Each run captures the value at start; cancel means
+/// `current > my_gen`. Starting a sibling must not clear an in-flight cancel.
+static CANCEL_GEN: AtomicU64 = AtomicU64::new(0);
 
 pub fn request_cancel_run() {
-    CANCEL_RUN.store(true, Ordering::SeqCst);
+    CANCEL_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-fn clear_cancel() {
-    CANCEL_RUN.store(false, Ordering::SeqCst);
+fn begin_run_generation() -> u64 {
+    CANCEL_GEN.load(Ordering::SeqCst)
+}
+
+fn cancel_requested(my_gen: u64) -> bool {
+    CANCEL_GEN.load(Ordering::SeqCst) > my_gen
+}
+
+fn poll_sleep_ms() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    // Base 750ms + 0..400ms jitter so concurrent pollers don't stampede.
+    750 + u64::from(nanos % 401)
 }
 
 /// Merge HashMap IPC + JSON string backup (Windows has dropped empty HashMaps).
@@ -258,13 +274,51 @@ async fn download_urls_to_run_dir(
     local_paths: &mut Vec<String>,
 ) -> Result<(), String> {
     local_paths.clear();
+    // Filesystem-safe ISO: 2026-07-29T16-57-00.123Z (colons → hyphens).
+    let iso = Utc::now().format("%Y-%m-%dT%H-%M-%S%.3fZ").to_string();
+    let owner_safe = safe_filename_part(owner);
+    let name_safe = safe_filename_part(name);
     for (i, url) in output_urls.iter().enumerate() {
         let ext = ext_for_output(url, owner, name);
-        let dest = run_dir.join(format!("out_{i}.{ext}"));
+        let stem = output_filename_stem(&owner_safe, &name_safe, &iso, i, output_urls.len());
+        let dest = run_dir.join(format!("{stem}.{ext}"));
         client::download_to_path(url, &dest, Some(token)).await?;
         local_paths.push(dest.to_string_lossy().to_string());
     }
     Ok(())
+}
+
+fn output_filename_stem(
+    owner_safe: &str,
+    name_safe: &str,
+    iso: &str,
+    index: usize,
+    total: usize,
+) -> String {
+    if total == 1 {
+        format!("{owner_safe}_{name_safe}_{iso}")
+    } else {
+        format!("{owner_safe}_{name_safe}_{iso}_{index}")
+    }
+}
+
+fn safe_filename_part(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        "model".into()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Re-download outputs for an existing prediction (e.g. after a CDN failure).
@@ -274,7 +328,6 @@ pub async fn download_prediction_outputs(
     app: AppHandle,
     prediction_id: String,
 ) -> Result<RunResult, String> {
-    clear_cancel();
     let token = token::require_token()?;
     let detail = history::get_prediction(&prediction_id)?
         .ok_or_else(|| format!("No local record for prediction {prediction_id}"))?;
@@ -431,7 +484,7 @@ pub async fn run_prediction(
     local_files: HashMap<String, Value>,
     required_file_fields: Vec<String>,
 ) -> Result<RunResult, String> {
-    clear_cancel();
+    let my_gen = begin_run_generation();
     let token = token::require_token()?;
     if !enabled_models::is_enabled(&owner, &name) {
         return Err(format!(
@@ -515,8 +568,9 @@ pub async fn run_prediction(
             app: &AppHandle,
             owner: &str,
             name: &str,
+            my_gen: u64,
         ) -> Result<String, String> {
-            if CANCEL_RUN.load(Ordering::SeqCst) {
+            if cancel_requested(my_gen) {
                 return Err("Cancelled".into());
             }
             let label = Path::new(path_trim)
@@ -560,6 +614,7 @@ pub async fn run_prediction(
                         &app,
                         &owner,
                         &name,
+                        my_gen,
                     )
                     .await?;
                     if uri.trim().is_empty() {
@@ -593,6 +648,7 @@ pub async fn run_prediction(
                             &app,
                             &owner,
                             &name,
+                            my_gen,
                         )
                         .await?;
                         if uri.trim().is_empty() {
@@ -717,7 +773,7 @@ pub async fn run_prediction(
     // Poll until terminal (Prefer: wait may already have finished).
     let mut polls = 0u32;
     loop {
-        if CANCEL_RUN.load(Ordering::SeqCst) {
+        if cancel_requested(my_gen) {
             let cancel_url =
                 format!("https://api.replicate.com/v1/predictions/{prediction_id}/cancel");
             let _ = client::post_json(&token, &cancel_url, &json!({})).await;
@@ -800,7 +856,7 @@ pub async fn run_prediction(
             },
         );
 
-        sleep(Duration::from_millis(750)).await;
+        sleep(Duration::from_millis(poll_sleep_ms())).await;
         let url = format!("https://api.replicate.com/v1/predictions/{prediction_id}");
         prediction = client::get_json(&token, &url).await?;
     }
@@ -1011,7 +1067,7 @@ pub async fn run_prediction(
 
 #[cfg(test)]
 mod tests {
-    use super::merge_local_files;
+    use super::{merge_local_files, output_filename_stem, safe_filename_part};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -1041,5 +1097,34 @@ mod tests {
     fn merge_empty_when_both_missing() {
         let out = merge_local_files(None, None).expect("merge");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn output_names_include_provider_model_and_iso() {
+        assert_eq!(
+            safe_filename_part("black-forest-labs"),
+            "black-forest-labs"
+        );
+        assert_eq!(safe_filename_part("flux/dev"), "flux_dev");
+        assert_eq!(
+            output_filename_stem(
+                "krea",
+                "flux",
+                "2026-07-29T16-57-00.123Z",
+                0,
+                1
+            ),
+            "krea_flux_2026-07-29T16-57-00.123Z"
+        );
+        assert_eq!(
+            output_filename_stem(
+                "krea",
+                "flux",
+                "2026-07-29T16-57-00.123Z",
+                1,
+                2
+            ),
+            "krea_flux_2026-07-29T16-57-00.123Z_1"
+        );
     }
 }

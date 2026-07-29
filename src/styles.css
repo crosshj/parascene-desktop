@@ -7979,6 +7979,107 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   padding-top: 0.25rem;
 }
 
+.lab-replicate-batch-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.lab-replicate-batch-count-input {
+  width: 3.5rem;
+  padding: 0.35rem 0.4rem;
+  text-align: center;
+}
+
+.lab-replicate-batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.lab-replicate-batch-slot {
+  min-height: 8rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: #12151c;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.35rem;
+  width: 100%;
+}
+
+.lab-replicate-batch-slot.has-aspect {
+  min-height: 0;
+}
+
+.lab-replicate-batch-slot.is-pending,
+.lab-replicate-batch-slot.is-running {
+  align-items: center;
+  justify-content: center;
+}
+
+.lab-replicate-batch-slot.is-error {
+  border-color: rgba(220, 80, 80, 0.45);
+}
+
+.lab-replicate-batch-placeholder {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 0.5rem;
+}
+
+.lab-replicate-batch-slot .lab-replicate-run-output {
+  margin-bottom: 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lab-replicate-batch-slot .lab-replicate-run-output img {
+  max-height: none;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.lab-replicate-run-output.is-activatable {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 0.5rem;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: zoom-in;
+  font: inherit;
+}
+
+.lab-replicate-run-output.is-activatable:hover img,
+.lab-replicate-run-output.is-activatable:focus-visible img {
+  outline: 2px solid rgba(140, 160, 255, 0.55);
+  outline-offset: 2px;
+}
+
+.lab-replicate-run-output.is-activating {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.lab-replicate-output-activating {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
 .lab-replicate-image-pick-row {
   display: flex;
   flex-wrap: wrap;

@@ -6,6 +6,8 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { importLocalPaths } from "../../library/catalogClient";
+import { CreationLightbox } from "../../library/CreationLightbox";
+import type { Creation } from "../../library/types";
 import {
   listenReplicateRunProgress,
   replicatePredictionDownload,
@@ -113,6 +115,10 @@ export function ReplicatePredictionsPanel() {
   const [loading, setLoading] = useState(false);
   const [savingToLibrary, setSavingToLibrary] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [lightboxCreation, setLightboxCreation] = useState<Creation | null>(
+    null,
+  );
+  const [activatingPath, setActivatingPath] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [detailWidth, setDetailWidth] = useState(loadDetailWidth);
   const [splitDragging, setSplitDragging] = useState(false);
@@ -151,17 +157,23 @@ export function ReplicatePredictionsPanel() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let refreshTimer: number | undefined;
     void listenReplicateRunProgress(() => {
-      void refresh();
-      if (selectedId) {
-        void replicatePredictionGet(selectedId)
-          .then(setDetail)
-          .catch(() => {});
-      }
+      // Progress fires often while polling — coalesce list reloads.
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        void refresh();
+        if (selectedId) {
+          void replicatePredictionGet(selectedId)
+            .then(setDetail)
+            .catch(() => {});
+        }
+      }, 400);
     }).then((fn) => {
       unlisten = fn;
     });
     return () => {
+      window.clearTimeout(refreshTimer);
       unlisten?.();
     };
   }, [refresh, selectedId]);
@@ -275,6 +287,25 @@ export function ReplicatePredictionsPanel() {
     [],
   );
 
+  const openOutputLightbox = useCallback(async (path: string) => {
+    setActivatingPath(path);
+    setError(null);
+    try {
+      const imported = await importLocalPaths([path]);
+      const creation = imported.creations[0];
+      if (!creation) {
+        throw new Error(
+          "Import produced no Library creation. Output may not be a supported media type.",
+        );
+      }
+      setLightboxCreation(creation);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActivatingPath(null);
+    }
+  }, []);
+
   const record = detail?.record;
   const selectedRow = selectedId
     ? rows.find((r) => r.predictionId === selectedId)
@@ -372,6 +403,7 @@ export function ReplicatePredictionsPanel() {
                         className={active ? "is-active" : undefined}
                         onClick={() => {
                           setSelectedId(row.predictionId);
+                          setDetail(null);
                           setSaveMessage(null);
                         }}
                       >
@@ -445,10 +477,33 @@ export function ReplicatePredictionsPanel() {
               {!record ? (
                 <div className="lab-replicate-detail-loading is-with-close">
                   <ReplicateDetailClose onClick={closeDetail} />
-                  {selectedRow?.audioPath ? (
+                  {selectedRow?.thumbPath ? (
                     <section className="lab-replicate-run-outputs">
                       <h4>Output</h4>
-                      <ReplicateLocalOutput path={selectedRow.audioPath} />
+                      <ReplicateLocalOutput
+                        path={selectedRow.thumbPath}
+                        showPath={false}
+                        onActivate={() => {
+                          const path = selectedRow.thumbPath;
+                          if (path) void openOutputLightbox(path);
+                        }}
+                        activating={activatingPath === selectedRow.thumbPath}
+                      />
+                      <p className="muted">Loading details…</p>
+                    </section>
+                  ) : selectedRow?.audioPath ? (
+                    <section className="lab-replicate-run-outputs">
+                      <h4>Output</h4>
+                      <ReplicateLocalOutput
+                        path={selectedRow.audioPath}
+                        showPath={false}
+                        onActivate={() => {
+                          const path = selectedRow.audioPath;
+                          if (path) void openOutputLightbox(path);
+                        }}
+                        activating={activatingPath === selectedRow.audioPath}
+                      />
+                      <p className="muted">Loading details…</p>
                     </section>
                   ) : (
                     <p className="muted">Loading…</p>
@@ -529,7 +584,16 @@ export function ReplicatePredictionsPanel() {
                         ) : null}
                       </div>
                       {record.localPaths.map((path) => (
-                        <ReplicateLocalOutput key={path} path={path} />
+                        <ReplicateLocalOutput
+                          key={path}
+                          path={path}
+                          onActivate={
+                            outputMediaKind(path) !== "other"
+                              ? () => void openOutputLightbox(path)
+                              : undefined
+                          }
+                          activating={activatingPath === path}
+                        />
                       ))}
                       <p className="muted">
                         Saved under <code>{record.runDir}</code>
@@ -589,6 +653,13 @@ export function ReplicatePredictionsPanel() {
         <footer className="lab-replicate-statusbar">
           <p className="lab-replicate-progress is-error">{error}</p>
         </footer>
+      ) : null}
+
+      {lightboxCreation ? (
+        <CreationLightbox
+          creation={lightboxCreation}
+          onClose={() => setLightboxCreation(null)}
+        />
       ) : null}
     </div>
   );

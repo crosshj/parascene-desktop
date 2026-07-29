@@ -20,6 +20,36 @@ fn meta_path(prediction_id: &str) -> Result<PathBuf, String> {
     Ok(run_dir(prediction_id)?.join("prediction.json"))
 }
 
+/// Strings longer than this (or data-URIs) are stubbed before sending detail to the FE.
+const HEAVY_INPUT_CHARS: usize = 2_048;
+
+fn is_heavy_string(s: &str) -> bool {
+    s.len() > HEAVY_INPUT_CHARS || s.starts_with("data:")
+}
+
+/// Drop multi-MB base64 / data-URI blobs so IPC + JSON.stringify stay snappy.
+pub fn redact_heavy_json(value: &Value) -> Value {
+    match value {
+        Value::String(s) if is_heavy_string(s) => {
+            let kind = if s.starts_with("data:") {
+                "data-uri"
+            } else {
+                "string"
+            };
+            json!(format!("[{kind}: {chars} chars]", chars = s.len()))
+        }
+        Value::Array(items) => Value::Array(items.iter().map(redact_heavy_json).collect()),
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                out.insert(k.clone(), redact_heavy_json(v));
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PredictionRecord {
@@ -96,6 +126,16 @@ fn is_audio_path(path: &str) -> bool {
         || lower.ends_with(".opus")
 }
 
+fn is_video_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".mp4")
+        || lower.ends_with(".mov")
+        || lower.ends_with(".webm")
+        || lower.ends_with(".m4v")
+        || lower.ends_with(".mkv")
+        || lower.ends_with(".avi")
+}
+
 /// Lean on-disk shape for list view — skips `prediction` / `input` blobs.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,12 +167,44 @@ struct ListRecordFile {
 }
 
 fn read_list_row(meta_path: &Path) -> Result<Option<PredictionListRow>, String> {
+    // Prefer lean list.json (written on upsert) so we never parse multi-MB
+    // prediction.json blobs just to fill the table.
+    if let Some(parent) = meta_path.parent() {
+        let lean = parent.join("list.json");
+        if lean.is_file() {
+            if let Ok(Some(row)) = read_list_row_from_lean(&lean) {
+                return Ok(Some(row));
+            }
+        }
+    }
+    read_list_row_from_prediction(meta_path)
+}
+
+fn read_list_row_from_lean(path: &Path) -> Result<Option<PredictionListRow>, String> {
+    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let meta: ListRecordFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    list_row_from_meta(meta, path)
+}
+
+fn read_list_row_from_prediction(meta_path: &Path) -> Result<Option<PredictionListRow>, String> {
     if !meta_path.exists() {
         return Ok(None);
     }
     let raw = std::fs::read_to_string(meta_path).map_err(|e| e.to_string())?;
     let meta: ListRecordFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let local_paths = meta.local_paths.clone();
+    let row = list_row_from_meta(meta, meta_path)?;
+    // Heal: write lean sidecar so the next list pass skips this multi-MB file.
+    if let Some(row) = row.as_ref() {
+        let _ = write_list_sidecar(row, &local_paths);
+    }
+    Ok(row)
+}
 
+fn list_row_from_meta(
+    meta: ListRecordFile,
+    meta_path: &Path,
+) -> Result<Option<PredictionListRow>, String> {
     let prediction_id = meta.prediction_id.or_else(|| {
         meta_path
             .parent()
@@ -182,6 +254,74 @@ fn read_list_row(meta_path: &Path) -> Result<Option<PredictionListRow>, String> 
         audio_path,
         updated_at,
     }))
+}
+
+fn write_list_sidecar(row: &PredictionListRow, local_paths: &[String]) -> Result<(), String> {
+    let dir = run_dir(&row.prediction_id)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    let paths: Vec<String> = if local_paths.is_empty() {
+        row.thumb_path
+            .iter()
+            .chain(row.audio_path.iter())
+            .cloned()
+            .collect()
+    } else {
+        local_paths.to_vec()
+    };
+    let lean = json!({
+        "predictionId": row.prediction_id,
+        "owner": row.owner,
+        "name": row.name,
+        "version": row.version,
+        "status": row.status,
+        "error": row.error,
+        "createdAt": row.created_at,
+        "predictTime": row.predict_time,
+        "totalTime": row.total_time,
+        "savedAt": row.updated_at,
+        "updatedAt": row.updated_at,
+        "localPaths": paths,
+    });
+    let path = dir.join("list.json");
+    let pretty = serde_json::to_string_pretty(&lean).map_err(|e| e.to_string())?;
+    let tmp = dir.join(".list.json.tmp");
+    std::fs::write(&tmp, &pretty).map_err(|e| format!("Write list.json failed: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("Rename list.json failed: {e}"))?;
+    Ok(())
+}
+
+fn write_list_sidecar_from_record(record: &PredictionRecord) -> Result<(), String> {
+    let version = record.version.as_ref().map(|v| {
+        if v.len() > 12 {
+            format!("{}…", &v[..7])
+        } else {
+            v.clone()
+        }
+    });
+    let lean = json!({
+        "predictionId": record.prediction_id,
+        "owner": record.owner,
+        "name": record.name,
+        "version": version,
+        "status": record.status,
+        "error": record.error,
+        "createdAt": record.created_at,
+        "predictTime": record.predict_time,
+        "totalTime": record.total_time,
+        "savedAt": record.saved_at,
+        "updatedAt": record.updated_at,
+        "localPaths": record.local_paths,
+    });
+    let dir = run_dir(&record.prediction_id)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    let path = dir.join("list.json");
+    let pretty = serde_json::to_string_pretty(&lean).map_err(|e| e.to_string())?;
+    let tmp = dir.join(".list.json.tmp");
+    std::fs::write(&tmp, &pretty).map_err(|e| format!("Write list.json failed: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("Rename list.json failed: {e}"))?;
+    Ok(())
 }
 
 fn read_record(path: &Path) -> Result<Option<PredictionRecord>, String> {
@@ -253,15 +393,26 @@ fn record_from_json(v: &Value, meta_file: &Path) -> Result<PredictionRecord, Str
                 .collect()
         })
         .unwrap_or_else(|| {
-            // Discover out_* files next to meta.
+            // Discover media files next to meta (out_* legacy + named downloads).
             let dir = meta_file.parent();
             let mut found = Vec::new();
             if let Some(dir) = dir {
                 if let Ok(rd) = std::fs::read_dir(dir) {
                     for entry in rd.flatten() {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        if name.starts_with("out_") {
-                            found.push(entry.path().to_string_lossy().to_string());
+                        if name == "prediction.json"
+                            || name == "list.json"
+                            || name.starts_with('.')
+                        {
+                            continue;
+                        }
+                        let path = entry.path();
+                        let path_str = path.to_string_lossy().to_string();
+                        if is_image_path(&path_str)
+                            || is_audio_path(&path_str)
+                            || is_video_path(&path_str)
+                        {
+                            found.push(path_str);
                         }
                     }
                 }
@@ -458,6 +609,8 @@ pub fn upsert_record(mut record: PredictionRecord) -> Result<PredictionRecord, S
     let tmp = dir.join(".prediction.json.tmp");
     std::fs::write(&tmp, &pretty).map_err(|e| format!("Write failed: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("Rename failed: {e}"))?;
+    let _ = write_list_sidecar_from_record(&record);
+    let _ = write_detail_sidecar(&record);
     Ok(record)
 }
 
@@ -618,6 +771,62 @@ pub fn list_predictions(
 }
 
 pub fn get_prediction(prediction_id: &str) -> Result<Option<PredictionDetail>, String> {
+    let lean_path = run_dir(prediction_id)?.join("detail.json");
+    if lean_path.is_file() {
+        if let Ok(Some(record)) = read_record(&lean_path) {
+            return Ok(Some(PredictionDetail { record }));
+        }
+    }
     let path = meta_path(prediction_id)?;
-    Ok(read_record(&path)?.map(|record| PredictionDetail { record }))
+    let Some(mut record) = read_record(&path)? else {
+        return Ok(None);
+    };
+    // Keep disk intact; strip multi-MB style/reference data-URIs before IPC.
+    record.input = redact_heavy_json(&record.input);
+    record.prediction = None;
+    let _ = write_detail_sidecar(&record);
+    Ok(Some(PredictionDetail { record }))
+}
+
+fn write_detail_sidecar(record: &PredictionRecord) -> Result<(), String> {
+    let dir = run_dir(&record.prediction_id)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    let lean = PredictionRecord {
+        prediction: None,
+        input: redact_heavy_json(&record.input),
+        ..record.clone()
+    };
+    let path = dir.join("detail.json");
+    let pretty = serde_json::to_string_pretty(&lean).map_err(|e| e.to_string())?;
+    let tmp = dir.join(".detail.json.tmp");
+    std::fs::write(&tmp, &pretty).map_err(|e| format!("Write detail.json failed: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("Rename detail.json failed: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_heavy_json;
+    use serde_json::json;
+
+    #[test]
+    fn redacts_data_uris_and_long_strings() {
+        let input = json!({
+            "prompt": "hello",
+            "style_reference_images": [
+                format!("data:image/png;base64,{}", "x".repeat(5000)),
+                "https://example.com/small.png"
+            ],
+            "nested": { "blob": "y".repeat(3000) }
+        });
+        let out = redact_heavy_json(&input);
+        assert_eq!(out["prompt"], "hello");
+        assert_eq!(out["style_reference_images"][1], "https://example.com/small.png");
+        let stub = out["style_reference_images"][0].as_str().unwrap();
+        assert!(stub.contains("data-uri"), "{stub}");
+        assert!(stub.contains("chars"), "{stub}");
+        let nested = out["nested"]["blob"].as_str().unwrap();
+        assert!(nested.contains("string"), "{nested}");
+    }
 }
