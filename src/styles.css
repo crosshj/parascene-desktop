@@ -2297,6 +2297,332 @@ input[type="checkbox"].control,
   }
 }
 
+/* —— Join Studio —— */
+.join-studio-backdrop {
+  z-index: 2100;
+}
+
+.join-studio-panel {
+  width: min(960px, 100%);
+  max-height: min(92vh, 920px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.join-studio-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+}
+
+.join-studio-sub {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--muted, rgba(255, 255, 255, 0.62));
+}
+
+.join-studio-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.join-studio-tab {
+  position: relative;
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.join-studio-tab.is-active {
+  border-color: var(--accent, #6d5efc);
+  background: rgba(109, 94, 252, 0.12);
+}
+
+.join-studio-stale-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: 0.35rem;
+  border-radius: 50%;
+  background: #e0a14a;
+  vertical-align: middle;
+}
+
+/* Fixed stage height keeps tab switches and frame reloads from resizing the modal. */
+.join-studio-stage {
+  position: relative;
+  width: 100%;
+  height: min(52vh, 460px);
+  background: #0a0a0b;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.join-studio-final,
+.join-studio-side,
+.join-studio-onion {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.join-studio-video {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: #000;
+  display: block;
+}
+
+.join-studio-refresh-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+.join-studio-final-caption,
+.join-studio-stale-banner {
+  padding: 0.4rem 0.65rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.join-studio-stale-banner {
+  color: #f0c674;
+  background: rgba(224, 161, 74, 0.12);
+}
+
+.join-studio-stage-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  height: 100%;
+  padding: 1rem;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
+}
+
+.join-studio-stage-message.is-error {
+  color: #f0a0a0;
+  text-align: center;
+}
+
+.join-studio-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+
+.join-studio-side figure {
+  margin: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.join-studio-side img {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  background: #000;
+  border-radius: 4px;
+}
+
+.join-studio-side figcaption {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.65);
+  text-align: center;
+}
+
+.join-studio-onion {
+  padding: 0.5rem;
+  gap: 0.5rem;
+}
+
+.join-studio-onion-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.join-studio-onion-stack img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.join-studio-onion-scrub {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.join-studio-onion-scrub input {
+  flex: 1;
+}
+
+.join-studio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding-top: 0.15rem;
+}
+
+.join-studio-controls-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.join-studio-strategy-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.join-studio-chip {
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.join-studio-chip.is-active {
+  border-color: var(--accent, #6d5efc);
+  background: rgba(109, 94, 252, 0.15);
+}
+
+.join-studio-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+}
+
+.join-studio-stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.join-studio-stepper select {
+  min-width: 8rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+}
+
+.join-studio-stepper-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.join-studio-stepper-controls button {
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.join-studio-stepper-value {
+  min-width: 2.5rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.join-studio-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.join-studio-span-hint {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.join-studio-commit-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  background: rgba(180, 60, 60, 0.18);
+  color: #f0a0a0;
+  font-size: 0.85rem;
+}
+
+.join-studio-committing {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.join-studio-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--border);
+}
+
 .ui-diagnostics-dialog {
   width: min(42rem, 100%);
   max-height: min(80vh, 720px);

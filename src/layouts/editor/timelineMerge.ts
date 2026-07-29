@@ -1,5 +1,11 @@
 import type { TimelineClip } from "../../project/types";
 
+export {
+  getJoinableTimelinePair,
+  JOIN_MAX_GAP_SEC,
+  type JoinableTimelinePair,
+} from "./joinStudio";
+
 export const MERGE_CONTIGUITY_EPSILON_SEC = 0.05;
 
 export type MergeableTimelineSelection = {

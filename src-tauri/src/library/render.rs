@@ -281,6 +281,16 @@ fn fit_inside(max_w: u32, max_h: u32, aw: u32, ah: u32) -> (u32, u32) {
 const PREVIEW_STAGE_W: u32 = 1920;
 const PREVIEW_STAGE_H: u32 = 1080;
 
+/// Export frame clock. Segments are CFR at this rate, so every cut has to land
+/// on this grid or the concat drifts off it.
+const RENDER_FPS: f64 = 30.0;
+
+/// Interior video gaps under this length are closed instead of rendered black.
+/// The editor snaps clip edges to 0.1s, so a shorter gap is a rounding sliver
+/// the user could not have placed on purpose — and one black frame between two
+/// clips reads as a flash.
+const GAP_CLOSE_MAX_SEC: f64 = 0.1;
+
 fn clip_lane(lane: Option<&str>) -> &'static str {
     match lane.map(str::trim) {
         Some("audio") => "audio",
@@ -402,27 +412,32 @@ fn resolve_extend_bake_path(
     clip: &RenderTimelineClipInput,
     paths: &ParascenePaths,
 ) -> Result<Option<PathBuf>, String> {
-    if !clip_is_video_extended(clip) || clip.reverse {
+    if !clip_is_video_extended(clip) {
         return Ok(None);
     }
 
     let timeline_dur = clip_timeline_duration(clip);
-    if let Some(stored) = clip
-        .extend_bake_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let path = PathBuf::from(stored);
-        if path.is_file() {
-            if let Some(cover) = clip.extend_bake_cover_sec.filter(|v| v.is_finite() && *v > 0.0)
-            {
-                let needed = timeline_dur * clip_speed(clip);
-                if cover + 0.001 >= needed {
+    // The editor bakes loop/pong material from forward media, so a reversed clip
+    // has to bake from the reversed file instead of reusing that stored path.
+    if !clip.reverse {
+        if let Some(stored) = clip
+            .extend_bake_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let path = PathBuf::from(stored);
+            if path.is_file() {
+                if let Some(cover) =
+                    clip.extend_bake_cover_sec.filter(|v| v.is_finite() && *v > 0.0)
+                {
+                    let needed = timeline_dur * clip_speed(clip);
+                    if cover + 0.001 >= needed {
+                        return Ok(Some(path));
+                    }
+                } else {
                     return Ok(Some(path));
                 }
-            } else {
-                return Ok(Some(path));
             }
         }
     }
@@ -433,7 +448,7 @@ fn resolve_extend_bake_path(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "Extended video clip is missing an asset id".to_string())?;
-    let source_path = resolve_media_path(paths, asset_id, false)?;
+    let source_path = resolve_media_path(paths, asset_id, clip.reverse)?;
     let in_sec = clip_in_sec(clip.in_sec);
     let out_sec = clip_trim_out_sec(clip);
     // Bake 1× loop/pong material long enough that cover/speed >= timeline.
@@ -672,6 +687,95 @@ fn video_clip_covering_index(
     hit
 }
 
+/// One span of output where the same clip (or nothing, meaning black) is on top.
+#[derive(Clone, Debug, PartialEq)]
+struct VideoRange {
+    start: f64,
+    end: f64,
+    clip_index: Option<usize>,
+}
+
+/// Split the video lane into contiguous spans on the export frame grid.
+fn video_ranges(lane_clips: &[&RenderTimelineClipInput], total: f64) -> Vec<VideoRange> {
+    let mut cuts: Vec<f64> = vec![0.0, total];
+    for clip in lane_clips {
+        if clip.start_sec.is_finite() && clip.start_sec > 0.0 && clip.start_sec < total {
+            cuts.push(clip.start_sec);
+        }
+        if clip.end_sec.is_finite() && clip.end_sec > 0.0 && clip.end_sec < total {
+            cuts.push(clip.end_sec);
+        }
+    }
+    cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+
+    // Collapse into contiguous ranges where the same top clip wins.
+    let mut ranges: Vec<VideoRange> = Vec::new();
+    for window in cuts.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if end - start < 1e-6 {
+            continue;
+        }
+        let mid = (start + end) * 0.5;
+        let clip_index = video_clip_covering_index(lane_clips, mid, total);
+        if let Some(last) = ranges.last_mut() {
+            if last.clip_index == clip_index {
+                last.end = end;
+                continue;
+            }
+        }
+        ranges.push(VideoRange {
+            start,
+            end,
+            clip_index,
+        });
+    }
+
+    // Close sub-snap interior gaps so the outgoing clip holds across them (via
+    // the tpad fill on encode) rather than the concat cutting to black. Leading
+    // and trailing black stay — those are real empty timeline, not slivers.
+    let last_range_index = ranges.len().saturating_sub(1);
+    let mut closed: Vec<VideoRange> = Vec::with_capacity(ranges.len());
+    for (index, range) in ranges.into_iter().enumerate() {
+        let is_interior_gap =
+            range.clip_index.is_none() && index > 0 && index < last_range_index;
+        if is_interior_gap && range.end - range.start < GAP_CLOSE_MAX_SEC {
+            if let Some(prev) = closed.last_mut() {
+                prev.end = range.end;
+                continue;
+            }
+        }
+        closed.push(range);
+    }
+
+    // Put every cut on the frame grid. Segments are encoded with a rounded frame
+    // count, so unsnapped cuts make each segment round in isolation and the
+    // concat drifts off the timeline.
+    let mut snapped: Vec<VideoRange> = Vec::with_capacity(closed.len());
+    let mut prev_end_frame: i64 = 0;
+    for range in closed {
+        let start_frame = prev_end_frame;
+        let mut end_frame = (range.end * RENDER_FPS).round() as i64;
+        if end_frame <= start_frame {
+            // Shorter than one frame: clip content still earns a frame, but a gap
+            // is dropped so it can't spend a black frame it never asked for. The
+            // next range starts where this one would have, so nothing shifts.
+            if range.clip_index.is_none() {
+                continue;
+            }
+            end_frame = start_frame + 1;
+        }
+        prev_end_frame = end_frame;
+        snapped.push(VideoRange {
+            start: start_frame as f64 / RENDER_FPS,
+            end: end_frame as f64 / RENDER_FPS,
+            clip_index: range.clip_index,
+        });
+    }
+    snapped
+}
+
 fn build_video_segments(
     clips: &[RenderTimelineClipInput],
     paths: &ParascenePaths,
@@ -708,46 +812,7 @@ fn build_video_segments(
         })
         .collect();
 
-    let mut cuts: Vec<f64> = vec![0.0, total];
-    for clip in &lane_clips {
-        if clip.start_sec.is_finite() && clip.start_sec > 0.0 && clip.start_sec < total {
-            cuts.push(clip.start_sec);
-        }
-        if clip.end_sec.is_finite() && clip.end_sec > 0.0 && clip.end_sec < total {
-            cuts.push(clip.end_sec);
-        }
-    }
-    cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-
-    // Collapse into contiguous ranges where the same top clip wins.
-    #[derive(Clone)]
-    struct Range {
-        start: f64,
-        end: f64,
-        clip_index: Option<usize>,
-    }
-    let mut ranges: Vec<Range> = Vec::new();
-    for window in cuts.windows(2) {
-        let start = window[0];
-        let end = window[1];
-        if end - start < 1e-6 {
-            continue;
-        }
-        let mid = (start + end) * 0.5;
-        let clip_index = video_clip_covering_index(&lane_clips, mid, total);
-        if let Some(last) = ranges.last_mut() {
-            if last.clip_index == clip_index {
-                last.end = end;
-                continue;
-            }
-        }
-        ranges.push(Range {
-            start,
-            end,
-            clip_index,
-        });
-    }
+    let ranges = video_ranges(&lane_clips, total);
 
     let extend_bakes = prepare_extend_bakes(&lane_clips, paths)?;
     let prepare_total = ranges.len().max(1) as u32;
@@ -1298,12 +1363,19 @@ fn render_timeline_file(
                 } else {
                     trim
                 };
-                let vf = if source.reverse_trim {
+                let body = if source.reverse_trim {
                     format!("{timed},reverse,{frame}")
                 } else {
                     format!("{timed},{frame}")
                 };
-                args.push(vf);
+                // A source too short for its slot would end the segment early, and
+                // concat would then pull every later clip ahead of where the
+                // timeline puts it. Hold the last frame instead; -frames:v trims
+                // the surplus. tpad needs the CFR link that frame_filter ends on.
+                args.push(format!(
+                    "{body},tpad=stop_mode=clone:stop_duration={:.3}",
+                    segment.duration_sec
+                ));
             }
         } else {
             args.push("-f".into());
@@ -2196,4 +2268,107 @@ pub async fn publisher_export_render(
     })
     .await
     .map_err(|e| format!("Export task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(start_sec: f64, end_sec: f64) -> RenderTimelineClipInput {
+        serde_json::from_value(serde_json::json!({
+            "assetId": format!("asset-{start_sec}"),
+            "startSec": start_sec,
+            "endSec": end_sec,
+            "lane": "video",
+            "kind": "video",
+            "inSec": 0.0,
+            "outSec": end_sec - start_sec,
+        }))
+        .expect("clip input")
+    }
+
+    fn ranges_for(clips: &[RenderTimelineClipInput], total: f64) -> Vec<VideoRange> {
+        let lane: Vec<&RenderTimelineClipInput> = clips.iter().collect();
+        video_ranges(&lane, total)
+    }
+
+    fn black_count(ranges: &[VideoRange]) -> usize {
+        ranges.iter().filter(|r| r.clip_index.is_none()).count()
+    }
+
+    #[test]
+    fn closes_sub_snap_gap_between_clips() {
+        let clips = [clip(0.0, 2.0), clip(2.019, 4.0)];
+        let ranges = ranges_for(&clips, 4.0);
+
+        assert_eq!(black_count(&ranges), 0, "{ranges:?}");
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].clip_index, Some(0));
+        assert_eq!(ranges[1].clip_index, Some(1));
+        // Outgoing clip holds to the incoming clip's snapped start.
+        assert_eq!(ranges[0].end, ranges[1].start);
+    }
+
+    #[test]
+    fn keeps_gap_the_editor_could_place() {
+        let clips = [clip(0.0, 2.0), clip(2.5, 4.0)];
+        let ranges = ranges_for(&clips, 4.0);
+
+        assert_eq!(black_count(&ranges), 1, "{ranges:?}");
+        assert_eq!(ranges[1].clip_index, None);
+        assert!((ranges[1].end - ranges[1].start - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn keeps_leading_and_trailing_black() {
+        let clips = [clip(0.5, 2.0)];
+        let ranges = ranges_for(&clips, 3.0);
+
+        assert_eq!(ranges.len(), 3, "{ranges:?}");
+        assert_eq!(ranges[0].clip_index, None);
+        assert_eq!(ranges[1].clip_index, Some(0));
+        assert_eq!(ranges[2].clip_index, None);
+    }
+
+    #[test]
+    fn drops_gaps_shorter_than_a_frame() {
+        // 8ms head gap and a 6ms seam gap: neither survives as a black frame.
+        let clips = [clip(0.008, 2.0), clip(2.006, 4.0)];
+        let ranges = ranges_for(&clips, 4.0);
+
+        assert_eq!(black_count(&ranges), 0, "{ranges:?}");
+        assert_eq!(ranges[0].start, 0.0);
+    }
+
+    #[test]
+    fn every_cut_lands_on_the_frame_grid_without_holes() {
+        let clips = [
+            clip(0.0, 2.03),
+            clip(2.049, 5.117),
+            clip(5.9, 8.44),
+            clip(8.44, 10.0),
+        ];
+        let ranges = ranges_for(&clips, 10.0);
+
+        assert_eq!(ranges[0].start, 0.0);
+        for range in &ranges {
+            for edge in [range.start, range.end] {
+                let frames = edge * RENDER_FPS;
+                assert!(
+                    (frames - frames.round()).abs() < 1e-9,
+                    "{edge} is off the frame grid"
+                );
+            }
+            assert!(range.end > range.start, "{range:?} is empty");
+        }
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "hole between {pair:?}");
+        }
+        // Frame counts sum to the timeline instead of drifting per segment.
+        let frames: i64 = ranges
+            .iter()
+            .map(|r| ((r.end - r.start) * RENDER_FPS).round() as i64)
+            .sum();
+        assert_eq!(frames, (10.0 * RENDER_FPS) as i64);
+    }
 }

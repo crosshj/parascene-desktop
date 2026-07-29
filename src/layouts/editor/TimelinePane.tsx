@@ -126,6 +126,9 @@ type TimelinePaneProps = {
   canMergeSelected?: boolean;
   onMergeSelected?: () => void;
   mergeBusy?: boolean;
+  canJoinSelected?: boolean;
+  onJoinSelected?: () => void;
+  joinBusy?: boolean;
 };
 
 type PointerDropDetail = {
@@ -628,6 +631,9 @@ export function TimelinePane({
   canMergeSelected = false,
   onMergeSelected,
   mergeBusy = false,
+  canJoinSelected = false,
+  onJoinSelected,
+  joinBusy = false,
 }: TimelinePaneProps) {
   const thumbAspectRatio = projectAspectCss(aspectRatio);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1742,6 +1748,29 @@ export function TimelinePane({
           className="editor-timeline-tools"
           onPointerDown={(event) => event.stopPropagation()}
         >
+          <button
+            type="button"
+            className="editor-timeline-tool"
+            title={
+              canJoinSelected
+                ? "Join Studio — inspect or repair the seam"
+                : "Select two nearby video clips for Join Studio"
+            }
+            aria-label="Open Join Studio"
+            disabled={!canJoinSelected || joinBusy}
+            onClick={() => onJoinSelected?.()}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M2 4.5h5.5M8.5 4.5H14M2 11.5h5.5M8.5 11.5H14M7.5 3v10M8.5 3v10"
+              />
+            </svg>
+          </button>
           <button
             type="button"
             className="editor-timeline-tool"

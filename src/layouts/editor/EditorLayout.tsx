@@ -92,6 +92,12 @@ import {
 } from "./clipExtendBake";
 import { getMergeableTimelineSelection } from "./timelineMerge";
 import {
+  getJoinableTimelinePair,
+  joinReplacementSpan,
+  type JoinStudioParams,
+} from "./joinStudio";
+import { JoinStudioModal } from "./JoinStudioModal";
+import {
   TimelineMergeModal,
   type TimelineMergeModalState,
 } from "./TimelineMergeModal";
@@ -225,6 +231,11 @@ export function EditorLayout() {
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
   );
+  const [joinStudioOpen, setJoinStudioOpen] = useState(false);
+  const [joinStudioPair, setJoinStudioPair] = useState<
+    ReturnType<typeof getJoinableTimelinePair>
+  >(null);
+  const joinBusyRef = useRef(false);
   const addAssetGenerationSession = useAddAssetGenerationSession(project.id);
   const prevAddAssetGenerationSessionRef = useRef(addAssetGenerationSession);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
@@ -311,6 +322,10 @@ export function EditorLayout() {
     : project.timelinePlayheadSec;
   const mergeSelection = useMemo(
     () => getMergeableTimelineSelection(project.timeline, selectedClipIds),
+    [project.timeline, selectedClipIds],
+  );
+  const joinPair = useMemo(
+    () => getJoinableTimelinePair(project.timeline, selectedClipIds),
     [project.timeline, selectedClipIds],
   );
 
@@ -1398,6 +1413,65 @@ export function EditorLayout() {
     });
   };
 
+  const openJoinStudio = () => {
+    if (!joinPair || joinBusyRef.current) return;
+    pauseTimelinePlayback();
+    setJoinStudioPair(joinPair);
+    setJoinStudioOpen(true);
+  };
+
+  const closeJoinStudio = () => {
+    if (joinBusyRef.current) return;
+    setJoinStudioOpen(false);
+    setJoinStudioPair(null);
+  };
+
+  const applyJoinCommit = (creationId: string, params: JoinStudioParams) => {
+    const pair = joinStudioPair;
+    if (!pair) return;
+    joinBusyRef.current = true;
+    try {
+      addCreationsToOpenProject([creationId]);
+      const span = joinReplacementSpan(pair, params);
+      const joinedClip: TimelineClip = {
+        id: newTimelineClipId(),
+        label: formatClipDuration(span.durationSec),
+        startSec: span.startSec,
+        endSec: span.endSec,
+        assetId: creationId,
+        thumbUrl: null,
+        lane: "video",
+        kind: "video",
+        inSec: 0,
+        outSec: span.durationSec,
+        includeAudio: false,
+        reverse: false,
+        transform: "hold",
+        framing: "fit",
+      };
+      const removeIds = new Set([pair.clipA.id, pair.clipB.id]);
+      let inserted = false;
+      const nextTimeline = project.timeline.flatMap((clip) => {
+        if (!removeIds.has(clip.id)) return [clip];
+        if (inserted) return [];
+        inserted = true;
+        return [joinedClip];
+      });
+      setOpenProjectTimeline(nextTimeline);
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
+      setSelectedClipId(joinedClip.id);
+      setSelectedClipIds([joinedClip.id]);
+      const draft = timelineClipToStagedDraft(joinedClip);
+      setClipStagingSeed(draft ? { clipId: joinedClip.id, draft } : null);
+      setOpenProjectSelectedTimelineClipId(joinedClip.id);
+      setJoinStudioOpen(false);
+      setJoinStudioPair(null);
+    } finally {
+      joinBusyRef.current = false;
+    }
+  };
+
   const closeMergeModal = () => {
     if (mergeRunningRef.current) return;
     setMergeModal(null);
@@ -2175,7 +2249,18 @@ export function EditorLayout() {
         canMergeSelected={Boolean(mergeSelection)}
         onMergeSelected={openMergeModal}
         mergeBusy={mergeModal?.phase === "running"}
+        canJoinSelected={Boolean(joinPair)}
+        onJoinSelected={openJoinStudio}
+        joinBusy={joinStudioOpen}
       />
+
+      {joinStudioOpen && joinStudioPair ? (
+        <JoinStudioModal
+          pair={joinStudioPair}
+          onDone={closeJoinStudio}
+          onCommitted={applyJoinCommit}
+        />
+      ) : null}
 
       {mergeModal ? (
         <TimelineMergeModal

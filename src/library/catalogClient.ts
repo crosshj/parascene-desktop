@@ -278,6 +278,61 @@ export async function mergeTimelineClips(
   return invoke<Creation>("library_merge_timeline_clips", { clips });
 }
 
+export type JoinClipInput = {
+  assetId: string;
+  inSec: number;
+  outSec: number;
+  reverse?: boolean;
+};
+
+export type JoinStrategyInput = {
+  strategy: string;
+  nudgeAOutFrames?: number;
+  nudgeBInFrames?: number;
+  holdSide?: string;
+  holdFrames?: number;
+  removeGap?: boolean;
+  fillFrom?: string;
+  fillFrames?: number;
+  xfadeFrames?: number;
+};
+
+export type JoinPreviewRequest = {
+  clipA: JoinClipInput;
+  clipB: JoinClipInput;
+  strategy: JoinStrategyInput;
+  previewHalfWindowSec?: number;
+};
+
+export type JoinBakeRequest = {
+  clipA: JoinClipInput;
+  clipB: JoinClipInput;
+  strategy: JoinStrategyInput;
+};
+
+export type JoinPreviewResult = {
+  path: string;
+  durationSec: number;
+};
+
+export type JoinProgress = {
+  phase: string;
+  done: number;
+  total: number;
+};
+
+export async function joinTimelinePreview(
+  req: JoinPreviewRequest,
+): Promise<JoinPreviewResult> {
+  return invoke<JoinPreviewResult>("library_join_preview", { req });
+}
+
+export async function joinTimelineBake(
+  req: JoinBakeRequest,
+): Promise<Creation> {
+  return invoke<Creation>("library_join_bake", { req });
+}
+
 /** Read local board preview bytes as base64 (for cloud fit upload). */
 export async function readLocalThumbBase64(id: string): Promise<string> {
   return invoke<string>("library_read_local_thumb_base64", { id });
