@@ -381,7 +381,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                   : result.audioMode,
               lyricsText:
                 result.mode === "first_last" ||
-                result.mode === "motion_match"
+                result.mode === "motion_match" ||
+                result.audioMode === "none"
                   ? undefined
                   : result.lyricsText.trim() || undefined,
               generatedAt: new Date().toISOString(),

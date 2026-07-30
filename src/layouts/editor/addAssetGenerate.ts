@@ -6,12 +6,14 @@ import {
 } from "../../lab/audioTools";
 import { runA2vGeneration } from "../../lab/a2vGeneration";
 import { FLF2V_MODEL, runFlf2vGeneration } from "../../lab/flf2vGeneration";
+import { LTX_I2V_MODEL, runLtxI2vGeneration } from "../../lab/ltxI2vGeneration";
 import { createAuthedSdk } from "../../auth/session";
 import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
 import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
 import { getCreations } from "../../library/catalogClient";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import type {
+  AddAssetBlueModel,
   AddAssetGeneration,
   AddAssetGenerationMode,
   LyricAlignment,
@@ -87,9 +89,11 @@ export type AddAssetGenerationSession = {
   errorMessage: string | null;
 };
 
-export type AddAssetAudioMode = "vocals" | "full_mix";
+export type AddAssetAudioMode = "vocals" | "full_mix" | "none";
 
 export type AddAssetContinuityMode = AddAssetGenerationMode;
+
+export type { AddAssetBlueModel };
 
 export function resolveAddAssetAudioMode(lyricsText: string): AddAssetAudioMode {
   return lyricsText.trim() ? "vocals" : "full_mix";
@@ -101,6 +105,9 @@ export const ADD_ASSET_NO_LYRICS_AUDIO_NOTE =
 
 export const ADD_ASSET_FIRST_LAST_AUDIO_NOTE =
   "First–last frame generation does not use audio — the song stays on the timeline.";
+
+export const ADD_ASSET_WAN_AUDIO_NOTE =
+  "WAN has no audio processing — source audio is locked to None. The song stays on the timeline.";
 
 export function createRunningAddAssetGenerationSession(
   clipId: string,
@@ -135,6 +142,13 @@ export function initialAddAssetGenerationSteps(
     return [
       { id: "still", label: "Prepare first frame still", status: "pending" },
       { id: "end-still", label: "Prepare last frame still", status: "pending" },
+      { id: "generate", label: "Generate video", status: "pending" },
+      { id: "file", label: "Add to project", status: "pending" },
+    ];
+  }
+  if (audioMode === "none") {
+    return [
+      { id: "still", label: "Prepare framed start still", status: "pending" },
       { id: "generate", label: "Generate video", status: "pending" },
       { id: "file", label: "Add to project", status: "pending" },
     ];
@@ -347,6 +361,8 @@ export type RunAddAssetGenerationOpts = {
   lyricsText: string;
   audioMode: AddAssetAudioMode;
   continuityMode?: AddAssetContinuityMode;
+  /** Parascene Blue model; ignored for Replicate runs. */
+  blueModel?: AddAssetBlueModel;
   startFrame: StartFramePreview;
   endFrame?: StartFramePreview | null;
   /** When set, run via Replicate instead of Parascene Blue. */
@@ -546,48 +562,53 @@ async function runStartFrameAddAssetGeneration(
   if (!(sliceOutSec > inSec)) {
     throw new Error("Invalid song time range for this clip.");
   }
-  const audioId = opts.mainAudioCreationId?.trim();
-  if (!audioId) {
-    throw new Error(
-      "Add main audio to the timeline (or set it in Lab) before generating.",
-    );
-  }
 
-  pushSteps(advanceStep(steps, "vocals"));
-  opts.onProgress(
-    audioMode === "full_mix"
-      ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
-      : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
-  );
-  const [audioRow] = await getCreations([audioId]);
-  const mixPath = audioRow?.localPath?.trim();
-  if (!mixPath) {
-    throw new Error("Main audio is not available locally yet.");
-  }
-  const audioSlice =
-    audioMode === "full_mix"
-      ? await sliceAudioRange({
-          sourcePath: mixPath,
-          inSec,
-          outSec: sliceOutSec,
-        })
-      : await isolateVocalsRange({
-          sourcePath: mixPath,
-          inSec,
-          outSec: sliceOutSec,
-        });
-  pushSteps(completeStep(steps, "vocals"));
+  let audioClipId: string | null = null;
+  if (audioMode !== "none") {
+    const audioId = opts.mainAudioCreationId?.trim();
+    if (!audioId) {
+      throw new Error(
+        "Add main audio to the timeline (or set it in Lab) before generating.",
+      );
+    }
 
-  pushSteps(advanceStep(steps, "upload-audio"));
-  opts.onProgress("Uploading audio clip…");
-  const { clipId } = await uploadVocalsSliceClip(audioSlice.path, {
-    title:
+    pushSteps(advanceStep(steps, "vocals"));
+    opts.onProgress(
       audioMode === "full_mix"
-        ? `Editor mix ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`
-        : `Editor vocals ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`,
-    durationSec: durationSeconds,
-  });
-  pushSteps(completeStep(steps, "upload-audio"));
+        ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
+        : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
+    );
+    const [audioRow] = await getCreations([audioId]);
+    const mixPath = audioRow?.localPath?.trim();
+    if (!mixPath) {
+      throw new Error("Main audio is not available locally yet.");
+    }
+    const audioSlice =
+      audioMode === "full_mix"
+        ? await sliceAudioRange({
+            sourcePath: mixPath,
+            inSec,
+            outSec: sliceOutSec,
+          })
+        : await isolateVocalsRange({
+            sourcePath: mixPath,
+            inSec,
+            outSec: sliceOutSec,
+          });
+    pushSteps(completeStep(steps, "vocals"));
+
+    pushSteps(advanceStep(steps, "upload-audio"));
+    opts.onProgress("Uploading audio clip…");
+    const { clipId } = await uploadVocalsSliceClip(audioSlice.path, {
+      title:
+        audioMode === "full_mix"
+          ? `Editor mix ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`
+          : `Editor vocals ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`,
+      durationSec: durationSeconds,
+    });
+    audioClipId = clipId;
+    pushSteps(completeStep(steps, "upload-audio"));
+  }
 
   pushSteps(advanceStep(steps, "still"));
   const existingImageUrl = opts.startFrame.remoteImageUrl?.trim();
@@ -611,7 +632,12 @@ async function runStartFrameAddAssetGeneration(
       framePath: opts.startFrame.framePath,
       framing: opts.startFrame.framing,
       aspectRatio: opts.aspectRatio,
-      filenamePrefix: "editor-a2v-start",
+      filenamePrefix:
+        opts.blueModel === "wan"
+          ? "editor-wan-i2v-start"
+          : audioMode === "none"
+            ? "editor-ltx-i2v-start"
+            : "editor-a2v-start",
       progressLabel: "start image",
       onProgress: opts.onProgress,
       projectId: opts.projectId,
@@ -626,16 +652,48 @@ async function runStartFrameAddAssetGeneration(
   }
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
+  const useWan = opts.blueModel === "wan";
 
   pushSteps(advanceStep(steps, "generate"));
-  const { creationId } = await runA2vGeneration({
-    prompt: fullPrompt,
-    aspectRatio: opts.aspectRatio,
-    imageUrl,
-    audioClipId: clipId,
-    durationSeconds,
-    onProgress: opts.onProgress,
-  });
+  let creationId: string;
+  let model: string;
+  if (audioMode === "none" || !audioClipId) {
+    if (useWan) {
+      const result = await runFlf2vGeneration({
+        prompt: fullPrompt,
+        aspectRatio: opts.aspectRatio,
+        firstImageUrl: imageUrl,
+        durationSeconds,
+        onProgress: opts.onProgress,
+      });
+      creationId = result.creationId;
+      model = FLF2V_MODEL;
+    } else {
+      const result = await runLtxI2vGeneration({
+        prompt: fullPrompt,
+        aspectRatio: opts.aspectRatio,
+        imageUrl,
+        durationSeconds,
+        onProgress: opts.onProgress,
+      });
+      creationId = result.creationId;
+      model = LTX_I2V_MODEL;
+    }
+  } else {
+    if (useWan) {
+      throw new Error("WAN has no audio processing — choose Source audio None.");
+    }
+    const result = await runA2vGeneration({
+      prompt: fullPrompt,
+      aspectRatio: opts.aspectRatio,
+      imageUrl,
+      audioClipId,
+      durationSeconds,
+      onProgress: opts.onProgress,
+    });
+    creationId = result.creationId;
+    model = "ltx_a2v";
+  }
   pushSteps(completeStep(steps, "generate"));
 
   pushSteps(advanceStep(steps, "file"));
@@ -658,6 +716,6 @@ async function runStartFrameAddAssetGeneration(
     videosGroupId: filed.groupId,
     imagesGroupId,
     mode: "start_frame",
-    model: "ltx_a2v",
+    model,
   };
 }

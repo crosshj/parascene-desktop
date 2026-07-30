@@ -358,6 +358,9 @@ export function PreviewPane({
   const [currentSec, setCurrentSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [volumeLocal, setVolumeLocal] = useState(80);
+  const [providerChoiceClipId, setProviderChoiceClipId] = useState<
+    string | null
+  >(null);
   const volume = volumeProp ?? volumeLocal;
   const setVolume = (next: number) => {
     if (onVolumeChange) onVolumeChange(next);
@@ -1232,6 +1235,9 @@ export function PreviewPane({
     !addAssetSlotActive &&
     addAssetPlaceholderClip != null &&
     isAddAssetPlaceholderClip(addAssetPlaceholderClip);
+  const showAddAssetProviderChoice =
+    showAddAssetGenerate &&
+    providerChoiceClipId === addAssetPlaceholderClip?.id;
   const showAddAssetIntent = addAssetMode && addAssetSlotActive;
   const showSelectionIntent =
     !addAssetMode &&
@@ -1345,8 +1351,10 @@ export function PreviewPane({
             ? "asset"
             : null;
   const sourceLabelText = addAssetMode
-    ? showAddAssetGenerate
-      ? "Generate video"
+    ? showAddAssetProviderChoice
+      ? "Choose provider"
+      : showAddAssetGenerate
+        ? "Generate video"
       : showAddAssetIntent
         ? "New asset"
         : null
@@ -1756,6 +1764,32 @@ export function PreviewPane({
                 classification={unsupportedSelection}
                 selectionCount={sourceSelectionIds.length}
               />
+            ) : showAddAssetProviderChoice && addAssetPlaceholderClip ? (
+              <AddAssetIntentPanel
+                providerOnly
+                intent={{
+                  provider:
+                    addAssetPlaceholderClip.addAssetDraft?.provider ===
+                    "replicate"
+                      ? "replicate"
+                      : "parascene_blue",
+                  methodId:
+                    addAssetPlaceholderClip.addAssetDraft?.provider ===
+                    "replicate"
+                      ? "replicate_timeline_fill"
+                      : "blue_timeline_fill",
+                }}
+                onIntentChange={(next) => {
+                  onAddAssetDraftChange?.({
+                    ...(addAssetPlaceholderClip.addAssetDraft ?? {}),
+                    provider: next.provider,
+                    methodId: next.methodId,
+                    lastError: undefined,
+                    replicatePredictionId: undefined,
+                  });
+                  setProviderChoiceClipId(null);
+                }}
+              />
             ) : showAddAssetIntent ? (
               <AddAssetIntentPanel
                 intent={addAssetIntent}
@@ -1778,6 +1812,9 @@ export function PreviewPane({
                 onClearError={onClearAddAssetGenerationError}
                 onRetryDownload={onRetryAddAssetDownload}
                 imageAssets={imageAssets}
+                onBackToProvider={() =>
+                  setProviderChoiceClipId(addAssetPlaceholderClip.id)
+                }
               />
             ) : showSelectionIntent ? (
               <SelectionIntentPanel

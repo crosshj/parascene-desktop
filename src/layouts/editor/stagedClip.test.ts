@@ -843,4 +843,39 @@ describe("stagedClip", () => {
     expect(staged.addAssetDraft?.methodId).toBe("replicate_timeline_fill");
     expect(staged.addAssetDraft?.replicateModel).toBe("owner/name");
   });
+
+  it("seeds Blue WAN drafts with source audio locked to none", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "bridge fill",
+      generatedAt: "2026-07-30T00:00:00.000Z",
+      creationId: "c2",
+      mode: "first_last",
+      model: "wan_i2v",
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
+    });
+    expect(draft).toMatchObject({
+      blueModel: "wan",
+      audioMode: "none",
+      continuityMode: "first_last",
+      provider: "parascene_blue",
+    });
+  });
+
+  it("seeds Blue LTX i2v drafts with source audio none", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "silent start",
+      generatedAt: "2026-07-30T00:00:00.000Z",
+      creationId: "c3",
+      mode: "start_frame",
+      model: "ltx_i2v",
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
+    });
+    expect(draft).toMatchObject({
+      blueModel: "ltx",
+      audioMode: "none",
+      continuityMode: "start_frame",
+    });
+  });
 });

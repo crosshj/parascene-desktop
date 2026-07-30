@@ -13,11 +13,14 @@ import { ClipDragHandle, ClipPlaceHandle } from "./PreviewStaging";
 type AddAssetIntentPanelProps = {
   intent: AddAssetIntent | null;
   onIntentChange: (intent: AddAssetIntent) => void;
+  /** Existing timeline placeholder: choose only its provider, then return. */
+  providerOnly?: boolean;
 };
 
 export function AddAssetIntentPanel({
   intent,
   onIntentChange,
+  providerOnly = false,
 }: AddAssetIntentPanelProps) {
   const provider = intent?.provider ?? null;
   const methodId = intent?.methodId ?? null;
@@ -43,17 +46,25 @@ export function AddAssetIntentPanel({
     <div className="add-asset-generate-pane preview-intent-pane" aria-label="Choose generation method">
       <div className="add-asset-generate-body">
         <header className="preview-intent-header">
-          <h2 className="preview-intent-title">New asset</h2>
+          <h2 className="preview-intent-title">
+            {providerOnly ? "Choose provider" : "New asset"}
+          </h2>
           <p className="muted preview-intent-lede">
-            Choose how this clip will be created. Timeline methods unlock Place
-            and Drag; other paths will generate into the library.
+            {providerOnly
+              ? "Choose who will generate this timeline clip."
+              : "Choose how this clip will be created. Timeline methods unlock Place and Drag; other paths will generate into the library."}
           </p>
         </header>
 
         <section className="add-asset-generate-section">
           <h3>Provider</h3>
           <div className="preview-intent-choice-grid" role="list">
-            {ADD_ASSET_PROVIDERS.map((p) => (
+            {ADD_ASSET_PROVIDERS.filter(
+              (p) =>
+                !providerOnly ||
+                p.id === "parascene_blue" ||
+                p.id === "replicate",
+            ).map((p) => (
               <button
                 key={p.id}
                 type="button"
@@ -73,7 +84,7 @@ export function AddAssetIntentPanel({
           </div>
         </section>
 
-        {provider ? (
+        {provider && !providerOnly ? (
           <section className="add-asset-generate-section">
             <h3>Method</h3>
             <div className="preview-intent-choice-grid" role="list">
@@ -103,7 +114,7 @@ export function AddAssetIntentPanel({
           </section>
         ) : null}
 
-        {selectedMethod && !selectedMethod.wired ? (
+        {!providerOnly && selectedMethod && !selectedMethod.wired ? (
           <section className="add-asset-generate-section">
             <div className="add-asset-generate-callout">
               <p className="muted" style={{ margin: 0 }}>
@@ -115,7 +126,7 @@ export function AddAssetIntentPanel({
           </section>
         ) : null}
 
-        {canPlace ? (
+        {!providerOnly && canPlace ? (
           <section className="add-asset-generate-section">
             <div className="add-asset-generate-callout">
               <p className="muted" style={{ margin: 0 }}>
@@ -127,7 +138,7 @@ export function AddAssetIntentPanel({
         ) : null}
       </div>
 
-      {canPlace ? (
+      {!providerOnly && canPlace ? (
         <div className="add-asset-generate-footer preview-intent-footer">
           <ClipPlaceHandle draft={dragDraft} />
           <ClipDragHandle draft={dragDraft} />

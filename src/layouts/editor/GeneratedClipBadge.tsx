@@ -161,7 +161,9 @@ export function GeneratedClipBadge({
                 <p>
                   {generation.audioMode === "vocals"
                     ? "Lyrics track"
-                    : "Full mix"}
+                    : generation.audioMode === "none"
+                      ? "None"
+                      : "Full mix"}
                 </p>
               </section>
             )}

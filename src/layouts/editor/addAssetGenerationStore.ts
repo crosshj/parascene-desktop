@@ -216,6 +216,7 @@ export function startAddAssetGenerationJob(
     lyricsText: request.lyricsText,
     audioMode: request.audioMode,
     continuityMode,
+    blueModel: request.blueModel,
     startFrame: request.startFrame,
     endFrame: request.endFrame,
     replicate: request.replicate,

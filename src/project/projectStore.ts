@@ -275,7 +275,9 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
       ? "full_mix"
       : row.audioMode === "vocals"
         ? "vocals"
-        : undefined;
+        : row.audioMode === "none"
+          ? "none"
+          : undefined;
   const continuityMode =
     row.continuityMode === "first_last"
       ? "first_last"
@@ -284,6 +286,10 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
         : row.continuityMode === "start_frame"
           ? "start_frame"
           : undefined;
+  const blueModel =
+    row.blueModel === "wan" || row.blueModel === "ltx"
+      ? row.blueModel
+      : undefined;
   const provider =
     typeof row.provider === "string" && row.provider.trim()
       ? row.provider.trim()
@@ -321,6 +327,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     prompt === undefined &&
     audioMode === undefined &&
     continuityMode === undefined &&
+    blueModel === undefined &&
     provider === undefined &&
     methodId === undefined &&
     replicateModel === undefined &&
@@ -337,6 +344,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     prompt,
     audioMode,
     continuityMode,
+    blueModel,
     provider,
     methodId,
     replicateModel,

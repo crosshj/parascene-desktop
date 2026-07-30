@@ -64,6 +64,11 @@ describe("initialAddAssetGenerationSteps", () => {
     expect(steps[0]?.label).toMatch(/first frame/i);
     expect(steps[1]?.label).toMatch(/last frame/i);
   });
+
+  it("skips audio steps when source audio is none", () => {
+    const steps = initialAddAssetGenerationSteps("none", "start_frame");
+    expect(steps.map((s) => s.id)).toEqual(["still", "generate", "file"]);
+  });
 });
 
 describe("replaceAddAssetPlaceholderWithVideo", () => {
@@ -201,5 +206,13 @@ describe("ADD_ASSET_NO_LYRICS_AUDIO_NOTE", () => {
 describe("ADD_ASSET_FIRST_LAST_AUDIO_NOTE", () => {
   it("mentions that audio is unused", () => {
     expect(ADD_ASSET_FIRST_LAST_AUDIO_NOTE).toMatch(/does not use audio/i);
+  });
+});
+
+describe("ADD_ASSET_WAN_AUDIO_NOTE", () => {
+  it("explains WAN locks source audio", async () => {
+    const { ADD_ASSET_WAN_AUDIO_NOTE: note } = await import("./addAssetGenerate");
+    expect(note).toMatch(/WAN/i);
+    expect(note).toMatch(/None/i);
   });
 });

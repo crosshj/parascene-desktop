@@ -28,6 +28,22 @@ describe("buildFlf2vCreateArgs", () => {
     expect(args.model).toBe("wan_i2v");
   });
 
+  it("uses wan_i2v with a single start-frame image when last is omitted", () => {
+    const args = buildFlf2vCreateArgs({
+      prompt: "subtle motion",
+      aspectRatio: "9:16",
+      firstImageUrl: "https://example.com/start.jpg",
+      durationSeconds: 4,
+    });
+    expect(args).toEqual({
+      prompt: "subtle motion",
+      model: FLF2V_MODEL,
+      aspect_ratio: "9:16",
+      input_images: ["https://example.com/start.jpg"],
+      duration_seconds: 4,
+    });
+  });
+
   it("omits duration when unset", () => {
     const args = buildFlf2vCreateArgs({
       prompt: "bridge",

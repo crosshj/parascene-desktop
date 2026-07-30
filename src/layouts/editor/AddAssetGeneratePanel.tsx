@@ -14,10 +14,12 @@ import {
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
 import {
+  ADD_ASSET_WAN_AUDIO_NOTE,
   addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
   resolveAddAssetAudioMode,
   type AddAssetAudioMode,
+  type AddAssetBlueModel,
   type AddAssetContinuityMode,
   type AddAssetGenerationSession,
   type RunAddAssetGenerationOpts,
@@ -72,6 +74,8 @@ export type StartAddAssetGenerationRequest = {
   lyricsText: string;
   audioMode: AddAssetAudioMode;
   continuityMode: AddAssetContinuityMode;
+  /** Parascene Blue model when not generating via Replicate. */
+  blueModel?: AddAssetBlueModel;
   songRange: { startSec: number; endSec: number };
   startFrame: StartFramePreview;
   endFrame?: StartFramePreview | null;
@@ -97,6 +101,8 @@ type AddAssetGeneratePanelProps = {
   onRetryDownload?: () => void;
   /** Project image assets available as an explicit start frame. */
   imageAssets?: ProjectAsset[];
+  /** Return to provider selection for this existing placeholder. */
+  onBackToProvider?: () => void;
 };
 
 type PanelPhase = "form" | "running" | "error";
@@ -117,6 +123,7 @@ function draftFromClip(
   prompt: string;
   audioMode: AddAssetAudioMode;
   continuityMode: AddAssetContinuityMode | null;
+  blueModel: AddAssetBlueModel | null;
   replicateModel: string | null;
   useNearestDuration: boolean;
   replicateTweaks: ReplicateVideoTweaks | null;
@@ -128,14 +135,28 @@ function draftFromClip(
     draft?.continuityMode === "motion_match"
       ? draft.continuityMode
       : null;
+  const blueModel =
+    draft?.blueModel === "wan" || draft?.blueModel === "ltx"
+      ? draft.blueModel
+      : continuity === "first_last"
+        ? "wan"
+        : continuity === "start_frame"
+          ? "ltx"
+          : null;
+  const audioMode: AddAssetAudioMode =
+    draft?.audioMode === "vocals" ||
+    draft?.audioMode === "full_mix" ||
+    draft?.audioMode === "none"
+      ? draft.audioMode
+      : blueModel === "wan"
+        ? "none"
+        : resolveAddAssetAudioMode(lyricsText);
   return {
     prompt:
       typeof draft?.prompt === "string" ? draft.prompt : LAB_A2V_PROMPT,
-    audioMode:
-      draft?.audioMode === "vocals" || draft?.audioMode === "full_mix"
-        ? draft.audioMode
-        : resolveAddAssetAudioMode(lyricsText),
+    audioMode,
     continuityMode: continuity,
+    blueModel,
     replicateModel:
       typeof draft?.replicateModel === "string" && draft.replicateModel.trim()
         ? draft.replicateModel.trim()
@@ -150,6 +171,7 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
     (a.prompt ?? "") === (b?.prompt ?? "") &&
     (a.audioMode ?? "") === (b?.audioMode ?? "") &&
     (a.continuityMode ?? "") === (b?.continuityMode ?? "") &&
+    (a.blueModel ?? "") === (b?.blueModel ?? "") &&
     (a.provider ?? "") === (b?.provider ?? "") &&
     (a.methodId ?? "") === (b?.methodId ?? "") &&
     (a.replicateModel ?? "") === (b?.replicateModel ?? "") &&
@@ -383,6 +405,7 @@ export function AddAssetGeneratePanel({
   onClearError,
   onRetryDownload,
   imageAssets = [],
+  onBackToProvider,
 }: AddAssetGeneratePanelProps) {
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
   const [pullEpoch, setPullEpoch] = useState(0);
@@ -440,6 +463,10 @@ export function AddAssetGeneratePanel({
   /** null = auto (prefer first+last when both frames exist). */
   const [continuityMode, setContinuityMode] =
     useState<AddAssetContinuityMode | null>(initial.continuityMode);
+  /** null = auto from continuity / bridge (WAN when bridged, else LTX). */
+  const [blueModel, setBlueModel] = useState<AddAssetBlueModel | null>(
+    initial.blueModel,
+  );
   const [replicateModelId, setReplicateModelId] = useState<string | null>(
     initial.replicateModel,
   );
@@ -491,7 +518,28 @@ export function AddAssetGeneratePanel({
   const framesLoading = phase === "form" && !framesReady;
 
   const hasLyrics = Boolean(lyricsText.trim());
-  const resolvedAudioMode = hasLyrics ? audioMode : "full_mix";
+  const hasMainAudio = Boolean(mainAudioCreationId?.trim());
+
+  const resolvedBlueModel: AddAssetBlueModel = (() => {
+    if (isReplicate) return "ltx";
+    if (blueModel === "wan" || blueModel === "ltx") return blueModel;
+    if (continuityMode === "first_last") return "wan";
+    if (continuityMode === "start_frame") return "ltx";
+    return bridgeAvailable ? "wan" : "ltx";
+  })();
+
+  const sourceAudioLocked =
+    !isReplicate && (resolvedBlueModel === "wan" || !hasMainAudio);
+
+  const resolvedAudioMode: AddAssetAudioMode = (() => {
+    if (isReplicate) {
+      return hasLyrics ? (audioMode === "full_mix" ? "full_mix" : "vocals") : "full_mix";
+    }
+    if (sourceAudioLocked) return "none";
+    if (audioMode === "none") return "none";
+    if (!hasLyrics) return "full_mix";
+    return audioMode === "full_mix" ? "full_mix" : "vocals";
+  })();
 
   const resolvedContinuityMode: AddAssetContinuityMode = (() => {
     if (isReplicate) {
@@ -500,10 +548,34 @@ export function AddAssetGeneratePanel({
       if (continuityMode === "first_last") return "start_frame";
       return continuityMode ?? "start_frame";
     }
-    return bridgeAvailable
-      ? (continuityMode ?? "first_last")
-      : "start_frame";
+    // LTX is start-frame only. WAN can use start frame or first+last when bridged.
+    if (resolvedBlueModel === "ltx") return "start_frame";
+    if (bridgeAvailable) return continuityMode ?? "start_frame";
+    return "start_frame";
   })();
+
+  const selectBlueModel = (next: AddAssetBlueModel) => {
+    setBlueModel(next);
+    if (next === "wan") {
+      setAudioMode("none");
+      return;
+    }
+    setContinuityMode("start_frame");
+  };
+
+  const selectSourceAudio = (next: AddAssetAudioMode) => {
+    if (sourceAudioLocked) return;
+    setAudioMode(next);
+  };
+
+  // Keep draft audio locked to None for WAN or when no main audio track exists.
+  useEffect(() => {
+    if (!sourceAudioLocked) return;
+    if (audioMode !== "none") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- lock source audio to none
+      setAudioMode("none");
+    }
+  }, [sourceAudioLocked, audioMode]);
 
   // Load enabled Replicate video models once for this panel.
   useEffect(() => {
@@ -676,8 +748,9 @@ export function AddAssetGeneratePanel({
   useEffect(() => {
     const next: AddAssetDraft = {
       prompt,
-      audioMode,
-      continuityMode: continuityMode ?? undefined,
+      audioMode: resolvedAudioMode,
+      continuityMode: resolvedContinuityMode,
+      blueModel: isReplicate ? undefined : resolvedBlueModel,
       provider: clip.addAssetDraft?.provider,
       methodId: clip.addAssetDraft?.methodId,
       replicateModel: replicateModelId ?? undefined,
@@ -693,8 +766,9 @@ export function AddAssetGeneratePanel({
     onDraftChange?.(next);
   }, [
     prompt,
-    audioMode,
-    continuityMode,
+    resolvedAudioMode,
+    resolvedContinuityMode,
+    resolvedBlueModel,
     replicateModelId,
     useNearestDuration,
     normalizedTweaks,
@@ -725,7 +799,7 @@ export function AddAssetGeneratePanel({
         start,
         bridge: resolvedBridge,
       });
-      // Bridge gone → can't keep first_last; otherwise keep draft/auto choice.
+      // Bridge gone → can't keep first_last; WAN still works with start frame.
       if (!resolvedBridge) {
         setContinuityMode((prev) =>
           prev === "first_last" ? "start_frame" : prev,
@@ -973,6 +1047,7 @@ export function AddAssetGeneratePanel({
           lyricsText,
           audioMode: resolvedAudioMode,
           continuityMode: "first_last",
+          blueModel: "wan",
           songRange: timing.songRange,
           startFrame: freshBridge.first,
           endFrame: freshBridge.last,
@@ -1001,6 +1076,7 @@ export function AddAssetGeneratePanel({
         lyricsText,
         audioMode: resolvedAudioMode,
         continuityMode: "start_frame",
+        blueModel: resolvedBlueModel,
         songRange: timing.songRange,
         startFrame: freshStart,
         endFrame: null,
@@ -1016,7 +1092,8 @@ export function AddAssetGeneratePanel({
       ? Boolean(
           bridge?.first.framePath?.trim() && bridge.last.framePath?.trim(),
         )
-      : startFrameIsReady(startFrame));
+      : startFrameIsReady(startFrame)) &&
+    (resolvedAudioMode === "none" || hasMainAudio);
 
   const canGenerate =
     isReplicate
@@ -1139,6 +1216,26 @@ export function AddAssetGeneratePanel({
 
   return (
     <div className="add-asset-generate-pane">
+      <header className="add-asset-generate-header">
+        <button
+          type="button"
+          className="add-asset-generate-back"
+          onClick={onBackToProvider}
+          aria-label="Choose generation provider"
+          title="Choose generation provider"
+        >
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+            <path
+              fill="currentColor"
+              d="M9.8 2.2 4 8l5.8 5.8 1.1-1.1L6.2 8l4.7-4.7z"
+            />
+          </svg>
+        </button>
+        <div>
+          <h2>{isReplicate ? "Replicate" : "Parascene Blue"}</h2>
+          <p>Timeline video fill</p>
+        </div>
+      </header>
       <div className="add-asset-generate-body">
         {isReplicate ? (
           <section className="add-asset-generate-section">
@@ -1151,7 +1248,7 @@ export function AddAssetGeneratePanel({
           </section>
         ) : null}
 
-        {bridgeAvailable || isReplicate ? (
+        {isReplicate ? (
           <section className="add-asset-generate-section">
             <h3>Continuity</h3>
             <div
@@ -1181,19 +1278,149 @@ export function AddAssetGeneratePanel({
               >
                 Start frame
               </button>
-              {isReplicate ? (
-                <button
-                  type="button"
-                  className={
-                    resolvedContinuityMode === "motion_match" ? "is-active" : ""
-                  }
-                  onClick={() => setContinuityMode("motion_match")}
-                  aria-pressed={resolvedContinuityMode === "motion_match"}
-                >
-                  Motion match
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className={
+                  resolvedContinuityMode === "motion_match" ? "is-active" : ""
+                }
+                onClick={() => setContinuityMode("motion_match")}
+                aria-pressed={resolvedContinuityMode === "motion_match"}
+              >
+                Motion match
+              </button>
             </div>
+          </section>
+        ) : null}
+
+        {!isReplicate ? (
+          <section className="add-asset-generate-section">
+            <h3>Model</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Parascene Blue model"
+            >
+              <button
+                type="button"
+                className={resolvedBlueModel === "wan" ? "is-active" : ""}
+                disabled={phase !== "form"}
+                onClick={() => selectBlueModel("wan")}
+                aria-pressed={resolvedBlueModel === "wan"}
+              >
+                WAN
+              </button>
+              <button
+                type="button"
+                className={resolvedBlueModel === "ltx" ? "is-active" : ""}
+                disabled={phase !== "form"}
+                onClick={() => selectBlueModel("ltx")}
+                aria-pressed={resolvedBlueModel === "ltx"}
+              >
+                LTX
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {!isReplicate && resolvedBlueModel === "wan" && bridgeAvailable ? (
+          <section className="add-asset-generate-section">
+            <h3>Continuity</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Continuity mode"
+            >
+              <button
+                type="button"
+                className={
+                  resolvedContinuityMode === "start_frame" ? "is-active" : ""
+                }
+                onClick={() => setContinuityMode("start_frame")}
+                aria-pressed={resolvedContinuityMode === "start_frame"}
+              >
+                Start frame
+              </button>
+              <button
+                type="button"
+                className={
+                  resolvedContinuityMode === "first_last" ? "is-active" : ""
+                }
+                onClick={() => setContinuityMode("first_last")}
+                aria-pressed={resolvedContinuityMode === "first_last"}
+              >
+                First + last frame
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {!isReplicate ? (
+          <section className="add-asset-generate-section">
+            <h3>Source audio</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Source audio"
+            >
+              <button
+                type="button"
+                className={resolvedAudioMode === "none" ? "is-active" : ""}
+                disabled={phase !== "form"}
+                onClick={() => selectSourceAudio("none")}
+                aria-pressed={resolvedAudioMode === "none"}
+              >
+                None
+              </button>
+              <button
+                type="button"
+                className={
+                  resolvedAudioMode === "full_mix" ? "is-active" : ""
+                }
+                disabled={phase !== "form" || sourceAudioLocked}
+                onClick={() => selectSourceAudio("full_mix")}
+                aria-pressed={resolvedAudioMode === "full_mix"}
+                title={
+                  resolvedBlueModel === "wan"
+                    ? "WAN has no audio processing"
+                    : !hasMainAudio
+                      ? "Add main audio to the timeline (or set it in Lab)"
+                      : undefined
+                }
+              >
+                Full track
+              </button>
+              <button
+                type="button"
+                className={resolvedAudioMode === "vocals" ? "is-active" : ""}
+                disabled={
+                  phase !== "form" || sourceAudioLocked || !hasLyrics
+                }
+                onClick={() => selectSourceAudio("vocals")}
+                aria-pressed={resolvedAudioMode === "vocals"}
+                title={
+                  resolvedBlueModel === "wan"
+                    ? "WAN has no audio processing"
+                    : !hasMainAudio
+                      ? "Add main audio to the timeline (or set it in Lab)"
+                      : !hasLyrics
+                        ? "No lyrics in this section"
+                        : undefined
+                }
+              >
+                Lyrics track
+              </button>
+            </div>
+            {resolvedBlueModel === "wan" ? (
+              <p className="muted add-asset-generate-note">
+                {ADD_ASSET_WAN_AUDIO_NOTE}
+              </p>
+            ) : !hasMainAudio ? (
+              <p className="muted add-asset-generate-note">
+                No audio track — source audio is locked to None. Add main audio
+                to the timeline (or set it in Lab) to unlock Full or Lyrics
+                track.
+              </p>
+            ) : null}
           </section>
         ) : null}
 
@@ -1647,40 +1874,9 @@ export function AddAssetGeneratePanel({
           </section>
         ) : null}
 
-        {!isReplicate && !showFirstLast && hasLyrics ? (
-          <section className="add-asset-generate-section">
-            <h3>Audio</h3>
-            <div
-              className="add-asset-generate-audio-toggle"
-              role="group"
-              aria-label="Audio source"
-            >
-              <button
-                type="button"
-                className={resolvedAudioMode === "vocals" ? "is-active" : ""}
-                onClick={() => setAudioMode("vocals")}
-                aria-pressed={resolvedAudioMode === "vocals"}
-              >
-                Lyrics track
-              </button>
-              <button
-                type="button"
-                className={
-                  resolvedAudioMode === "full_mix" ? "is-active" : ""
-                }
-                onClick={() => setAudioMode("full_mix")}
-                aria-pressed={resolvedAudioMode === "full_mix"}
-              >
-                Full track
-              </button>
-            </div>
-          </section>
-        ) : null}
-
         {!isReplicate &&
-        !showFirstLast &&
-        hasLyrics &&
-        resolvedAudioMode === "vocals" ? (
+        resolvedAudioMode === "vocals" &&
+        hasLyrics ? (
           <section className="add-asset-generate-section">
             <h3>Lyrics</h3>
             <div

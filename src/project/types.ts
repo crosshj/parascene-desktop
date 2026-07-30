@@ -126,11 +126,16 @@ export type TimelineClip = {
   addAssetGeneration?: AddAssetGeneration;
 };
 
+/** Parascene Blue model for timeline fill (WAN = no audio; LTX = optional audio). */
+export type AddAssetBlueModel = "wan" | "ltx";
+
 /** Draft form state for an unfilled add-asset placeholder. */
 export type AddAssetDraft = {
   prompt?: string;
-  audioMode?: "vocals" | "full_mix";
+  audioMode?: "vocals" | "full_mix" | "none";
   continuityMode?: AddAssetGenerationMode;
+  /** Parascene Blue model (wan_i2v / ltx_a2v|ltx_i2v). */
+  blueModel?: AddAssetBlueModel;
   /** Pre-drop intent: generation provider (e.g. parascene_blue). */
   provider?: string;
   /** Pre-drop intent: method id within the provider catalog. */
@@ -173,8 +178,8 @@ export type AddAssetGenerationMode =
 
 export type AddAssetGeneration = {
   prompt: string;
-  /** Present for audio-driven (start_frame) generations. */
-  audioMode?: "vocals" | "full_mix";
+  /** Present for start_frame generations (`none` when LTX ran without audio). */
+  audioMode?: "vocals" | "full_mix" | "none";
   lyricsText?: string;
   generatedAt: string;
   creationId: string;

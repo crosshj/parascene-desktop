@@ -8,23 +8,26 @@ export type Flf2vCreateArgs = {
   prompt: string;
   model: typeof FLF2V_MODEL;
   aspect_ratio: string;
-  input_images: [string, string];
+  input_images: [string] | [string, string];
   duration_seconds?: number;
 };
 
-/** Pure builder for WAN first/last-frame image2video create args. */
+/** Pure builder for WAN image2video create args (start-only or first+last). */
 export function buildFlf2vCreateArgs(opts: {
   prompt: string;
   aspectRatio: string;
   firstImageUrl: string;
-  lastImageUrl: string;
+  lastImageUrl?: string;
   durationSeconds?: number;
 }): Flf2vCreateArgs {
+  const last = opts.lastImageUrl?.trim();
   const args: Flf2vCreateArgs = {
     prompt: opts.prompt.trim(),
     model: FLF2V_MODEL,
     aspect_ratio: opts.aspectRatio,
-    input_images: [opts.firstImageUrl, opts.lastImageUrl],
+    input_images: last
+      ? [opts.firstImageUrl, last]
+      : [opts.firstImageUrl],
   };
   if (
     typeof opts.durationSeconds === "number" &&
@@ -40,7 +43,8 @@ export type RunFlf2vGenerationOpts = {
   prompt: string;
   aspectRatio: string;
   firstImageUrl: string;
-  lastImageUrl: string;
+  /** Omit for start-frame-only WAN. */
+  lastImageUrl?: string;
   /** Output length in seconds. Caller must clamp. */
   durationSeconds?: number;
   onProgress: (note: string) => void;
@@ -59,7 +63,12 @@ export async function runFlf2vGeneration(
     onProgress,
     onPendingCreation,
   } = opts;
-  onProgress("Starting first–last frame video…");
+  const hasLast = Boolean(lastImageUrl?.trim());
+  onProgress(
+    hasLast
+      ? "Starting first–last frame video…"
+      : "Starting image-to-video…",
+  );
   const sdk = createAuthedSdk();
   const args = buildFlf2vCreateArgs({
     prompt,

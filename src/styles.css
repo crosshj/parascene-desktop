@@ -5669,6 +5669,49 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   gap: 0.9rem;
 }
 
+.add-asset-generate-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.75rem;
+}
+
+.add-asset-generate-header h2,
+.add-asset-generate-header p {
+  margin: 0;
+}
+
+.add-asset-generate-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.add-asset-generate-header p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.add-asset-generate-back {
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.add-asset-generate-back:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .add-asset-generate-pane .add-asset-generate-section h3 {
   margin: 0 0 0.2rem;
   font-size: 0.76rem;
@@ -5911,6 +5954,11 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 .add-asset-generate-audio-toggle button.is-active {
   background: rgba(96, 165, 250, 0.18);
   color: #dbeafe;
+}
+
+.add-asset-generate-audio-toggle button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .add-asset-generate-audio-toggle button:not(:disabled):hover {

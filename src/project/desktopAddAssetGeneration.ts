@@ -70,9 +70,11 @@ export function normalizeAddAssetGeneration(
       ? "full_mix"
       : row.audioMode === "vocals"
         ? "vocals"
-        : mode === "first_last" || mode === "motion_match"
-          ? undefined
-          : "vocals";
+        : row.audioMode === "none"
+          ? "none"
+          : mode === "first_last" || mode === "motion_match"
+            ? undefined
+            : "vocals";
   const lyricsText =
     typeof row.lyricsText === "string" && row.lyricsText.trim()
       ? row.lyricsText.trim()
