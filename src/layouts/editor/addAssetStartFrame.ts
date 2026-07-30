@@ -1,5 +1,9 @@
 import { applyImageFraming, extractVideoFrame } from "../../lab/audioTools";
-import { getCreations, ensureReversed } from "../../library/catalogClient";
+import {
+  downloadIds,
+  ensureReversed,
+  getCreations,
+} from "../../library/catalogClient";
 import { ensureClipThumbnail } from "../../library/clipThumbnail";
 import {
   creationDetailUrl,
@@ -374,8 +378,35 @@ async function resolveFrameFromNeighborClip(opts: {
   const { neighbor, aspectRatio, role } = opts;
   const framing = normalizeFraming(opts.framing ?? neighbor.framing);
   const assetId = neighbor.assetId!.trim();
-  const [creation] = await getCreations([assetId]);
+  let [creation] = await getCreations([assetId]);
   let sourcePath = creation?.localPath?.trim() || null;
+  if (!sourcePath && (creation?.remoteUrl?.trim() || creation?.videoUrl?.trim())) {
+    // Neighbors often sync thumb-only; pull the media so the frame still resolves.
+    recordUiOpTrace({
+      type: "add_asset_frame_fetch_media",
+      clipId: neighbor.id,
+      kind: neighbor.kind ?? creation?.mediaType ?? "?",
+      ids: assetId,
+      reason: `${role}:download_on_demand`,
+    });
+    try {
+      await downloadIds([assetId]);
+      const [fresh] = await getCreations([assetId]);
+      if (fresh) creation = fresh;
+      sourcePath = creation?.localPath?.trim() || null;
+    } catch (downloadError) {
+      recordUiOpTrace({
+        type: "add_asset_frame_fetch_failed",
+        clipId: neighbor.id,
+        kind: neighbor.kind ?? creation?.mediaType ?? "?",
+        ids: assetId,
+        reason: `${role}:${downloadError instanceof Error ? downloadError.message : String(downloadError)}`.slice(
+          0,
+          180,
+        ),
+      });
+    }
+  }
   if (!sourcePath) {
     recordUiOpTrace({
       type: "add_asset_frame_missing_local",
@@ -570,11 +601,38 @@ export async function resolveAddAssetStartFrameFromAsset(
     };
   }
 
-  const [creation] = await getCreations([id]);
+  let [creation] = await getCreations([id]);
+  let sourcePath = creation?.localPath?.trim() || null;
+  if (!sourcePath && creation?.remoteUrl?.trim()) {
+    // Pull the picked image so framing bakes locally instead of sending a raw URL.
+    recordUiOpTrace({
+      type: "add_asset_frame_fetch_media",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: "start:asset:download_on_demand",
+    });
+    try {
+      await downloadIds([id]);
+      const [fresh] = await getCreations([id]);
+      if (fresh) creation = fresh;
+      sourcePath = creation?.localPath?.trim() || null;
+    } catch (downloadError) {
+      recordUiOpTrace({
+        type: "add_asset_frame_fetch_failed",
+        clipId: "",
+        kind: "image",
+        ids: id,
+        reason: `start:asset:${downloadError instanceof Error ? downloadError.message : String(downloadError)}`.slice(
+          0,
+          180,
+        ),
+      });
+    }
+  }
   const previewUrl =
     creationDetailUrl(creation) ?? creationPreviewUrl(creation);
   const remoteImageUrl = creation?.remoteUrl?.trim() || null;
-  const sourcePath = creation?.localPath?.trim() || null;
 
   if (creation?.mediaType !== "image" && sourcePath && !looksLikeImagePath(sourcePath)) {
     return {
