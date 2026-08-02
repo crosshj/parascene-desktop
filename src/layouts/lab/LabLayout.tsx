@@ -645,13 +645,15 @@ export function LabLayout({ active = true }: { active?: boolean }) {
     groupsBusy ||
     Boolean(session.activeJob?.backendJobId?.trim());
 
-  // Keep Cancel available across HMR remounts while a groups job is in flight.
+  // Keep Cancel available across HMR remounts while a groups job is in flight,
+  // and drop it again once nothing is running. Frontend-only steps (Dedupe)
+  // never register a backend job id, so they have nothing else to clear it.
   useEffect(() => {
-    if (!groupsBusy && !session.activeJob?.backendJobId) return;
+    const backendJobId = session.activeJob?.backendJobId?.trim() || null;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setGroupsJobCancellable(true);
-    if (session.activeJob?.backendJobId) {
-      trackGroupsJobId(session.activeJob.backendJobId);
+    setGroupsJobCancellable(groupsBusy || Boolean(backendJobId));
+    if (backendJobId) {
+      trackGroupsJobId(backendJobId);
     }
   }, [
     groupsBusy,
