@@ -21,6 +21,7 @@ import {
 } from "../../library/creationFlags";
 import { isLocalOnlyCreation } from "../../library/creationFilters";
 import { FolderCard } from "../../library/FolderCard";
+import CompositionCard from "../../library/CompositionCard";
 import type { LibraryFolder } from "../../library/folderClient";
 import {
   canFetchLocal,
@@ -36,6 +37,10 @@ import {
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
 import type { ProjectAsset } from "../../project/types";
+import {
+  compositionInternalCreationIds,
+  type StillWorkstream,
+} from "../../project/stillWorkstream";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
 
 export type AssetKindFilter = "all" | MediaType;
@@ -72,6 +77,14 @@ type AssetBrowserPaneProps = {
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
   onRemoveFolders?: (ids: string[]) => void;
+  /** Bound working folder id — never shown as a folder card. */
+  boundFolderId?: string | null;
+  /** Members of the bound working folder — shown flat at assets root. */
+  boundMemberIds?: readonly string[];
+  onBindFolder?: (folderId: string) => void;
+  onUnbindFolder?: () => void;
+  /** When true, bind/clear actions are disabled (timeline uses working files). */
+  boundFolderLocked?: boolean;
   onDeleteFromGroup?: (opts: {
     groupId: string;
     kind: "images" | "videos";
@@ -79,11 +92,17 @@ type AssetBrowserPaneProps = {
   }) => void;
   /** Asset ids referenced on the project timeline (blocks group delete). */
   timelineUsedAssetIds?: ReadonlySet<string>;
+  /** Still compositions (sandbox / record / group). */
+  compositions?: readonly StillWorkstream[];
+  openCompositionId?: string | null;
+  onOpenComposition?: (composition: StillWorkstream) => void;
+  onDeleteCompositions?: (compositionIds: string[]) => void;
 };
 
 type AssetContextMenu =
   | { kind: "assets"; assetIds: string[]; x: number; y: number }
-  | { kind: "folders"; folderIds: string[]; x: number; y: number };
+  | { kind: "folders"; folderIds: string[]; x: number; y: number }
+  | { kind: "compositions"; compositionIds: string[]; x: number; y: number };
 
 function kindFromCreation(
   creation: Creation | undefined,
@@ -216,8 +235,17 @@ export function AssetBrowserPane({
   onDeleteAssets,
   onRemoveAssets,
   onRemoveFolders,
+  boundFolderId = null,
+  boundMemberIds = [],
+  onBindFolder,
+  onUnbindFolder,
+  boundFolderLocked = false,
   onDeleteFromGroup,
   timelineUsedAssetIds,
+  compositions = [],
+  openCompositionId = null,
+  onOpenComposition,
+  onDeleteCompositions,
 }: AssetBrowserPaneProps) {
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
@@ -241,18 +269,57 @@ export function AssetBrowserPane({
   const filedInProjectFolders = useMemo(() => {
     const ids = new Set<string>();
     for (const folder of folders) {
+      // Bound folder is never in `folders`; attached folders hide members at root.
       for (const memberId of folder.memberIds) ids.add(memberId);
     }
     return ids;
   }, [folders]);
+
+  const boundMemberSet = useMemo(() => {
+    const id = boundFolderId?.trim();
+    if (!id) return null;
+    return new Set(
+      boundMemberIds.map((memberId) => String(memberId).trim()).filter(Boolean),
+    );
+  }, [boundFolderId, boundMemberIds]);
+
+  const compositionHiddenIds = useMemo(
+    () => compositionInternalCreationIds(compositions),
+    [compositions],
+  );
 
   const rootAssets = useMemo(() => {
     if (folderView) {
       const members = new Set(folderView.memberIds);
       return assets.filter((asset) => members.has(asset.id));
     }
-    return assets.filter((asset) => !filedInProjectFolders.has(asset.id));
-  }, [assets, filedInProjectFolders, folderView]);
+    // Bound working folder = the project file pool: show its members flat.
+    let rows = boundMemberSet
+      ? assets.filter((asset) => boundMemberSet.has(asset.id))
+      : assets.filter((asset) => !filedInProjectFolders.has(asset.id));
+    // Plate / AI steps stay inside compositions until promoted.
+    if (compositionHiddenIds.size > 0) {
+      rows = rows.filter((asset) => !compositionHiddenIds.has(asset.id));
+    }
+    return rows;
+  }, [
+    assets,
+    boundMemberSet,
+    compositionHiddenIds,
+    filedInProjectFolders,
+    folderView,
+  ]);
+
+  const visibleCompositions = useMemo(() => {
+    if (folderView) return [];
+    if (filter !== "all" && filter !== "image") return [];
+    return [...compositions].sort((a, b) =>
+      b.updatedAt.localeCompare(a.updatedAt),
+    );
+  }, [compositions, filter, folderView]);
+
+  const showRootCompositions =
+    !folderView && visibleCompositions.length > 0 && Boolean(onOpenComposition);
 
   const assetIdsKey = useMemo(
     () => rootAssets.map((a) => a.id).join("\0"),
@@ -549,10 +616,23 @@ export function AssetBrowserPane({
     folderId: string,
     event: ReactMouseEvent<HTMLButtonElement>,
   ) => {
-    if (!onRemoveFolders) return;
+    if (!onRemoveFolders && !onBindFolder && !onUnbindFolder) return;
     setContextMenu({
       kind: "folders",
       folderIds: [folderId],
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const openCompositionContextMenu = (
+    compositionId: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    if (!onDeleteCompositions) return;
+    setContextMenu({
+      kind: "compositions",
+      compositionIds: [compositionId],
       x: event.clientX,
       y: event.clientY,
     });
@@ -621,6 +701,30 @@ export function AssetBrowserPane({
         </button>
       </div>
 
+      {boundFolderId && !folderView ? (
+        <div className="editor-asset-working-folder" role="status">
+          <span className="muted">
+            Working folder
+            {boundMemberSet ? ` · ${boundMemberSet.size} items` : ""}
+          </span>
+          {onUnbindFolder ? (
+            <button
+              type="button"
+              className="linkish"
+              disabled={boundFolderLocked}
+              title={
+                boundFolderLocked
+                  ? "Remove timeline clips that use the working folder first."
+                  : "Stop using this folder as the project container"
+              }
+              onClick={() => onUnbindFolder()}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {folderView ? (
         <div className="library-folder-breadcrumb editor-asset-breadcrumb">
           <button
@@ -662,7 +766,10 @@ export function AssetBrowserPane({
       </div>
 
       <div className="editor-asset-scroll">
-        {visible.length === 0 && !showRootFolders && !showAddSlot ? (
+        {visible.length === 0 &&
+        !showRootFolders &&
+        !showRootCompositions &&
+        !showAddSlot ? (
           <p className="muted editor-asset-empty">No assets in this filter.</p>
         ) : (
           <ul className="editor-asset-grid">
@@ -675,6 +782,27 @@ export function AssetBrowserPane({
                 />
               </li>
             ) : null}
+            {showRootCompositions
+              ? visibleCompositions.map((composition) => (
+                  <li key={`composition:${composition.id}`}>
+                    <CompositionCard
+                      composition={composition}
+                      aspectCss={projectAspectCss(aspectRatio)}
+                      selected={openCompositionId === composition.id}
+                      onOpen={(next) => {
+                        // Clear ordinary asset selection first. EditorLayout's
+                        // selection path closes any open composition, so the
+                        // composition open must be the final state change.
+                        onSelectionChange([], null);
+                        onOpenComposition?.(next);
+                      }}
+                      onContextMenu={(next, event) =>
+                        openCompositionContextMenu(next.id, event)
+                      }
+                    />
+                  </li>
+                ))
+              : null}
             {showRootFolders
               ? visibleFolders.map((folder) => (
                   <li key={`folder:${folder.id}`}>
@@ -740,18 +868,55 @@ export function AssetBrowserPane({
               onPointerDown={(event) => event.stopPropagation()}
               onContextMenu={(event) => event.preventDefault()}
             >
-              {contextMenu.kind === "folders" && onRemoveFolders ? (
+              {contextMenu.kind === "folders" ? (
+                <>
+                  {onBindFolder &&
+                  !boundFolderId &&
+                  contextMenu.folderIds.length === 1 ? (
+                    <button
+                      type="button"
+                      className="editor-asset-context-item"
+                      role="menuitem"
+                      onClick={() => {
+                        const id = contextMenu.folderIds[0];
+                        setContextMenu(null);
+                        onBindFolder(id);
+                      }}
+                    >
+                      Use as working folder
+                    </button>
+                  ) : null}
+                  {onRemoveFolders && !boundFolderId ? (
+                    <button
+                      type="button"
+                      className="editor-asset-context-item"
+                      role="menuitem"
+                      onClick={() => {
+                        const ids = contextMenu.folderIds;
+                        setContextMenu(null);
+                        onRemoveFolders(ids);
+                      }}
+                    >
+                      Remove folder from project
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+              {contextMenu.kind === "compositions" && onDeleteCompositions ? (
                 <button
                   type="button"
-                  className="editor-asset-context-item"
+                  className="editor-asset-context-item is-danger"
                   role="menuitem"
                   onClick={() => {
-                    const ids = contextMenu.folderIds;
+                    const ids = contextMenu.compositionIds;
                     setContextMenu(null);
-                    onRemoveFolders(ids);
+                    onDeleteCompositions(ids);
                   }}
                 >
-                  Remove folder from project
+                  Delete composition
+                  {contextMenu.compositionIds.length > 1
+                    ? ` (${contextMenu.compositionIds.length})`
+                    : ""}
                 </button>
               ) : null}
               {contextMenu.kind === "assets" &&

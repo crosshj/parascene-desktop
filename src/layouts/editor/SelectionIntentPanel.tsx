@@ -14,6 +14,10 @@ import {
 } from "./previewIntent";
 import { ClipDragHandle, ClipPlaceHandle, StagingFields } from "./PreviewStaging";
 import { addAssetDragDraftFromIntent, type StagedClipDraft } from "./stagedClip";
+import {
+  CompositePlatePanel,
+  type CompositePlatePanelProps,
+} from "./CompositePlatePanel";
 
 export type SelectionImageItem = {
   id: string;
@@ -34,6 +38,8 @@ type SelectionIntentPanelProps = {
   sourceDurationSec: number;
   onDraftChange: (draft: StagedClipDraft) => void;
   bakeInfo?: BakeInfo | null;
+  /** Plate composite controls when Composite mode is active. */
+  composite?: CompositePlatePanelProps | null;
 };
 
 function orderedPick(allIds: string[], picked: Set<string>): string[] {
@@ -52,6 +58,7 @@ export function SelectionIntentPanel({
   sourceDurationSec,
   onDraftChange,
   bakeInfo = null,
+  composite = null,
 }: SelectionIntentPanelProps) {
   const selected = findSelectionIntentMode(modeId);
   const allIds = items.map((item) => item.id);
@@ -60,10 +67,13 @@ export function SelectionIntentPanel({
   const totalCount = items.length;
   const canSlideshow = pickedCount >= 2;
   const canGenerate = pickedCount >= 1;
+  const canComposite = pickedCount >= 2;
   const showSlideshowConfig =
     modeId === "slideshow" && draft?.kind === "slideshow";
   const showGenerate =
     modeId === "generate_from_selection" && selected?.wired === true;
+  const showComposite =
+    modeId === "composite" && selected?.wired === true && Boolean(composite);
   const provider = generateIntent?.provider ?? null;
   const methodId = generateIntent?.methodId ?? null;
   const methods = provider ? addAssetMethodsForProvider(provider) : [];
@@ -188,7 +198,8 @@ export function SelectionIntentPanel({
             {SELECTION_INTENT_MODES.map((m) => {
               const disabled =
                 (m.id === "slideshow" && !canSlideshow) ||
-                (m.id === "generate_from_selection" && !canGenerate);
+                (m.id === "generate_from_selection" && !canGenerate) ||
+                (m.id === "composite" && !canComposite);
               return (
                 <button
                   key={m.id}
@@ -212,7 +223,9 @@ export function SelectionIntentPanel({
                       ? "Pick at least two images for a slideshow."
                       : m.id === "generate_from_selection" && !canGenerate
                         ? "Pick at least one image to generate from."
-                        : m.description}
+                        : m.id === "composite" && !canComposite
+                          ? "Pick at least two images for a plate."
+                          : m.description}
                   </span>
                 </button>
               );
@@ -230,6 +243,10 @@ export function SelectionIntentPanel({
               </p>
             </div>
           </section>
+        ) : null}
+
+        {showComposite && composite ? (
+          <CompositePlatePanel {...composite} />
         ) : null}
 
         {showGenerate ? (

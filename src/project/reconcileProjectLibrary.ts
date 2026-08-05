@@ -67,6 +67,13 @@ export async function collectProjectGroupCoverIdsToRefresh(
       if (!folder) continue;
       for (const memberId of folder.memberIds) seeds.add(memberId);
     }
+    const boundId = project.boundFolderId?.trim();
+    if (boundId) {
+      const folder = byFolderId.get(boundId);
+      if (folder) {
+        for (const memberId of folder.memberIds) seeds.add(memberId);
+      }
+    }
   }
 
   if (seeds.size === 0) return [];
@@ -101,6 +108,14 @@ export async function collectCreationIdsToMergeForProject(
     const folder = byFolderId.get(folderId);
     if (!folder) continue;
     for (const memberId of folder.memberIds) candidates.add(memberId);
+  }
+
+  const boundId = project.boundFolderId?.trim();
+  if (boundId) {
+    const folder = byFolderId.get(boundId);
+    if (folder) {
+      for (const memberId of folder.memberIds) candidates.add(memberId);
+    }
   }
 
   if (candidates.size === 0) return [];
@@ -144,6 +159,14 @@ export async function collectExtraneousExpandedGroupMemberIds(
     if (!folder) continue;
     // Folder filings stay as whatever was filed (usually group covers).
     for (const memberId of folder.memberIds) keep.add(memberId);
+  }
+
+  const boundId = project.boundFolderId?.trim();
+  if (boundId) {
+    const folder = byFolderId.get(boundId);
+    if (folder) {
+      for (const memberId of folder.memberIds) keep.add(memberId);
+    }
   }
 
   if (cabinets.size > 0) {

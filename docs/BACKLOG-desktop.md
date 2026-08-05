@@ -2,6 +2,18 @@
 
 Ordered by expected leverage relative to implementation effort.
 
+## Principle
+
+Prefer giving the video model more to work with over fighting it in the edit.
+
+Most strong AI video today comes from better inputs—stills, references, characters, environments, first/last frames, composition—not from heavy timeline surgery on weak clips. Desktop production should optimize for preparing those inputs, generating candidates, and promoting selected results. The timeline assembles accepted shots; it is not where shots are invented.
+
+Stills are first-class shot setup, not a side path: generate them, manipulate them, store them with purpose and lifecycle, and attach them to the shot before asking for video.
+
+Composition and iterative still editing: [PLAN-image-compose-edit.md](./PLAN-image-compose-edit.md) (composition groups members; per-image show-outside / pop-out; bake creates new assets; bind = one working folder as the project file pool, not an attach card; plates and reference sheets).
+
+## Backlog
+
 - [ ] 1. Make the desktop project local-first
   Stop treating Parascene as the project’s working asset store.
   Project owns: local asset pool, metadata, timelines, generation history, prompts/settings, characters/environments, temporary and accepted outputs.
@@ -12,7 +24,8 @@ Ordered by expected leverage relative to implementation effort.
   Remove the split between image groups and video groups.
   Every asset has: type, origin, purpose, relationships, creation settings, lifecycle state.
   Lifecycle states: temporary, candidate, selected, used, published, discarded.
-  Done when: extracted frames, generated stills, clips, audio, and final renders coexist without polluting the timeline or Parascene.
+  Stills used as shot inputs (references, first/last frames, plates) must store cleanly alongside clips without polluting the timeline or Parascene.
+  Done when: extracted frames, generated stills, clips, audio, and final renders coexist with clear purpose and lifecycle.
 
 - [ ] 3. Connect desktop generation directly to Replicate
   Finish the direct Replicate integration already partially present.
@@ -23,12 +36,13 @@ Ordered by expected leverage relative to implementation effort.
 - [ ] 4. Introduce a persistent ShotSpec
   Make the shot—not the resulting file—the central production object.
   Shot contains: characters, environment, props, camera/composition, action, first/last frames, source references, generation config, candidates, selected result, timeline placement.
+  Setting up a shot means building and attaching stills and references until the model has enough to succeed—not reconstructing intent from scattered files after the fact.
   Done when: a shot can be revised or regenerated without reconstructing intent from scattered files.
 
 - [ ] 5. Move generation outside the timeline
   Timeline assembles selected clips; it is not scaffolding for creating them.
-  Capabilities: extract frame, generate start/end frames, select frame candidates, generate video candidates, promote result to timeline.
-  Done when: first and last frames can be created and used without temporarily inserting and removing them from the timeline.
+  Capabilities: extract frame, generate/manipulate stills for shot setup, generate start/end frames, select frame candidates, generate video candidates, promote result to timeline.
+  Done when: first and last frames can be created, stored, and attached without temporarily inserting and removing them from the timeline.
 
 - [ ] 6. Expose the new capabilities to the LLM/chat
   Use chat as the experimental interface instead of designing a complete shot-building UI.
@@ -56,6 +70,7 @@ Ordered by expected leverage relative to implementation effort.
   Given a shot, assemble references needed by Seedance or another model.
   Packages may include: character sheet, outfit reference, environment reference, prop references, previous-shot continuity frame, composition sketch, first/last frames.
   Model adapter determines required format.
+  This is the main lever: feed the model its strengths instead of compensating in the edit.
   Done when: “prepare this shot for Seedance” produces an appropriate reference sheet or bundle automatically.
 
 - [ ] 11. Add fixed-camera wide-plate shots with a virtual output camera
@@ -65,7 +80,7 @@ Ordered by expected leverage relative to implementation effort.
   Done when: Parascene controls framing while the generation model only handles subject performance.
 
 - [ ] 12. Add candidate-generation and promotion workflow
-  Every generation is a candidate until accepted.
+  Every generation is a candidate until accepted—stills and clips alike.
   Support: multiple still/clip candidates, comparison, selection, rejection, regeneration with one changed property, promotion to shot, promotion to timeline.
   Done when: experimentation no longer produces an undifferentiated pile of assets.
 
@@ -78,6 +93,7 @@ Ordered by expected leverage relative to implementation effort.
 - [ ] 14. Preserve the existing direct-manipulation surfaces
   Do not replace the working interface. Keep conventional UI where it is already superior: timeline, preview, asset library, candidate grid, crop/frame control, inspector.
   Chat orchestrates these surfaces instead of replacing them.
+  Timeline remains for assembly and finishing; shot setup and generation stay off it.
 
 - [ ] 15. Instrument chat usage to discover future UI
   Track: commonly invoked commands, repeated corrections, repeatedly altered settings, frequent failures, undos, workflows that require many chat turns.
@@ -107,6 +123,7 @@ Ordered by expected leverage relative to implementation effort.
 
 - [ ] 20. Improve long-form local export
   Continue hardening: reliable FFmpeg rendering, long timelines, audio sync, transition rendering, framing/crop animation, resumable/recoverable exports, output presets for 9:16, 16:9, and platform targets.
+  Important for finishing and publishing, secondary to getting generation inputs right.
   More important once shot generation is no longer the bottleneck.
 
 ## Recommended immediate sequence
@@ -114,7 +131,7 @@ Ordered by expected leverage relative to implementation effort.
 1. Local project and unified asset pool
 2. Direct Replicate adapter
 3. Persistent ShotSpec
-4. Generation outside the timeline
+4. Generation outside the timeline (including stills for shot setup)
 5. Chat-accessible shot commands
 6. Characters and environments
 7. Reference-package assembly
@@ -122,4 +139,4 @@ Ordered by expected leverage relative to implementation effort.
 9. Candidate promotion into timeline
 10. Selective publishing
 
-That sequence first removes the existing pain, then creates the semantic foundation, then proves the new AI-native workflow without requiring a large UI investment.
+That sequence first removes the existing pain, then creates the semantic foundation for better model inputs, then proves the workflow without requiring a large UI investment. Editing and export follow once accepted shots are easy to produce.

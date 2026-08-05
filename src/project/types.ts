@@ -457,6 +457,12 @@ export type StoryboardProposal = {
 
 export type { ProjectAspectRatio };
 export type { ProjectLookId, ProjectLooks, ProjectLookState } from "./looks";
+export type {
+  PlateRecipe,
+  StillWorkstream,
+  StillWorkstreamNode,
+  StillWorkstreamKind,
+} from "./stillWorkstream";
 
 export type Project = {
   id: string;
@@ -472,6 +478,15 @@ export type Project = {
   assets: ProjectAsset[];
   /** Local Library folder ids attached to this project. */
   folderIds: string[];
+  /**
+   * Bound working folder — the project's file container (one per project).
+   * Assets pane shows this folder's members flat; the folder itself is not
+   * listed as an attached folder card. New local outputs land here.
+   * Null when none. Distinct from `folderIds` (attach).
+   */
+  boundFolderId: string | null;
+  /** Still composition workstreams (plate bake + edit history). */
+  stillWorkstreams: import("./stillWorkstream").StillWorkstream[];
   /**
    * Parascene group creation ids for this project's Images / Videos buckets.
    * Null until Lab (or create flow) ensures the cloud group exists.

@@ -137,9 +137,9 @@ export const SELECTION_INTENT_MODES: readonly SelectionIntentModeDef[] = [
   {
     id: "composite",
     label: "Composite",
-    description: "Combine the selection into a single composite frame or clip.",
+    description: "Create a composition in Assets, then iterate plate and AI edits inside it.",
     placement: "none",
-    wired: false,
+    wired: true,
   },
 ] as const;
 

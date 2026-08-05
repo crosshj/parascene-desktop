@@ -26,6 +26,11 @@ import {
   type ProjectAspectRatio,
 } from "./aspectRatios";
 import { normalizeAddAssetGeneration } from "./desktopAddAssetGeneration";
+import {
+  normalizeStillWorkstream,
+  normalizeStillWorkstreams,
+  type StillWorkstream,
+} from "./stillWorkstream";
 
 /** Parse draft.replicateTweaks without importing editor modules (avoids init cycles). */
 function parseReplicateVideoTweaks(
@@ -76,6 +81,13 @@ export type StoredProject = {
   creationIds: string[];
   /** Local Library folder ids attached to this project; omitted on older projects → []. */
   folderIds?: string[];
+  /**
+   * Bound working folder id (default output landing zone).
+   * Omitted on older projects → null.
+   */
+  boundFolderId?: string | null;
+  /** Still composition workstreams; omitted → []. */
+  stillWorkstreams?: import("./stillWorkstream").StillWorkstream[];
   /** Creative output frame; omitted on older stored projects → default. */
   aspectRatio?: ProjectAspectRatio;
   /** Export-time Looks; omitted on older stored projects → {}. */
@@ -458,9 +470,13 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
       ? null
       : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
   const selectedClipId = timelineMonitorActive ? null : selectedTimelineClipId;
+  const folderIds = normalizeFolderIds(project.folderIds);
+  const boundFolderId = normalizeBoundFolderId(project.boundFolderId, folderIds);
   return {
     ...project,
-    folderIds: normalizeFolderIds(project.folderIds),
+    folderIds,
+    boundFolderId,
+    stillWorkstreams: normalizeStillWorkstreams(project.stillWorkstreams),
     aspectRatio,
     looks: normalizeProjectLooks(project.looks),
     timeline,
@@ -486,6 +502,17 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
 
 function normalizeOptionalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Bound folder must be a real id. Prefer keeping it even if not yet in
+ * `folderIds` (caller may attach in the same write); drop empty strings.
+ */
+function normalizeBoundFolderId(
+  value: unknown,
+  _folderIds: readonly string[],
+): string | null {
+  return normalizeOptionalId(value);
 }
 
 function normalizeAlignedLyricLine(value: unknown): AlignedLyricLine | null {
@@ -695,6 +722,8 @@ export function createStoredProject(
     title: trimmed,
     creationIds: uniqueIds,
     folderIds: [],
+    boundFolderId: null,
+    stillWorkstreams: [],
     aspectRatio: isProjectAspectRatio(aspectRatio)
       ? aspectRatio
       : DEFAULT_PROJECT_ASPECT_RATIO,
@@ -841,14 +870,117 @@ export function removeFolderIds(
   ) {
     return project;
   }
+  const prevBound = normalizeOptionalId(project.boundFolderId);
+  const nextBound =
+    prevBound && removeFolders.has(prevBound) ? null : prevBound;
   return {
     ...project,
     folderIds: nextFolders,
+    boundFolderId: nextBound,
     creationIds: nextCreations,
     selectedAssetId: normalizeSelectedAssetId(
       project.selectedAssetId,
       nextCreations,
     ),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Set or clear the project's bound working folder (one per project).
+ * Bind is not attach: the folder becomes the project file container and is
+ * removed from `folderIds` if it was previously attached as a folder card.
+ * Member creation ids are merged into the project asset pool.
+ */
+export function setStoredProjectBoundFolderId(
+  project: StoredProject,
+  folderId: string | null,
+  memberCreationIds: string[] = [],
+): StoredProject {
+  const nextBound = normalizeOptionalId(folderId);
+  const prevBound = normalizeOptionalId(project.boundFolderId);
+  if (nextBound === prevBound && memberCreationIds.length === 0) {
+    return project;
+  }
+  if (!nextBound) {
+    if (prevBound === null) return project;
+    return {
+      ...project,
+      boundFolderId: null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  // Drop all attached folder cards — bind is the sole container (no nesting).
+  const nextCreations = new Set(project.creationIds);
+  for (const id of memberCreationIds) {
+    const trimmed = String(id).trim();
+    if (trimmed) nextCreations.add(trimmed);
+  }
+  return {
+    ...project,
+    folderIds: [],
+    boundFolderId: nextBound,
+    creationIds: [...nextCreations],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * True when the bound working folder cannot be cleared or replaced because
+ * timeline clips still reference its members.
+ */
+export function isBoundFolderLockedByTimeline(
+  timeline: readonly TimelineClip[],
+  boundMemberIds: readonly string[],
+): boolean {
+  if (boundMemberIds.length === 0) return false;
+  const members = new Set(
+    boundMemberIds.map((id) => String(id).trim()).filter(Boolean),
+  );
+  if (members.size === 0) return false;
+  for (const clip of timeline) {
+    const assetId = clip.assetId?.trim();
+    if (assetId && members.has(assetId)) return true;
+    const slideIds = clip.slideshow?.imageAssetIds;
+    if (slideIds?.some((id) => members.has(String(id).trim()))) return true;
+    const audioId = clip.slideshow?.audioAssetId?.trim();
+    if (audioId && members.has(audioId)) return true;
+  }
+  return false;
+}
+
+export function upsertStoredStillWorkstream(
+  project: StoredProject,
+  stream: StillWorkstream,
+): StoredProject {
+  const normalized = normalizeStillWorkstream(stream);
+  if (!normalized) return project;
+  const prev = normalizeStillWorkstreams(project.stillWorkstreams);
+  const idx = prev.findIndex((row) => row.id === normalized.id);
+  const next =
+    idx >= 0
+      ? prev.map((row, i) => (i === idx ? normalized : row))
+      : [...prev, normalized];
+  return {
+    ...project,
+    stillWorkstreams: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function removeStoredStillWorkstream(
+  project: StoredProject,
+  workstreamId: string,
+): StoredProject {
+  const id = workstreamId.trim();
+  if (!id) return project;
+  const prev = normalizeStillWorkstreams(project.stillWorkstreams);
+  const next = prev.filter((row) => row.id !== id);
+  if (next.length === prev.length) return project;
+  return {
+    ...project,
+    stillWorkstreams: next,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1306,6 +1438,11 @@ export function storedProjectToUi(project: StoredProject): Project {
     ],
     assets,
     folderIds: normalizeFolderIds(project.folderIds),
+    boundFolderId: normalizeBoundFolderId(
+      project.boundFolderId,
+      normalizeFolderIds(project.folderIds),
+    ),
+    stillWorkstreams: normalizeStillWorkstreams(project.stillWorkstreams),
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
     labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
@@ -1337,6 +1474,8 @@ export function emptyUiProject(): Project {
     scenes: [],
     assets: [],
     folderIds: [],
+    boundFolderId: null,
+    stillWorkstreams: [],
     imagesGroupId: null,
     videosGroupId: null,
     labStillPrompt: null,

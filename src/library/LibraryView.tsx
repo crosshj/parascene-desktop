@@ -17,6 +17,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { isSessionReauthError } from "../auth/errors";
 import { useShell } from "../app/ShellProvider";
 import type { LibrarySurface } from "../app/shellSession";
+import { isBoundFolderLockedByTimeline } from "../project/projectStore";
 import { CreationsFilterEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
@@ -1218,6 +1219,7 @@ function CreationsPanel({
     createProject,
     addCreationsToOpenProject,
     addFoldersToOpenProject,
+    setOpenProjectBoundFolderId,
     creationsFilterId,
     setCreationsFilterId,
   } = useShell();
@@ -1969,6 +1971,7 @@ function CreationsPanel({
 
   const onAddSelectedFoldersToProject = useCallback(() => {
     if (!openProjectId || selectedFolderIds.size === 0) return;
+    if (project.boundFolderId?.trim()) return;
     const chosen = folders.filter((folder) => selectedFolderIds.has(folder.id));
     const folderIds = chosen.map((folder) => folder.id);
     const memberIds = [
@@ -1976,7 +1979,79 @@ function CreationsPanel({
     ];
     addFoldersToOpenProject(folderIds, memberIds);
     setSelectedFolderIds(new Set());
-  }, [addFoldersToOpenProject, folders, openProjectId, selectedFolderIds]);
+  }, [
+    addFoldersToOpenProject,
+    folders,
+    openProjectId,
+    project.boundFolderId,
+    selectedFolderIds,
+  ]);
+
+  const onBindSelectedFolderToProject = useCallback(() => {
+    if (!openProjectId || selectedFolderIds.size !== 1) return;
+    if (project.boundFolderId?.trim()) return;
+    const folderId = [...selectedFolderIds][0];
+    const folder = folders.find((row) => row.id === folderId);
+    if (!folder) return;
+    setOpenProjectBoundFolderId(folder.id, folder.memberIds);
+    setSelectedFolderIds(new Set());
+  }, [
+    folders,
+    openProjectId,
+    project.boundFolderId,
+    selectedFolderIds,
+    setOpenProjectBoundFolderId,
+  ]);
+
+  const onUnbindWorkingFolder = useCallback(() => {
+    if (!openProjectId) return;
+    const boundId = project.boundFolderId?.trim();
+    if (!boundId || selectedFolderIds.size !== 1) return;
+    if (![...selectedFolderIds][0] || [...selectedFolderIds][0] !== boundId) {
+      return;
+    }
+    const folder = folders.find((row) => row.id === boundId);
+    const locked = isBoundFolderLockedByTimeline(
+      project.timeline,
+      folder?.memberIds ?? [],
+    );
+    if (locked) {
+      window.alert(
+        "Files from this folder are still used on the timeline. Remove those clips first, then unbind.",
+      );
+      return;
+    }
+    setOpenProjectBoundFolderId(null);
+    setSelectedFolderIds(new Set());
+  }, [
+    folders,
+    openProjectId,
+    project.boundFolderId,
+    project.timeline,
+    selectedFolderIds,
+    setOpenProjectBoundFolderId,
+  ]);
+
+  const onAddSelectionToWorkingFolder = useCallback(async () => {
+    if (!openProjectId || selectedIds.size === 0) return;
+    const boundId = project.boundFolderId?.trim();
+    if (!boundId) return;
+    try {
+      await addToFolder(boundId, [...selectedIds]);
+      addCreationsToOpenProject([...selectedIds]);
+      setSelectedIds(new Set());
+      setDeferredKeepIds(new Set());
+      await refreshFolders();
+    } catch (error) {
+      console.error(error);
+    }
+  }, [
+    addCreationsToOpenProject,
+    openProjectId,
+    project.boundFolderId,
+    refreshFolders,
+    selectedIds,
+  ]);
 
   const onSaveFolderEdit = useCallback(
     async (title: string, description: string) => {
@@ -2097,16 +2172,38 @@ function CreationsPanel({
             selectedCount={selectedIds.size}
             selectedFolderCount={selectedFolderIds.size}
             hasOpenProject={Boolean(openProjectId)}
+            hasBoundFolder={Boolean(project.boundFolderId?.trim())}
+            selectedFolderIsBound={
+              selectedFolderIds.size === 1 &&
+              Boolean(project.boundFolderId?.trim()) &&
+              [...selectedFolderIds][0] === project.boundFolderId?.trim()
+            }
+            boundFolderLocked={
+              Boolean(project.boundFolderId?.trim()) &&
+              isBoundFolderLockedByTimeline(
+                project.timeline,
+                folders.find((f) => f.id === project.boundFolderId?.trim())
+                  ?.memberIds ?? [],
+              )
+            }
             inFolderView={Boolean(folderView)}
             hasFolders={folders.length > 0 || seedFolders.length > 0}
             onNewProject={onNewProjectFromSelection}
             onAddToProject={onAddSelectionToProject}
             onNewFolder={() => setCreateFolderOpen(true)}
-            onAddToFolder={() => setPickFolderOpen(true)}
+            onAddToFolder={
+              project.boundFolderId?.trim()
+                ? () => {
+                    void onAddSelectionToWorkingFolder();
+                  }
+                : () => setPickFolderOpen(true)
+            }
             onRemoveFromFolder={() => {
               void onRemoveSelectionFromFolder();
             }}
             onAddFolderToProject={onAddSelectedFoldersToProject}
+            onBindFolderToProject={onBindSelectedFolderToProject}
+            onUnbindFolderFromProject={onUnbindWorkingFolder}
             onClearSelection={onClearSelection}
             onAddFromDisk={onImportFromDisk}
             importing={importing}
@@ -2200,6 +2297,7 @@ function CreationsPanel({
                 folderMemberCountsByFolderId={folderMemberCountsByFolderId}
                 folderCreationsById={folderFilterCreationsById}
                 boardColumnLayout={boardColumnLayout}
+                boundFolderId={openProjectId ? project.boundFolderId : null}
                 onOpen={(creation) => {
                   setActive(creation);
                   if (

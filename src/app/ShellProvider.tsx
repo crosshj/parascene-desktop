@@ -22,6 +22,9 @@ import {
   renameStoredProject,
   saveStoredProjects,
   setStoredProjectAspectRatio,
+  setStoredProjectBoundFolderId,
+  upsertStoredStillWorkstream,
+  removeStoredStillWorkstream,
   setStoredProjectLookEnabled,
   setStoredProjectSelectedTimelineClipId,
   setStoredProjectSelectedAssetId,
@@ -160,6 +163,21 @@ type ShellState = {
     folderIds: string[],
     memberCreationIds?: string[],
   ) => void;
+  /**
+   * Bind (or clear) the open project's working folder — one per project.
+   * This is the project file container (not an attached folder card).
+   * Member creation ids are merged into the project asset pool.
+   */
+  setOpenProjectBoundFolderId: (
+    folderId: string | null,
+    memberCreationIds?: string[],
+  ) => void;
+  /** Create or replace a still workstream on the open project. */
+  upsertOpenStillWorkstream: (
+    stream: import("../project/stillWorkstream").StillWorkstream,
+  ) => void;
+  /** Remove a still composition from the open project. */
+  removeOpenStillWorkstream: (workstreamId: string) => void;
   /** Last Creations filter — survives Library ↔ Project switches. */
   creationsFilterId: FilterId;
   setCreationsFilterId: (id: FilterId) => void;
@@ -587,7 +605,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const addFoldersToOpenProject = useCallback(
     (folderIds: string[], memberCreationIds: string[]) => {
       if (folderIds.length === 0 && memberCreationIds.length === 0) return;
-      patchOpenProject((p) => mergeFolderIds(p, folderIds, memberCreationIds));
+      patchOpenProject((p) => {
+        // Bound project: folder is the container — do not attach more folders.
+        if (typeof p.boundFolderId === "string" && p.boundFolderId.trim()) {
+          return p;
+        }
+        return mergeFolderIds(p, folderIds, memberCreationIds);
+      });
     },
     [patchOpenProject],
   );
@@ -598,6 +622,29 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProject((p) =>
         removeFolderIds(p, folderIds, memberCreationIds),
       );
+    },
+    [patchOpenProject],
+  );
+
+  const setOpenProjectBoundFolderId = useCallback(
+    (folderId: string | null, memberCreationIds: string[] = []) => {
+      patchOpenProject((p) =>
+        setStoredProjectBoundFolderId(p, folderId, memberCreationIds),
+      );
+    },
+    [patchOpenProject],
+  );
+
+  const upsertOpenStillWorkstream = useCallback(
+    (stream: import("../project/stillWorkstream").StillWorkstream) => {
+      patchOpenProject((p) => upsertStoredStillWorkstream(p, stream));
+    },
+    [patchOpenProject],
+  );
+
+  const removeOpenStillWorkstream = useCallback(
+    (workstreamId: string) => {
+      patchOpenProject((p) => removeStoredStillWorkstream(p, workstreamId));
     },
     [patchOpenProject],
   );
@@ -788,6 +835,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
       removeFoldersFromOpenProject,
+      setOpenProjectBoundFolderId,
+      upsertOpenStillWorkstream,
+      removeOpenStillWorkstream,
       creationsFilterId,
       setCreationsFilterId,
       chromeStatus,
@@ -836,6 +886,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       removeCreationsFromOpenProject,
       addFoldersToOpenProject,
       removeFoldersFromOpenProject,
+      setOpenProjectBoundFolderId,
+      upsertOpenStillWorkstream,
+      removeOpenStillWorkstream,
       creationsFilterId,
       chromeStatus,
       project,

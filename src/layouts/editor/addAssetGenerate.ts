@@ -357,6 +357,8 @@ export type RunAddAssetGenerationOpts = {
   projectTitle: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  /** Bound working folder — Replicate outputs land here when set. */
+  boundFolderId?: string | null;
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
@@ -400,6 +402,7 @@ export async function runAddAssetGeneration(
       projectTitle: opts.projectTitle,
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
+      boundFolderId: opts.boundFolderId,
       prompt: opts.prompt,
       continuityMode,
       modelOwner: opts.replicate.owner,

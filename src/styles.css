@@ -698,6 +698,10 @@ input[type="checkbox"].control,
   font-size: 0.72rem;
 }
 
+.folder-card.is-bound .folder-card-meta {
+  color: var(--text, inherit);
+}
+
 .folder-edit-dialog {
   width: min(26rem, 100%);
 }
@@ -4084,6 +4088,270 @@ input[type="checkbox"].control,
   padding-top: 0.15rem;
 }
 
+.editor-asset-working-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0.55rem 0.35rem;
+  padding: 0.25rem 0.15rem;
+  font-size: 0.78rem;
+}
+
+.composite-open-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.35rem;
+}
+
+.composite-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.composition-simple-card {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.75rem;
+  border: 0;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composition-card-hit:hover .composition-simple-card {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.folder-card-preview {
+  position: relative;
+}
+
+.folder-card-collage.is-single {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.folder-card-collage.is-single img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.composite-live-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  max-height: 360px;
+  background: #0a0a0a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  padding: 0.65rem;
+}
+
+.composite-live-preview-img {
+  max-width: 100%;
+  max-height: 340px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.composite-preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.composite-preview-heading h3 {
+  margin: 0;
+}
+
+.composite-recipe-preview-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  align-items: start;
+  gap: 1rem;
+}
+
+.composite-recipe-section {
+  order: 1;
+  min-width: 0;
+}
+
+.composite-preview-section {
+  order: 2;
+  min-width: 0;
+}
+
+.composite-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.composite-slot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.composite-slot-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.composite-slot-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.composite-slot-empty {
+  width: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.composite-slot-title {
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composite-slot-swap {
+  flex: 0 0 auto;
+  min-width: 2.25rem;
+  padding: 0.35rem 0.4rem;
+}
+
+.composition-runs {
+  margin-top: 0.65rem;
+}
+
+.composition-create-run {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.composition-run-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.65rem;
+}
+
+.composition-run-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.composition-run-card.is-selected {
+  border-color: var(--accent, #7c9cff);
+  box-shadow: 0 0 0 1px var(--accent, #7c9cff);
+  background: color-mix(in srgb, var(--accent, #7c9cff) 8%, transparent);
+}
+
+.composition-run-preview {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: #090909;
+  color: inherit;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.composition-run-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.composition-run-body {
+  padding: 0.65rem;
+}
+
+.composition-run-heading,
+.composition-run-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.composition-run-base,
+.composition-run-promoted {
+  padding: 0.12rem 0.38rem;
+  border-radius: 999px;
+  background: var(--accent, #7c9cff);
+  color: #080808;
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.composition-run-promoted {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+
+.composition-run-body p {
+  min-height: 2.4em;
+  margin: 0.45rem 0 0.65rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.composition-run-actions .btn {
+  flex: 1;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.composition-run-actions .composition-run-delete:not(:disabled) {
+  color: var(--danger, #ff7777);
+}
+
 .editor-asset-grid .folder-card {
   width: 100%;
   height: 100%;
@@ -5341,6 +5609,12 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   font-size: 0.9rem;
   color: var(--text);
   white-space: nowrap;
+}
+
+.editor-staging-field.has-leading-divider {
+  margin-left: 0.15rem;
+  padding-left: 0.85rem;
+  border-left: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
 .editor-staging-empty {

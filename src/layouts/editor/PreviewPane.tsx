@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -7,12 +8,29 @@ import {
   type CSSProperties,
   type SyntheticEvent,
 } from "react";
+import { useShell } from "../../app/ShellProvider";
 import {
   applyManifest,
+  deleteLocal,
   ensureLocal,
   getCreation,
   getCreations,
 } from "../../library/catalogClient";
+import { bakePlateStill } from "../../library/plateBake";
+import { importLocalPathsForProject } from "../../project/boundFolderLanding";
+import {
+  appendWorkstreamEditNode,
+  createComposition,
+  discardWorkstreamNode,
+  selectWorkstreamNode,
+  selectWorkstreamPlate,
+  defaultPlateRecipe,
+  type PlateRecipe,
+  type StillWorkstream,
+} from "../../project/stillWorkstream";
+import { creationUpsertWithStillCompositionOrigin } from "../../project/stillCompositionProvenance";
+import { replicateModelsListEnabled } from "../../replicate/replicateClient";
+import { runStillImageEdit } from "./stillImageEdit";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import {
   clipThumbnailKey,
@@ -91,11 +109,13 @@ import {
   SelectionIntentPanel,
   type SelectionImageItem,
 } from "./SelectionIntentPanel";
+import { CompositePlatePanel } from "./CompositePlatePanel";
 import { UnsupportedSelectionPanel } from "./UnsupportedSelectionPanel";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import { isAddAssetPlaceholderClip } from "./stagedClip";
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
 import { GeneratedClipBadge } from "./GeneratedClipBadge";
+import { useConfirm } from "../../ui/ConfirmDialog";
 import type { AddAssetIntent, SelectionIntentModeId } from "./previewIntent";
 import { addAssetGenerationFromCreation } from "../../project/desktopAddAssetGeneration";
 
@@ -181,6 +201,9 @@ type PreviewPaneProps = {
   /** Shared preview volume (0–100). */
   volume?: number;
   onVolumeChange?: (volume: number) => void;
+  /** Open this still composition in the preview sandbox (from Assets). */
+  openCompositionId?: string | null;
+  onOpenCompositionIdChange?: (id: string | null) => void;
   /** Play/pause the timeline (used when generate panel is focused, no field active). */
   onToggleTimelinePlay?: () => void;
 };
@@ -346,9 +369,24 @@ export function PreviewPane({
   onExpandAssets,
   volume: volumeProp,
   onVolumeChange,
+  openCompositionId = null,
+  onOpenCompositionIdChange,
   onToggleTimelinePlay,
 }: PreviewPaneProps) {
+  const confirm = useConfirm();
+  const {
+    project,
+    addCreationsToOpenProject,
+    removeCreationsFromOpenProject,
+    upsertOpenStillWorkstream,
+  } = useShell();
   const [creation, setCreation] = useState<Creation | null>(null);
+  const [assetImageView, setAssetImageView] = useState({
+    assetId: null as string | null,
+    zoom: 1,
+    offsetX: 0,
+    offsetY: 0,
+  });
   const [selectionClass, setSelectionClass] =
     useState<MultiSelectionClass | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(false);
@@ -453,12 +491,44 @@ export function PreviewPane({
   const [pickedImageIds, setPickedImageIds] = useState<string[]>([]);
   const [selectionGenerateIntent, setSelectionGenerateIntent] =
     useState<AddAssetIntent | null>(null);
+  const [plateRecipe, setPlateRecipe] = useState<PlateRecipe>(() =>
+    defaultPlateRecipe(),
+  );
+  const [activeWorkstreamId, setActiveWorkstreamId] = useState<string | null>(
+    null,
+  );
+  const [compositeBusy, setCompositeBusy] = useState(false);
+  const [compositePreviewBusy, setCompositePreviewBusy] = useState(false);
+  const [compositeStatus, setCompositeStatus] = useState<string | null>(null);
+  const [compositeError, setCompositeError] = useState<string | null>(null);
+  const [platePreviewPath, setPlatePreviewPath] = useState<string | null>(null);
+  const [selectedNodePreview, setSelectedNodePreview] = useState<{
+    creationId: string;
+    url: string;
+  } | null>(null);
+  const [workstreamNodePreviewUrls, setWorkstreamNodePreviewUrls] = useState<
+    Record<string, string>
+  >({});
+  const platePreviewGenRef = useRef(0);
+  const [platePreviewGapPx, setPlatePreviewGapPx] = useState<number | null>(
+    null,
+  );
+  const [editPrompt, setEditPrompt] = useState(
+    "Fill the gap between the subjects so they share one continuous scene. Clean seams and bars; keep identity and composition.",
+  );
+  const [editModel, setEditModel] = useState("");
+  const [enabledEditModels, setEnabledEditModels] = useState<string[]>([]);
   if (selectionKey !== loadedSelectionKey) {
     setLoadedSelectionKey(selectionKey);
     setSelectionClass(null);
     setSelectionItems([]);
     setPickedImageIds([]);
     setSelectionGenerateIntent(null);
+    setActiveWorkstreamId(null);
+    setCompositeStatus(null);
+    setCompositeError(null);
+    setPlatePreviewPath(null);
+    setPlatePreviewGapPx(null);
     setSelectionLoading(sourceSelectionIds.length > 0);
     const restoreSlideshow =
       !editingClip &&
@@ -1243,7 +1313,13 @@ export function PreviewPane({
     !addAssetMode &&
     !editingClip &&
     monitorMode === "source" &&
-    isCompositeSelection;
+    isCompositeSelection &&
+    !activeWorkstreamId;
+  const showCompositionWorkspace =
+    !addAssetMode &&
+    !editingClip &&
+    monitorMode === "source" &&
+    Boolean(activeWorkstreamId);
   const showUnsupportedSelection =
     !addAssetMode &&
     !editingClip &&
@@ -1253,6 +1329,7 @@ export function PreviewPane({
     showAddAssetGenerate ||
     showAddAssetIntent ||
     showSelectionIntent ||
+    showCompositionWorkspace ||
     showUnsupportedSelection;
   const compositeImageIds =
     selectionClass?.type === "compositeImages"
@@ -1260,6 +1337,498 @@ export function PreviewPane({
       : [];
   const activeImageIds =
     pickedImageIds.length > 0 ? pickedImageIds : compositeImageIds;
+
+  const activeWorkstream = useMemo((): StillWorkstream | null => {
+    if (!activeWorkstreamId) return null;
+    return (
+      project.stillWorkstreams.find((row) => row.id === activeWorkstreamId) ??
+      null
+    );
+  }, [activeWorkstreamId, project.stillWorkstreams]);
+
+  const selectedWorkstreamCreationId = useMemo(() => {
+    if (!activeWorkstream?.selectedNodeId) return null;
+    return (
+      activeWorkstream.nodes
+        .find((node) => node.id === activeWorkstream.selectedNodeId)
+        ?.creationId?.trim() || null
+    );
+  }, [activeWorkstream]);
+
+  // A committed plate or AI edit is a Library creation. Resolve the selected
+  // history node so the inline preview follows the current composition head.
+  useEffect(() => {
+    if (!selectedWorkstreamCreationId) return;
+    let cancelled = false;
+    void getCreation(selectedWorkstreamCreationId)
+      .then((row) => {
+        if (cancelled) return;
+        const url = creationDetailUrl(row) ?? creationPreviewUrl(row);
+        setSelectedNodePreview(
+          url ? { creationId: selectedWorkstreamCreationId, url } : null,
+        );
+      })
+      .catch((error) => {
+        console.error("Failed to load composition step preview", error);
+        if (!cancelled) setSelectedNodePreview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWorkstreamCreationId]);
+
+  const compositionPreviewUrl =
+    selectedNodePreview?.creationId === selectedWorkstreamCreationId
+      ? selectedNodePreview.url
+      : platePreviewPath
+        ? mediaUrlForBakePath(platePreviewPath)
+        : null;
+
+  useEffect(() => {
+    const nodes = activeWorkstream?.nodes.filter(
+      (node) => node.status !== "discarded" && node.creationId,
+    );
+    if (!nodes?.length) return;
+    let cancelled = false;
+    void getCreations(nodes.map((node) => node.creationId!))
+      .then((rows) => {
+        if (cancelled) return;
+        const urls: Record<string, string> = {};
+        const byCreationId = new Map(rows.map((row) => [row.id, row]));
+        for (const node of nodes) {
+          const row = byCreationId.get(node.creationId!);
+          const url = row
+            ? creationPreviewUrl(row) ?? creationDetailUrl(row)
+            : null;
+          if (url) urls[node.id] = url;
+        }
+        setWorkstreamNodePreviewUrls(urls);
+      })
+      .catch((error) => {
+        console.error("Failed to load composition run previews", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkstream]);
+
+  // Open composition from Assets card.
+  useEffect(() => {
+    if (!openCompositionId) return;
+    const stream = project.stillWorkstreams.find(
+      (row) => row.id === openCompositionId,
+    );
+    if (!stream) return;
+    setActiveWorkstreamId(stream.id);
+    setPlateRecipe(stream.recipe);
+    setPickedImageIds(stream.memberIds);
+    setSelectionIntentMode("composite");
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await getCreations(stream.memberIds);
+        if (cancelled) return;
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        setSelectionItems(
+          stream.memberIds.map((id) => {
+            const row = byId.get(id);
+            return {
+              id,
+              title: row ? creationCardTitle(row).text : id,
+              thumbUrl: row ? creationPreviewUrl(row) : null,
+            };
+          }),
+        );
+      } catch {
+        if (!cancelled) {
+          setSelectionItems(
+            stream.memberIds.map((id) => ({
+              id,
+              title: id,
+              thumbUrl: null,
+            })),
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openCompositionId, project.stillWorkstreams]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void replicateModelsListEnabled()
+      .then((ids) => {
+        if (cancelled) return;
+        setEnabledEditModels(ids);
+        setEditModel((prev) => prev || ids[0] || "");
+      })
+      .catch(() => {
+        if (!cancelled) setEnabledEditModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activeImageIdsKey = activeImageIds.join("\0");
+
+  // Live plate preview — layout only, no Library import.
+  useEffect(() => {
+    if (selectionIntentMode !== "composite") return;
+    const ids = activeImageIdsKey ? activeImageIdsKey.split("\0") : [];
+    if (ids.length < 2) {
+      platePreviewGenRef.current += 1;
+      setPlatePreviewPath(null);
+      setPlatePreviewGapPx(null);
+      setCompositePreviewBusy(false);
+      return;
+    }
+    const gen = ++platePreviewGenRef.current;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        if (gen !== platePreviewGenRef.current) return;
+        setCompositePreviewBusy(true);
+        try {
+          for (const id of ids) {
+            try {
+              await ensureLocal([id]);
+            } catch {
+              /* bake will surface missing media */
+            }
+          }
+          if (cancelled || gen !== platePreviewGenRef.current) return;
+          const previewRes =
+            plateRecipe.resolution > 1536 ? 1536 : plateRecipe.resolution;
+          const baked = await bakePlateStill({
+            imageAssetIds: ids,
+            aspectRatio: plateRecipe.aspectRatio,
+            resolution: previewRes,
+            placement: plateRecipe.placement,
+            framing: plateRecipe.framing,
+            gapMode: plateRecipe.gapMode,
+            gapPx: plateRecipe.gapPx,
+            marginPx: plateRecipe.marginPx,
+            preview: true,
+          });
+          if (cancelled || gen !== platePreviewGenRef.current) return;
+          setPlatePreviewPath(baked.path);
+          setPlatePreviewGapPx(baked.gapPx);
+          setCompositeError(null);
+        } catch (error) {
+          if (cancelled || gen !== platePreviewGenRef.current) return;
+          const message =
+            error instanceof Error ? error.message : String(error);
+          setCompositeError(message);
+          setPlatePreviewPath(null);
+        } finally {
+          if (!cancelled && gen === platePreviewGenRef.current) {
+            setCompositePreviewBusy(false);
+          }
+        }
+      })();
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeImageIdsKey,
+    plateRecipe.aspectRatio,
+    plateRecipe.resolution,
+    plateRecipe.placement,
+    plateRecipe.framing,
+    plateRecipe.gapMode,
+    plateRecipe.gapPx,
+    plateRecipe.marginPx,
+    selectionIntentMode,
+  ]);
+
+  const onCreateComposition = useCallback(() => {
+    const ids = activeImageIds;
+    if (ids.length < 2 || compositeBusy) return;
+    const stream = createComposition({
+      memberIds: ids,
+      recipe: plateRecipe,
+      title: `Composition (${ids.length})`,
+    });
+    upsertOpenStillWorkstream(stream);
+    setActiveWorkstreamId(stream.id);
+    onOpenCompositionIdChange?.(stream.id);
+    setCompositeError(null);
+    setCompositeStatus("Composition created in Assets — iterate inside it.");
+  }, [
+    activeImageIds,
+    compositeBusy,
+    onOpenCompositionIdChange,
+    plateRecipe,
+    upsertOpenStillWorkstream,
+  ]);
+
+  const onPlateRecipeChange = useCallback(
+    (recipe: PlateRecipe) => {
+      setPlateRecipe(recipe);
+      if (!activeWorkstream) return;
+      upsertOpenStillWorkstream({
+        ...activeWorkstream,
+        recipe,
+        memberIds: activeImageIds,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    [activeImageIds, activeWorkstream, upsertOpenStillWorkstream],
+  );
+
+  const onExportRun = useCallback(async (nodeId: string) => {
+    if (!activeWorkstream || compositeBusy) return;
+    const selected = activeWorkstream.nodes.find(
+      (n) => n.id === nodeId,
+    );
+    const creationId = selected?.creationId?.trim();
+    if (!creationId || !selected) {
+      setCompositeError("This run no longer has an image to export.");
+      return;
+    }
+    setCompositeBusy(true);
+    setCompositeError(null);
+    setCompositeStatus("Exporting run to Assets…");
+    try {
+      await ensureLocal([creationId]);
+      const source = await getCreation(creationId);
+      const sourcePath = source.localPath?.trim();
+      if (!sourcePath) throw new Error("Could not resolve the run's cached file.");
+      const imported = await importLocalPathsForProject({
+        paths: [sourcePath],
+        boundFolderId: project.boundFolderId,
+      });
+      const outside = imported.creations[0];
+      if (!outside?.id) throw new Error("Could not create the Asset copy.");
+      await applyManifest([
+        creationUpsertWithStillCompositionOrigin(outside, {
+          compositionId: activeWorkstream.id,
+          runNodeId: selected.id,
+          sourceCreationId: creationId,
+          promotedAt: new Date().toISOString(),
+          prompt: selected.prompt,
+          model: selected.model,
+        }),
+      ]);
+      addCreationsToOpenProject([outside.id]);
+      setCompositeStatus(
+        "Created an independent Asset copy. The composition run remains internal.",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCompositeError(message);
+      setCompositeStatus(null);
+    } finally {
+      setCompositeBusy(false);
+    }
+  }, [
+    activeWorkstream,
+    addCreationsToOpenProject,
+    compositeBusy,
+    project.boundFolderId,
+  ]);
+
+  const onCompositeEdit = useCallback(async () => {
+    if (!activeWorkstream || compositeBusy) return;
+    const selected = activeWorkstream.nodes.find(
+      (n) => n.id === activeWorkstream.selectedNodeId,
+    );
+    const creationId = selected?.creationId?.trim();
+    const modelRaw = editModel.trim();
+    const slash = modelRaw.indexOf("/");
+    if (slash <= 0) {
+      setCompositeError("Model must be owner/name.");
+      return;
+    }
+    const owner = modelRaw.slice(0, slash);
+    const name = modelRaw.slice(slash + 1);
+    if (!owner || !name) {
+      setCompositeError("Model must be owner/name.");
+      return;
+    }
+    setCompositeBusy(true);
+    setCompositeError(null);
+    try {
+      let sourcePath: string | null = null;
+      if (creationId) {
+        await ensureLocal([creationId]);
+        const [row] = await getCreations([creationId]);
+        sourcePath = row?.localPath?.trim() || null;
+      } else {
+        if (activeImageIds.length < 2) {
+          throw new Error("The composer plate needs at least two images.");
+        }
+        setCompositeStatus("Baking the composer plate for AI edit…");
+        for (const id of activeImageIds) await ensureLocal([id]);
+        const baked = await bakePlateStill({
+          imageAssetIds: activeImageIds,
+          aspectRatio: plateRecipe.aspectRatio,
+          resolution: plateRecipe.resolution,
+          placement: plateRecipe.placement,
+          framing: plateRecipe.framing,
+          gapMode: plateRecipe.gapMode,
+          gapPx: plateRecipe.gapPx,
+          marginPx: plateRecipe.marginPx,
+          preview: false,
+        });
+        sourcePath = baked.path;
+      }
+      if (!sourcePath) {
+        throw new Error("Could not resolve the selected edit base.");
+      }
+      const result = await runStillImageEdit({
+        owner,
+        name,
+        prompt: editPrompt,
+        sourceLocalPath: sourcePath,
+        boundFolderId: project.boundFolderId,
+        landInProject: false,
+        onProgress: setCompositeStatus,
+      });
+      const next = appendWorkstreamEditNode(
+        { ...activeWorkstream, recipe: plateRecipe, memberIds: activeImageIds },
+        {
+          creationId: result.creationId,
+          parentNodeId: selected?.id ?? null,
+          prompt: editPrompt.trim(),
+          model: result.modelId,
+          showOutside: false,
+        },
+      );
+      upsertOpenStillWorkstream(next);
+      setCompositeStatus("Edit kept inside the composition.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCompositeError(message);
+      setCompositeStatus(null);
+    } finally {
+      setCompositeBusy(false);
+    }
+  }, [
+    activeWorkstream,
+    activeImageIds,
+    compositeBusy,
+    editModel,
+    editPrompt,
+    plateRecipe,
+    project.boundFolderId,
+    upsertOpenStillWorkstream,
+  ]);
+
+  const onCloseComposition = useCallback(() => {
+    setActiveWorkstreamId(null);
+    onOpenCompositionIdChange?.(null);
+    setCompositeStatus(null);
+    setCompositeError(null);
+  }, [onOpenCompositionIdChange]);
+
+  const onCompositeSelectNode = useCallback(
+    (nodeId: string) => {
+      if (!activeWorkstream) return;
+      upsertOpenStillWorkstream(selectWorkstreamNode(activeWorkstream, nodeId));
+    },
+    [activeWorkstream, upsertOpenStillWorkstream],
+  );
+
+  const onCompositeSelectPlate = useCallback(() => {
+    if (!activeWorkstream) return;
+    upsertOpenStillWorkstream(selectWorkstreamPlate(activeWorkstream));
+  }, [activeWorkstream, upsertOpenStillWorkstream]);
+
+  const onCompositeDeleteNode = useCallback(
+    async (nodeId: string) => {
+      if (!activeWorkstream || compositeBusy) return;
+      const node = activeWorkstream.nodes.find((row) => row.id === nodeId);
+      if (!node || node.status === "discarded") return;
+      const ok = await confirm({
+        title: "Delete this run?",
+        message:
+          "This permanently deletes the generated image. Other runs and the original source images stay intact.",
+        confirmLabel: "Delete run",
+        cancelLabel: "Cancel",
+        danger: true,
+      });
+      if (!ok) return;
+      setCompositeBusy(true);
+      setCompositeError(null);
+      try {
+        let cleanupWarning: string | null = null;
+        let shouldDeleteBackingCreation = !node.showOutside;
+        // Older compositions promoted the same Creation instead of copying it.
+        // Preserve an independent outside Asset before removing that internal
+        // cached run, then retire the shared legacy Creation below.
+        if (node.showOutside && node.creationId) {
+          try {
+            await ensureLocal([node.creationId]);
+            const legacySource = await getCreation(node.creationId);
+            const sourcePath = legacySource.localPath?.trim();
+            if (!sourcePath) {
+              throw new Error("The legacy run has no cached file.");
+            }
+            const imported = await importLocalPathsForProject({
+              paths: [sourcePath],
+              boundFolderId: project.boundFolderId,
+            });
+            const outside = imported.creations[0];
+            if (!outside?.id) throw new Error("Asset copy was not created.");
+            await applyManifest([
+              creationUpsertWithStillCompositionOrigin(outside, {
+                compositionId: activeWorkstream.id,
+                runNodeId: node.id,
+                sourceCreationId: node.creationId,
+                promotedAt: new Date().toISOString(),
+                prompt: node.prompt,
+                model: node.model,
+              }),
+            ]);
+            addCreationsToOpenProject([outside.id]);
+            shouldDeleteBackingCreation = true;
+          } catch (error) {
+            cleanupWarning =
+              error instanceof Error ? error.message : String(error);
+          }
+        }
+        const result = discardWorkstreamNode(activeWorkstream, nodeId);
+        // The composition record is authoritative. Remove the run first so a
+        // missing/stale cache row cannot make the UI deletion fail.
+        upsertOpenStillWorkstream(result.stream);
+        if (result.creationIdToDelete && shouldDeleteBackingCreation) {
+          try {
+            await deleteLocal(result.creationIdToDelete);
+          } catch (error) {
+            cleanupWarning ??=
+              error instanceof Error ? error.message : String(error);
+          }
+          removeCreationsFromOpenProject([result.creationIdToDelete]);
+        }
+        setCompositeStatus(
+          cleanupWarning
+            ? "Run deleted. Its stale cached file could not be cleaned up."
+            : "Run deleted.",
+        );
+      } catch (error) {
+        setCompositeError(error instanceof Error ? error.message : String(error));
+        setCompositeStatus(null);
+      } finally {
+        setCompositeBusy(false);
+      }
+    },
+    [
+      activeWorkstream,
+      addCreationsToOpenProject,
+      compositeBusy,
+      confirm,
+      project.boundFolderId,
+      removeCreationsFromOpenProject,
+      upsertOpenStillWorkstream,
+    ],
+  );
+
   const onSelectionIntentModeChange = (modeId: SelectionIntentModeId) => {
     setSelectionIntentMode(modeId);
     if (modeId === "generate_from_selection") {
@@ -1309,6 +1878,13 @@ export function PreviewPane({
   };
   const onPickedImageIdsChange = (ids: string[]) => {
     setPickedImageIds(ids);
+    if (activeWorkstream) {
+      upsertOpenStillWorkstream({
+        ...activeWorkstream,
+        memberIds: ids,
+        updatedAt: new Date().toISOString(),
+      });
+    }
     if (selectionIntentMode !== "slideshow") return;
     if (ids.length < 2) {
       setStagedDraft(null);
@@ -1647,6 +2223,30 @@ export function PreviewPane({
   const sourceViewportClass = `editor-preview-framing-viewport${
     sourceViewport ? " is-project-matte" : ""
   }`;
+  const currentAssetImageView =
+    assetImageView.assetId === assetId
+      ? assetImageView
+      : { assetId, zoom: 1, offsetX: 0, offsetY: 0 };
+  const showAssetImageViewControls =
+    monitorMode === "source" &&
+    !addAssetMode &&
+    !editingClip &&
+    creationMatchesAsset &&
+    mediaType === "image" &&
+    !showCompositionWorkspace &&
+    !showSelectionIntent;
+  const assetImageViewStyle: CSSProperties | undefined =
+    showAssetImageViewControls
+      ? {
+          transform: `translate(${currentAssetImageView.offsetX}%, ${currentAssetImageView.offsetY}%) scale(${currentAssetImageView.zoom})`,
+          transformOrigin: "center",
+        }
+      : undefined;
+  const patchAssetImageView = (
+    patch: Partial<Pick<typeof currentAssetImageView, "zoom" | "offsetX" | "offsetY">>,
+  ) => {
+    setAssetImageView({ ...currentAssetImageView, ...patch });
+  };
 
   const unsupportedMessage = unsupportedSelection
     ? unsupportedSelectionMessage(unsupportedSelection)
@@ -1670,8 +2270,8 @@ export function PreviewPane({
       status = "Slideshow bake unavailable";
     } else if (editingClip) {
       status = "Hit Render to generate this slideshow";
-    } else if (showSelectionIntent) {
-      // Intent pane fills the surface — no void status copy.
+    } else if (showSelectionIntent || showCompositionWorkspace) {
+      // Intent / composition pane fills the surface — no void status copy.
       status = null;
     } else {
       status = "Drop on the timeline, then hit Render";
@@ -1816,6 +2416,52 @@ export function PreviewPane({
                   setProviderChoiceClipId(addAssetPlaceholderClip.id)
                 }
               />
+            ) : showCompositionWorkspace && activeWorkstream ? (
+              <div
+                className="add-asset-generate-pane preview-intent-pane"
+                aria-label="Composition sandbox"
+              >
+                <div className="add-asset-generate-body">
+                  <CompositePlatePanel
+                    pickedIds={activeImageIds}
+                    onPickedIdsChange={onPickedImageIdsChange}
+                    previewUrl={compositionPreviewUrl}
+                    platePreviewUrl={
+                      platePreviewPath
+                        ? mediaUrlForBakePath(platePreviewPath)
+                        : null
+                    }
+                    canCreate={false}
+                    recipe={plateRecipe}
+                    onRecipeChange={onPlateRecipeChange}
+                    activeWorkstream={activeWorkstream}
+                    busy={compositeBusy}
+                    previewBusy={compositePreviewBusy}
+                    statusNote={compositeStatus}
+                    errorNote={compositeError}
+                    autoGapPx={platePreviewGapPx}
+                    editPrompt={editPrompt}
+                    onEditPromptChange={setEditPrompt}
+                    editModel={editModel}
+                    onEditModelChange={setEditModel}
+                    enabledModels={enabledEditModels}
+                    onCreateComposition={onCreateComposition}
+                    onExportNode={(nodeId) => {
+                      void onExportRun(nodeId);
+                    }}
+                    onEdit={() => {
+                      void onCompositeEdit();
+                    }}
+                    onSelectNode={onCompositeSelectNode}
+                    onSelectPlate={onCompositeSelectPlate}
+                    onDeleteNode={(nodeId) => {
+                      void onCompositeDeleteNode(nodeId);
+                    }}
+                    nodePreviewUrls={workstreamNodePreviewUrls}
+                    onCloseComposition={onCloseComposition}
+                  />
+                </div>
+              </div>
             ) : showSelectionIntent ? (
               <SelectionIntentPanel
                 items={selectionItems}
@@ -1835,6 +2481,43 @@ export function PreviewPane({
                 onDraftChange={onStagingDraftChange}
                 bakeInfo={
                   stagedDraft?.kind === "slideshow" ? bakeInfo : null
+                }
+                composite={
+                  selectionIntentMode === "composite"
+                    ? {
+                        pickedIds: activeImageIds,
+                        onPickedIdsChange: onPickedImageIdsChange,
+                        previewUrl: platePreviewPath
+                          ? mediaUrlForBakePath(platePreviewPath)
+                          : null,
+                        platePreviewUrl: platePreviewPath
+                          ? mediaUrlForBakePath(platePreviewPath)
+                          : null,
+                        canCreate: activeImageIds.length >= 2,
+                        recipe: plateRecipe,
+                        onRecipeChange: onPlateRecipeChange,
+                        activeWorkstream: null,
+                        busy: compositeBusy,
+                        previewBusy: compositePreviewBusy,
+                        statusNote: compositeStatus,
+                        errorNote: compositeError,
+                        autoGapPx: platePreviewGapPx,
+                        editPrompt,
+                        onEditPromptChange: setEditPrompt,
+                        editModel,
+                        onEditModelChange: setEditModel,
+                        enabledModels: enabledEditModels,
+                        onCreateComposition,
+                        onExportNode: () => {},
+                        onEdit: () => {
+                          void onCompositeEdit();
+                        },
+                        onSelectNode: onCompositeSelectNode,
+                        onSelectPlate: () => {},
+                        onDeleteNode: () => {},
+                        nodePreviewUrls: {},
+                      }
+                    : null
                 }
               />
             ) : status ? (
@@ -1867,6 +2550,7 @@ export function PreviewPane({
                       src={thumb}
                       alt=""
                       draggable={false}
+                      style={assetImageViewStyle}
                     />
                   ) : null}
 
@@ -1917,6 +2601,7 @@ export function PreviewPane({
                       src={playbackDetail!}
                       alt={creation?.title || "Asset preview"}
                       draggable={false}
+                      style={assetImageViewStyle}
                       onError={() => setDetailFailed(true)}
                     />
                   ) : null}
@@ -2123,6 +2808,16 @@ export function PreviewPane({
                   draft={stagedDraft}
                   sourceDurationSec={durationSec}
                   onDraftChange={onStagingDraftChange}
+                  imageView={
+                    showAssetImageViewControls && stagedDraft.kind === "image"
+                      ? {
+                          zoom: currentAssetImageView.zoom,
+                          offsetX: currentAssetImageView.offsetX,
+                          offsetY: currentAssetImageView.offsetY,
+                          onChange: patchAssetImageView,
+                        }
+                      : null
+                  }
                   bakeInfo={
                     stagedDraft.kind === "slideshow" ||
                     (stagedDraft.kind === "video" &&

@@ -17,9 +17,11 @@ import {
 } from "../../library/catalogClient";
 import { groupSourceCreationIds } from "../../library/creationFlags";
 import {
+  getFolder,
   listFolders,
   type LibraryFolder,
 } from "../../library/folderClient";
+import { isBoundFolderLockedByTimeline } from "../../project/projectStore";
 import {
   ensureSlideshowMedia,
   formatBakeError,
@@ -177,6 +179,7 @@ export function EditorLayout() {
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
     removeFoldersFromOpenProject,
+    setOpenProjectBoundFolderId,
     setOpenProjectGroupIds,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
@@ -186,6 +189,7 @@ export function EditorLayout() {
     setOpenProjectTimelineZoom,
     setOpenProjectTimelineMonitorActive,
     setOpenProjectTimelinePlayheadSec,
+    removeOpenStillWorkstream,
     leftCollapsed,
     rightCollapsed,
     toggleLeft,
@@ -224,10 +228,14 @@ export function EditorLayout() {
   const [previewVolume, setPreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
   const [addAssetSlotActive, setAddAssetSlotActive] = useState(false);
+  const [openCompositionId, setOpenCompositionId] = useState<string | null>(
+    null,
+  );
   const [addAssetIntent, setAddAssetIntent] = useState<AddAssetIntent | null>(
     null,
   );
   const [projectFolders, setProjectFolders] = useState<LibraryFolder[]>([]);
+  const [boundFolder, setBoundFolder] = useState<LibraryFolder | null>(null);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
   );
@@ -330,9 +338,13 @@ export function EditorLayout() {
   );
 
   const projectFolderIdsKey = project.folderIds.join("\0");
+  const boundFolderId = project.boundFolderId?.trim() || null;
 
   if (project.folderIds.length === 0 && projectFolders.length > 0) {
     setProjectFolders([]);
+  }
+  if (!boundFolderId && boundFolder) {
+    setBoundFolder(null);
   }
 
   useEffect(() => {
@@ -343,7 +355,12 @@ export function EditorLayout() {
       try {
         const all = await listFolders();
         if (cancelled) return;
-        setProjectFolders(all.filter((folder) => wanted.has(folder.id)));
+        setProjectFolders(
+          all.filter(
+            (folder) =>
+              wanted.has(folder.id) && folder.id !== boundFolderId,
+          ),
+        );
       } catch (error) {
         console.error("Failed to load project folders", error);
         if (!cancelled) setProjectFolders([]);
@@ -352,7 +369,44 @@ export function EditorLayout() {
     return () => {
       cancelled = true;
     };
-  }, [projectFolderIdsKey, project.assets.length, project.folderIds]);
+  }, [projectFolderIdsKey, project.assets.length, project.folderIds, boundFolderId]);
+
+  useEffect(() => {
+    if (!boundFolderId) {
+      setBoundFolder(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const folder = await getFolder(boundFolderId);
+        if (cancelled) return;
+        setBoundFolder(folder);
+        const known = new Set(project.assets.map((asset) => asset.id));
+        const missing = folder.memberIds.filter((id) => !known.has(id));
+        if (missing.length > 0) addCreationsToOpenProject(missing);
+      } catch (error) {
+        console.error("Failed to load bound working folder", error);
+        if (!cancelled) setBoundFolder(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addCreationsToOpenProject,
+    boundFolderId,
+    project.assets.length,
+    project.id,
+  ]);
+
+  const boundFolderLocked = useMemo(() => {
+    if (!boundFolder) return false;
+    return isBoundFolderLockedByTimeline(
+      project.timeline,
+      boundFolder.memberIds,
+    );
+  }, [boundFolder, project.timeline]);
 
   const projectAssetIdsKey = useMemo(
     () => project.assets.map((asset) => asset.id).join("\0"),
@@ -853,6 +907,10 @@ export function EditorLayout() {
 
   const selectAssets = (ids: string[], primaryId: string | null) => {
     pauseTimelinePlayback();
+    // A normal asset selection leaves the composition sandbox. Keeping the
+    // parent id set causes PreviewPane's open-composition effect to reopen it
+    // immediately after its local selection reset.
+    setOpenCompositionId(null);
     setAddAssetSlotActive(false);
     setAddAssetIntent(null);
     setSelectedClipId(null);
@@ -870,6 +928,7 @@ export function EditorLayout() {
 
   const selectAddAssetSlot = () => {
     pauseTimelinePlayback();
+    setOpenCompositionId(null);
     setSelectedClipId(null);
     setSelectedClipIds([]);
     setClipStagingSeed(null);
@@ -1664,6 +1723,55 @@ export function EditorLayout() {
     }
   };
 
+  const deleteCompositionsFromProject = async (compositionIds: string[]) => {
+    const ids = compositionIds.map((id) => id.trim()).filter(Boolean);
+    if (ids.length === 0) return;
+    const streams = ids
+      .map((id) => project.stillWorkstreams.find((row) => row.id === id))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    if (streams.length === 0) return;
+    const count = streams.length;
+    const ok = await confirm({
+      title: count === 1 ? "Delete composition?" : `Delete ${count} compositions?`,
+      message:
+        count === 1
+          ? "Removes this composition sandbox. Source images stay in Assets. Unpromoted plate/edit steps inside it are deleted."
+          : `Removes these ${count} composition sandboxes. Source images stay in Assets. Unpromoted plate/edit steps inside them are deleted.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+
+    const internalCreationIds = new Set<string>();
+    for (const stream of streams) {
+      for (const node of stream.nodes) {
+        if (node.status === "discarded") continue;
+        if (node.showOutside) continue;
+        const creationId = node.creationId?.trim();
+        if (creationId) internalCreationIds.add(creationId);
+      }
+    }
+    if (internalCreationIds.size > 0) {
+      const toDelete = [...internalCreationIds];
+      const results = await Promise.allSettled(
+        toDelete.map((creationId) => deleteLocal(creationId)),
+      );
+      const deletedIds = toDelete.filter(
+        (_, index) => results[index]?.status === "fulfilled",
+      );
+      if (deletedIds.length > 0) {
+        removeCreationsFromOpenProject(deletedIds);
+      }
+    }
+    for (const stream of streams) {
+      removeOpenStillWorkstream(stream.id);
+    }
+    if (openCompositionId && ids.includes(openCompositionId)) {
+      setOpenCompositionId(null);
+    }
+  };
+
   const deleteAssetsFromProjectAndLibrary = async (assetIds: string[]) => {
     const usedIds = assetsUsedOnTimeline(assetIds);
     if (usedIds.size > 0) {
@@ -1891,6 +1999,7 @@ export function EditorLayout() {
         projectTitle: project.title,
         imagesGroupId: project.imagesGroupId,
         videosGroupId: project.videosGroupId,
+        boundFolderId: project.boundFolderId,
       },
     });
   };
@@ -1938,6 +2047,7 @@ export function EditorLayout() {
         clipId: clip.id,
         predictionId,
         imagesGroupId: project.imagesGroupId,
+        boundFolderId: project.boundFolderId,
         prompt: draft?.prompt?.trim() || "",
         lyricsText: "",
         audioMode: draft?.audioMode === "full_mix" ? "full_mix" : "vocals",
@@ -2041,10 +2151,59 @@ export function EditorLayout() {
           onRemoveFolders={(ids) => {
             void removeFoldersFromProject(ids);
           }}
+          boundFolderId={boundFolderId}
+          boundMemberIds={boundFolder?.memberIds ?? []}
+          boundFolderLocked={boundFolderLocked}
+          onBindFolder={(folderId) => {
+            void (async () => {
+              if (boundFolderLocked) {
+                await confirm({
+                  title: "Working folder locked",
+                  message:
+                    "Timeline clips still use files from the current working folder. Remove those clips first, then try again.",
+                  confirmLabel: "OK",
+                  hideCancel: true,
+                });
+                return;
+              }
+              try {
+                const folder =
+                  projectFolders.find((row) => row.id === folderId) ??
+                  (await getFolder(folderId));
+                setOpenProjectBoundFolderId(folderId, folder.memberIds);
+              } catch (error) {
+                console.error("Failed to bind working folder", error);
+              }
+            })();
+          }}
+          onUnbindFolder={() => {
+            void (async () => {
+              if (boundFolderLocked) {
+                await confirm({
+                  title: "Working folder locked",
+                  message:
+                    "Timeline clips still use files from the working folder. Remove those clips first, then try again.",
+                  confirmLabel: "OK",
+                  hideCancel: true,
+                });
+                return;
+              }
+              setOpenProjectBoundFolderId(null);
+            })();
+          }}
           onDeleteFromGroup={(target) => {
             void deleteMembersFromProjectGroup(target);
           }}
           timelineUsedAssetIds={timelineUsedAssetIds}
+          compositions={project.stillWorkstreams}
+          openCompositionId={openCompositionId}
+          onOpenComposition={(composition) => {
+            setOpenCompositionId(composition.id);
+            setAddAssetSlotActive(false);
+          }}
+          onDeleteCompositions={(ids) => {
+            void deleteCompositionsFromProject(ids);
+          }}
         />
       ) : null}
 
@@ -2063,6 +2222,8 @@ export function EditorLayout() {
 
       <PreviewPane
         assetId={previewAssetId}
+        openCompositionId={openCompositionId}
+        onOpenCompositionIdChange={setOpenCompositionId}
         addAssetMode={addAssetMode}
         addAssetSlotActive={addAssetSlotActive}
         addAssetIntent={addAssetIntent}

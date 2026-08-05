@@ -269,6 +269,7 @@ export type RetryAddAssetDownloadJobOpts = {
   clipId: string;
   predictionId: string;
   imagesGroupId: string | null;
+  boundFolderId?: string | null;
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
@@ -287,6 +288,7 @@ export function retryAddAssetDownloadJob(
     clipId,
     predictionId,
     imagesGroupId,
+    boundFolderId,
     prompt,
     lyricsText,
     audioMode,
@@ -318,6 +320,7 @@ export function retryAddAssetDownloadJob(
   void resumeReplicateAddAssetDownload({
     predictionId,
     imagesGroupId,
+    boundFolderId,
     continuityMode: continuityMode as ReplicateVideoContinuity,
     modelId,
     onSteps: (steps) => {

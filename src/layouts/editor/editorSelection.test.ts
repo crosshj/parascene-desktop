@@ -18,6 +18,8 @@ function baseProject(overrides: Partial<Project> = {}): Project {
       { id: "a2", name: "a2", kind: "image" },
     ],
     folderIds: [],
+    boundFolderId: null,
+    stillWorkstreams: [],
     imagesGroupId: null,
     videosGroupId: null,
     labStillPrompt: null,

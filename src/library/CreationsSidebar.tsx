@@ -257,6 +257,12 @@ export function CreationsSidebar({
   selectedCount = 0,
   selectedFolderCount = 0,
   hasOpenProject = false,
+  /** Open project already has a bound working folder. */
+  hasBoundFolder = false,
+  /** True when the single selected folder is the project's bound folder. */
+  selectedFolderIsBound = false,
+  /** True when unbind is blocked (bound members used on the timeline). */
+  boundFolderLocked = false,
   inFolderView = false,
   hasFolders = false,
   onNewProject,
@@ -265,6 +271,8 @@ export function CreationsSidebar({
   onAddToFolder,
   onRemoveFromFolder,
   onAddFolderToProject,
+  onBindFolderToProject,
+  onUnbindFolderFromProject,
   onClearSelection,
   onAddFromDisk,
   importing = false,
@@ -276,6 +284,9 @@ export function CreationsSidebar({
   selectedCount?: number;
   selectedFolderCount?: number;
   hasOpenProject?: boolean;
+  hasBoundFolder?: boolean;
+  selectedFolderIsBound?: boolean;
+  boundFolderLocked?: boolean;
   inFolderView?: boolean;
   hasFolders?: boolean;
   onNewProject?: () => void;
@@ -284,6 +295,10 @@ export function CreationsSidebar({
   onAddToFolder?: () => void;
   onRemoveFromFolder?: () => void;
   onAddFolderToProject?: () => void;
+  /** Bind the single selected folder as the project's working folder. */
+  onBindFolderToProject?: () => void;
+  /** Unbind the project's working folder (selected folder must be that folder). */
+  onUnbindFolderFromProject?: () => void;
   onClearSelection?: () => void;
   onAddFromDisk?: () => void;
   importing?: boolean;
@@ -292,6 +307,16 @@ export function CreationsSidebar({
   const showSelectionActions = totalSelected > 0;
   const creationSelection = selectedCount > 0;
   const folderSelection = selectedFolderCount > 0;
+  // Once bound, the folder is the project container — no attach/bind of other folders.
+  const showFolderAttachOrBind =
+    folderSelection && hasOpenProject && !hasBoundFolder;
+  const showUnbind =
+    folderSelection &&
+    hasOpenProject &&
+    hasBoundFolder &&
+    selectedFolderCount === 1 &&
+    selectedFolderIsBound &&
+    Boolean(onUnbindFolderFromProject);
 
   return (
     <aside
@@ -379,7 +404,9 @@ export function CreationsSidebar({
                   className="creations-sidebar-action-btn"
                   onClick={onAddToFolder}
                 >
-                  Add to folder…
+                  {hasBoundFolder
+                    ? "Add to working folder…"
+                    : "Add to folder…"}
                 </button>
               ) : null}
               {inFolderView ? (
@@ -398,7 +425,7 @@ export function CreationsSidebar({
               >
                 New project…
               </button>
-              {hasOpenProject ? (
+              {hasOpenProject && !hasBoundFolder ? (
                 <button
                   type="button"
                   className="creations-sidebar-action-btn"
@@ -409,13 +436,41 @@ export function CreationsSidebar({
               ) : null}
             </>
           ) : null}
-          {folderSelection && hasOpenProject ? (
+          {showFolderAttachOrBind ? (
+            <>
+              {onAddFolderToProject ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onAddFolderToProject}
+                >
+                  Add folder to project…
+                </button>
+              ) : null}
+              {selectedFolderCount === 1 && onBindFolderToProject ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onBindFolderToProject}
+                >
+                  Bind as working folder
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          {showUnbind ? (
             <button
               type="button"
               className="creations-sidebar-action-btn"
-              onClick={onAddFolderToProject}
+              disabled={boundFolderLocked}
+              title={
+                boundFolderLocked
+                  ? "Remove timeline clips that use files from this folder first."
+                  : "Stop using this folder as the project file container"
+              }
+              onClick={onUnbindFolderFromProject}
             >
-              Add folder to project…
+              Unbind working folder
             </button>
           ) : null}
           <button

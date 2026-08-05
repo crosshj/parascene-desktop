@@ -64,6 +64,12 @@ type StagingFieldsProps = {
   draft: StagedClipDraft;
   sourceDurationSec: number;
   onDraftChange: (draft: StagedClipDraft) => void;
+  imageView?: {
+    zoom: number;
+    offsetX: number;
+    offsetY: number;
+    onChange: (patch: Partial<{ zoom: number; offsetX: number; offsetY: number }>) => void;
+  } | null;
   /** Runtime slideshow bake status when editing a timeline clip. */
   bakeInfo?: BakeInfo | null;
 };
@@ -93,6 +99,7 @@ export function StagingFields({
   draft,
   sourceDurationSec,
   onDraftChange,
+  imageView = null,
   bakeInfo = null,
 }: StagingFieldsProps) {
   const speed = stagedClipSpeed(draft);
@@ -312,6 +319,66 @@ export function StagingFields({
             <option value="stretch">Stretch</option>
           </select>
         </label>
+      ) : null}
+
+      {draft.kind === "image" && imageView ? (
+        <>
+          <label className="editor-staging-field has-leading-divider">
+            <span>Zoom</span>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              step={0.05}
+              value={imageView.zoom}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  imageView.onChange({ zoom: Math.max(1, Math.min(4, value)) });
+                }
+              }}
+            />
+            <span className="muted">×</span>
+          </label>
+          <label className="editor-staging-field">
+            <span>Center X</span>
+            <input
+              type="number"
+              min={-50}
+              max={50}
+              step={1}
+              value={imageView.offsetX}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  imageView.onChange({
+                    offsetX: Math.max(-50, Math.min(50, value)),
+                  });
+                }
+              }}
+            />
+            <span className="muted">%</span>
+          </label>
+          <label className="editor-staging-field">
+            <span>Center Y</span>
+            <input
+              type="number"
+              min={-50}
+              max={50}
+              step={1}
+              value={imageView.offsetY}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  imageView.onChange({
+                    offsetY: Math.max(-50, Math.min(50, value)),
+                  });
+                }
+              }}
+            />
+            <span className="muted">%</span>
+          </label>
+        </>
       ) : null}
 
       {draft.kind === "video" ? (

@@ -8,7 +8,8 @@ import {
   replicatePredictionDownload,
   type ReplicateInputField,
 } from "../../replicate/replicateClient";
-import { getCreations, importLocalPaths } from "../../library/catalogClient";
+import { getCreations } from "../../library/catalogClient";
+import { importLocalPathsForProject } from "../../project/boundFolderLanding";
 import type { TimelineClip } from "../../project/types";
 import {
   type AddAssetGenerationStep,
@@ -176,6 +177,8 @@ export type RunReplicateAddAssetGenerationOpts = {
   projectTitle: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  /** Bound working folder — new outputs land here when set. */
+  boundFolderId?: string | null;
   prompt: string;
   continuityMode: ReplicateVideoContinuity;
   modelOwner: string;
@@ -195,6 +198,7 @@ export type RunReplicateAddAssetGenerationOpts = {
 async function importReplicateOutput(opts: {
   outputPath: string;
   imagesGroupId: string | null;
+  boundFolderId?: string | null;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
   steps: AddAssetGenerationStep[];
@@ -215,7 +219,10 @@ async function importReplicateOutput(opts: {
   };
   pushSteps(advanceStep(steps, "file"));
   opts.onProgress("Importing video into library…");
-  const imported = await importLocalPaths([opts.outputPath]);
+  const imported = await importLocalPathsForProject({
+    paths: [opts.outputPath],
+    boundFolderId: opts.boundFolderId,
+  });
   const created = imported.creations[0];
   if (!created?.id) {
     const ext = opts.outputPath.includes(".")
@@ -225,7 +232,11 @@ async function importReplicateOutput(opts: {
       `Import produced no Library creation from ${ext} file. The Replicate run succeeded but the output could not be imported locally.`,
     );
   }
-  opts.onProgress("Adding video to project…");
+  opts.onProgress(
+    opts.boundFolderId?.trim()
+      ? "Adding video to project working folder…"
+      : "Adding video to project…",
+  );
   pushSteps(completeStep(steps, "file"));
   return {
     creationId: created.id,
@@ -438,6 +449,7 @@ export async function runReplicateAddAssetGeneration(
     return await importReplicateOutput({
       outputPath,
       imagesGroupId: opts.imagesGroupId,
+      boundFolderId: opts.boundFolderId,
       onSteps: opts.onSteps,
       onProgress: opts.onProgress,
       steps,
@@ -457,6 +469,7 @@ export async function runReplicateAddAssetGeneration(
 export type ResumeReplicateDownloadOpts = {
   predictionId: string;
   imagesGroupId: string | null;
+  boundFolderId?: string | null;
   continuityMode: ReplicateVideoContinuity;
   modelId: string;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
@@ -514,6 +527,7 @@ export async function resumeReplicateAddAssetDownload(
     return await importReplicateOutput({
       outputPath,
       imagesGroupId: opts.imagesGroupId,
+      boundFolderId: opts.boundFolderId,
       onSteps: opts.onSteps,
       onProgress: opts.onProgress,
       steps,

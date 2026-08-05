@@ -10,6 +10,8 @@ import {
   renameStoredProject,
   saveStoredProjects,
   setStoredProjectAspectRatio,
+  setStoredProjectBoundFolderId,
+  isBoundFolderLockedByTimeline,
   setStoredProjectSelectedTimelineClipId,
   setStoredProjectSelectedAssetId,
   setStoredProjectPendingStagedDraft,
@@ -71,6 +73,49 @@ describe("projectStore", () => {
     expect(next.creationIds).toEqual(["c1", "c2"]);
   });
 
+  it("binds a working folder without attaching it as a folder card", () => {
+    let a = createStoredProject("Demo", ["c1"]);
+    expect(a.boundFolderId).toBeNull();
+    a = setStoredProjectBoundFolderId(a, "f1", ["c2"]);
+    expect(a.boundFolderId).toBe("f1");
+    expect(a.folderIds).toEqual([]);
+    expect(a.creationIds).toEqual(["c1", "c2"]);
+  });
+
+  it("clears all attached folders when binding", () => {
+    let a = createStoredProject("Demo", ["c1"]);
+    a = mergeFolderIds(a, ["f1", "f2"], ["c2"]);
+    expect(a.folderIds).toEqual(["f1", "f2"]);
+    a = setStoredProjectBoundFolderId(a, "f1", ["c2", "c3"]);
+    expect(a.boundFolderId).toBe("f1");
+    expect(a.folderIds).toEqual([]);
+    expect(a.creationIds).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("clears bound folder id when removeFolderIds targets it", () => {
+    let a = createStoredProject("Demo", ["c1"]);
+    a = setStoredProjectBoundFolderId(a, "f1", ["c1"]);
+    expect(a.folderIds).toEqual([]);
+    const next = removeFolderIds(a, ["f1"], ["c1"]);
+    expect(next.boundFolderId).toBeNull();
+    expect(next.creationIds).toEqual([]);
+  });
+
+  it("locks bound folder changes when timeline uses its members", () => {
+    expect(
+      isBoundFolderLockedByTimeline(
+        [{ id: "c1", label: "x", startSec: 0, endSec: 1, assetId: "m1" }],
+        ["m1", "m2"],
+      ),
+    ).toBe(true);
+    expect(
+      isBoundFolderLockedByTimeline(
+        [{ id: "c1", label: "x", startSec: 0, endSec: 1, assetId: "other" }],
+        ["m1", "m2"],
+      ),
+    ).toBe(false);
+  });
+
   it("defaults missing folder ids when loading older projects", () => {
     localStorage.setItem(
       PROJECTS_STORAGE_KEY,
@@ -85,7 +130,9 @@ describe("projectStore", () => {
     );
     const loaded = loadStoredProjects();
     expect(loaded[0].folderIds).toEqual([]);
+    expect(loaded[0].boundFolderId).toBeNull();
     expect(storedProjectToUi(loaded[0]).folderIds).toEqual([]);
+    expect(storedProjectToUi(loaded[0]).boundFolderId).toBeNull();
   });
 
   it("removes creation ids and clears selected asset when needed", () => {

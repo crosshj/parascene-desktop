@@ -19,6 +19,8 @@ export const mockProject: Project = {
     { id: "a4", name: "logo.png", kind: "image" },
   ],
   folderIds: [],
+  boundFolderId: null,
+  stillWorkstreams: [],
   imagesGroupId: null,
   videosGroupId: null,
   labStillPrompt: null,

@@ -15,6 +15,7 @@ mod merge;
 mod join;
 mod parascene_api;
 pub(crate) mod paths;
+mod plate;
 mod render;
 mod reverse;
 mod slideshow;
@@ -53,6 +54,7 @@ pub use lab_deps::{
 pub use lab_transcribe::library_transcribe_local;
 pub use merge::library_merge_timeline_clips;
 pub use join::{library_join_bake, library_join_preview};
+pub use plate::library_bake_plate_still;
 pub use render::{
     publisher_delete_render, publisher_export_render, publisher_get_render, publisher_list_renders,
     publisher_render_timeline,
