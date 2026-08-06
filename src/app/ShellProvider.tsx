@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -15,14 +16,11 @@ import {
   createStoredProject,
   emptyUiProject,
   loadStoredProjects,
+  loadStoredProjectsStrict,
   mergeCreationIds,
-  mergeFolderIds,
-  removeCreationIds,
-  removeFolderIds,
   renameStoredProject,
-  saveStoredProjects,
+  replaceStoredProjectAssets,
   setStoredProjectAspectRatio,
-  setStoredProjectBoundFolderId,
   upsertStoredStillWorkstream,
   removeStoredStillWorkstream,
   setStoredProjectLookEnabled,
@@ -43,6 +41,23 @@ import {
   storedProjectToUi,
   type StoredProject,
 } from "../project/projectStore";
+import { collectProjectReferencedCreationIds } from "../project/projectUsage";
+import {
+  addProjectAssets,
+  reconcileLegacyProjectFolder,
+  removeProjectAssetsChecked,
+  renameProjectFolder,
+  provisionProjectFolder,
+  type ProjectFolderReconcileResult,
+} from "../project/projectFolderClient";
+import {
+  initializeProjectUsageIndexes,
+  mirrorStoredProjectsAfterNativeMembership,
+  mutateStoredProjects,
+  mutateStoredProjectsWithNativeMutation,
+} from "../project/projectMutationCoordinator";
+import { listFolders, type LibraryFolder } from "../library/folderClient";
+import { listen } from "@tauri-apps/api/event";
 import {
   collectProjectGroupCoverIdsToRefresh,
   reconcileStoredProjectsFromLibrary,
@@ -56,7 +71,11 @@ import {
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
-import { applyManifest, getCreation } from "../library/catalogClient";
+import {
+  applyManifest,
+  deleteCreationChecked,
+  getCreation,
+} from "../library/catalogClient";
 import { creationUpsertWithAddAssetGeneration } from "../project/desktopAddAssetGeneration";
 import {
   loadShellSession,
@@ -65,6 +84,11 @@ import {
   type PrimaryTab,
 } from "./shellSession";
 import type { FilterId } from "../library/creationFilters";
+import {
+  syncLibraryFolders,
+  type FolderConflict,
+  type FolderSyncResult,
+} from "../sync/folderSync";
 
 export type { PrimaryTab, LibrarySurface } from "./shellSession";
 
@@ -77,12 +101,14 @@ type ShellState = {
   setMode: (mode: LayoutMode) => void;
   /** Null means no project open (Project tab shows the picker). */
   openProjectId: string | null;
-  openProject: (id: string) => void;
+  openProject: (id: string) => Promise<void>;
   closeProject: () => void;
   /** Create a project (optionally from library creation IDs) and open it. */
-  createProject: (title: string, creationIds?: string[]) => string;
+  createProject: (title: string, creationIds?: string[]) => Promise<string | null>;
   /** Rename the open project (no-op if none open). */
-  renameOpenProject: (title: string) => void;
+  renameOpenProject: (title: string) => Promise<void>;
+  /** Rename any locally available project and its canonical folder. */
+  renameProject: (projectId: string, title: string) => Promise<void>;
   /** Set the open project's creative aspect ratio (no-op if none open). */
   setOpenProjectAspectRatio: (aspectRatio: ProjectAspectRatio) => void;
   /** Enable/disable a project Look (export-time filter). */
@@ -138,7 +164,12 @@ type ShellState = {
   /** Persist MV Concept seed direction for the open project. */
   setOpenProjectLabStoryboardDirection: (direction: string | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
-  addCreationsToOpenProject: (creationIds: string[]) => void;
+  addCreationsToOpenProject: (creationIds: string[]) => Promise<void>;
+  /** Add Library creations to any locally available project. */
+  addCreationsToProject: (
+    projectId: string,
+    creationIds: string[],
+  ) => Promise<boolean>;
   /**
    * After Library sync: refresh project group covers, expand embedded members,
    * and merge missing folder/cabinet/group members into every stored project.
@@ -152,32 +183,25 @@ type ShellState = {
     creationsRemoved: number;
   }>;
   /** Remove library creation IDs from the open project (no-op if none open). */
-  removeCreationsFromOpenProject: (creationIds: string[]) => void;
-  /** Attach local Library folders (and their members) to the open project. */
-  addFoldersToOpenProject: (
-    folderIds: string[],
-    memberCreationIds: string[],
-  ) => void;
-  /** Detach local Library folders from the open project (and their members). */
-  removeFoldersFromOpenProject: (
-    folderIds: string[],
-    memberCreationIds?: string[],
-  ) => void;
-  /**
-   * Bind (or clear) the open project's working folder — one per project.
-   * This is the project file container (not an attached folder card).
-   * Member creation ids are merged into the project asset pool.
-   */
-  setOpenProjectBoundFolderId: (
-    folderId: string | null,
-    memberCreationIds?: string[],
-  ) => void;
+  removeCreationsFromOpenProject: (creationIds: string[]) => Promise<void>;
+  /** Remove unused creations from any locally available project. */
+  removeCreationsFromProject: (
+    projectId: string,
+    creationIds: string[],
+  ) => Promise<void>;
+  /** Globally delete after a strict all-project audit. */
+  deleteLibraryCreation: (creationId: string) => Promise<void>;
+  /** Sync cloud folders while project saves/removals are serialized. */
+  syncProjectFolders: (opts?: {
+    resolutions?: Record<string, "local" | "cloud">;
+    priorConflicts?: FolderConflict[];
+  }) => Promise<FolderSyncResult>;
   /** Create or replace a still workstream on the open project. */
   upsertOpenStillWorkstream: (
     stream: import("../project/stillWorkstream").StillWorkstream,
-  ) => void;
+  ) => Promise<void>;
   /** Remove a still composition from the open project. */
-  removeOpenStillWorkstream: (workstreamId: string) => void;
+  removeOpenStillWorkstream: (workstreamId: string) => Promise<void>;
   /** Last Creations filter — survives Library ↔ Project switches. */
   creationsFilterId: FilterId;
   setCreationsFilterId: (id: FilterId) => void;
@@ -185,7 +209,11 @@ type ShellState = {
   chromeStatus: string | null;
   setChromeStatus: (status: string | null) => void;
   project: Project;
-  recentProjects: { id: string; title: string }[];
+  recentProjects: {
+    id: string;
+    title: string;
+    lifecycle: StoredProject["lifecycle"];
+  }[];
   selectedSceneId: string | null;
   setSelectedSceneId: (id: string | null) => void;
   leftCollapsed: boolean;
@@ -216,10 +244,28 @@ function sortByUpdatedDesc(projects: StoredProject[]): StoredProject[] {
   );
 }
 
+function mirrorProjectFolderMembership(
+  projects: StoredProject[],
+  folders: readonly LibraryFolder[],
+): StoredProject[] {
+  const projectFolders = new Map(
+    folders
+      .filter((folder) => folder.kind === "project" && folder.projectId)
+      .map((folder) => [folder.projectId as string, folder]),
+  );
+  return projects.map((project) => {
+    const folder = projectFolders.get(project.id);
+    return folder ? replaceStoredProjectAssets(project, folder.memberIds) : project;
+  });
+}
+
 export function ShellProvider({ children }: { children: ReactNode }) {
   const [storedProjects, setStoredProjects] = useState<StoredProject[]>(() =>
     sortByUpdatedDesc(loadStoredProjects()),
   );
+  const [projectFolderBlock, setProjectFolderBlock] =
+    useState<ProjectFolderReconcileResult | null>(null);
+  const [blockedProjectTitle, setBlockedProjectTitle] = useState("");
 
   const initialSession = useMemo(() => {
     const ids = new Set(loadStoredProjects().map((p) => p.id));
@@ -233,7 +279,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     initialSession.librarySurface,
   );
   const [openProjectId, setOpenProjectId] = useState<string | null>(
-    initialSession.openProjectId,
+    null,
   );
   const [mode, setMode] = useState<LayoutMode>(initialSession.mode);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(
@@ -265,7 +311,6 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     setStoredProjects(again);
     const session = loadShellSession(new Set(again.map((p) => p.id)));
     if (session.openProjectId) {
-      setOpenProjectId(session.openProjectId);
       setMode(session.mode);
       setSelectedSceneId(session.selectedSceneId);
       setPrimaryTab(session.primaryTab);
@@ -304,25 +349,55 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     setCreationsFilterId("all");
   }
 
+  const publishStoredProjects = useCallback((projects: StoredProject[]) => {
+    const sorted = sortByUpdatedDesc(projects);
+    setStoredProjects(sorted);
+    return sorted;
+  }, []);
+
   /** Functional update so rapid sequential writes (e.g. activate + scrub) compose. */
   const updateStoredProjects = useCallback(
     (updater: (prev: StoredProject[]) => StoredProject[]) => {
-      setStoredProjects((prev) => {
+      return mutateStoredProjects((prev) => {
         const next = updater(prev);
-        // Guard against accidental wipe from a stale empty prev after a failed load.
         if (prev.length > 0 && next.length === 0) {
-          console.error(
-            "[updateStoredProjects] Refusing to replace non-empty projects with []",
-          );
-          return prev;
+          throw new Error("Refusing to replace non-empty projects with []");
         }
-        const sorted = sortByUpdatedDesc(next);
-        saveStoredProjects(sorted);
-        return sorted;
-      });
+        return sortByUpdatedDesc(next);
+      }).then(publishStoredProjects);
     },
-    [],
+    [publishStoredProjects],
   );
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        await initializeProjectUsageIndexes(loadStoredProjectsStrict());
+      } catch (error) {
+        console.error("Failed to initialize project usage protection", error);
+        setChromeStatusState("Project usage protection needs repair");
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<LibraryFolder[]>("library-folders-updated", (event) => {
+      void mirrorStoredProjectsAfterNativeMembership((projects) =>
+        mirrorProjectFolderMembership(projects, event.payload),
+      ).then(publishStoredProjects).catch((error) => {
+        console.error("Failed to mirror project-folder membership", error);
+      });
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [publishStoredProjects]);
 
   // One-shot cleanup: strip ordinary group members flattened onto projects by
   // an earlier reconcile that expanded every group. Must refresh covers first —
@@ -347,7 +422,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           await reconcileStoredProjectsFromLibrary(loadStoredProjects());
         if (cancelled) return;
         if (result.projectsUpdated > 0) {
-          updateStoredProjects(() => projects);
+          await updateStoredProjects(() => projects);
         }
         if (result.creationsRemoved > 0) {
           setChromeStatus(
@@ -367,8 +442,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   // (e.g. user browses Library while a job is running).
   useEffect(() => {
     bindAddAssetGenerationApplier({
-      applySuccess: (result: AddAssetGenerationSuccess) => {
-        updateStoredProjects((prev) =>
+      applySuccess: async (result: AddAssetGenerationSuccess) => {
+        await updateStoredProjects((prev) =>
           prev.map((project) => {
             if (project.id !== result.projectId) return project;
             let next = mergeCreationIds(project, result.projectCreationIds);
@@ -440,7 +515,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         );
       },
       applyFailure: (result) => {
-        updateStoredProjects((prev) =>
+        void updateStoredProjects((prev) =>
           prev.map((project) => {
             if (project.id !== result.projectId) return project;
             const timeline = storedProjectToUi(project).timeline;
@@ -468,10 +543,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             });
             return setStoredProjectTimeline(project, nextTimeline);
           }),
-        );
+        ).catch((error) => {
+          console.error("Failed to save generation error", error);
+        });
       },
       clearFailure: (projectId, clipId) => {
-        updateStoredProjects((prev) =>
+        void updateStoredProjects((prev) =>
           prev.map((project) => {
             if (project.id !== projectId) return project;
             const timeline = storedProjectToUi(project).timeline;
@@ -497,7 +574,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               ? setStoredProjectTimeline(project, nextTimeline)
               : project;
           }),
-        );
+        ).catch((error) => {
+          console.error("Failed to clear generation error", error);
+        });
       },
     });
     return () => bindAddAssetGenerationApplier(null);
@@ -507,9 +586,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     (patch: (project: StoredProject) => StoredProject) => {
       if (!openProjectId) return;
       const id = openProjectId;
-      updateStoredProjects((prev) =>
+      void updateStoredProjects((prev) =>
         prev.map((p) => (p.id === id ? patch(p) : p)),
-      );
+      ).catch((error) => {
+        console.error("Failed to save project", error);
+        window.alert(error instanceof Error ? error.message : String(error));
+      });
     },
     [openProjectId, updateStoredProjects],
   );
@@ -522,24 +604,147 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       })();
 
   const recentProjects = useMemo(
-    () => storedProjects.map((p) => ({ id: p.id, title: p.title })),
+    () =>
+      storedProjects.map((p) => ({
+        id: p.id,
+        title: p.title,
+        lifecycle: p.lifecycle,
+      })),
     [storedProjects],
   );
 
   const toggleLeft = useCallback(() => setLeftCollapsed((v) => !v), []);
   const toggleRight = useCallback(() => setRightCollapsed((v) => !v), []);
 
+  const reconcileProjectForOpen = useCallback(
+    async (projectToOpen: StoredProject): Promise<StoredProject | null> => {
+      const { result, projects } =
+        await mutateStoredProjectsWithNativeMutation(
+          async (current) => {
+            const project = current.find(
+              (candidate) => candidate.id === projectToOpen.id,
+            );
+            if (!project) throw new Error("Project no longer exists");
+            const folders = await listFolders();
+            const attached = new Set(project.folderIds ?? []);
+            const attachedMemberIds = folders
+              .filter((folder) => attached.has(folder.id))
+              .flatMap((folder) => folder.memberIds);
+            const legacyAssetIds = [
+              ...new Set([
+                ...project.creationIds,
+                ...attachedMemberIds,
+                ...collectProjectReferencedCreationIds(project),
+              ]),
+            ];
+            return reconcileLegacyProjectFolder({
+              projectId: project.id,
+              title: project.title,
+              boundFolderIds: project.boundFolderId
+                ? [project.boundFolderId]
+                : [],
+              legacyAssetIds,
+            });
+          },
+          (current, reconcileResult) =>
+            reconcileResult.status === "ready" && reconcileResult.folder
+              ? current.map((project) =>
+                  project.id === projectToOpen.id
+                    ? {
+                        ...replaceStoredProjectAssets(
+                          project,
+                          reconcileResult.folder?.memberIds ?? [],
+                        ),
+                        folderIds: [],
+                        boundFolderId: null,
+                        lifecycle: "ready" as const,
+                      }
+                    : project,
+                )
+              : current,
+        );
+      if (result.status === "blocked" || !result.folder) {
+        setBlockedProjectTitle(projectToOpen.title);
+        setProjectFolderBlock(result);
+        return null;
+      }
+      const sorted = publishStoredProjects(projects);
+      return sorted.find((project) => project.id === projectToOpen.id) ?? null;
+    },
+    [publishStoredProjects],
+  );
+
   const openProject = useCallback(
-    (id: string) => {
-      const found = storedProjects.find((p) => p.id === id);
+    async (id: string) => {
+      const found = loadStoredProjectsStrict().find((p) => p.id === id);
       if (!found) return;
+      let ready: StoredProject | null = null;
+      if (
+        found.lifecycle === "provisioning" ||
+        found.lifecycle === "repair-needed"
+      ) {
+        try {
+          const { result, projects } =
+            await mutateStoredProjectsWithNativeMutation(
+              async () => {
+                const provisioned = await provisionProjectFolder(
+                  found.id,
+                  found.title,
+                  found.creationIds,
+                );
+                return { provisioned, folders: await listFolders() };
+              },
+              (current, payload) =>
+                mirrorProjectFolderMembership(
+                  current.map((project) =>
+                    project.id === found.id
+                      ? {
+                          ...project,
+                          folderIds: [],
+                          boundFolderId: null,
+                          lifecycle: "ready" as const,
+                        }
+                      : project,
+                  ),
+                  payload.folders,
+                ),
+            );
+          const next = publishStoredProjects(projects);
+          ready = next.find((project) => project.id === found.id) ?? null;
+          if (result.provisioned.missingCreationIds.length > 0) {
+            window.alert(
+              `Project repaired without ${result.provisioned.missingCreationIds.length} file(s) that no longer exist in Library:\n${result.provisioned.missingCreationIds.join(", ")}`,
+            );
+          }
+        } catch (error) {
+          console.error("Failed to retry project folder setup", error);
+          window.alert(error instanceof Error ? error.message : String(error));
+          return;
+        }
+      } else {
+        ready = await reconcileProjectForOpen(found).catch((error) => {
+          console.error("Failed to prepare project folder", error);
+          window.alert(error instanceof Error ? error.message : String(error));
+          return null;
+        });
+      }
+      if (!ready) return;
       setOpenProjectId(id);
       setPrimaryTab("project");
       setMode("director");
       setSelectedSceneId(`${id}-scene-1`);
     },
-    [storedProjects],
+    [publishStoredProjects, reconcileProjectForOpen],
   );
+
+  const startupOpenAttempted = useRef(false);
+  useEffect(() => {
+    if (startupOpenAttempted.current) return;
+    startupOpenAttempted.current = true;
+    if (!initialSession.openProjectId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- restoring the persisted session is the purpose of this mount effect
+    void openProject(initialSession.openProjectId);
+  }, [initialSession.openProjectId, openProject]);
 
   const closeProject = useCallback(() => {
     setOpenProjectId(null);
@@ -548,27 +753,109 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createProject = useCallback(
-    (title: string, creationIds: string[] = []) => {
-      const created = createStoredProject(title, creationIds);
-      updateStoredProjects((prev) => [
+    async (title: string, creationIds: string[] = []) => {
+      // Persist the provisioning document first; native creates the project
+      // root and files the complete selection in one checked transaction.
+      // Selection is not owned until the native provisioning transaction
+      // succeeds. Persisting an empty provisioning document also lets native
+      // return a structured warning for selections that disappeared meanwhile.
+      const created = createStoredProject(title, []);
+      await updateStoredProjects((prev) => [
         created,
         ...prev.filter((p) => p.id !== created.id),
       ]);
+      try {
+        const { result, projects } =
+          await mutateStoredProjectsWithNativeMutation(
+            async () => {
+              const provisioned = await provisionProjectFolder(
+                created.id,
+                created.title,
+                creationIds,
+              );
+              return { provisioned, folders: await listFolders() };
+            },
+            (current, payload) =>
+              mirrorProjectFolderMembership(
+                current.map((project) =>
+                  project.id === created.id
+                    ? {
+                        ...project,
+                        folderIds: [],
+                        boundFolderId: null,
+                        lifecycle: "ready" as const,
+                      }
+                    : project,
+                ),
+                payload.folders,
+              ),
+          );
+        publishStoredProjects(projects);
+        if (result.provisioned.missingCreationIds.length > 0) {
+          window.alert(
+            `Project created without ${result.provisioned.missingCreationIds.length} file(s) that no longer exist in Library:\n${result.provisioned.missingCreationIds.join(", ")}`,
+          );
+        }
+      } catch (error) {
+        await updateStoredProjects((projects) =>
+          projects.map((project) =>
+            project.id === created.id
+              ? { ...project, lifecycle: "repair-needed" as const }
+              : project,
+          ),
+        );
+        window.alert(error instanceof Error ? error.message : String(error));
+        return null;
+      }
       setOpenProjectId(created.id);
       setPrimaryTab("project");
       setMode("director");
       setSelectedSceneId(`${created.id}-scene-1`);
       return created.id;
     },
-    [updateStoredProjects],
+    [publishStoredProjects, updateStoredProjects],
+  );
+
+  const addCreationsToProject = useCallback(
+    async (projectId: string, creationIds: string[]) => {
+      if (creationIds.length === 0) return false;
+      const perform = async (allowCrossProjectMove: boolean) => {
+        const { projects } = await mutateStoredProjectsWithNativeMutation(
+          async () => {
+            const result = await addProjectAssets(
+              projectId,
+              creationIds,
+              allowCrossProjectMove,
+            );
+            return { result, folders: await listFolders() };
+          },
+          (current, payload) =>
+            mirrorProjectFolderMembership(current, payload.folders),
+        );
+        publishStoredProjects(projects);
+      };
+      try {
+        await perform(false);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/Confirm moving it to this project/i.test(message)) throw error;
+        const confirmed = window.confirm(
+          `${message}\n\nMove the unused file to this project?`,
+        );
+        if (!confirmed) return false;
+        await perform(true);
+      }
+      return true;
+    },
+    [publishStoredProjects],
   );
 
   const addCreationsToOpenProject = useCallback(
-    (creationIds: string[]) => {
-      if (creationIds.length === 0) return;
-      patchOpenProject((p) => mergeCreationIds(p, creationIds));
+    async (creationIds: string[]) => {
+      if (!openProjectId) return;
+      await addCreationsToProject(openProjectId, creationIds);
     },
-    [patchOpenProject],
+    [addCreationsToProject, openProjectId],
   );
 
   const reconcileProjectsAfterLibrarySync = useCallback(
@@ -587,73 +874,141 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       const { projects, result } =
         await reconcileStoredProjectsFromLibrary(current);
       if (result.projectsUpdated > 0) {
-        updateStoredProjects(() => projects);
+        await updateStoredProjects(() => projects);
       }
       return result;
     },
     [updateStoredProjects],
   );
 
-  const removeCreationsFromOpenProject = useCallback(
-    (creationIds: string[]) => {
+  const removeCreationsFromProject = useCallback(
+    async (projectId: string, creationIds: string[]) => {
       if (creationIds.length === 0) return;
-      patchOpenProject((p) => removeCreationIds(p, creationIds));
-    },
-    [patchOpenProject],
-  );
-
-  const addFoldersToOpenProject = useCallback(
-    (folderIds: string[], memberCreationIds: string[]) => {
-      if (folderIds.length === 0 && memberCreationIds.length === 0) return;
-      patchOpenProject((p) => {
-        // Bound project: folder is the container — do not attach more folders.
-        if (typeof p.boundFolderId === "string" && p.boundFolderId.trim()) {
-          return p;
-        }
-        return mergeFolderIds(p, folderIds, memberCreationIds);
-      });
-    },
-    [patchOpenProject],
-  );
-
-  const removeFoldersFromOpenProject = useCallback(
-    (folderIds: string[], memberCreationIds: string[] = []) => {
-      if (folderIds.length === 0 && memberCreationIds.length === 0) return;
-      patchOpenProject((p) =>
-        removeFolderIds(p, folderIds, memberCreationIds),
+      const { projects } = await mutateStoredProjectsWithNativeMutation(
+        async () => {
+          const result = await removeProjectAssetsChecked(projectId, creationIds);
+          return { result, folders: await listFolders() };
+        },
+        (current, payload) =>
+          mirrorProjectFolderMembership(current, payload.folders),
       );
+      publishStoredProjects(projects);
     },
-    [patchOpenProject],
+    [publishStoredProjects],
   );
 
-  const setOpenProjectBoundFolderId = useCallback(
-    (folderId: string | null, memberCreationIds: string[] = []) => {
-      patchOpenProject((p) =>
-        setStoredProjectBoundFolderId(p, folderId, memberCreationIds),
-      );
+  const removeCreationsFromOpenProject = useCallback(
+    async (creationIds: string[]) => {
+      if (!openProjectId) return;
+      await removeCreationsFromProject(openProjectId, creationIds);
     },
-    [patchOpenProject],
+    [openProjectId, removeCreationsFromProject],
+  );
+
+  const deleteLibraryCreation = useCallback(
+    async (creationId: string) => {
+      const { projects } = await mutateStoredProjectsWithNativeMutation(
+        (current) =>
+          deleteCreationChecked(
+            creationId,
+            current.map((project) => project.id),
+          ),
+        (current) =>
+          current.map((project) =>
+            project.creationIds.includes(creationId)
+              ? replaceStoredProjectAssets(
+                  project,
+                  project.creationIds.filter((id) => id !== creationId),
+                )
+              : project,
+          ),
+      );
+      publishStoredProjects(projects);
+    },
+    [publishStoredProjects],
+  );
+
+  const syncProjectFolders = useCallback(
+    async (opts?: {
+      resolutions?: Record<string, "local" | "cloud">;
+      priorConflicts?: FolderConflict[];
+    }) => {
+      const { result, projects } =
+        await mutateStoredProjectsWithNativeMutation(
+          async () => {
+            const folderResult = await syncLibraryFolders(opts);
+            return { folderResult, folders: await listFolders() };
+          },
+          (current, payload) =>
+            mirrorProjectFolderMembership(current, payload.folders),
+        );
+      publishStoredProjects(projects);
+      return result.folderResult;
+    },
+    [publishStoredProjects],
   );
 
   const upsertOpenStillWorkstream = useCallback(
-    (stream: import("../project/stillWorkstream").StillWorkstream) => {
-      patchOpenProject((p) => upsertStoredStillWorkstream(p, stream));
+    async (stream: import("../project/stillWorkstream").StillWorkstream) => {
+      if (!openProjectId) return;
+      await updateStoredProjects((projects) =>
+        projects.map((project) =>
+          project.id === openProjectId
+            ? upsertStoredStillWorkstream(project, stream)
+            : project,
+        ),
+      );
     },
-    [patchOpenProject],
+    [openProjectId, updateStoredProjects],
   );
 
   const removeOpenStillWorkstream = useCallback(
-    (workstreamId: string) => {
-      patchOpenProject((p) => removeStoredStillWorkstream(p, workstreamId));
+    async (workstreamId: string) => {
+      if (!openProjectId) return;
+      await updateStoredProjects((projects) =>
+        projects.map((project) =>
+          project.id === openProjectId
+            ? removeStoredStillWorkstream(project, workstreamId)
+            : project,
+        ),
+      );
     },
-    [patchOpenProject],
+    [openProjectId, updateStoredProjects],
+  );
+
+  const renameProject = useCallback(
+    async (projectId: string, title: string) => {
+      const next = await updateStoredProjects((projects) =>
+        projects.map((project) =>
+          project.id === projectId
+            ? renameStoredProject(project, title)
+            : project,
+        ),
+      );
+      const renamed = next.find((project) => project.id === projectId);
+      if (!renamed) return;
+      try {
+        await renameProjectFolder(projectId, renamed.title);
+      } catch (error) {
+        await updateStoredProjects((projects) =>
+          projects.map((project) =>
+            project.id === projectId
+              ? { ...project, lifecycle: "repair-needed" as const }
+              : project,
+          ),
+        );
+        throw error;
+      }
+    },
+    [updateStoredProjects],
   );
 
   const renameOpenProject = useCallback(
-    (title: string) => {
-      patchOpenProject((p) => renameStoredProject(p, title));
+    async (title: string) => {
+      if (!openProjectId) return;
+      await renameProject(openProjectId, title);
     },
-    [patchOpenProject],
+    [openProjectId, renameProject],
   );
 
   const setOpenProjectAspectRatio = useCallback(
@@ -813,6 +1168,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       closeProject,
       createProject,
       renameOpenProject,
+      renameProject,
       setOpenProjectAspectRatio,
       setOpenProjectLookEnabled,
       setOpenProjectTimeline,
@@ -831,11 +1187,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
+      addCreationsToProject,
       reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
-      addFoldersToOpenProject,
-      removeFoldersFromOpenProject,
-      setOpenProjectBoundFolderId,
+      removeCreationsFromProject,
+      deleteLibraryCreation,
+      syncProjectFolders,
       upsertOpenStillWorkstream,
       removeOpenStillWorkstream,
       creationsFilterId,
@@ -864,6 +1221,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       closeProject,
       createProject,
       renameOpenProject,
+      renameProject,
       setOpenProjectAspectRatio,
       setOpenProjectLookEnabled,
       setOpenProjectTimeline,
@@ -882,11 +1240,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
+      addCreationsToProject,
       reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
-      addFoldersToOpenProject,
-      removeFoldersFromOpenProject,
-      setOpenProjectBoundFolderId,
+      removeCreationsFromProject,
+      deleteLibraryCreation,
+      syncProjectFolders,
       upsertOpenStillWorkstream,
       removeOpenStillWorkstream,
       creationsFilterId,
@@ -906,7 +1265,78 @@ export function ShellProvider({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={value}>
-      <ConfirmProvider>{children}</ConfirmProvider>
+      <ConfirmProvider>
+        {children}
+        {projectFolderBlock ? (
+          <div className="confirm-dialog-backdrop" role="presentation">
+            <div
+              className="confirm-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="project-folder-block-title"
+            >
+              <h2 id="project-folder-block-title">
+                Project folder needed
+              </h2>
+              <p>
+                <strong>{blockedProjectTitle}</strong> could not be assigned a
+                project folder safely.
+              </p>
+              {projectFolderBlock.bindingProblem ? (
+                <p>{projectFolderBlock.bindingProblem}</p>
+              ) : null}
+              {projectFolderBlock.blockers.map((group) => (
+                <div key={group.folderId ?? "root"}>
+                  <p>
+                    <strong>{group.folderTitle}</strong>
+                    {group.projectId
+                      ? ` — owned by project ${group.projectId}`
+                      : ""}
+                  </p>
+                  <p className="muted">{group.creationIds.join(", ")}</p>
+                </div>
+              ))}
+              {projectFolderBlock.missingCreationIds.length > 0 ? (
+                <div>
+                  <p>
+                    <strong>Missing creations</strong>
+                  </p>
+                  <p className="muted">
+                    {projectFolderBlock.missingCreationIds.join(", ")}
+                  </p>
+                </div>
+              ) : null}
+              <p className="muted">
+                In Library, put every available project file in one regular
+                folder, or move all of them to Library root, then reopen the
+                project. A file owned by another project must first be removed
+                safely from that project. Missing IDs must be restored with the
+                same ID; importing a replacement creates a different file.
+              </p>
+              <div className="confirm-dialog-actions">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setProjectFolderBlock(null)}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setProjectFolderBlock(null);
+                    setPrimaryTab("library");
+                    setLibrarySurface("creations");
+                  }}
+                >
+                  Open Library
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </ConfirmProvider>
     </ShellContext.Provider>
   );
 }

@@ -76,15 +76,6 @@ type AssetBrowserPaneProps = {
   onAddSlotSelect?: () => void;
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
-  onRemoveFolders?: (ids: string[]) => void;
-  /** Bound working folder id — never shown as a folder card. */
-  boundFolderId?: string | null;
-  /** Members of the bound working folder — shown flat at assets root. */
-  boundMemberIds?: readonly string[];
-  onBindFolder?: (folderId: string) => void;
-  onUnbindFolder?: () => void;
-  /** When true, bind/clear actions are disabled (timeline uses working files). */
-  boundFolderLocked?: boolean;
   onDeleteFromGroup?: (opts: {
     groupId: string;
     kind: "images" | "videos";
@@ -234,12 +225,6 @@ export function AssetBrowserPane({
   onAddSlotSelect,
   onDeleteAssets,
   onRemoveAssets,
-  onRemoveFolders,
-  boundFolderId = null,
-  boundMemberIds = [],
-  onBindFolder,
-  onUnbindFolder,
-  boundFolderLocked = false,
   onDeleteFromGroup,
   timelineUsedAssetIds,
   compositions = [],
@@ -269,19 +254,10 @@ export function AssetBrowserPane({
   const filedInProjectFolders = useMemo(() => {
     const ids = new Set<string>();
     for (const folder of folders) {
-      // Bound folder is never in `folders`; attached folders hide members at root.
       for (const memberId of folder.memberIds) ids.add(memberId);
     }
     return ids;
   }, [folders]);
-
-  const boundMemberSet = useMemo(() => {
-    const id = boundFolderId?.trim();
-    if (!id) return null;
-    return new Set(
-      boundMemberIds.map((memberId) => String(memberId).trim()).filter(Boolean),
-    );
-  }, [boundFolderId, boundMemberIds]);
 
   const compositionHiddenIds = useMemo(
     () => compositionInternalCreationIds(compositions),
@@ -293,10 +269,7 @@ export function AssetBrowserPane({
       const members = new Set(folderView.memberIds);
       return assets.filter((asset) => members.has(asset.id));
     }
-    // Bound working folder = the project file pool: show its members flat.
-    let rows = boundMemberSet
-      ? assets.filter((asset) => boundMemberSet.has(asset.id))
-      : assets.filter((asset) => !filedInProjectFolders.has(asset.id));
+    let rows = assets.filter((asset) => !filedInProjectFolders.has(asset.id));
     // Plate / AI steps stay inside compositions until promoted.
     if (compositionHiddenIds.size > 0) {
       rows = rows.filter((asset) => !compositionHiddenIds.has(asset.id));
@@ -304,7 +277,6 @@ export function AssetBrowserPane({
     return rows;
   }, [
     assets,
-    boundMemberSet,
     compositionHiddenIds,
     filedInProjectFolders,
     folderView,
@@ -613,16 +585,10 @@ export function AssetBrowserPane({
   };
 
   const openFolderContextMenu = (
-    folderId: string,
+    _folderId: string,
     event: ReactMouseEvent<HTMLButtonElement>,
   ) => {
-    if (!onRemoveFolders && !onBindFolder && !onUnbindFolder) return;
-    setContextMenu({
-      kind: "folders",
-      folderIds: [folderId],
-      x: event.clientX,
-      y: event.clientY,
-    });
+    event.preventDefault();
   };
 
   const openCompositionContextMenu = (
@@ -700,30 +666,6 @@ export function AssetBrowserPane({
           </svg>
         </button>
       </div>
-
-      {boundFolderId && !folderView ? (
-        <div className="editor-asset-working-folder" role="status">
-          <span className="muted">
-            Working folder
-            {boundMemberSet ? ` · ${boundMemberSet.size} items` : ""}
-          </span>
-          {onUnbindFolder ? (
-            <button
-              type="button"
-              className="linkish"
-              disabled={boundFolderLocked}
-              title={
-                boundFolderLocked
-                  ? "Remove timeline clips that use the working folder first."
-                  : "Stop using this folder as the project container"
-              }
-              onClick={() => onUnbindFolder()}
-            >
-              Clear
-            </button>
-          ) : null}
-        </div>
-      ) : null}
 
       {folderView ? (
         <div className="library-folder-breadcrumb editor-asset-breadcrumb">
@@ -868,40 +810,6 @@ export function AssetBrowserPane({
               onPointerDown={(event) => event.stopPropagation()}
               onContextMenu={(event) => event.preventDefault()}
             >
-              {contextMenu.kind === "folders" ? (
-                <>
-                  {onBindFolder &&
-                  !boundFolderId &&
-                  contextMenu.folderIds.length === 1 ? (
-                    <button
-                      type="button"
-                      className="editor-asset-context-item"
-                      role="menuitem"
-                      onClick={() => {
-                        const id = contextMenu.folderIds[0];
-                        setContextMenu(null);
-                        onBindFolder(id);
-                      }}
-                    >
-                      Use as working folder
-                    </button>
-                  ) : null}
-                  {onRemoveFolders && !boundFolderId ? (
-                    <button
-                      type="button"
-                      className="editor-asset-context-item"
-                      role="menuitem"
-                      onClick={() => {
-                        const ids = contextMenu.folderIds;
-                        setContextMenu(null);
-                        onRemoveFolders(ids);
-                      }}
-                    >
-                      Remove folder from project
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
               {contextMenu.kind === "compositions" && onDeleteCompositions ? (
                 <button
                   type="button"

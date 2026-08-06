@@ -1,6 +1,6 @@
 [package]
 name = "parascene-desktop"
-version = "1.1.28"
+version = "1.1.29"
 description = "Parascene Desktop"
 authors = ["Parascene"]
 edition = "2021"
@@ -39,6 +39,7 @@ wgpu = "30"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
 arboard = "3"
+unicode-segmentation = "1"
 
 # Force gpu-allocator onto the same windows version as wgpu-hal (0.62).
 # Without this, Cargo can resolve gpu-allocator to windows 0.61 while wgpu-hal

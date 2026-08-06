@@ -34,7 +34,11 @@ export function DirectorLayout() {
   const commitTitle = () => {
     const next = titleDraft.trim() || "Untitled project";
     setTitleDraft(next);
-    if (next !== project.title) renameOpenProject(next);
+    if (next !== project.title) {
+      void renameOpenProject(next).catch((error) => {
+        window.alert(error instanceof Error ? error.message : String(error));
+      });
+    }
   };
 
   const onAspectChange = (next: ProjectAspectRatio) => {

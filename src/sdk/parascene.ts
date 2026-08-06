@@ -76,6 +76,7 @@ export type RemoteLibraryFolder = {
   updated_at: string | null;
   creation_ids: number[];
   member_count: number;
+  meta: Record<string, unknown>;
 };
 
 export type LibraryFoldersSnapshot = {
@@ -89,6 +90,8 @@ export type LibraryFolderCreateOp = {
   title?: string;
   description?: string;
   creation_ids?: number[];
+  meta?: Record<string, unknown>;
+  project_id?: string;
 };
 
 export type LibraryFolderUpdateOp = {
@@ -96,17 +99,21 @@ export type LibraryFolderUpdateOp = {
   id: string;
   title?: string;
   description?: string;
+  meta?: Record<string, unknown>;
+  project_id?: string;
 };
 
 export type LibraryFolderDeleteOp = {
   op: "delete";
   id: string;
+  project_id?: string;
 };
 
 export type LibraryFolderMoveOp = {
   op: "move";
   folder_id: string | null;
   creation_ids: number[];
+  project_id?: string;
 };
 
 export type LibraryFolderOperation =
@@ -165,6 +172,10 @@ function parseLibraryFoldersSnapshot(raw: unknown): LibraryFoldersSnapshot {
           typeof folder.member_count === "number"
             ? folder.member_count
             : creationIds.length,
+        meta:
+          folder.meta && typeof folder.meta === "object" && !Array.isArray(folder.meta)
+            ? (folder.meta as Record<string, unknown>)
+            : {},
       };
     }),
   };

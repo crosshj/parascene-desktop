@@ -51,6 +51,7 @@ function remoteFolder(
     updated_at: "2026-07-18T00:00:00.000Z",
     creation_ids: [],
     member_count: 0,
+    meta: {},
     ...partial,
   };
 }
@@ -205,6 +206,29 @@ describe("folderSync helpers", () => {
     const { ops } = prepareOpsForUpload(pendingOps);
     expect(ops.length).toBe(LIBRARY_FOLDER_OPS_MAX + 5);
   });
+
+  it("upgrades legacy project claims and preserves ownership assertions", () => {
+    const legacyClaim = {
+      op: "claim_project",
+      id: "11111111-1111-4111-8111-111111111111",
+      title: "Project",
+      project_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    } as unknown as LibraryFolderOperation;
+    const { ops } = prepareOpsForUpload([pending(1, legacyClaim)]);
+    expect(ops).toEqual([
+      {
+        op: "update",
+        id: "11111111-1111-4111-8111-111111111111",
+        title: "Project",
+        meta: {
+          parascene_desktop: {
+            project_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          },
+        },
+        project_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+    ]);
+  });
 });
 
 describe("syncLibraryFolders", () => {
@@ -237,6 +261,47 @@ describe("syncLibraryFolders", () => {
       ]),
     );
     expect(mutateLibraryFolders).not.toHaveBeenCalled();
+  });
+
+  it("uploads project repairs generated while applying a cloud snapshot", async () => {
+    const folderId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const repair = pending(9, {
+      op: "update",
+      id: folderId,
+      title: "Local project",
+      meta: { parascene_desktop: { project_id: projectId } },
+      project_id: projectId,
+    });
+    getFolderSyncState
+      .mockResolvedValueOnce(state({ revision: 1 }))
+      .mockResolvedValueOnce(state({ revision: 3, pendingOps: [] }));
+    getLibraryFolders.mockResolvedValue({
+      revision: 2,
+      folders: [remoteFolder({ id: folderId, title: "Ordinary cloud folder" })],
+    });
+    applyFolderSnapshot
+      .mockResolvedValueOnce(state({ revision: 2, pendingOps: [repair] }))
+      .mockResolvedValueOnce(state({ revision: 3, pendingOps: [repair] }));
+    mutateLibraryFolders.mockResolvedValue({
+      revision: 3,
+      folders: [
+        remoteFolder({
+          id: folderId,
+          title: "Local project",
+          meta: { parascene_desktop: { project_id: projectId } },
+        }),
+      ],
+    });
+    ackFolderOps.mockResolvedValue(state({ revision: 3, pendingOps: [] }));
+
+    const result = await syncLibraryFolders();
+    expect(result.ok).toBe(true);
+    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+      baseRevision: 2,
+      operations: [repair.op],
+    });
+    expect(ackFolderOps).toHaveBeenCalledWith([9]);
   });
 
   it("uploads pending ops and acks on success", async () => {

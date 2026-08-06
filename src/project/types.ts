@@ -480,13 +480,11 @@ export type Project = {
   looks: ProjectLooks;
   scenes: Scene[];
   assets: ProjectAsset[];
-  /** Local Library folder ids attached to this project. */
+  /** Legacy attachment ids, retained read-only until open-time reconciliation. */
   folderIds: string[];
   /**
-   * Bound working folder — the project's file container (one per project).
-   * Assets pane shows this folder's members flat; the folder itself is not
-   * listed as an attached folder card. New local outputs land here.
-   * Null when none. Distinct from `folderIds` (attach).
+   * Legacy explicit binding, retained read-only as reconciliation evidence.
+   * Ready projects always clear this after claiming their marked folder.
    */
   boundFolderId: string | null;
   /** Still composition workstreams (plate bake + edit history). */

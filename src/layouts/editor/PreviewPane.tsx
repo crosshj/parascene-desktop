@@ -10,17 +10,15 @@ import {
 } from "react";
 import { useShell } from "../../app/ShellProvider";
 import {
-  addExistingProjectAsset,
   applyManifest,
   cacheCompositionRun,
   deleteCompositionRun,
-  deleteLocal,
   ensureLocal,
   getCreation,
   getCreations,
 } from "../../library/catalogClient";
 import { bakePlateStill } from "../../library/plateBake";
-import { importLocalPathsForProject } from "../../project/boundFolderLanding";
+import { importLocalPathsForProject } from "../../project/projectAssetLanding";
 import {
   appendWorkstreamEditNode,
   createComposition,
@@ -387,7 +385,7 @@ export function PreviewPane({
   const {
     project,
     addCreationsToOpenProject,
-    removeCreationsFromOpenProject,
+    deleteLibraryCreation,
     upsertOpenStillWorkstream,
   } = useShell();
   const [creation, setCreation] = useState<Creation | null>(null);
@@ -1442,9 +1440,11 @@ export function PreviewPane({
         }
         setWorkstreamNodePreviewUrls(urls);
         if (hydrated) {
-          upsertOpenStillWorkstream({
+          void upsertOpenStillWorkstream({
             ...activeWorkstream!,
             nodes: nextNodes,
+          }).catch((error) => {
+            console.error("Failed to persist composition paths", error);
           });
         }
       })
@@ -1622,7 +1622,9 @@ export function PreviewPane({
       recipe: plateRecipe,
       title: `Composition (${ids.length})`,
     });
-    upsertOpenStillWorkstream(stream);
+    void upsertOpenStillWorkstream(stream).catch((error) => {
+      setCompositeError(error instanceof Error ? error.message : String(error));
+    });
     setActiveWorkstreamId(stream.id);
     onOpenCompositionIdChange?.(stream.id);
     setCompositeError(null);
@@ -1639,11 +1641,13 @@ export function PreviewPane({
     (recipe: PlateRecipe) => {
       setPlateRecipe(recipe);
       if (!activeWorkstream) return;
-      upsertOpenStillWorkstream({
+      void upsertOpenStillWorkstream({
         ...activeWorkstream,
         recipe,
         memberIds: activeImageIds,
         updatedAt: new Date().toISOString(),
+      }).catch((error) => {
+        setCompositeError(error instanceof Error ? error.message : String(error));
       });
     },
     [activeImageIds, activeWorkstream, upsertOpenStillWorkstream],
@@ -1681,7 +1685,7 @@ export function PreviewPane({
           activeWorkstream.id,
         );
         outside = await getCreation(creationId);
-        upsertOpenStillWorkstream({
+        await upsertOpenStillWorkstream({
           ...activeWorkstream,
           nodes: activeWorkstream.nodes.map((node) =>
             node.id === selected.id
@@ -1708,10 +1712,9 @@ export function PreviewPane({
           model: selected.model,
         }),
       ]);
-      await addExistingProjectAsset(project.id, outside.id);
-      addCreationsToOpenProject([outside.id]);
+      await addCreationsToOpenProject([outside.id]);
       setCompositeStatus(
-        "Exported one project Asset into the working folder.",
+        "Exported one project Asset.",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1797,7 +1800,7 @@ export function PreviewPane({
           showOutside: false,
         },
       );
-      upsertOpenStillWorkstream(next);
+      await upsertOpenStillWorkstream(next);
       setCompositeStatus("Edit kept inside the composition.");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1826,14 +1829,22 @@ export function PreviewPane({
   const onCompositeSelectNode = useCallback(
     (nodeId: string) => {
       if (!activeWorkstream) return;
-      upsertOpenStillWorkstream(selectWorkstreamNode(activeWorkstream, nodeId));
+      void upsertOpenStillWorkstream(
+        selectWorkstreamNode(activeWorkstream, nodeId),
+      ).catch((error) => {
+        setCompositeError(error instanceof Error ? error.message : String(error));
+      });
     },
     [activeWorkstream, upsertOpenStillWorkstream],
   );
 
   const onCompositeSelectPlate = useCallback(() => {
     if (!activeWorkstream) return;
-    upsertOpenStillWorkstream(selectWorkstreamPlate(activeWorkstream));
+    void upsertOpenStillWorkstream(
+      selectWorkstreamPlate(activeWorkstream),
+    ).catch((error) => {
+      setCompositeError(error instanceof Error ? error.message : String(error));
+    });
   }, [activeWorkstream, upsertOpenStillWorkstream]);
 
   const onCompositeDeleteNode = useCallback(
@@ -1892,7 +1903,7 @@ export function PreviewPane({
         const result = discardWorkstreamNode(activeWorkstream, nodeId);
         // The composition record is authoritative. Remove the run first so a
         // missing/stale cache row cannot make the UI deletion fail.
-        upsertOpenStillWorkstream(result.stream);
+        await upsertOpenStillWorkstream(result.stream);
         if (node.localPath) {
           try {
             await deleteCompositionRun(node.localPath);
@@ -1903,12 +1914,11 @@ export function PreviewPane({
         }
         if (result.creationIdToDelete && shouldDeleteBackingCreation) {
           try {
-            await deleteLocal(result.creationIdToDelete);
+            await deleteLibraryCreation(result.creationIdToDelete);
           } catch (error) {
             cleanupWarning ??=
               error instanceof Error ? error.message : String(error);
           }
-          removeCreationsFromOpenProject([result.creationIdToDelete]);
         }
         setCompositeStatus(
           cleanupWarning
@@ -1927,8 +1937,8 @@ export function PreviewPane({
       addCreationsToOpenProject,
       compositeBusy,
       confirm,
+      deleteLibraryCreation,
       project.id,
-      removeCreationsFromOpenProject,
       upsertOpenStillWorkstream,
     ],
   );
@@ -1983,10 +1993,12 @@ export function PreviewPane({
   const onPickedImageIdsChange = (ids: string[]) => {
     setPickedImageIds(ids);
     if (activeWorkstream) {
-      upsertOpenStillWorkstream({
+      void upsertOpenStillWorkstream({
         ...activeWorkstream,
         memberIds: ids,
         updatedAt: new Date().toISOString(),
+      }).catch((error) => {
+        setCompositeError(error instanceof Error ? error.message : String(error));
       });
     }
     if (selectionIntentMode !== "slideshow") return;

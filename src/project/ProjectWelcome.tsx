@@ -36,6 +36,10 @@ export function ProjectWelcome() {
                     onClick={() => openProject(p.id)}
                   >
                     {p.title}
+                    {p.lifecycle === "provisioning" ||
+                    p.lifecycle === "repair-needed" ? (
+                      <span className="muted"> · Retry setup</span>
+                    ) : null}
                   </button>
                 </li>
               ))}

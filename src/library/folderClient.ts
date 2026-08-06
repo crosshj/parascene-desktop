@@ -9,6 +9,8 @@ export type LibraryFolder = {
   updatedAt: string;
   memberIds: string[];
   memberCount: number;
+  kind: "regular" | "project";
+  projectId: string | null;
 };
 
 export type CloudFolderRow = {
@@ -19,6 +21,7 @@ export type CloudFolderRow = {
   updatedAt: string | null;
   creationIds: string[];
   memberCount: number;
+  meta?: Record<string, unknown>;
 };
 
 export type PendingFolderOp = {
@@ -123,6 +126,19 @@ export function filedIdSet(ids: readonly string[]): Set<string> {
   return new Set(ids);
 }
 
+export function projectIdFromFolderMeta(
+  meta: Record<string, unknown> | null | undefined,
+): string | null {
+  const namespace = meta?.parascene_desktop;
+  if (!namespace || typeof namespace !== "object" || Array.isArray(namespace)) {
+    return null;
+  }
+  const projectId = (namespace as Record<string, unknown>).project_id;
+  return typeof projectId === "string" && projectId.trim()
+    ? projectId.trim()
+    : null;
+}
+
 export function remoteFoldersToCloudRows(
   folders: Array<{
     id: string;
@@ -132,6 +148,7 @@ export function remoteFoldersToCloudRows(
     updated_at: string | null;
     creation_ids: number[];
     member_count: number;
+    meta?: Record<string, unknown>;
   }>,
 ): CloudFolderRow[] {
   return folders.map((folder) => ({
@@ -142,5 +159,9 @@ export function remoteFoldersToCloudRows(
     updatedAt: folder.updated_at,
     creationIds: folder.creation_ids.map(String),
     memberCount: folder.member_count,
+    meta:
+      folder.meta && typeof folder.meta === "object" && !Array.isArray(folder.meta)
+        ? folder.meta
+        : {},
   }));
 }

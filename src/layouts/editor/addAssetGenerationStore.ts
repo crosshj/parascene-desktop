@@ -53,7 +53,7 @@ export type AddAssetGenerationFailure = {
 };
 
 export type AddAssetGenerationApplier = {
-  applySuccess: (result: AddAssetGenerationSuccess) => void;
+  applySuccess: (result: AddAssetGenerationSuccess) => void | Promise<void>;
   /** Persist failure on the placeholder so the timeline ! survives navigation. */
   applyFailure: (result: AddAssetGenerationFailure) => void;
   /** Clear persisted failure when the user dismisses / retries. */
@@ -227,7 +227,7 @@ export function startAddAssetGenerationJob(
       patchSession(clipId, { progressNote });
     },
   })
-    .then((result) => {
+    .then(async (result) => {
       const success: AddAssetGenerationSuccess = {
         projectId,
         clipId,
@@ -241,7 +241,7 @@ export function startAddAssetGenerationJob(
         mode: result.mode,
         model: result.model,
       };
-      applier?.applySuccess(success);
+      await applier?.applySuccess(success);
       // Only clear if this job is still the active session.
       if (session?.clipId === clipId) {
         setSession(null);
@@ -269,7 +269,6 @@ export type RetryAddAssetDownloadJobOpts = {
   clipId: string;
   predictionId: string;
   imagesGroupId: string | null;
-  boundFolderId?: string | null;
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
@@ -288,7 +287,6 @@ export function retryAddAssetDownloadJob(
     clipId,
     predictionId,
     imagesGroupId,
-    boundFolderId,
     prompt,
     lyricsText,
     audioMode,
@@ -321,7 +319,6 @@ export function retryAddAssetDownloadJob(
     predictionId,
     projectId,
     imagesGroupId,
-    boundFolderId,
     continuityMode: continuityMode as ReplicateVideoContinuity,
     modelId,
     onSteps: (steps) => {
@@ -331,7 +328,7 @@ export function retryAddAssetDownloadJob(
       patchSession(clipId, { progressNote });
     },
   })
-    .then((result) => {
+    .then(async (result) => {
       const success: AddAssetGenerationSuccess = {
         projectId,
         clipId,
@@ -345,7 +342,7 @@ export function retryAddAssetDownloadJob(
         mode: result.mode,
         model: result.model,
       };
-      applier?.applySuccess(success);
+      await applier?.applySuccess(success);
       if (session?.clipId === clipId) {
         setSession(null);
       }

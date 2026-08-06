@@ -32,6 +32,7 @@ import {
   normalizeStillWorkstreams,
   type StillWorkstream,
 } from "./stillWorkstream";
+import { normalizeProjectTitle } from "./projectTitle";
 
 /** Parse draft.replicateTweaks without importing editor modules (avoids init cycles). */
 function parseReplicateVideoTweaks(
@@ -77,14 +78,15 @@ import {
 } from "./looks";
 
 export type StoredProject = {
+  schemaVersion?: 2;
   id: string;
   title: string;
   creationIds: string[];
-  /** Local Library folder ids attached to this project; omitted on older projects → []. */
+  /** Legacy attachment ids, read only during reconciliation; omitted → []. */
   folderIds?: string[];
   /**
-   * Bound working folder id (default output landing zone).
-   * Omitted on older projects → null.
+   * Legacy explicit binding used only as open-time reconciliation evidence.
+   * Ready projects clear it; omitted on older projects → null.
    */
   boundFolderId?: string | null;
   /** Still composition workstreams; omitted → []. */
@@ -127,6 +129,10 @@ export type StoredProject = {
   /** MV Concept seed prompt; omitted → null. */
   labStoryboardDirection?: string | null;
   updatedAt: string;
+  /** Opaque project-document revision; distinct from Library/cloud revisions. */
+  documentRevision?: string;
+  /** New-project setup lifecycle. Legacy projects omit this until reconciled. */
+  lifecycle?: "provisioning" | "ready" | "repair-needed";
 };
 
 export const PROJECTS_STORAGE_KEY = "parascene.projects.v1";
@@ -164,6 +170,174 @@ export function loadStoredProjects(): StoredProject[] {
   } catch (error) {
     console.error("[loadStoredProjects] Failed to read projects", error);
     return [];
+  }
+}
+
+/** Strict loader for safety-sensitive operations. Never drops malformed rows. */
+export function loadStoredProjectsStrict(): StoredProject[] {
+  const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Stored projects could not be parsed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("Stored projects are not an array");
+  }
+  return parsed.map((row, index) => {
+    if (!isStoredProject(row)) {
+      throw new Error(`Stored project ${index + 1} is malformed`);
+    }
+    try {
+      const normalized = normalizeStoredProject(row);
+      assertStrictProjectSafetyShape(row, normalized);
+      return normalized;
+    } catch (error) {
+      throw new Error(
+        `Stored project ${row.id} is corrupt: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+}
+
+function strictReferenceIds(value: StoredProject): Set<string> {
+  const project = value as unknown as Record<string, unknown>;
+  const ids = new Set<string>();
+  const add = (candidate: unknown) => {
+    if (typeof candidate === "string" && candidate.trim()) {
+      ids.add(candidate.trim());
+    }
+  };
+  const object = (candidate: unknown): Record<string, unknown> | null =>
+    candidate && typeof candidate === "object"
+      ? (candidate as Record<string, unknown>)
+      : null;
+
+  if (Array.isArray(project.timeline)) {
+    for (const rawClip of project.timeline) {
+      const clip = object(rawClip);
+      if (!clip) continue;
+      add(clip.assetId);
+      const slideshow = object(clip.slideshow);
+      if (Array.isArray(slideshow?.imageAssetIds)) {
+        for (const id of slideshow.imageAssetIds) add(id);
+      }
+      add(slideshow?.audioAssetId);
+      const draft = object(clip.addAssetDraft);
+      const generation = object(clip.addAssetGeneration);
+      add(draft?.startFrameAssetId);
+      add(generation?.startFrameAssetId);
+      add(generation?.creationId);
+    }
+  }
+
+  if (Array.isArray(project.stillWorkstreams)) {
+    for (const rawStream of project.stillWorkstreams) {
+      const stream = object(rawStream);
+      if (!stream) continue;
+      if (Array.isArray(stream.memberIds)) {
+        for (const id of stream.memberIds) add(id);
+      }
+      if (Array.isArray(stream.nodes)) {
+        for (const rawNode of stream.nodes) {
+          const node = object(rawNode);
+          if (!node || node.status === "discarded") continue;
+          add(node.creationId);
+        }
+      }
+    }
+  }
+
+  add(project.mainAudioCreationId);
+  const lyric = object(project.lyricAlignment);
+  add(lyric?.sourceAudioCreationId);
+  const storyboard = object(project.storyboardProposal);
+  add(storyboard?.sourceAudioCreationId);
+  const generationPlan = object(storyboard?.generationPlan);
+  if (Array.isArray(generationPlan?.steps)) {
+    for (const rawStep of generationPlan.steps) {
+      const step = object(rawStep);
+      if (!step) continue;
+      add(step.creationId);
+      add(object(step.stillSource)?.creationId);
+    }
+  }
+  add(project.imagesGroupId);
+  add(project.videosGroupId);
+  return ids;
+}
+
+/**
+ * Safety-sensitive loads may normalize legacy values, but they may never
+ * normalize away a timeline/composition reference. Any unreadable nested row
+ * blocks destructive Library operations until the project is repaired.
+ */
+function assertStrictProjectSafetyShape(
+  raw: StoredProject,
+  normalized: StoredProject,
+): void {
+  const project = raw as unknown as Record<string, unknown>;
+  if (project.timeline !== undefined) {
+    if (!Array.isArray(project.timeline)) {
+      throw new Error("timeline is not an array");
+    }
+    if (normalizeStoredTimeline(project.timeline).length !== project.timeline.length) {
+      throw new Error("timeline contains a malformed clip");
+    }
+  }
+
+  if (project.stillWorkstreams !== undefined) {
+    if (!Array.isArray(project.stillWorkstreams)) {
+      throw new Error("compositions are not an array");
+    }
+    const normalizedStreams = normalizeStillWorkstreams(project.stillWorkstreams);
+    if (normalizedStreams.length !== project.stillWorkstreams.length) {
+      throw new Error("compositions contain a malformed row");
+    }
+    project.stillWorkstreams.forEach((candidate, index) => {
+      const stream = candidate as Record<string, unknown>;
+      if (stream.nodes !== undefined && !Array.isArray(stream.nodes)) {
+        throw new Error(`composition ${index + 1} nodes are not an array`);
+      }
+      if (
+        Array.isArray(stream.nodes) &&
+        normalizedStreams[index]?.nodes.length !== stream.nodes.length
+      ) {
+        throw new Error(`composition ${index + 1} contains a malformed node`);
+      }
+      if (stream.memberIds !== undefined && !Array.isArray(stream.memberIds)) {
+        throw new Error(`composition ${index + 1} members are not an array`);
+      }
+    });
+  }
+
+  if (
+    project.lyricAlignment !== undefined &&
+    project.lyricAlignment !== null &&
+    normalizeLyricAlignment(project.lyricAlignment) === null
+  ) {
+    throw new Error("lyric alignment is malformed");
+  }
+  if (
+    project.storyboardProposal !== undefined &&
+    project.storyboardProposal !== null &&
+    normalizeStoryboardProposal(project.storyboardProposal) === null
+  ) {
+    throw new Error("storyboard is malformed");
+  }
+
+  const normalizedIds = strictReferenceIds(normalized);
+  const omittedIds = [...strictReferenceIds(raw)].filter(
+    (id) => !normalizedIds.has(id),
+  );
+  if (omittedIds.length > 0) {
+    throw new Error(
+      `normalization would omit referenced creation(s): ${omittedIds.join(", ")}`,
+    );
   }
 }
 
@@ -458,15 +632,17 @@ export function normalizeFolderIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [
     ...new Set(
-      value.filter((id): id is string => typeof id === "string" && id.length > 0),
+      value
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => id.trim())
+        .filter(Boolean),
     ),
   ];
 }
 
 function normalizeStoredProject(project: StoredProject): StoredProject {
   const stillWorkstreams = normalizeStillWorkstreams(project.stillWorkstreams);
-  const internalIds = compositionInternalCreationIds(stillWorkstreams);
-  const creationIds = project.creationIds.filter((id) => !internalIds.has(id));
+  const creationIds = [...new Set(project.creationIds.map((id) => id.trim()).filter(Boolean))];
   const aspectRatio = isProjectAspectRatio(project.aspectRatio)
     ? project.aspectRatio
     : DEFAULT_PROJECT_ASPECT_RATIO;
@@ -487,6 +663,16 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
   const boundFolderId = normalizeBoundFolderId(project.boundFolderId, folderIds);
   return {
     ...project,
+    schemaVersion: 2,
+    documentRevision:
+      normalizeOptionalId(project.documentRevision) ??
+      `legacy:${project.id}:${project.updatedAt}`,
+    lifecycle:
+      project.lifecycle === "provisioning" ||
+      project.lifecycle === "repair-needed" ||
+      project.lifecycle === "ready"
+        ? project.lifecycle
+        : undefined,
     creationIds,
     folderIds,
     boundFolderId,
@@ -518,10 +704,7 @@ function normalizeOptionalId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-/**
- * Bound folder must be a real id. Prefer keeping it even if not yet in
- * `folderIds` (caller may attach in the same write); drop empty strings.
- */
+/** Preserve a non-empty legacy binding as reconciliation evidence. */
 function normalizeBoundFolderId(
   value: unknown,
   _folderIds: readonly string[],
@@ -706,7 +889,6 @@ function normalizeOptionalPrompt(value: unknown): string | null {
 }
 
 export function saveStoredProjects(projects: StoredProject[]): void {
-  try {
     // Never clobber a non-empty store with an empty write — usually means a
     // failed load / HMR race, not an intentional delete-all.
     if (projects.length === 0) {
@@ -718,11 +900,12 @@ export function saveStoredProjects(projects: StoredProject[]): void {
         return;
       }
     }
-    localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects));
-  } catch (error) {
-    // ignore quota / private mode
-    console.error("[saveStoredProjects] Failed to persist projects", error);
-  }
+  localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+}
+
+export function nextProjectDocumentRevision(): string {
+  const id = newId();
+  return `doc:${new Date().toISOString()}:${id}`;
 }
 
 export function createStoredProject(
@@ -730,9 +913,10 @@ export function createStoredProject(
   creationIds: string[] = [],
   aspectRatio: ProjectAspectRatio = DEFAULT_PROJECT_ASPECT_RATIO,
 ): StoredProject {
-  const trimmed = title.trim() || "Untitled project";
+  const trimmed = normalizeProjectTitle(title);
   const uniqueIds = [...new Set(creationIds)];
   return {
+    schemaVersion: 2,
     id: newId(),
     title: trimmed,
     creationIds: uniqueIds,
@@ -758,6 +942,27 @@ export function createStoredProject(
     lyricAlignment: null,
     storyboardProposal: null,
     labStoryboardDirection: null,
+    updatedAt: new Date().toISOString(),
+    documentRevision: nextProjectDocumentRevision(),
+    lifecycle: "provisioning",
+  };
+}
+
+export function replaceStoredProjectAssets(
+  project: StoredProject,
+  creationIds: readonly string[],
+): StoredProject {
+  const nextIds = [...new Set(creationIds.map((id) => id.trim()).filter(Boolean))];
+  if (
+    nextIds.length === project.creationIds.length &&
+    nextIds.every((id, index) => id === project.creationIds[index])
+  ) {
+    return project;
+  }
+  return {
+    ...project,
+    creationIds: nextIds,
+    selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -847,119 +1052,6 @@ export function removeCreationIds(
   };
 }
 
-export function mergeFolderIds(
-  project: StoredProject,
-  folderIds: string[],
-  memberCreationIds: string[] = [],
-): StoredProject {
-  if (folderIds.length === 0 && memberCreationIds.length === 0) return project;
-  const nextFolders = new Set(normalizeFolderIds(project.folderIds));
-  for (const id of folderIds) nextFolders.add(id);
-  const nextCreations = new Set(project.creationIds);
-  for (const id of memberCreationIds) nextCreations.add(id);
-  return {
-    ...project,
-    folderIds: [...nextFolders],
-    creationIds: [...nextCreations],
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-export function removeFolderIds(
-  project: StoredProject,
-  folderIds: string[],
-  memberCreationIds: string[] = [],
-): StoredProject {
-  if (folderIds.length === 0 && memberCreationIds.length === 0) return project;
-  const removeFolders = new Set(folderIds);
-  const currentFolders = normalizeFolderIds(project.folderIds);
-  const nextFolders = currentFolders.filter((id) => !removeFolders.has(id));
-  const removeMembers = new Set(memberCreationIds);
-  const nextCreations =
-    removeMembers.size === 0
-      ? project.creationIds
-      : project.creationIds.filter((id) => !removeMembers.has(id));
-  if (
-    nextFolders.length === currentFolders.length &&
-    nextCreations.length === project.creationIds.length
-  ) {
-    return project;
-  }
-  const prevBound = normalizeOptionalId(project.boundFolderId);
-  const nextBound =
-    prevBound && removeFolders.has(prevBound) ? null : prevBound;
-  return {
-    ...project,
-    folderIds: nextFolders,
-    boundFolderId: nextBound,
-    creationIds: nextCreations,
-    selectedAssetId: normalizeSelectedAssetId(
-      project.selectedAssetId,
-      nextCreations,
-    ),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-/**
- * Set or clear the project's bound working folder (one per project).
- * Bind is not attach: the folder becomes the project file container and is
- * removed from `folderIds` if it was previously attached as a folder card.
- * Member creation ids are merged into the project asset pool.
- */
-export function setStoredProjectBoundFolderId(
-  project: StoredProject,
-  folderId: string | null,
-  _memberCreationIds: string[] = [],
-): StoredProject {
-  void _memberCreationIds;
-  const nextBound = normalizeOptionalId(folderId);
-  const prevBound = normalizeOptionalId(project.boundFolderId);
-  if (nextBound === prevBound) {
-    return project;
-  }
-  if (!nextBound) {
-    if (prevBound === null) return project;
-    return {
-      ...project,
-      boundFolderId: null,
-      updatedAt: new Date().toISOString(),
-    };
-  }
-
-  // Drop all attached folder cards — bind is the sole container (no nesting).
-  return {
-    ...project,
-    folderIds: [],
-    boundFolderId: nextBound,
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-/**
- * True when the bound working folder cannot be cleared or replaced because
- * timeline clips still reference its members.
- */
-export function isBoundFolderLockedByTimeline(
-  timeline: readonly TimelineClip[],
-  boundMemberIds: readonly string[],
-): boolean {
-  if (boundMemberIds.length === 0) return false;
-  const members = new Set(
-    boundMemberIds.map((id) => String(id).trim()).filter(Boolean),
-  );
-  if (members.size === 0) return false;
-  for (const clip of timeline) {
-    const assetId = clip.assetId?.trim();
-    if (assetId && members.has(assetId)) return true;
-    const slideIds = clip.slideshow?.imageAssetIds;
-    if (slideIds?.some((id) => members.has(String(id).trim()))) return true;
-    const audioId = clip.slideshow?.audioAssetId?.trim();
-    if (audioId && members.has(audioId)) return true;
-  }
-  return false;
-}
-
 export function upsertStoredStillWorkstream(
   project: StoredProject,
   stream: StillWorkstream,
@@ -999,7 +1091,7 @@ export function renameStoredProject(
   project: StoredProject,
   title: string,
 ): StoredProject {
-  const trimmed = title.trim() || "Untitled project";
+  const trimmed = normalizeProjectTitle(title);
   if (trimmed === project.title) return project;
   return {
     ...project,

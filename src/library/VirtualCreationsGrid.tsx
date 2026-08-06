@@ -133,7 +133,6 @@ export function VirtualCreationsGrid({
   folderCreationsById,
   loadingFolderIds,
   boardColumnLayout,
-  boundFolderId = null,
   onOpen,
   onToggleSelect,
   onOpenFolder,
@@ -160,8 +159,6 @@ export function VirtualCreationsGrid({
   loadingFolderIds?: ReadonlySet<string>;
   /** Optional wider/narrower columns for aspect-focused views (e.g. 16:9 cinema). */
   boardColumnLayout?: BoardColumnLayoutOpts;
-  /** Open project's bound working folder (Library badge only). */
-  boundFolderId?: string | null;
   onOpen: (creation: Creation) => void;
   onToggleSelect: (creation: Creation) => void;
   onOpenFolder?: (folder: LibraryFolder) => void;
@@ -382,7 +379,6 @@ export function VirtualCreationsGrid({
                   <FolderCard
                     folder={card.item.folder}
                     variant="board"
-                    bound={card.item.folder.id === boundFolderId}
                     selected={selectedFolderIds?.has(card.item.folder.id) ?? false}
                     collageMemberIds={
                       folderCollageIdsByFolderId?.get(card.item.folder.id) ??

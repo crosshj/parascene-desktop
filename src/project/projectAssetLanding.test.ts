@@ -1,13 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { importProjectAssetPaths } from "../library/catalogClient";
-import { importLocalPathsForProject } from "./boundFolderLanding";
+import { importLocalPathsForProject } from "./projectAssetLanding";
 
 vi.mock("../library/catalogClient", () => ({
   importProjectAssetPaths: vi.fn(),
-}));
-vi.mock("../library/folderClient", () => ({
-  addToFolder: vi.fn(),
-  getFolder: vi.fn(),
 }));
 
 describe("backend-owned project asset landing", () => {

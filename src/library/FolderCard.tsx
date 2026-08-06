@@ -7,8 +7,6 @@ import type { Creation } from "./types";
 type FolderCardProps = {
   folder: LibraryFolder;
   selected?: boolean;
-  /** Highlight as the project's bound working folder. */
-  bound?: boolean;
   /** Square board tile that fills the masonry cell. */
   variant?: "default" | "board";
   /** Members to show in the collage (defaults to the first folder members). */
@@ -97,7 +95,6 @@ function FolderCollage({
 export const FolderCard = memo(function FolderCard({
   folder,
   selected = false,
-  bound = false,
   variant = "default",
   collageMemberIds,
   creationsById,
@@ -112,7 +109,7 @@ export const FolderCard = memo(function FolderCard({
   return (
     <button
       type="button"
-      className={`folder-card${isBoard ? " is-board" : ""}${selected ? " is-selected" : ""}${bound ? " is-bound" : ""}`}
+      className={`folder-card${isBoard ? " is-board" : ""}${selected ? " is-selected" : ""}${folder.kind === "project" ? " is-project" : ""}`}
       onClick={(event) => {
         if (event.shiftKey && onToggleSelect) {
           event.preventDefault();
@@ -136,7 +133,7 @@ export const FolderCard = memo(function FolderCard({
       </div>
       <span className="folder-card-title">{folder.title}</span>
       <span className="folder-card-meta muted">
-        {bound ? "Working · " : ""}
+        {folder.kind === "project" ? "Project · " : ""}
         {memberCount} {memberCount === 1 ? "item" : "items"}
       </span>
     </button>

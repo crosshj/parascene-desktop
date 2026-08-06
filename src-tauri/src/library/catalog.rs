@@ -1,6 +1,6 @@
 use super::paths::{default_root, ensure_directories, resolve_paths, ParascenePaths};
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -189,7 +189,9 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           title TEXT NOT NULL,
           description TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'regular',
+          project_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS folder_items (
@@ -221,6 +223,31 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           added_at TEXT NOT NULL,
           PRIMARY KEY (project_id, creation_id)
         );
+
+        CREATE TABLE IF NOT EXISTS project_asset_usage (
+          project_id TEXT NOT NULL,
+          creation_id TEXT NOT NULL,
+          usage_kind TEXT NOT NULL,
+          usage_owner_id TEXT NOT NULL,
+          usage_owner_label TEXT NOT NULL,
+          document_revision TEXT NOT NULL,
+          PRIMARY KEY (project_id, creation_id, usage_kind, usage_owner_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS project_asset_usage_creation_idx
+          ON project_asset_usage(creation_id);
+
+        CREATE TABLE IF NOT EXISTS project_usage_revisions (
+          project_id TEXT PRIMARY KEY NOT NULL,
+          document_revision TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('stale', 'ready')),
+          indexed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS project_membership_revisions (
+          project_id TEXT PRIMARY KEY NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0
+        );
         "#,
     )
     .map_err(|e| format!("Catalog migrate failed: {e}"))?;
@@ -243,6 +270,8 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE creations ADD COLUMN remote_json TEXT",
         "ALTER TABLE creations ADD COLUMN fit_thumbnail_url TEXT",
         "ALTER TABLE project_library_bindings ADD COLUMN binding_known INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE folders ADD COLUMN kind TEXT NOT NULL DEFAULT 'regular'",
+        "ALTER TABLE folders ADD COLUMN project_id TEXT",
     ] {
         let _ = conn.execute(ddl, []);
     }
@@ -255,7 +284,9 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           title TEXT NOT NULL,
           description TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'regular',
+          project_id TEXT
         );
         CREATE TABLE IF NOT EXISTS folder_items (
           folder_id TEXT NOT NULL,
@@ -281,6 +312,27 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           added_at TEXT NOT NULL,
           PRIMARY KEY (project_id, creation_id)
         );
+        CREATE TABLE IF NOT EXISTS project_asset_usage (
+          project_id TEXT NOT NULL,
+          creation_id TEXT NOT NULL,
+          usage_kind TEXT NOT NULL,
+          usage_owner_id TEXT NOT NULL,
+          usage_owner_label TEXT NOT NULL,
+          document_revision TEXT NOT NULL,
+          PRIMARY KEY (project_id, creation_id, usage_kind, usage_owner_id)
+        );
+        CREATE INDEX IF NOT EXISTS project_asset_usage_creation_idx
+          ON project_asset_usage(creation_id);
+        CREATE TABLE IF NOT EXISTS project_usage_revisions (
+          project_id TEXT PRIMARY KEY NOT NULL,
+          document_revision TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('stale', 'ready')),
+          indexed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS project_membership_revisions (
+          project_id TEXT PRIMARY KEY NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS jobs (
           id TEXT PRIMARY KEY NOT NULL,
           kind TEXT NOT NULL,
@@ -301,6 +353,32 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           ON jobs(project_id);
         "#,
     );
+
+    conn.execute_batch(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS folders_project_id_unique
+          ON folders(project_id) WHERE project_id IS NOT NULL;
+        CREATE TRIGGER IF NOT EXISTS folders_project_shape_insert
+        BEFORE INSERT ON folders
+        WHEN NOT (
+          (NEW.kind = 'regular' AND NEW.project_id IS NULL) OR
+          (NEW.kind = 'project' AND NEW.project_id IS NOT NULL AND length(trim(NEW.project_id)) > 0)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid project folder identity');
+        END;
+        CREATE TRIGGER IF NOT EXISTS folders_project_shape_update
+        BEFORE UPDATE OF kind, project_id ON folders
+        WHEN NOT (
+          (NEW.kind = 'regular' AND NEW.project_id IS NULL) OR
+          (NEW.kind = 'project' AND NEW.project_id IS NOT NULL AND length(trim(NEW.project_id)) > 0)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid project folder identity');
+        END;
+        "#,
+    )
+    .map_err(|e| format!("Project folder schema migrate failed: {e}"))?;
 
     // Jobs may be missing on catalogs created before the generation queue.
     let _ = conn.execute_batch(
@@ -1306,6 +1384,54 @@ pub(crate) fn delete_creation_local(
     paths: &ParascenePaths,
     id: &str,
 ) -> Result<(), String> {
+    let audit_unavailable: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM project_usage_revisions WHERE state != 'ready'
+               UNION ALL
+               SELECT 1 FROM folders f
+               WHERE f.kind = 'project' AND NOT EXISTS (
+                 SELECT 1 FROM project_usage_revisions r WHERE r.project_id = f.project_id
+               )
+               UNION ALL
+               SELECT 1 FROM project_library_bindings b
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM project_usage_revisions r WHERE r.project_id = b.project_id
+               )
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Could not verify project usage index: {e}"))?;
+    if audit_unavailable {
+        return Err(
+            "Library deletion is unavailable until every project usage index is ready".into(),
+        );
+    }
+    let uses: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM project_asset_usage WHERE creation_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Could not verify project usage: {e}"))?;
+    if uses > 0 {
+        return Err("This creation is used by a project and cannot be deleted".into());
+    }
+    let project_owner: Option<String> = conn
+        .query_row(
+            "SELECT f.project_id FROM folder_items fi JOIN folders f ON f.id = fi.folder_id
+             WHERE fi.creation_id = ?1 AND f.kind = 'project' LIMIT 1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Could not verify project membership: {e}"))?;
+    if let Some(project_id) = project_owner {
+        return Err(format!(
+            "This creation belongs to project {project_id}. Remove it from the project before deleting it."
+        ));
+    }
     let creation =
         get_creation_by_id(conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?;
     remove_file_under_root(&paths.media, creation.local_path.as_deref());

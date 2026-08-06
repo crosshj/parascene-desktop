@@ -12,13 +12,11 @@ import {
 import { listFolders, type LibraryFolder } from "../library/folderClient";
 import {
   loadStoredProjects,
-  mergeCreationIds,
   normalizeFolderIds,
   normalizeStoredTimeline,
-  removeCreationIds,
-  saveStoredProjects,
   type StoredProject,
 } from "./projectStore";
+import { mutateStoredProjects } from "./projectMutationCoordinator";
 
 function cabinetIdsFor(project: StoredProject): string[] {
   return [project.imagesGroupId, project.videosGroupId]
@@ -185,23 +183,40 @@ export async function reconcileStoredProjectsFromLibrary(
   const next: StoredProject[] = [];
 
   for (const project of projects) {
-    const extraneous = await collectExtraneousExpandedGroupMemberIds(
-      project,
-      folders,
+    const canonical = folders.find(
+      (folder) =>
+        folder.kind === "project" && folder.projectId === project.id,
     );
-    let working =
-      extraneous.length > 0 ? removeCreationIds(project, extraneous) : project;
-    if (extraneous.length > 0) {
-      creationsRemoved += extraneous.length;
+    if (!canonical) {
+      // Unresolved legacy projects are reconciled only by the deterministic
+      // open path. Background sync must not guess their ownership.
+      next.push(project);
+      continue;
     }
+    const previous = new Set(project.creationIds);
+    const canonicalIds = [...new Set(canonical.memberIds)];
+    const canonicalSet = new Set(canonicalIds);
+    creationsRemoved += project.creationIds.filter(
+      (id) => !canonicalSet.has(id),
+    ).length;
+    creationsMerged += canonicalIds.filter((id) => !previous.has(id)).length;
+    const changed =
+      canonicalIds.length !== project.creationIds.length ||
+      canonicalIds.some((id, index) => id !== project.creationIds[index]) ||
+      (project.folderIds?.length ?? 0) > 0 ||
+      Boolean(project.boundFolderId);
+    const working = changed
+      ? {
+          ...project,
+          creationIds: canonicalIds,
+          folderIds: [],
+          boundFolderId: null,
+          lifecycle: "ready" as const,
+          updatedAt: new Date().toISOString(),
+        }
+      : project;
 
-    const missing = await collectCreationIdsToMergeForProject(working, folders);
-    if (missing.length > 0) {
-      working = mergeCreationIds(working, missing);
-      creationsMerged += missing.length;
-    }
-
-    if (working !== project) {
+    if (changed) {
       projectsUpdated += 1;
     }
     next.push(working);
@@ -218,7 +233,7 @@ export async function reconcileAndSaveStoredProjects(): Promise<ReconcileProject
   const loaded = loadStoredProjects();
   const { projects, result } = await reconcileStoredProjectsFromLibrary(loaded);
   if (result.projectsUpdated > 0) {
-    saveStoredProjects(projects);
+    await mutateStoredProjects(() => projects);
   }
   return result;
 }

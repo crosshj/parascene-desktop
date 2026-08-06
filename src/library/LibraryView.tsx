@@ -17,12 +17,10 @@ import { useAuth } from "../auth/AuthProvider";
 import { isSessionReauthError } from "../auth/errors";
 import { useShell } from "../app/ShellProvider";
 import type { LibrarySurface } from "../app/shellSession";
-import { isBoundFolderLockedByTimeline } from "../project/projectStore";
 import { CreationsFilterEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
   folderConflictKindLabel,
-  syncLibraryFolders,
   type FolderConflict,
   type FolderSyncResult,
 } from "../sync/folderSync";
@@ -71,8 +69,6 @@ import { LibraryPageSkeleton } from "./LibraryLoadingSkeleton";
 import {
   cacheMissingMedia,
   cacheMissingThumbs,
-  deleteLocal,
-  deleteProjectAsset,
   ensureLocal,
   getCatalogFilterCounts,
   getCreation,
@@ -84,8 +80,6 @@ import {
   listCreationsPage,
   listGroupMemberIds,
   mergeCreationsById,
-  removeProjectAssets,
-  setProjectBoundFolder,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
 import { FolderCreateModal } from "./FolderCreateModal";
@@ -220,7 +214,7 @@ function CatalogSyncButton({
 }
 
 function useCatalog(librarySurface: LibrarySurface) {
-  const { reconcileProjectsAfterLibrarySync } = useShell();
+  const { reconcileProjectsAfterLibrarySync, syncProjectFolders } = useShell();
   const [creations, setCreations] = useState<Creation[] | null>(null);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -482,7 +476,7 @@ function useCatalog(librarySurface: LibrarySurface) {
       resolutions?: Record<string, "local" | "cloud">;
       priorConflicts?: FolderConflict[];
     }) => {
-      const folderResult = await syncLibraryFolders(opts);
+      const folderResult = await syncProjectFolders(opts);
       setFolderSyncResult(folderResult);
       if (folderResult.conflicts.length > 0) {
         setFolderConflicts(folderResult.conflicts);
@@ -500,7 +494,7 @@ function useCatalog(librarySurface: LibrarySurface) {
       await refreshFolderSync();
       return folderResult;
     },
-    [refreshFolderSync],
+    [refreshFolderSync, syncProjectFolders],
   );
 
   const pushActivity = useCallback((event: SyncItemEvent) => {
@@ -1219,12 +1213,14 @@ function CreationsPanel({
   const {
     setChromeStatus,
     openProjectId,
+    openProject,
+    recentProjects,
     project,
     createProject,
-    addCreationsToOpenProject,
-    removeCreationsFromOpenProject,
-    addFoldersToOpenProject,
-    setOpenProjectBoundFolderId,
+    renameProject,
+    addCreationsToProject,
+    removeCreationsFromProject,
+    deleteLibraryCreation,
     creationsFilterId,
     setCreationsFilterId,
   } = useShell();
@@ -1232,28 +1228,9 @@ function CreationsPanel({
 
   const deleteCreationFromLibrary = useCallback(
     async (creationId: string) => {
-      const boundId = project.boundFolderId?.trim();
-      const isBoundProjectAsset = Boolean(boundId) &&
-        project.assets.some((asset) => asset.id === creationId);
-      if (!isBoundProjectAsset) {
-        await deleteLocal(creationId);
-        return;
-      }
-      const used = project.timeline.some(
-        (clip) =>
-          clip.assetId === creationId ||
-          clip.slideshow?.audioAssetId === creationId ||
-          clip.slideshow?.imageAssetIds.includes(creationId),
-      );
-      if (used) {
-        throw new Error(
-          "This project asset is used on the timeline. Remove its clips first, then delete it.",
-        );
-      }
-      await deleteProjectAsset(project.id, creationId);
-      removeCreationsFromOpenProject([creationId]);
+      await deleteLibraryCreation(creationId);
     },
-    [project.assets, project.boundFolderId, project.id, project.timeline, removeCreationsFromOpenProject],
+    [deleteLibraryCreation],
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(
@@ -1283,6 +1260,7 @@ function CreationsPanel({
   const [folderFilterFetchedKey, setFolderFilterFetchedKey] = useState("");
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [pickFolderOpen, setPickFolderOpen] = useState(false);
+  const [pickProjectFolderOpen, setPickProjectFolderOpen] = useState(false);
   const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
   /** Sidebar highlight — updates immediately on click. */
   const [sidebarFilters, setSidebarFilters] = useState<CreationFilterToggles>(
@@ -1312,6 +1290,10 @@ function CreationsPanel({
   const [dragging, setDragging] = useState(false);
   const [catalogCounts, setCatalogCounts] = useState<CatalogFilterCounts | null>(
     null,
+  );
+  const localProjectIds = useMemo(
+    () => new Set(recentProjects.map((recent) => recent.id)),
+    [recentProjects],
   );
   const [deferredKeepIds, setDeferredKeepIds] = useState<Set<string>>(
     () => new Set(),
@@ -1547,8 +1529,12 @@ function CreationsPanel({
 
   const projectFolderIds = useMemo(() => {
     if (!openProjectId) return new Set<string>();
-    return new Set(project.folderIds);
-  }, [openProjectId, project.folderIds]);
+    return new Set(
+      folders
+        .filter((folder) => folder.projectId === openProjectId)
+        .map((folder) => folder.id),
+    );
+  }, [folders, openProjectId]);
 
   const filterCounts = useMemo(
     () => mergeFilterCounts(catalogCounts, selectedIds, inProjectIds),
@@ -1949,12 +1935,69 @@ function CreationsPanel({
     setDeferredKeepIds(new Set());
   }, [createProject, selectedIds]);
 
+  const fileSelectionInProject = useCallback(
+    async (projectId: string, ids: string[]) => {
+      return addCreationsToProject(projectId, ids);
+    },
+    [addCreationsToProject],
+  );
+
   const onAddSelectionToProject = useCallback(() => {
-    if (!openProjectId || selectedIds.size === 0) return;
-    addCreationsToOpenProject([...selectedIds]);
-    setSelectedIds(new Set());
-    setDeferredKeepIds(new Set());
-  }, [addCreationsToOpenProject, openProjectId, selectedIds]);
+    if (selectedIds.size === 0) return;
+    const projectFolders = folders.filter(
+      (folder) =>
+        folder.kind === "project" &&
+        folder.projectId &&
+        localProjectIds.has(folder.projectId),
+    );
+    const openFolder = projectFolders.find(
+      (folder) => folder.projectId === openProjectId,
+    );
+    if (openFolder?.projectId) {
+      void fileSelectionInProject(openFolder.projectId, [...selectedIds])
+        .then((result) => {
+          if (!result) return;
+          setSelectedIds(new Set());
+          setDeferredKeepIds(new Set());
+          return refreshFolders();
+        })
+        .catch((error) => {
+          window.alert(error instanceof Error ? error.message : String(error));
+        });
+      return;
+    }
+    if (projectFolders.length === 1 && projectFolders[0]?.projectId) {
+      void fileSelectionInProject(projectFolders[0].projectId, [...selectedIds])
+        .then((result) => {
+          if (!result) return;
+          setSelectedIds(new Set());
+          setDeferredKeepIds(new Set());
+          return refreshFolders();
+        })
+        .catch((error) => {
+          window.alert(error instanceof Error ? error.message : String(error));
+        });
+      return;
+    }
+    setPickProjectFolderOpen(true);
+  }, [fileSelectionInProject, folders, localProjectIds, openProjectId, refreshFolders, selectedIds]);
+
+  const onAddSelectionToClosedProject = useCallback(
+    async (folder: LibraryFolder) => {
+      if (!folder.projectId || selectedIds.size === 0) return;
+      try {
+        const result = await fileSelectionInProject(folder.projectId, [...selectedIds]);
+        if (!result) return;
+        setPickProjectFolderOpen(false);
+        setSelectedIds(new Set());
+        setDeferredKeepIds(new Set());
+        await refreshFolders();
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [fileSelectionInProject, refreshFolders, selectedIds],
+  );
 
   const onCreateFolderFromSelection = useCallback(
     async (title: string) => {
@@ -1992,24 +2035,8 @@ function CreationsPanel({
     if (selectedIds.size === 0) return;
     try {
       const ids = [...selectedIds];
-      const isBoundFolder = Boolean(folderViewId) &&
-        folderViewId === project.boundFolderId?.trim();
-      if (isBoundFolder) {
-        const used = ids.filter((id) =>
-          project.timeline.some(
-            (clip) =>
-              clip.assetId === id ||
-              clip.slideshow?.audioAssetId === id ||
-              clip.slideshow?.imageAssetIds.includes(id),
-          ),
-        );
-        if (used.length > 0) {
-          throw new Error(
-            "One or more selected project assets are used on the timeline. Remove their clips first.",
-          );
-        }
-        await removeProjectAssets(project.id, ids);
-        removeCreationsFromOpenProject(ids);
+      if (folderView?.kind === "project" && folderView.projectId) {
+        await removeCreationsFromProject(folderView.projectId, ids);
       } else {
         await removeFromFolder(ids);
       }
@@ -2020,101 +2047,23 @@ function CreationsPanel({
       console.error(error);
       window.alert(error instanceof Error ? error.message : String(error));
     }
-  }, [folderViewId, project.boundFolderId, project.id, project.timeline, refreshFolders, removeCreationsFromOpenProject, selectedIds]);
-
-  const onAddSelectedFoldersToProject = useCallback(() => {
-    if (!openProjectId || selectedFolderIds.size === 0) return;
-    if (project.boundFolderId?.trim()) return;
-    const chosen = folders.filter((folder) => selectedFolderIds.has(folder.id));
-    const folderIds = chosen.map((folder) => folder.id);
-    const memberIds = [
-      ...new Set(chosen.flatMap((folder) => folder.memberIds)),
-    ];
-    addFoldersToOpenProject(folderIds, memberIds);
-    setSelectedFolderIds(new Set());
-  }, [
-    addFoldersToOpenProject,
-    folders,
-    openProjectId,
-    project.boundFolderId,
-    selectedFolderIds,
-  ]);
-
-  const onBindSelectedFolderToProject = useCallback(() => {
-    if (!openProjectId || selectedFolderIds.size !== 1) return;
-    if (project.boundFolderId?.trim()) return;
-    const folderId = [...selectedFolderIds][0];
-    const folder = folders.find((row) => row.id === folderId);
-    if (!folder) return;
-    void setProjectBoundFolder(project.id, folder.id).then(() => {
-      setOpenProjectBoundFolderId(folder.id);
-      setSelectedFolderIds(new Set());
-    });
-  }, [
-    folders,
-    openProjectId,
-    project.boundFolderId,
-    project.id,
-    selectedFolderIds,
-    setOpenProjectBoundFolderId,
-  ]);
-
-  const onUnbindWorkingFolder = useCallback(() => {
-    if (!openProjectId) return;
-    const boundId = project.boundFolderId?.trim();
-    if (!boundId || selectedFolderIds.size !== 1) return;
-    if (![...selectedFolderIds][0] || [...selectedFolderIds][0] !== boundId) {
-      return;
-    }
-    const folder = folders.find((row) => row.id === boundId);
-    const locked = isBoundFolderLockedByTimeline(
-      project.timeline,
-      folder?.memberIds ?? [],
-    );
-    if (locked) {
-      window.alert(
-        "Files from this folder are still used on the timeline. Remove those clips first, then unbind.",
-      );
-      return;
-    }
-    void setProjectBoundFolder(project.id, null).then(() => {
-      setOpenProjectBoundFolderId(null);
-      setSelectedFolderIds(new Set());
-    });
-  }, [
-    folders,
-    openProjectId,
-    project.boundFolderId,
-    project.id,
-    project.timeline,
-    selectedFolderIds,
-    setOpenProjectBoundFolderId,
-  ]);
-
-  const onAddSelectionToWorkingFolder = useCallback(async () => {
-    if (!openProjectId || selectedIds.size === 0) return;
-    const boundId = project.boundFolderId?.trim();
-    if (!boundId) return;
-    try {
-      await addToFolder(boundId, [...selectedIds]);
-      addCreationsToOpenProject([...selectedIds]);
-      setSelectedIds(new Set());
-      setDeferredKeepIds(new Set());
-      await refreshFolders();
-    } catch (error) {
-      console.error(error);
-    }
-  }, [
-    addCreationsToOpenProject,
-    openProjectId,
-    project.boundFolderId,
-    refreshFolders,
-    selectedIds,
-  ]);
+  }, [folderView, refreshFolders, removeCreationsFromProject, selectedIds]);
 
   const onSaveFolderEdit = useCallback(
     async (title: string, description: string) => {
       if (!editFolder) return;
+      if (editFolder.kind === "project") {
+        if (!editFolder.projectId) return;
+        try {
+          await renameProject(editFolder.projectId, title);
+          setEditFolder(null);
+          await refreshFolders();
+        } catch (error) {
+          console.error(error);
+          window.alert(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
       try {
         await renameFolder(editFolder.id, title, description);
         setEditFolder(null);
@@ -2123,7 +2072,7 @@ function CreationsPanel({
         console.error(error);
       }
     },
-    [editFolder, refreshFolders],
+    [editFolder, refreshFolders, renameProject],
   );
 
   useEffect(() => {
@@ -2230,39 +2179,25 @@ function CreationsPanel({
             onToggle={onToggleFilter}
             selectedCount={selectedIds.size}
             selectedFolderCount={selectedFolderIds.size}
-            hasOpenProject={Boolean(openProjectId)}
-            hasBoundFolder={Boolean(project.boundFolderId?.trim())}
-            selectedFolderIsBound={
-              selectedFolderIds.size === 1 &&
-              Boolean(project.boundFolderId?.trim()) &&
-              [...selectedFolderIds][0] === project.boundFolderId?.trim()
-            }
-            boundFolderLocked={
-              Boolean(project.boundFolderId?.trim()) &&
-              isBoundFolderLockedByTimeline(
-                project.timeline,
-                folders.find((f) => f.id === project.boundFolderId?.trim())
-                  ?.memberIds ?? [],
-              )
-            }
+            hasOpenProject={folders.some(
+              (folder) =>
+                folder.kind === "project" &&
+                Boolean(folder.projectId) &&
+                localProjectIds.has(folder.projectId as string),
+            )}
             inFolderView={Boolean(folderView)}
+            folderViewLocked={Boolean(
+              folderView?.kind === "project" &&
+                (!folderView.projectId || !localProjectIds.has(folderView.projectId)),
+            )}
             hasFolders={folders.length > 0 || seedFolders.length > 0}
             onNewProject={onNewProjectFromSelection}
             onAddToProject={onAddSelectionToProject}
             onNewFolder={() => setCreateFolderOpen(true)}
-            onAddToFolder={
-              project.boundFolderId?.trim()
-                ? () => {
-                    void onAddSelectionToWorkingFolder();
-                  }
-                : () => setPickFolderOpen(true)
-            }
+            onAddToFolder={() => setPickFolderOpen(true)}
             onRemoveFromFolder={() => {
               void onRemoveSelectionFromFolder();
             }}
-            onAddFolderToProject={onAddSelectedFoldersToProject}
-            onBindFolderToProject={onBindSelectedFolderToProject}
-            onUnbindFolderFromProject={onUnbindWorkingFolder}
             onClearSelection={onClearSelection}
             onAddFromDisk={onImportFromDisk}
             importing={importing}
@@ -2306,19 +2241,61 @@ function CreationsPanel({
                 <span className="library-folder-crumb-name">
                   {folderView.title}
                 </span>
-                <button
-                  type="button"
-                  className="library-folder-edit"
-                  aria-label="Edit folder"
-                  onClick={() => setEditFolder(folderView)}
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
-                    <path
-                      fill="currentColor"
-                      d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
-                    />
-                  </svg>
-                </button>
+                {folderView.kind === "regular" ? (
+                  <button
+                    type="button"
+                    className="library-folder-edit"
+                    aria-label="Edit folder"
+                    onClick={() => setEditFolder(folderView)}
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                      <path
+                        fill="currentColor"
+                        d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
+                      />
+                    </svg>
+                  </button>
+                ) : (
+                  <>
+                    <span className="folder-project-badge">Project</span>
+                    {folderView.projectId &&
+                    localProjectIds.has(folderView.projectId) ? (
+                      <button
+                        type="button"
+                        className="library-folder-edit"
+                        aria-label="Rename project"
+                        onClick={() => setEditFolder(folderView)}
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                          <path
+                            fill="currentColor"
+                            d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
+                          />
+                        </svg>
+                      </button>
+                    ) : null}
+                    {folderView.projectId &&
+                    recentProjects.some(
+                      (recent) => recent.id === folderView.projectId,
+                    ) ? (
+                      <button
+                        type="button"
+                        className="linkish"
+                        onClick={() => {
+                          if (folderView.projectId) {
+                            void openProject(folderView.projectId);
+                          }
+                        }}
+                      >
+                        Open project
+                      </button>
+                    ) : (
+                      <span className="muted">
+                        Project unavailable on this device
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
             ) : null}
             {gridBlank ||
@@ -2356,7 +2333,6 @@ function CreationsPanel({
                 folderMemberCountsByFolderId={folderMemberCountsByFolderId}
                 folderCreationsById={folderFilterCreationsById}
                 boardColumnLayout={boardColumnLayout}
-                boundFolderId={openProjectId ? project.boundFolderId : null}
                 onOpen={(creation) => {
                   setActive(creation);
                   if (
@@ -2406,7 +2382,7 @@ function CreationsPanel({
             ) : null}
             {pickFolderOpen ? (
               <FolderPickModal
-                folders={folders}
+                folders={folders.filter((folder) => folder.kind === "regular")}
                 creationsById={folderFilterCreationsById}
                 selectedCount={selectedIds.size}
                 onCancel={() => setPickFolderOpen(false)}
@@ -2415,9 +2391,27 @@ function CreationsPanel({
                 }}
               />
             ) : null}
+            {pickProjectFolderOpen ? (
+              <FolderPickModal
+                title="Add to project"
+                folders={folders.filter(
+                  (folder) =>
+                    folder.kind === "project" &&
+                    Boolean(folder.projectId) &&
+                    localProjectIds.has(folder.projectId as string),
+                )}
+                creationsById={folderFilterCreationsById}
+                selectedCount={selectedIds.size}
+                onCancel={() => setPickProjectFolderOpen(false)}
+                onPick={(folder) => {
+                  void onAddSelectionToClosedProject(folder);
+                }}
+              />
+            ) : null}
             {editFolder ? (
               <FolderEditModal
                 folder={editFolder}
+                entityKind={editFolder.kind === "project" ? "project" : "folder"}
                 onCancel={() => setEditFolder(null)}
                 onSave={(title, description) => {
                   void onSaveFolderEdit(title, description);

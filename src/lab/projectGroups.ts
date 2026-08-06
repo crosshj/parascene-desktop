@@ -44,10 +44,13 @@ import {
   type DesktopProjectGroupRole,
 } from "../project/desktopProjectGroups";
 import {
-  loadStoredProjects,
-  saveStoredProjects,
+  replaceStoredProjectAssets,
   setStoredProjectGroupIds,
 } from "../project/projectStore";
+import {
+  mutateStoredProjectsWithNativeMutation,
+} from "../project/projectMutationCoordinator";
+import { addProjectAssets } from "../project/projectFolderClient";
 import { ingestRemoteCreation } from "./ingestCreation";
 import {
   resolveLabAnimatePrompt,
@@ -837,6 +840,10 @@ export async function fileCreationIntoProjectGroup(opts: {
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
   });
+  // The cloud cabinet and its selectable member are both real project assets.
+  // File them into the canonical native project root before any caller writes
+  // a cabinet pointer or timeline reference.
+  await addProjectAssets(opts.projectId, [groupId, opts.creationId]);
   return {
     groupId,
     message: existing
@@ -960,7 +967,7 @@ export async function dedupeDesktopProjectCabinets(opts?: {
   if (duplicateBuckets.length === 0) {
     messages.push("No duplicate desktop cabinets found.");
     applyCabinetPointersFromBuckets(buckets, projectUpdates, messages);
-    persistProjectCabinetUpdates(projectUpdates, messages);
+    await persistProjectCabinetUpdates(projectUpdates, messages);
     return {
       messages,
       keeperIds: buckets.flatMap((b) => b.coverIds),
@@ -1062,7 +1069,7 @@ export async function dedupeDesktopProjectCabinets(opts?: {
 
   const singles = buckets.filter((b) => b.coverIds.length === 1);
   applyCabinetPointersFromBuckets(singles, projectUpdates, messages);
-  persistProjectCabinetUpdates(projectUpdates, messages);
+  await persistProjectCabinetUpdates(projectUpdates, messages);
   onProgress(
     `Dedupe finished: ${mergedOrphanIds.length} orphan(s) merged, ${keeperIds.length} keeper(s).`,
   );
@@ -1098,10 +1105,10 @@ function applyCabinetPointersFromBuckets(
   }
 }
 
-function persistProjectCabinetUpdates(
+async function persistProjectCabinetUpdates(
   updates: DedupeDesktopCabinetsResult["projectUpdates"],
   messages: string[],
-): void {
+): Promise<void> {
   if (updates.length === 0) return;
   const byProject = new Map<
     string,
@@ -1115,25 +1122,38 @@ function persistProjectCabinetUpdates(
       videosGroupId: u.videosGroupId ?? prev.videosGroupId,
     });
   }
-  const projects = loadStoredProjects();
-  let changed = false;
-  const next = projects.map((project) => {
-    const patch = byProject.get(project.id);
-    if (!patch) return project;
-    changed = true;
-    return setStoredProjectGroupIds(project, {
-      ...(patch.imagesGroupId !== undefined
-        ? { imagesGroupId: patch.imagesGroupId }
-        : {}),
-      ...(patch.videosGroupId !== undefined
-        ? { videosGroupId: patch.videosGroupId }
-        : {}),
-    });
-  });
-  if (changed) {
-    saveStoredProjects(next);
-    messages.push(`Updated group ids on ${byProject.size} project(s).`);
-  }
+  await mutateStoredProjectsWithNativeMutation(
+    async () => {
+      const memberIdsByProject = new Map<string, string[]>();
+      for (const patch of byProject.values()) {
+        const ids = [patch.imagesGroupId, patch.videosGroupId].filter(
+          (id): id is string => Boolean(id?.trim()),
+        );
+        if (ids.length === 0) continue;
+        const result = await addProjectAssets(patch.projectId, ids);
+        memberIdsByProject.set(patch.projectId, result.folder.memberIds);
+      }
+      return memberIdsByProject;
+    },
+    (projects, memberIdsByProject) =>
+      projects.map((project) => {
+        const patch = byProject.get(project.id);
+        if (!patch) return project;
+        const members = memberIdsByProject.get(project.id);
+        const withMembers = members
+          ? replaceStoredProjectAssets(project, members)
+          : project;
+        return setStoredProjectGroupIds(withMembers, {
+          ...(patch.imagesGroupId !== undefined
+            ? { imagesGroupId: patch.imagesGroupId }
+            : {}),
+          ...(patch.videosGroupId !== undefined
+            ? { videosGroupId: patch.videosGroupId }
+            : {}),
+        });
+      }),
+  );
+  messages.push(`Updated group ids on ${byProject.size} project(s).`);
 }
 
 async function loadExistingMemberIds(

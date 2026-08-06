@@ -20,6 +20,46 @@ import {
 export const LIBRARY_FOLDER_OPS_MAX = 100;
 export const LIBRARY_FOLDER_CREATION_IDS_MAX = 500;
 
+function projectMeta(projectId: string): Record<string, unknown> {
+  return { parascene_desktop: { project_id: projectId } };
+}
+
+/** One-release adapter for pending ops written by the pre-metadata desktop build. */
+function normalizePendingOperation(
+  operation: LibraryFolderOperation,
+): LibraryFolderOperation {
+  const raw = operation as unknown as Record<string, unknown>;
+  const projectId =
+    typeof raw.project_id === "string" && raw.project_id.trim()
+      ? raw.project_id.trim()
+      : null;
+  if (raw.op === "claim_project" && projectId) {
+    return {
+      op: "update",
+      id: String(raw.id),
+      title: typeof raw.title === "string" ? raw.title : undefined,
+      meta: projectMeta(projectId),
+      project_id: projectId,
+    };
+  }
+  if (raw.op === "create" || raw.op === "update") {
+    const { kind: _kind, project_id: _legacyProjectId, ...rest } = raw;
+    return {
+      ...(rest as unknown as LibraryFolderOperation),
+      ...(projectId
+        ? {
+            meta:
+              raw.meta && typeof raw.meta === "object" && !Array.isArray(raw.meta)
+                ? (raw.meta as Record<string, unknown>)
+                : projectMeta(projectId),
+            project_id: projectId,
+          }
+        : {}),
+    } as LibraryFolderOperation;
+  }
+  return operation;
+}
+
 export type FolderConflictKind =
   | "folder_meta"
   | "creation_move"
@@ -56,6 +96,7 @@ function asRemote(folder: RemoteLibraryFolder | CloudFolderRow): {
   title: string;
   description: string;
   creationIds: string[];
+  meta: Record<string, unknown>;
 } {
   if ("creation_ids" in folder) {
     return {
@@ -63,6 +104,7 @@ function asRemote(folder: RemoteLibraryFolder | CloudFolderRow): {
       title: folder.title,
       description: folder.description,
       creationIds: folder.creation_ids.map(String),
+      meta: folder.meta ?? {},
     };
   }
   return {
@@ -70,6 +112,7 @@ function asRemote(folder: RemoteLibraryFolder | CloudFolderRow): {
     title: folder.title,
     description: folder.description,
     creationIds: folder.creationIds.map(String),
+    meta: folder.meta ?? {},
   };
 }
 
@@ -119,6 +162,7 @@ function splitLargeMoveOps(
         op: "move",
         folder_id: op.folder_id,
         creation_ids: ids.slice(i, i + LIBRARY_FOLDER_CREATION_IDS_MAX),
+        ...(op.project_id ? { project_id: op.project_id } : {}),
       });
     }
   }
@@ -149,6 +193,7 @@ function splitLargeCreateOps(
         op: "move",
         folder_id: op.id,
         creation_ids: rest.slice(i, i + LIBRARY_FOLDER_CREATION_IDS_MAX),
+        ...(op.project_id ? { project_id: op.project_id } : {}),
       });
     }
   }
@@ -163,7 +208,9 @@ export function prepareOpsForUpload(
   const seqs: number[] = [];
   const expanded: LibraryFolderOperation[] = [];
   for (const row of pending) {
-    const prepared = splitLargeMoveOps(splitLargeCreateOps([row.op]));
+    const prepared = splitLargeMoveOps(
+      splitLargeCreateOps([normalizePendingOperation(row.op)]),
+    );
     for (const op of prepared) {
       expanded.push(op);
       seqs.push(row.seq);
@@ -212,6 +259,7 @@ export function detectFolderConflicts(
           member_count: (op.creation_ids ?? []).length,
           created_at: null,
           updated_at: null,
+          meta: op.meta ?? {},
         });
         const cloudRow = asRemote(cloudFolder);
         if (
@@ -250,15 +298,20 @@ export function detectFolderConflicts(
       const cloudRow = asRemote(cloudFolder);
       const cloudChanged =
         cloudRow.title !== baseRow.title ||
-        cloudRow.description !== baseRow.description;
+        cloudRow.description !== baseRow.description ||
+        JSON.stringify(cloudRow.meta) !== JSON.stringify(baseRow.meta);
       const localTitle = op.title ?? baseRow.title;
       const localDescription = op.description ?? baseRow.description;
+      const localMeta = op.meta ?? baseRow.meta;
       const localChanged =
-        localTitle !== baseRow.title || localDescription !== baseRow.description;
+        localTitle !== baseRow.title ||
+        localDescription !== baseRow.description ||
+        JSON.stringify(localMeta) !== JSON.stringify(baseRow.meta);
       if (cloudChanged && localChanged) {
         const same =
           localTitle === cloudRow.title &&
-          localDescription === cloudRow.description;
+          localDescription === cloudRow.description &&
+          JSON.stringify(localMeta) === JSON.stringify(cloudRow.meta);
         if (!same) {
           push({
             id: `folder_meta:${op.id}`,
@@ -345,7 +398,11 @@ export function applyConflictResolutions(
   const kept: LibraryFolderOperation[] = [];
   for (const row of pending) {
     const op = row.op;
-    if (op.op === "create" || op.op === "update" || op.op === "delete") {
+    if (
+      op.op === "create" ||
+      op.op === "update" ||
+      op.op === "delete"
+    ) {
       if (dropFolderIds.has(op.id)) continue;
       kept.push(op);
       continue;
@@ -440,7 +497,11 @@ export async function syncLibraryFolders(opts?: {
       cloud.revision,
       remoteFoldersToCloudRows(cloud.folders),
     );
-    return resultFromState(state, { ok: true, uploadedBatches: 0 });
+    // Native snapshot reconciliation may enqueue marker/title/membership
+    // repairs for a locally owned project. Upload them in this same Sync pass.
+    if (state.pendingOps.length === 0) {
+      return resultFromState(state, { ok: true, uploadedBatches: 0 });
+    }
   }
 
   const localRevision = state.revision;

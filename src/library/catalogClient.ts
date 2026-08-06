@@ -198,6 +198,17 @@ export async function deleteLocal(id: string): Promise<SyncStatus> {
   return invoke<SyncStatus>("library_delete_local", { id });
 }
 
+/** Delete after the native all-project usage/membership check. */
+export async function deleteCreationChecked(
+  id: string,
+  auditedProjectIds: readonly string[],
+): Promise<SyncStatus> {
+  return invoke<SyncStatus>("library_delete_creation_checked", {
+    creationId: id,
+    auditedProjectIds: [...auditedProjectIds],
+  });
+}
+
 export type ImportLocalResult = {
   imported: number;
   cancelled: boolean;
@@ -221,26 +232,6 @@ export async function importLocalPaths(
   });
 }
 
-export async function setProjectBoundFolder(
-  projectId: string,
-  folderId: string | null,
-  creationIds: string[] = [],
-): Promise<void> {
-  return invoke("library_set_project_bound_folder", {
-    projectId,
-    folderId,
-    creationIds,
-  });
-}
-
-export async function getProjectBoundFolder(
-  projectId: string,
-): Promise<string | null> {
-  return invoke<string | null>("library_get_project_bound_folder", {
-    projectId,
-  });
-}
-
 /** Backend-routed project asset write; the frontend never supplies a folder. */
 export async function importProjectAssetPaths(
   projectId: string,
@@ -254,26 +245,6 @@ export async function importProjectAssetPaths(
 
 export async function listProjectAssetIds(projectId: string): Promise<string[]> {
   return invoke<string[]>("library_list_project_asset_ids", { projectId });
-}
-
-export async function deleteProjectAsset(
-  projectId: string,
-  creationId: string,
-): Promise<SyncStatus> {
-  return invoke<SyncStatus>("library_delete_project_asset", {
-    projectId,
-    creationId,
-  });
-}
-
-export async function addExistingProjectAsset(
-  projectId: string,
-  creationId: string,
-): Promise<void> {
-  return invoke("library_add_existing_project_asset", {
-    projectId,
-    creationId,
-  });
 }
 
 export async function removeProjectAssets(

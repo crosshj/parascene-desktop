@@ -7,6 +7,8 @@ const store = new Map<string, string>();
 
 let fixtureCreations: Array<Record<string, unknown>> = [];
 
+let fixtureProjectFolders = new Map<string, Record<string, unknown>>();
+
 let fixtureSyncStatus = {
   rootPath: "/tmp/Movies/Parascene",
   lastSyncAt: null as string | null,
@@ -29,14 +31,14 @@ let fixtureSyncStatus = {
 
 let oauthCallback: { code: string; state: string | null } | null = null;
 
-const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }) => {
-  if (cmd === "keychain_get") return store.get(args?.key ?? "") ?? null;
+const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+  if (cmd === "keychain_get") return store.get(String(args?.key ?? "")) ?? null;
   if (cmd === "keychain_set") {
-    store.set(args?.key ?? "", args?.value ?? "");
+    store.set(String(args?.key ?? ""), String(args?.value ?? ""));
     return null;
   }
   if (cmd === "keychain_delete") {
-    store.delete(args?.key ?? "");
+    store.delete(String(args?.key ?? ""));
     return null;
   }
   if (cmd === "cancel_oauth_listener") return null;
@@ -100,6 +102,9 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
   if (cmd === "library_list_creations") {
     return fixtureCreations;
   }
+  if (cmd === "library_list_filter_creations") {
+    return fixtureCreations;
+  }
   if (cmd === "library_list_creations_page") {
     return {
       creations: fixtureCreations,
@@ -125,12 +130,54 @@ const invoke = vi.fn(async (cmd: string, args?: { key?: string; value?: string }
       aspect169: 0,
     };
   }
+  if (cmd === "library_list_folders") {
+    return [...fixtureProjectFolders.values()];
+  }
   if (
-    cmd === "library_list_folders" ||
     cmd === "library_list_filed_creation_ids" ||
     cmd === "library_list_group_member_ids"
   ) {
     return [];
+  }
+  if (
+    cmd === "library_repair_project_usage" ||
+    cmd === "library_replace_project_usage" ||
+    cmd === "library_mark_project_usage_stale"
+  ) {
+    return null;
+  }
+  if (cmd === "library_provision_project_folder") {
+    const projectId = String(args?.projectId ?? "");
+    const creationIds = Array.isArray(args?.creationIds)
+      ? args.creationIds.map(String)
+      : [];
+    const folder = {
+      id: `folder-${projectId}`,
+      title: String(args?.title ?? "Untitled project"),
+      description: "",
+      createdAt: "2026-08-06T12:00:00.000Z",
+      updatedAt: "2026-08-06T12:00:00.000Z",
+      memberIds: creationIds,
+      memberCount: creationIds.length,
+      kind: "project",
+      projectId,
+    };
+    fixtureProjectFolders.set(projectId, folder);
+    return { folder, membershipRevision: 1, missingCreationIds: [] };
+  }
+  if (cmd === "library_reconcile_legacy_project_folder") {
+    const projectId = String(args?.projectId ?? "");
+    const folder = fixtureProjectFolders.get(projectId);
+    if (!folder) throw new Error(`missing fixture project folder: ${projectId}`);
+    return {
+      status: "ready",
+      folder,
+      resolution: "marked",
+      blockers: [],
+      missingCreationIds: [],
+      bindingProblem: null,
+      membershipRevision: 1,
+    };
   }
   if (
     cmd === "library_folder_sync_state" ||
@@ -208,6 +255,7 @@ describe("auth shell", () => {
     localStorage.clear();
     oauthCallback = null;
     fixtureCreations = [];
+    fixtureProjectFolders = new Map();
     fixtureSyncStatus = {
       rootPath: "/tmp/Movies/Parascene",
       lastSyncAt: null,
@@ -282,9 +330,11 @@ describe("auth shell", () => {
     expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "New project" }));
-    expect(screen.getByLabelText("Video preview")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Video preview")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Director" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Editor" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Editor" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publisher" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Labs" })).toBeInTheDocument();
 
@@ -331,7 +381,7 @@ describe("auth shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Project" }));
     await user.click(screen.getByRole("button", { name: "New project" }));
-    await user.click(screen.getByRole("button", { name: "Editor" }));
+    await user.click(await screen.findByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Library" }));
@@ -348,7 +398,9 @@ describe("auth shell", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Editor" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Editor" }),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();

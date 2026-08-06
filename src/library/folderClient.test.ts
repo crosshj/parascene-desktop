@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filedIdSet,
   omitFiledCreations,
+  projectIdFromFolderMeta,
   remoteFoldersToCloudRows,
 } from "./folderClient";
 
@@ -36,6 +37,7 @@ describe("remoteFoldersToCloudRows", () => {
           updated_at: "2026-07-18T20:05:00.000Z",
           creation_ids: [101, 102],
           member_count: 2,
+          meta: {},
         },
       ]),
     ).toEqual([
@@ -47,7 +49,18 @@ describe("remoteFoldersToCloudRows", () => {
         updatedAt: "2026-07-18T20:05:00.000Z",
         creationIds: ["101", "102"],
         memberCount: 2,
+        meta: {},
       },
     ]);
+  });
+
+  it("reads the opaque desktop project marker without treating other metadata as ownership", () => {
+    expect(
+      projectIdFromFolderMeta({
+        parascene_desktop: { project_id: "project-1" },
+        color: "blue",
+      }),
+    ).toBe("project-1");
+    expect(projectIdFromFolderMeta({ color: "blue" })).toBeNull();
   });
 });

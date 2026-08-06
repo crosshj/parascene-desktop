@@ -698,8 +698,43 @@ input[type="checkbox"].control,
   font-size: 0.72rem;
 }
 
-.folder-card.is-bound .folder-card-meta {
+.folder-card.is-project .folder-card-meta {
   color: var(--text, inherit);
+}
+
+.folder-card.is-project {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.folder-project-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  color: var(--text);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.025em;
+}
+
+.editor-outside-reference-warning {
+  position: absolute;
+  z-index: 20;
+  top: 0.45rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  max-width: min(42rem, calc(100% - 2rem));
+  padding: 0.4rem 0.65rem;
+  border: 1px solid color-mix(in srgb, #f6b94f 55%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, #2c200b 90%, var(--surface));
+  color: var(--text);
+  font-size: 0.78rem;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.35);
 }
 
 .folder-edit-dialog {

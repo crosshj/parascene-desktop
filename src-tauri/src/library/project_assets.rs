@@ -1,52 +1,542 @@
 use super::catalog::{
     default_paths, delete_creation_local, ready_connection, sync_status_for, SyncStatus,
 };
-use super::folders::{emit_folders_updated, list_folders};
-use super::folders::move_creations_into_folder;
+use super::folders::{
+    emit_folders_updated, enqueue_op, get_folder, list_folders, move_creations_into_folder,
+    normalize_project_title, project_folder_meta, remove_from_folder, remove_from_project_folder,
+    LibraryFolder,
+};
 use super::import_local::{import_paths, ImportLocalResult};
+use chrono::Utc;
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
 
-fn resolve_project_folder(
-    conn: &rusqlite::Connection,
-    project_id: &str,
-) -> Result<Option<String>, String> {
-    let stored: Option<(Option<String>, bool)> = conn
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAssetUsageInput {
+    pub creation_id: String,
+    pub usage_kind: String,
+    pub usage_owner_id: String,
+    pub usage_owner_label: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAssetUsageBlocker {
+    pub project_id: String,
+    pub creation_id: String,
+    pub usage_kind: String,
+    pub usage_owner_id: String,
+    pub usage_owner_label: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolderBlockerGroup {
+    pub folder_id: Option<String>,
+    pub folder_title: String,
+    pub project_id: Option<String>,
+    pub creation_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolderReconcileResult {
+    pub status: String,
+    pub folder: Option<LibraryFolder>,
+    pub resolution: Option<String>,
+    pub blockers: Vec<ProjectFolderBlockerGroup>,
+    pub missing_creation_ids: Vec<String>,
+    pub binding_problem: Option<String>,
+    pub membership_revision: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAssetMutationResult {
+    pub folder: LibraryFolder,
+    pub membership_revision: i64,
+    pub missing_creation_ids: Vec<String>,
+}
+
+fn project_folder(conn: &Connection, project_id: &str) -> Result<Option<LibraryFolder>, String> {
+    let id: Option<String> = conn
         .query_row(
-            "SELECT folder_id, binding_known FROM project_library_bindings WHERE project_id = ?1",
-            [project_id],
-            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+            "SELECT id FROM folders WHERE kind = 'project' AND project_id = ?1 LIMIT 1",
+            params![project_id],
+            |row| row.get(0),
         )
-        .ok();
-    if let Some((folder_id, true)) = stored {
-        return Ok(folder_id);
-    }
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT fi.folder_id
-             FROM project_assets pa
-             JOIN folder_items fi ON fi.creation_id = pa.creation_id
-             WHERE pa.project_id = ?1 LIMIT 2",
+        .optional()
+        .map_err(|e| e.to_string())?;
+    id.map(|id| get_folder(conn, &id))
+        .transpose()
+        .map(|folder| folder.flatten())
+}
+
+fn required_project_folder(conn: &Connection, project_id: &str) -> Result<LibraryFolder, String> {
+    project_folder(conn, project_id)?.ok_or_else(|| {
+        format!("Project {project_id} does not have a ready project folder. Reopen the project to repair it.")
+    })
+}
+
+fn require_local_project_document(conn: &Connection, project_id: &str) -> Result<(), String> {
+    let known: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_usage_revisions WHERE project_id = ?1)",
+            params![project_id],
+            |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    let folders = stmt
-        .query_map([project_id], |row| row.get::<_, String>(0))
+    if known {
+        Ok(())
+    } else {
+        Err(format!(
+            "Project {project_id} is unavailable on this device and cannot be modified"
+        ))
+    }
+}
+
+fn replace_project_asset_cache(
+    conn: &Connection,
+    project_id: &str,
+    creation_ids: &[String],
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM project_assets WHERE project_id = ?1",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    for creation_id in creation_ids {
+        conn.execute(
+            "INSERT INTO project_assets(project_id, creation_id, added_at) VALUES (?1, ?2, ?3)",
+            params![project_id, creation_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn increment_membership_revision(conn: &Connection, project_id: &str) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO project_membership_revisions(project_id, revision) VALUES (?1, 1)
+         ON CONFLICT(project_id) DO UPDATE SET revision = revision + 1",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT revision FROM project_membership_revisions WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn mark_membership_mirror_stale(conn: &Connection, project_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE project_usage_revisions SET state = 'stale', indexed_at = NULL
+         WHERE project_id = ?1",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn queue_cloud_move(
+    conn: &Connection,
+    folder_id: Option<&str>,
+    ids: &[String],
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    let cloud_ids: Vec<i64> = ids
+        .iter()
+        .filter_map(|id| id.trim().parse::<i64>().ok())
+        .filter(|id| *id > 0)
+        .collect();
+    if cloud_ids.is_empty() {
+        return Ok(());
+    }
+    let mut op = json!({ "op": "move", "folder_id": folder_id, "creation_ids": cloud_ids });
+    if let Some(project_id) = project_id {
+        op["project_id"] = json!(project_id);
+    }
+    enqueue_op(conn, op)
+}
+
+fn create_marked_project_folder(
+    conn: &Connection,
+    project_id: &str,
+    title: &str,
+) -> Result<LibraryFolder, String> {
+    if let Some(folder) = project_folder(conn, project_id)? {
+        let title = normalize_project_title(title);
+        if folder.title == title {
+            return Ok(folder);
+        }
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE folders SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title, now, folder.id],
+        )
+        .map_err(|e| e.to_string())?;
+        enqueue_op(
+            conn,
+            json!({
+                "op": "update",
+                "id": folder.id,
+                "title": title,
+                "description": folder.description,
+                "meta": project_folder_meta(project_id),
+                "project_id": project_id,
+            }),
+        )?;
+        return get_folder(conn, &folder.id)?
+            .ok_or_else(|| "Project folder disappeared after title repair".into());
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let title = normalize_project_title(title);
+    conn.execute(
+        "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+         VALUES (?1, ?2, '', ?3, ?3, 'project', ?4)",
+        params![id, title, now, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    enqueue_op(
+        conn,
+        json!({
+            "op": "create",
+            "id": id,
+            "title": title,
+            "description": "",
+            "meta": project_folder_meta(project_id),
+            "project_id": project_id,
+        }),
+    )?;
+    get_folder(conn, &id)?.ok_or_else(|| "Project folder disappeared after create".into())
+}
+
+fn claim_regular_folder(
+    conn: &Connection,
+    folder_id: &str,
+    project_id: &str,
+    title: &str,
+) -> Result<LibraryFolder, String> {
+    let existing = get_folder(conn, folder_id)?.ok_or_else(|| "Folder not found".to_string())?;
+    if existing.kind == "project" && existing.project_id.as_deref() != Some(project_id) {
+        return Err(format!(
+            "Folder is owned by project {}",
+            existing.project_id.unwrap_or_default()
+        ));
+    }
+    let now = Utc::now().to_rfc3339();
+    let title = normalize_project_title(title);
+    conn.execute(
+        "UPDATE folders SET title = ?1, kind = 'project', project_id = ?2, updated_at = ?3
+         WHERE id = ?4",
+        params![title, project_id, now, folder_id],
+    )
+    .map_err(|e| e.to_string())?;
+    enqueue_op(
+        conn,
+        json!({
+            "op": "update",
+            "id": folder_id,
+            "project_id": project_id,
+            "title": title,
+            "description": existing.description,
+            "meta": project_folder_meta(project_id),
+        }),
+    )?;
+    get_folder(conn, folder_id)?.ok_or_else(|| "Project folder disappeared after claim".into())
+}
+
+fn creation_location(
+    conn: &Connection,
+    creation_id: &str,
+) -> Result<Option<Option<String>>, String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM creations WHERE id = ?1)",
+            params![creation_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Ok(None);
+    }
+    let folder: Option<String> = conn
+        .query_row(
+            "SELECT folder_id FROM folder_items WHERE creation_id = ?1 LIMIT 1",
+            params![creation_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(Some(folder))
+}
+
+fn blocker_result(
+    conn: &Connection,
+    locations: &BTreeMap<Option<String>, Vec<String>>,
+    missing: Vec<String>,
+    binding_problem: Option<String>,
+) -> Result<ProjectFolderReconcileResult, String> {
+    let mut blockers = Vec::new();
+    for (folder_id, creation_ids) in locations {
+        let (title, owner) = match folder_id {
+            Some(id) => match get_folder(conn, id)? {
+                Some(folder) => (folder.title, folder.project_id),
+                None => ("Missing folder".into(), None),
+            },
+            None => ("Library root".into(), None),
+        };
+        blockers.push(ProjectFolderBlockerGroup {
+            folder_id: folder_id.clone(),
+            folder_title: title,
+            project_id: owner,
+            creation_ids: creation_ids.clone(),
+        });
+    }
+    Ok(ProjectFolderReconcileResult {
+        status: "blocked".into(),
+        folder: None,
+        resolution: None,
+        blockers,
+        missing_creation_ids: missing,
+        binding_problem,
+        membership_revision: None,
+    })
+}
+
+fn finish_reconcile(
+    conn: &Connection,
+    project_id: &str,
+    folder: LibraryFolder,
+    resolution: &str,
+) -> Result<ProjectFolderReconcileResult, String> {
+    let mut cached_stmt = conn
+        .prepare(
+            "SELECT creation_id FROM project_assets WHERE project_id = ?1 ORDER BY creation_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let cached = cached_stmt
+        .query_map(params![project_id], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    drop(stmt);
-    if folders.len() != 1 {
-        return Ok(None);
-    }
+    drop(cached_stmt);
+    let mut canonical = folder.member_ids.clone();
+    canonical.sort();
+    let membership_mirror_changed = cached != canonical;
+    replace_project_asset_cache(conn, project_id, &folder.member_ids)?;
     conn.execute(
-        "INSERT INTO project_library_bindings(project_id, folder_id, binding_known) VALUES (?1, ?2, 1)
-         ON CONFLICT(project_id) DO UPDATE SET folder_id = excluded.folder_id, binding_known = 1",
-        rusqlite::params![project_id, folders[0]],
+        "DELETE FROM project_library_bindings WHERE project_id = ?1",
+        params![project_id],
     )
     .map_err(|e| e.to_string())?;
-    Ok(folders.into_iter().next())
+    if membership_mirror_changed {
+        mark_membership_mirror_stale(conn, project_id)?;
+    }
+    let membership_revision = increment_membership_revision(conn, project_id)?;
+    Ok(ProjectFolderReconcileResult {
+        status: "ready".into(),
+        folder: Some(folder),
+        resolution: Some(resolution.into()),
+        blockers: Vec::new(),
+        missing_creation_ids: Vec::new(),
+        binding_problem: None,
+        membership_revision: Some(membership_revision),
+    })
 }
 
+#[tauri::command]
+pub fn library_reconcile_legacy_project_folder(
+    app: AppHandle,
+    project_id: String,
+    title: String,
+    bound_folder_ids: Vec<String>,
+    legacy_asset_ids: Vec<String>,
+) -> Result<ProjectFolderReconcileResult, String> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err("Project id is required".into());
+    }
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+
+    if let Some(marked) = project_folder(&transaction, project_id)? {
+        let canonical_title = normalize_project_title(&title);
+        let folder = if marked.title != canonical_title {
+            let now = Utc::now().to_rfc3339();
+            transaction
+                .execute(
+                    "UPDATE folders SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![canonical_title, now, marked.id],
+                )
+                .map_err(|e| e.to_string())?;
+            enqueue_op(
+                &transaction,
+                json!({
+                    "op": "update",
+                    "id": marked.id,
+                    "title": canonical_title,
+                    "description": marked.description,
+                    "meta": project_folder_meta(project_id),
+                    "project_id": project_id,
+                }),
+            )?;
+            get_folder(&transaction, &marked.id)?
+                .ok_or_else(|| "Marked project folder disappeared".to_string())?
+        } else {
+            marked
+        };
+        let result = finish_reconcile(&transaction, project_id, folder, "marked")?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        emit_folders_updated(&app, &list_folders(&conn)?);
+        return Ok(result);
+    }
+
+    let native_bound: Option<String> = transaction
+        .query_row(
+            "SELECT folder_id FROM project_library_bindings
+             WHERE project_id = ?1 AND binding_known = 1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let mut bindings: BTreeSet<String> = bound_folder_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if let Some(id) = native_bound {
+        bindings.insert(id);
+    }
+    let mut binding_problem = None;
+    if bindings.len() == 1 {
+        let id = bindings.iter().next().expect("one binding");
+        if let Some(folder) = get_folder(&transaction, id)? {
+            if folder.kind == "regular" || folder.project_id.as_deref() == Some(project_id) {
+                let folder = claim_regular_folder(&transaction, id, project_id, &title)?;
+                let result = finish_reconcile(&transaction, project_id, folder, "bound")?;
+                transaction.commit().map_err(|e| e.to_string())?;
+                emit_folders_updated(&app, &list_folders(&conn)?);
+                return Ok(result);
+            }
+            binding_problem = Some(format!(
+                "The bound folder belongs to project {}",
+                folder.project_id.unwrap_or_else(|| "(unknown)".into())
+            ));
+        } else {
+            binding_problem = Some(format!("The bound folder {id} no longer exists"));
+        }
+    } else if bindings.len() > 1 {
+        binding_problem = Some(format!(
+            "Project records disagree about the bound folder: {}",
+            bindings.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    let mut legacy_ids: BTreeSet<String> = legacy_asset_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    let mut legacy_stmt = transaction
+        .prepare("SELECT creation_id FROM project_assets WHERE project_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let cached_ids = legacy_stmt
+        .query_map(params![project_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(legacy_stmt);
+    legacy_ids.extend(cached_ids);
+    if legacy_ids.is_empty() {
+        let folder = create_marked_project_folder(&transaction, project_id, &title)?;
+        let result = finish_reconcile(&transaction, project_id, folder, "empty")?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        emit_folders_updated(&app, &list_folders(&conn)?);
+        return Ok(result);
+    }
+
+    let mut missing = Vec::new();
+    let mut locations: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
+    for id in legacy_ids {
+        match creation_location(&transaction, &id)? {
+            None => missing.push(id),
+            Some(location) => locations.entry(location).or_default().push(id),
+        }
+    }
+    if !missing.is_empty() || locations.len() != 1 {
+        return blocker_result(&transaction, &locations, missing, binding_problem);
+    }
+
+    let (location, ids) = locations.iter().next().expect("one location");
+    let (folder, resolution) = match location {
+        None => {
+            let folder = create_marked_project_folder(&transaction, project_id, &title)?;
+            move_creations_into_folder(&transaction, &folder.id, ids, &Utc::now().to_rfc3339())?;
+            queue_cloud_move(&transaction, Some(&folder.id), ids, Some(project_id))?;
+            (
+                get_folder(&transaction, &folder.id)?.ok_or_else(|| {
+                    "Project folder disappeared while filing root assets".to_string()
+                })?,
+                "all-root",
+            )
+        }
+        Some(folder_id) => {
+            let candidate = get_folder(&transaction, folder_id)?
+                .ok_or_else(|| "Candidate folder disappeared".to_string())?;
+            if candidate.kind == "project" && candidate.project_id.as_deref() != Some(project_id) {
+                return blocker_result(&transaction, &locations, missing, binding_problem);
+            }
+            (
+                claim_regular_folder(&transaction, folder_id, project_id, &title)?,
+                "single-folder",
+            )
+        }
+    };
+    let result = finish_reconcile(&transaction, project_id, folder, resolution)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn library_get_project_folder(project_id: String) -> Result<LibraryFolder, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    required_project_folder(&conn, project_id.trim())
+}
+
+#[tauri::command]
+pub fn library_get_project_bound_folder(project_id: String) -> Result<Option<String>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    if let Some(folder) = project_folder(&conn, project_id.trim())? {
+        return Ok(Some(folder.id));
+    }
+    conn.query_row(
+        "SELECT folder_id FROM project_library_bindings WHERE project_id = ?1 AND binding_known = 1",
+        params![project_id.trim()],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|row| row.flatten())
+    .map_err(|e| e.to_string())
+}
+
+/// Compatibility-only writer retained for one release. New UI does not expose binding.
 #[tauri::command]
 pub fn library_set_project_bound_folder(
     project_id: String,
@@ -59,35 +549,27 @@ pub fn library_set_project_bound_folder(
     }
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    let folder_id = folder_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
-    if let Some(folder_id) = folder_id {
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM folders WHERE id = ?1)",
-                [folder_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if !exists {
-            return Err("Bound folder was not found".into());
-        }
+    if project_folder(&conn, project_id)?.is_some() {
+        return Err("Ready projects cannot be rebound".into());
     }
+    let folder_id = folder_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
     conn.execute(
         "INSERT INTO project_library_bindings(project_id, folder_id, binding_known) VALUES (?1, ?2, 1)
          ON CONFLICT(project_id) DO UPDATE SET folder_id = excluded.folder_id, binding_known = 1",
-        rusqlite::params![project_id, folder_id],
+        params![project_id, folder_id],
     )
     .map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().to_rfc3339();
-    for creation_id in creation_ids {
-        let creation_id = creation_id.trim();
-        if creation_id.is_empty() {
+    for id in creation_ids {
+        let id = id.trim();
+        if id.is_empty() {
             continue;
         }
         conn.execute(
-            "INSERT OR IGNORE INTO project_assets(project_id, creation_id, added_at)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![project_id, creation_id, now],
+            "INSERT OR IGNORE INTO project_assets(project_id, creation_id, added_at) VALUES (?1, ?2, ?3)",
+            params![project_id, id, Utc::now().to_rfc3339()],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -95,14 +577,39 @@ pub fn library_set_project_bound_folder(
 }
 
 #[tauri::command]
-pub fn library_get_project_bound_folder(project_id: String) -> Result<Option<String>, String> {
+pub fn library_rename_project(
+    app: AppHandle,
+    project_id: String,
+    title: String,
+) -> Result<LibraryFolder, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    resolve_project_folder(&conn, project_id.trim())
+    require_local_project_document(&conn, project_id.trim())?;
+    let folder = required_project_folder(&conn, project_id.trim())?;
+    let title = normalize_project_title(&title);
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE folders SET title = ?1, updated_at = ?2 WHERE id = ?3",
+        params![title, now, folder.id],
+    )
+    .map_err(|e| e.to_string())?;
+    enqueue_op(
+        &conn,
+        json!({
+            "op": "update",
+            "id": folder.id,
+            "title": title,
+            "description": folder.description,
+            "meta": project_folder_meta(project_id.trim()),
+            "project_id": project_id.trim(),
+        }),
+    )?;
+    let updated =
+        get_folder(&conn, &folder.id)?.ok_or_else(|| "Project folder not found".to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(updated)
 }
 
-/// The project id is the only ownership input. Folder routing is resolved from
-/// backend state and committed with the Library row and project membership.
 #[tauri::command]
 pub fn library_import_project_asset_paths(
     app: AppHandle,
@@ -115,29 +622,220 @@ pub fn library_import_project_asset_paths(
     }
     let catalog_paths = default_paths()?;
     let conn = ready_connection(&catalog_paths)?;
-    let folder_id = resolve_project_folder(&conn, project_id)?;
+    require_local_project_document(&conn, project_id)?;
+    let folder = required_project_folder(&conn, project_id)?;
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    import_paths(
-        &app,
-        &files,
-        folder_id.as_deref(),
-        Some(project_id),
-    )
+    import_paths(&app, &files, Some(&folder.id), Some(project_id))
 }
 
 #[tauri::command]
 pub fn library_list_project_asset_ids(project_id: String) -> Result<Vec<String>, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT creation_id FROM project_assets WHERE project_id = ?1 ORDER BY added_at",
+    Ok(required_project_folder(&conn, project_id.trim())?.member_ids)
+}
+
+fn usage_blockers(
+    conn: &Connection,
+    project_id: &str,
+    creation_ids: &[String],
+) -> Result<Vec<ProjectAssetUsageBlocker>, String> {
+    let revision: Option<(String, String)> = conn
+        .query_row(
+            "SELECT document_revision, state FROM project_usage_revisions WHERE project_id = ?1",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
+        .optional()
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([project_id.trim()], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    if revision.as_ref().map(|(_, state)| state.as_str()) != Some("ready") {
+        return Err(format!("Project {project_id} usage index is not ready"));
+    }
+    let mut out = Vec::new();
+    for creation_id in creation_ids {
+        let mut stmt = conn
+            .prepare(
+                "SELECT creation_id, usage_kind, usage_owner_id, usage_owner_label
+                 FROM project_asset_usage WHERE project_id = ?1 AND creation_id = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id, creation_id], |row| {
+                Ok(ProjectAssetUsageBlocker {
+                    project_id: project_id.to_string(),
+                    creation_id: row.get(0)?,
+                    usage_kind: row.get(1)?,
+                    usage_owner_id: row.get(2)?,
+                    usage_owner_label: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(out)
+}
+
+fn add_project_assets_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    creation_ids: &[String],
+    allow_cross_project_move: bool,
+) -> Result<ProjectAssetMutationResult, String> {
+    require_local_project_document(transaction, project_id)?;
+    let folder = required_project_folder(transaction, project_id)?;
+    let mut source_projects: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in creation_ids {
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM creations WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Err(format!("Creation {id} was not found"));
+        }
+        let source_project: Option<String> = transaction
+            .query_row(
+                "SELECT f.project_id FROM folder_items fi JOIN folders f ON f.id = fi.folder_id
+                 WHERE fi.creation_id = ?1 AND f.kind = 'project' AND f.project_id != ?2 LIMIT 1",
+                params![id, project_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(source_project) = source_project {
+            if !allow_cross_project_move {
+                return Err(format!(
+                    "Creation {id} belongs to project {source_project}. Confirm moving it to this project."
+                ));
+            }
+            let blockers = usage_blockers(transaction, &source_project, std::slice::from_ref(id))?;
+            if !blockers.is_empty() {
+                return Err(format!(
+                    "Creation {id} is used by project {source_project} and cannot be moved"
+                ));
+            }
+            source_projects
+                .entry(source_project)
+                .or_default()
+                .push(id.clone());
+        }
+    }
+    let now = Utc::now().to_rfc3339();
+    move_creations_into_folder(transaction, &folder.id, creation_ids, &now)?;
+    // The server protects each project marker independently. Release a
+    // cross-project source with its own assertion before filing into the target.
+    for (source_project, source_ids) in &source_projects {
+        queue_cloud_move(transaction, None, source_ids, Some(source_project.as_str()))?;
+    }
+    queue_cloud_move(
+        transaction,
+        Some(&folder.id),
+        creation_ids,
+        Some(project_id),
+    )?;
+    let updated = get_folder(transaction, &folder.id)?
+        .ok_or_else(|| "Project folder not found after filing".to_string())?;
+    replace_project_asset_cache(transaction, project_id, &updated.member_ids)?;
+    for source_project in source_projects.keys() {
+        let source_folder = required_project_folder(transaction, source_project)?;
+        replace_project_asset_cache(transaction, source_project, &source_folder.member_ids)?;
+        mark_membership_mirror_stale(transaction, source_project)?;
+        increment_membership_revision(transaction, source_project)?;
+    }
+    let revision = increment_membership_revision(transaction, project_id)?;
+    Ok(ProjectAssetMutationResult {
+        folder: updated,
+        membership_revision: revision,
+        missing_creation_ids: Vec::new(),
+    })
+}
+
+#[tauri::command]
+pub fn library_provision_project_folder(
+    app: AppHandle,
+    project_id: String,
+    title: String,
+    creation_ids: Vec<String>,
+) -> Result<ProjectAssetMutationResult, String> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err("Project id is required".into());
+    }
+    let ids: Vec<String> = creation_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let folder = create_marked_project_folder(&transaction, project_id, &title)?;
+    let mut present = Vec::new();
+    let mut missing = Vec::new();
+    for id in ids {
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM creations WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if exists {
+            present.push(id);
+        } else {
+            missing.push(id);
+        }
+    }
+    let mut result = if present.is_empty() {
+        replace_project_asset_cache(&transaction, project_id, &folder.member_ids)?;
+        ProjectAssetMutationResult {
+            folder,
+            membership_revision: increment_membership_revision(&transaction, project_id)?,
+            missing_creation_ids: Vec::new(),
+        }
+    } else {
+        // "New project from selection" is explicit transfer intent. A source
+        // project still blocks the whole transaction when any selected asset
+        // is used or its usage snapshot is not ready.
+        add_project_assets_transaction(&transaction, project_id, &present, true)?
+    };
+    result.missing_creation_ids = missing;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    let _ = app.emit("project-assets-updated", &result);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn library_add_project_assets(
+    app: AppHandle,
+    project_id: String,
+    creation_ids: Vec<String>,
+    allow_cross_project_move: bool,
+) -> Result<ProjectAssetMutationResult, String> {
+    let project_id = project_id.trim();
+    let ids: Vec<String> = creation_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let result =
+        add_project_assets_transaction(&transaction, project_id, &ids, allow_cross_project_move)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    let _ = app.emit("project-assets-updated", &result);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -146,54 +844,7 @@ pub fn library_add_existing_project_asset(
     project_id: String,
     creation_id: String,
 ) -> Result<(), String> {
-    let paths = default_paths()?;
-    let mut conn = ready_connection(&paths)?;
-    let folder_id = resolve_project_folder(&conn, project_id.trim())?;
-    let transaction = conn.transaction().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().to_rfc3339();
-    transaction
-        .execute(
-            "INSERT OR IGNORE INTO project_assets(project_id, creation_id, added_at)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![project_id.trim(), creation_id.trim(), now],
-        )
-        .map_err(|e| e.to_string())?;
-    if let Some(folder_id) = folder_id.as_deref() {
-        move_creations_into_folder(
-            &transaction,
-            folder_id,
-            &[creation_id.trim().to_string()],
-            &now,
-        )?;
-    }
-    transaction.commit().map_err(|e| e.to_string())?;
-    emit_folders_updated(&app, &list_folders(&conn)?);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn library_delete_project_asset(
-    app: AppHandle,
-    project_id: String,
-    creation_id: String,
-) -> Result<SyncStatus, String> {
-    let paths = default_paths()?;
-    let conn = ready_connection(&paths)?;
-    let owned: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM project_assets
-             WHERE project_id = ?1 AND creation_id = ?2)",
-            rusqlite::params![project_id.trim(), creation_id.trim()],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if !owned {
-        return Err("Creation is not an asset of this project".into());
-    }
-    delete_creation_local(&conn, &paths, creation_id.trim())?;
-    emit_folders_updated(&app, &list_folders(&conn)?);
-    let _ = app.emit("library-creation-deleted", creation_id);
-    sync_status_for(&paths)
+    library_add_project_assets(app, project_id, vec![creation_id], false).map(|_| ())
 }
 
 #[tauri::command]
@@ -201,25 +852,386 @@ pub fn library_remove_project_assets(
     app: AppHandle,
     project_id: String,
     creation_ids: Vec<String>,
-) -> Result<(), String> {
-    let paths = default_paths()?;
-    let mut conn = ready_connection(&paths)?;
-    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+) -> Result<ProjectAssetMutationResult, String> {
+    let project_id = project_id.trim();
     let ids: Vec<String> = creation_ids
         .into_iter()
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
-    super::folders::remove_from_folder(&transaction, &ids)?;
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let blockers = usage_blockers(&transaction, project_id, &ids)?;
+    if !blockers.is_empty() {
+        let labels = blockers
+            .iter()
+            .map(|row| row.usage_owner_label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("Selected files are still used by {labels}"));
+    }
+    let folder = required_project_folder(&transaction, project_id)?;
     for id in &ids {
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT folder_id FROM folder_items WHERE creation_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if owner.as_deref() != Some(&folder.id) {
+            return Err(format!("Creation {id} is not an asset of this project"));
+        }
+    }
+    remove_from_project_folder(&transaction, project_id, &ids)?;
+    let updated = get_folder(&transaction, &folder.id)?
+        .ok_or_else(|| "Project folder not found after removal".to_string())?;
+    replace_project_asset_cache(&transaction, project_id, &updated.member_ids)?;
+    mark_membership_mirror_stale(&transaction, project_id)?;
+    let revision = increment_membership_revision(&transaction, project_id)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    let result = ProjectAssetMutationResult {
+        folder: updated,
+        membership_revision: revision,
+        missing_creation_ids: Vec::new(),
+    };
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    let _ = app.emit("project-assets-updated", &result);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn library_mark_project_usage_stale(
+    project_id: String,
+    expected_document_revision: Option<String>,
+    next_document_revision: String,
+    allow_existing_stale: bool,
+) -> Result<(), String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    let current: Option<(String, String)> = conn
+        .query_row(
+            "SELECT document_revision, state FROM project_usage_revisions WHERE project_id = ?1",
+            params![project_id.trim()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if current.as_ref().map(|(revision, _)| revision.clone()) != expected_document_revision {
+        return Err("Project document revision changed; reload and retry".into());
+    }
+    if current.as_ref().is_some_and(|(_, state)| state == "stale") && !allow_existing_stale {
+        return Err(
+            "Project membership changed and must be mirrored before editing the project".into(),
+        );
+    }
+    conn.execute(
+        "INSERT INTO project_usage_revisions(project_id, document_revision, state, indexed_at)
+         VALUES (?1, ?2, 'stale', NULL)
+         ON CONFLICT(project_id) DO UPDATE SET document_revision = excluded.document_revision,
+           state = 'stale', indexed_at = NULL",
+        params![project_id.trim(), next_document_revision],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn replace_usage(
+    conn: &Connection,
+    project_id: &str,
+    document_revision: &str,
+    usage_rows: &[ProjectAssetUsageInput],
+) -> Result<(), String> {
+    let current: Option<(String, String)> = conn
+        .query_row(
+            "SELECT document_revision, state FROM project_usage_revisions WHERE project_id = ?1",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some((revision, _)) = current.as_ref() {
+        if revision != document_revision {
+            return Err("Usage snapshot does not match the project document revision".into());
+        }
+    }
+    conn.execute(
+        "DELETE FROM project_asset_usage WHERE project_id = ?1",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    for row in usage_rows {
+        if row.creation_id.trim().is_empty() {
+            continue;
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO project_asset_usage(
+               project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label, document_revision
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                project_id,
+                row.creation_id.trim(),
+                row.usage_kind,
+                row.usage_owner_id,
+                row.usage_owner_label,
+                document_revision,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT INTO project_usage_revisions(project_id, document_revision, state, indexed_at)
+         VALUES (?1, ?2, 'ready', ?3)
+         ON CONFLICT(project_id) DO UPDATE SET document_revision = excluded.document_revision,
+           state = 'ready', indexed_at = excluded.indexed_at",
+        params![project_id, document_revision, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn library_replace_project_usage(
+    project_id: String,
+    document_revision: String,
+    usage_rows: Vec<ProjectAssetUsageInput>,
+) -> Result<(), String> {
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    replace_usage(
+        &transaction,
+        project_id.trim(),
+        document_revision.trim(),
+        &usage_rows,
+    )?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_repair_project_usage(
+    project_id: String,
+    document_revision: String,
+    usage_rows: Vec<ProjectAssetUsageInput>,
+) -> Result<(), String> {
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO project_usage_revisions(project_id, document_revision, state, indexed_at)
+             VALUES (?1, ?2, 'stale', NULL)
+             ON CONFLICT(project_id) DO UPDATE SET document_revision = excluded.document_revision,
+               state = 'stale', indexed_at = NULL",
+            params![project_id.trim(), document_revision.trim()],
+        )
+        .map_err(|e| e.to_string())?;
+    replace_usage(
+        &transaction,
+        project_id.trim(),
+        document_revision.trim(),
+        &usage_rows,
+    )?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn library_check_creation_usage(
+    creation_ids: Vec<String>,
+) -> Result<Vec<ProjectAssetUsageBlocker>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    let stale: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_usage_revisions WHERE state != 'ready')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if stale {
+        return Err("Project usage is still being indexed".into());
+    }
+    let wanted: BTreeSet<String> = creation_ids.into_iter().collect();
+    let mut stmt = conn
+        .prepare(
+            "SELECT project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label
+             FROM project_asset_usage ORDER BY project_id, creation_id, usage_kind",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ProjectAssetUsageBlocker {
+                project_id: row.get(0)?,
+                creation_id: row.get(1)?,
+                usage_kind: row.get(2)?,
+                usage_owner_id: row.get(3)?,
+                usage_owner_label: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let row = row.map_err(|e| e.to_string())?;
+        if wanted.contains(&row.creation_id) {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn library_delete_creation_checked(
+    app: AppHandle,
+    creation_id: String,
+    audited_project_ids: Vec<String>,
+) -> Result<SyncStatus, String> {
+    let id = creation_id.trim();
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let unaudited: bool = transaction
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM project_usage_revisions WHERE state != 'ready'
+               UNION ALL
+               SELECT 1 FROM folders f WHERE f.kind = 'project' AND NOT EXISTS (
+                 SELECT 1 FROM project_usage_revisions r WHERE r.project_id = f.project_id
+               )
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if unaudited {
+        return Err("Delete is unavailable until every project can be audited".into());
+    }
+    let audited: BTreeSet<String> = audited_project_ids
+        .into_iter()
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty())
+        .collect();
+    let mut known_stmt = transaction
+        .prepare(
+            "SELECT project_id FROM project_usage_revisions
+             UNION SELECT project_id FROM folders WHERE kind = 'project' AND project_id IS NOT NULL
+             UNION SELECT project_id FROM project_library_bindings",
+        )
+        .map_err(|e| e.to_string())?;
+    let known: BTreeSet<String> = known_stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    drop(known_stmt);
+    if known != audited {
+        let missing = known.difference(&audited).cloned().collect::<Vec<_>>();
+        let unexpected = audited.difference(&known).cloned().collect::<Vec<_>>();
+        return Err(format!(
+            "Delete audit does not cover the native project set (missing: {}; unexpected: {})",
+            if missing.is_empty() {
+                "none".into()
+            } else {
+                missing.join(", ")
+            },
+            if unexpected.is_empty() {
+                "none".into()
+            } else {
+                unexpected.join(", ")
+            },
+        ));
+    }
+    let mut stmt = transaction
+        .prepare(
+            "SELECT project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label
+             FROM project_asset_usage WHERE creation_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let blockers: Vec<ProjectAssetUsageBlocker> = stmt
+        .query_map(params![id], |row| {
+            Ok(ProjectAssetUsageBlocker {
+                project_id: row.get(0)?,
+                creation_id: row.get(1)?,
+                usage_kind: row.get(2)?,
+                usage_owner_id: row.get(3)?,
+                usage_owner_label: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+    if !blockers.is_empty() {
+        let details = blockers
+            .iter()
+            .map(|row| format!("{} ({})", row.usage_owner_label, row.project_id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("This creation is used by {details}"));
+    }
+    let owner_project: Option<String> = transaction
+        .query_row(
+            "SELECT f.project_id FROM folder_items fi JOIN folders f ON f.id = fi.folder_id
+             WHERE fi.creation_id = ?1 AND f.kind = 'project' LIMIT 1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(project_id) = owner_project.as_deref() {
+        remove_from_project_folder(&transaction, project_id, &[id.to_string()])?;
+    } else {
+        remove_from_folder(&transaction, &[id.to_string()])?;
+    }
+    if let Some(project_id) = owner_project.as_deref() {
         transaction
             .execute(
                 "DELETE FROM project_assets WHERE project_id = ?1 AND creation_id = ?2",
-                rusqlite::params![project_id.trim(), id],
+                params![project_id, id],
             )
             .map_err(|e| e.to_string())?;
+        increment_membership_revision(&transaction, project_id)?;
+    }
+    delete_creation_local(&transaction, &paths, id)?;
+    if let Some(project_id) = owner_project.as_deref() {
+        mark_membership_mirror_stale(&transaction, project_id)?;
     }
     transaction.commit().map_err(|e| e.to_string())?;
     emit_folders_updated(&app, &list_folders(&conn)?);
-    Ok(())
+    let _ = app.emit("library-creation-deleted", id);
+    sync_status_for(&paths)
+}
+
+/// Deprecated compatibility command. Checked global deletion now belongs to Library.
+#[tauri::command]
+pub fn library_delete_project_asset(
+    app: AppHandle,
+    project_id: String,
+    creation_id: String,
+) -> Result<SyncStatus, String> {
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let folder = required_project_folder(&transaction, project_id.trim())?;
+    if !folder.member_ids.iter().any(|id| id == creation_id.trim()) {
+        return Err("Creation is not an asset of this project".into());
+    }
+    let blockers = usage_blockers(&transaction, project_id.trim(), &[creation_id.clone()])?;
+    if !blockers.is_empty() {
+        return Err("This project asset is still in use".into());
+    }
+    // Deliberately remove project ownership first; delete_creation_local then applies
+    // the all-project usage guard used by the ordinary Library delete command.
+    remove_from_project_folder(&transaction, project_id.trim(), &[creation_id.clone()])?;
+    delete_creation_local(&transaction, &paths, creation_id.trim())?;
+    mark_membership_mirror_stale(&transaction, project_id.trim())?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    let _ = app.emit("library-creation-deleted", creation_id);
+    sync_status_for(&paths)
 }

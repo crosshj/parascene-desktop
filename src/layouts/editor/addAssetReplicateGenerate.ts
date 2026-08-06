@@ -9,7 +9,7 @@ import {
   type ReplicateInputField,
 } from "../../replicate/replicateClient";
 import { getCreations } from "../../library/catalogClient";
-import { importLocalPathsForProject } from "../../project/boundFolderLanding";
+import { importLocalPathsForProject } from "../../project/projectAssetLanding";
 import type { TimelineClip } from "../../project/types";
 import {
   type AddAssetGenerationStep,
@@ -177,8 +177,6 @@ export type RunReplicateAddAssetGenerationOpts = {
   projectTitle: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
-  /** Bound working folder — new outputs land here when set. */
-  boundFolderId?: string | null;
   prompt: string;
   continuityMode: ReplicateVideoContinuity;
   modelOwner: string;
@@ -199,7 +197,6 @@ async function importReplicateOutput(opts: {
   outputPath: string;
   projectId: string;
   imagesGroupId: string | null;
-  boundFolderId?: string | null;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
   steps: AddAssetGenerationStep[];
@@ -233,11 +230,7 @@ async function importReplicateOutput(opts: {
       `Import produced no Library creation from ${ext} file. The Replicate run succeeded but the output could not be imported locally.`,
     );
   }
-  opts.onProgress(
-    opts.boundFolderId?.trim()
-      ? "Adding video to project working folder…"
-      : "Adding video to project…",
-  );
+  opts.onProgress("Adding video to project…");
   pushSteps(completeStep(steps, "file"));
   return {
     creationId: created.id,
@@ -451,7 +444,6 @@ export async function runReplicateAddAssetGeneration(
       outputPath,
       projectId: opts.projectId,
       imagesGroupId: opts.imagesGroupId,
-      boundFolderId: opts.boundFolderId,
       onSteps: opts.onSteps,
       onProgress: opts.onProgress,
       steps,
@@ -472,7 +464,6 @@ export type ResumeReplicateDownloadOpts = {
   predictionId: string;
   projectId: string;
   imagesGroupId: string | null;
-  boundFolderId?: string | null;
   continuityMode: ReplicateVideoContinuity;
   modelId: string;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
@@ -531,7 +522,6 @@ export async function resumeReplicateAddAssetDownload(
       outputPath,
       projectId: opts.projectId,
       imagesGroupId: opts.imagesGroupId,
-      boundFolderId: opts.boundFolderId,
       onSteps: opts.onSteps,
       onProgress: opts.onProgress,
       steps,

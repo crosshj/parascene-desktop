@@ -7,6 +7,7 @@ type FolderPickModalProps = {
   folders: LibraryFolder[];
   creationsById?: ReadonlyMap<string, Creation>;
   selectedCount?: number;
+  title?: string;
   onCancel: () => void;
   onPick: (folder: LibraryFolder) => void;
 };
@@ -15,6 +16,7 @@ export function FolderPickModal({
   folders,
   creationsById,
   selectedCount,
+  title = "Add to folder",
   onCancel,
   onPick,
 }: FolderPickModalProps) {
@@ -57,7 +59,7 @@ export function FolderPickModal({
         aria-labelledby="folder-pick-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id="folder-pick-title">Add to folder</h2>
+        <h2 id="folder-pick-title">{title}</h2>
         {folders.length === 0 ? (
           <p className="muted">No folders yet. Create one from a selection.</p>
         ) : (

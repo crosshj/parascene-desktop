@@ -6,7 +6,7 @@ use super::catalog::{
 use super::folders::{emit_folders_updated, list_folders, move_creations_into_folder};
 use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -151,15 +151,39 @@ pub(crate) fn import_paths(
 
     if let Some(folder_id) = folder_id {
         let conn = ready_connection(&paths)?;
-        let exists: bool = conn
+        let folder: Option<(String, Option<String>)> = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM folders WHERE id = ?1)",
+                "SELECT kind, project_id FROM folders WHERE id = ?1",
                 params![folder_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
+            .optional()
             .map_err(|e| e.to_string())?;
-        if !exists {
+        let Some((kind, owner_project_id)) = folder else {
             return Err(format!("Project working folder {folder_id} was not found"));
+        };
+        match project_id {
+            Some(project_id) => {
+                if kind != "project" || owner_project_id.as_deref() != Some(project_id) {
+                    return Err("Resolved folder does not belong to this project".into());
+                }
+                let known: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM project_usage_revisions WHERE project_id = ?1)",
+                        params![project_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if !known {
+                    return Err(format!(
+                        "Project {project_id} is unavailable on this device and cannot receive files"
+                    ));
+                }
+            }
+            None if kind == "project" => {
+                return Err("Use Add to project to import into a project folder".into());
+            }
+            None => {}
         }
     }
 
@@ -222,6 +246,13 @@ pub(crate) fn import_paths(
                         params![project_id, id, Utc::now().to_rfc3339()],
                     )
                     .map_err(|e| format!("Could not add project asset: {e}"))?;
+                transaction
+                    .execute(
+                        "INSERT INTO project_membership_revisions(project_id, revision) VALUES (?1, 1)
+                         ON CONFLICT(project_id) DO UPDATE SET revision = revision + 1",
+                        params![project_id],
+                    )
+                    .map_err(|e| format!("Could not advance project membership: {e}"))?;
             }
             transaction.commit().map_err(|e| e.to_string())?;
         }

@@ -65,6 +65,8 @@ describe("reconcileProjectLibrary", () => {
         updatedAt: "",
         memberIds: ["50", "99"],
         memberCount: 2,
+        kind: "regular",
+        projectId: null,
       },
     ];
     getCreations.mockResolvedValue([
@@ -95,6 +97,8 @@ describe("reconcileProjectLibrary", () => {
         updatedAt: "",
         memberIds: ["50"],
         memberCount: 1,
+        kind: "regular",
+        projectId: null,
       },
     ];
     getCreations.mockResolvedValue([
@@ -127,6 +131,8 @@ describe("reconcileProjectLibrary", () => {
         updatedAt: "",
         memberIds: ["50"],
         memberCount: 1,
+        kind: "regular",
+        projectId: null,
       },
     ];
     getCreations.mockImplementation(async (ids: string[]) => {

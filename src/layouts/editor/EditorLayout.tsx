@@ -11,25 +11,13 @@ import { listen } from "@tauri-apps/api/event";
 import { useShell } from "../../app/ShellProvider";
 import {
   deleteCompositionRun,
-  deleteLocal,
-  deleteProjectAsset,
   getCreations,
-  getProjectBoundFolder,
-  listProjectAssetIds,
   mergeTimelineClips,
-  removeProjectAssets,
-  setProjectBoundFolder,
   type MergeProgress,
 } from "../../library/catalogClient";
 import { groupSourceCreationIds } from "../../library/creationFlags";
-import {
-  addToFolder,
-  getFolder,
-  listFolders,
-  type LibraryFolder,
-} from "../../library/folderClient";
-import { isBoundFolderLockedByTimeline } from "../../project/projectStore";
-import { landCreationsInBoundFolder } from "../../project/boundFolderLanding";
+import { loadStoredProjectsStrict } from "../../project/projectStore";
+import { collectProjectReferencedCreationIds } from "../../project/projectUsage";
 import {
   ensureSlideshowMedia,
   formatBakeError,
@@ -186,8 +174,7 @@ export function EditorLayout() {
     project,
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
-    removeFoldersFromOpenProject,
-    setOpenProjectBoundFolderId,
+    deleteLibraryCreation,
     setOpenProjectGroupIds,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
@@ -202,6 +189,8 @@ export function EditorLayout() {
     rightCollapsed,
     toggleLeft,
     toggleRight,
+    setPrimaryTab,
+    setLibrarySurface,
   } = useShell();
   const confirm = useConfirm();
 
@@ -242,8 +231,6 @@ export function EditorLayout() {
   const [addAssetIntent, setAddAssetIntent] = useState<AddAssetIntent | null>(
     null,
   );
-  const [projectFolders, setProjectFolders] = useState<LibraryFolder[]>([]);
-  const [boundFolder, setBoundFolder] = useState<LibraryFolder | null>(null);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
   );
@@ -345,119 +332,19 @@ export function EditorLayout() {
     [project.timeline, selectedClipIds],
   );
 
-  const projectFolderIdsKey = project.folderIds.join("\0");
-  const boundFolderId = project.boundFolderId?.trim() || null;
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        // One-time migration of existing frontend projects, then backend is
-        // queried as the project-asset authority.
-        if (boundFolderId) {
-          await setProjectBoundFolder(
-            project.id,
-            boundFolderId,
-            project.assets.map((asset) => asset.id),
-          );
-        } else {
-          const backendFolderId = await getProjectBoundFolder(project.id);
-          if (backendFolderId) {
-            setOpenProjectBoundFolderId(backendFolderId);
-          }
-        }
-        const backendIds = await listProjectAssetIds(project.id);
-        const backend = new Set(backendIds);
-        const frontendIds = project.assets.map((asset) => asset.id);
-        const missing = backendIds.filter((id) => !frontendIds.includes(id));
-        const stale = frontendIds.filter((id) => !backend.has(id));
-        if (missing.length > 0) addCreationsToOpenProject(missing);
-        if (stale.length > 0) removeCreationsFromOpenProject(stale);
-      } catch (error) {
-        console.error("Failed to load backend project assets", error);
-      }
-    })();
-  }, [
-    addCreationsToOpenProject,
-    boundFolderId,
-    project.assets,
-    project.id,
-    removeCreationsFromOpenProject,
-    setOpenProjectBoundFolderId,
-  ]);
-
-  if (project.folderIds.length === 0 && projectFolders.length > 0) {
-    setProjectFolders([]);
-  }
-  if (!boundFolderId && boundFolder) {
-    setBoundFolder(null);
-  }
-
-  useEffect(() => {
-    if (project.folderIds.length === 0) return;
-    const wanted = new Set(project.folderIds);
-    let cancelled = false;
-    void (async () => {
-      try {
-        const all = await listFolders();
-        if (cancelled) return;
-        setProjectFolders(
-          all.filter(
-            (folder) =>
-              wanted.has(folder.id) && folder.id !== boundFolderId,
-          ),
-        );
-      } catch (error) {
-        console.error("Failed to load project folders", error);
-        if (!cancelled) setProjectFolders([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [projectFolderIdsKey, project.assets.length, project.folderIds, boundFolderId]);
-
-  useEffect(() => {
-    if (!boundFolderId) {
-      queueMicrotask(() => setBoundFolder(null));
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const folder = await getFolder(boundFolderId);
-        if (cancelled) return;
-        let resolvedFolder = folder;
-        const members = new Set(folder.memberIds);
-        const unfiledProjectIds = project.assets
-          .map((asset) => asset.id.trim())
-          .filter((id) => id && !members.has(id));
-        if (unfiledProjectIds.length > 0) {
-          resolvedFolder = await addToFolder(boundFolderId, unfiledProjectIds);
-          if (cancelled) return;
-        }
-        setBoundFolder(resolvedFolder);
-      } catch (error) {
-        console.error("Failed to load bound working folder", error);
-        if (!cancelled) setBoundFolder(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [boundFolderId, project.assets, project.id]);
-
-  const boundFolderLocked = useMemo(() => {
-    if (!boundFolder) return false;
-    return isBoundFolderLockedByTimeline(
-      project.timeline,
-      boundFolder.memberIds,
-    );
-  }, [boundFolder, project.timeline]);
-
   const projectAssetIdsKey = useMemo(
     () => project.assets.map((asset) => asset.id).join("\0"),
     [project.assets],
   );
+
+  const outsideReferenceIds = (() => {
+    const stored = loadStoredProjectsStrict().find((row) => row.id === project.id);
+    if (!stored) return [];
+    const members = new Set(project.assets.map((asset) => asset.id));
+    return collectProjectReferencedCreationIds(stored).filter(
+      (id) => !members.has(id),
+    );
+  })();
 
   // Cabinet covers alone are on the project; members must be project assets too
   // so Assets selection / timeline staging aren't cleared as "stale".
@@ -1542,11 +1429,7 @@ export function EditorLayout() {
     if (!pair) return;
     joinBusyRef.current = true;
     try {
-      await landCreationsInBoundFolder({
-        creationIds: [creationId],
-        boundFolderId: project.boundFolderId,
-      });
-      addCreationsToOpenProject([creationId]);
+      await addCreationsToOpenProject([creationId]);
       const span = joinReplacementSpan(pair, params);
       const joinedClip: TimelineClip = {
         id: newTimelineClipId(),
@@ -1619,11 +1502,7 @@ export function EditorLayout() {
           reverse: Boolean(clip.reverse),
         })),
       );
-      await landCreationsInBoundFolder({
-        creationIds: [creation.id],
-        boundFolderId: project.boundFolderId,
-      });
-      addCreationsToOpenProject([creation.id]);
+      await addCreationsToOpenProject([creation.id]);
 
       const duration = Math.max(
         0.1,
@@ -1730,58 +1609,8 @@ export function EditorLayout() {
       cancelLabel: "Cancel",
     });
     if (!ok) return;
-    if (boundFolderId) {
-      await removeProjectAssets(project.id, assetIds);
-    }
-    removeCreationsFromOpenProject(assetIds);
+    await removeCreationsFromOpenProject(assetIds);
     if (selectedAssetId && assetIds.includes(selectedAssetId)) {
-      setSelectedAssetId(null);
-      setSelectedAssetIds([]);
-      setOpenProjectSelectedAssetId(null);
-    }
-  };
-
-  const removeFoldersFromProject = async (folderIds: string[]) => {
-    const chosen = projectFolders.filter((folder) =>
-      folderIds.includes(folder.id),
-    );
-    const memberIds = [
-      ...new Set(chosen.flatMap((folder) => folder.memberIds)),
-    ].filter((id) => project.assets.some((asset) => asset.id === id));
-    const usedIds = assetsUsedOnTimeline(memberIds);
-    if (usedIds.size > 0) {
-      await confirm({
-        title: usedIds.size === 1 ? "Asset in use" : "Assets in use",
-        message:
-          usedIds.size === 1
-            ? "An asset in this folder is used on the timeline. Remove its clips first, then try again."
-            : `${usedIds.size} assets in this folder are used on the timeline. Remove their clips first, then try again.`,
-        confirmLabel: "OK",
-        hideCancel: true,
-      });
-      return;
-    }
-    const folderCount = folderIds.length;
-    const memberCount = memberIds.length;
-    const ok = await confirm({
-      title:
-        folderCount === 1
-          ? "Remove folder from project?"
-          : `Remove ${folderCount} folders?`,
-      message:
-        memberCount === 0
-          ? folderCount === 1
-            ? "Do you want to remove this folder from the project?"
-            : `Do you want to remove these ${folderCount} folders from the project?`
-          : folderCount === 1
-            ? `Do you want to remove this folder and its ${memberCount} asset${memberCount === 1 ? "" : "s"} from the project?`
-            : `Do you want to remove these ${folderCount} folders and their ${memberCount} assets from the project?`,
-      confirmLabel: "Remove",
-      cancelLabel: "Cancel",
-    });
-    if (!ok) return;
-    removeFoldersFromOpenProject(folderIds, memberIds);
-    if (selectedAssetId && memberIds.includes(selectedAssetId)) {
       setSelectedAssetId(null);
       setSelectedAssetIds([]);
       setOpenProjectSelectedAssetId(null);
@@ -1823,20 +1652,14 @@ export function EditorLayout() {
     await Promise.allSettled(
       [...internalCachePaths].map((path) => deleteCompositionRun(path)),
     );
+    await Promise.all(
+      streams.map((stream) => removeOpenStillWorkstream(stream.id)),
+    );
     if (internalCreationIds.size > 0) {
       const toDelete = [...internalCreationIds];
-      const results = await Promise.allSettled(
-        toDelete.map((creationId) => deleteLocal(creationId)),
+      await Promise.allSettled(
+        toDelete.map((creationId) => deleteLibraryCreation(creationId)),
       );
-      const deletedIds = toDelete.filter(
-        (_, index) => results[index]?.status === "fulfilled",
-      );
-      if (deletedIds.length > 0) {
-        removeCreationsFromOpenProject(deletedIds);
-      }
-    }
-    for (const stream of streams) {
-      removeOpenStillWorkstream(stream.id);
     }
     if (openCompositionId && ids.includes(openCompositionId)) {
       setOpenCompositionId(null);
@@ -1870,15 +1693,12 @@ export function EditorLayout() {
     });
     if (!ok) return;
     const results = await Promise.allSettled(
-      assetIds.map((assetId) => deleteProjectAsset(project.id, assetId)),
+      assetIds.map((assetId) => deleteLibraryCreation(assetId)),
     );
     const deletedIds = assetIds.filter(
       (_, index) => results[index]?.status === "fulfilled",
     );
     const failed = results.filter((result) => result.status === "rejected");
-    if (deletedIds.length > 0) {
-      removeCreationsFromOpenProject(deletedIds);
-    }
     if (deletedIds.includes(selectedAssetId ?? "")) {
       setSelectedAssetId(null);
       setSelectedAssetIds([]);
@@ -2070,7 +1890,6 @@ export function EditorLayout() {
         projectTitle: project.title,
         imagesGroupId: project.imagesGroupId,
         videosGroupId: project.videosGroupId,
-        boundFolderId: project.boundFolderId,
       },
     });
   };
@@ -2118,7 +1937,6 @@ export function EditorLayout() {
         clipId: clip.id,
         predictionId,
         imagesGroupId: project.imagesGroupId,
-        boundFolderId: project.boundFolderId,
         prompt: draft?.prompt?.trim() || "",
         lyricsText: "",
         audioMode: draft?.audioMode === "full_mix" ? "full_mix" : "vocals",
@@ -2193,10 +2011,29 @@ export function EditorLayout() {
 
   return (
     <div ref={workspaceRef} className={workspaceClass} style={style}>
+      {outsideReferenceIds.length > 0 ? (
+        <div className="editor-outside-reference-warning" role="status">
+          <span>
+            {outsideReferenceIds.length} referenced file
+            {outsideReferenceIds.length === 1 ? " is" : "s are"} outside the
+            project folder.
+          </span>
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => {
+              setLibrarySurface("creations");
+              setPrimaryTab("library");
+            }}
+          >
+            Open Library
+          </button>
+        </div>
+      ) : null}
       {showAssetsPane ? (
         <AssetBrowserPane
           assets={project.assets}
-          folders={projectFolders}
+          folders={[]}
           imagesGroupId={project.imagesGroupId}
           videosGroupId={project.videosGroupId}
           filter={assetFilter}
@@ -2218,48 +2055,6 @@ export function EditorLayout() {
           }}
           onRemoveAssets={(ids) => {
             void removeAssetsFromProject(ids);
-          }}
-          onRemoveFolders={(ids) => {
-            void removeFoldersFromProject(ids);
-          }}
-          boundFolderId={boundFolderId}
-          boundMemberIds={boundFolder?.memberIds ?? []}
-          boundFolderLocked={boundFolderLocked}
-          onBindFolder={(folderId) => {
-            void (async () => {
-              if (boundFolderLocked) {
-                await confirm({
-                  title: "Working folder locked",
-                  message:
-                    "Timeline clips still use files from the current working folder. Remove those clips first, then try again.",
-                  confirmLabel: "OK",
-                  hideCancel: true,
-                });
-                return;
-              }
-              try {
-                await setProjectBoundFolder(project.id, folderId);
-                setOpenProjectBoundFolderId(folderId);
-              } catch (error) {
-                console.error("Failed to bind working folder", error);
-              }
-            })();
-          }}
-          onUnbindFolder={() => {
-            void (async () => {
-              if (boundFolderLocked) {
-                await confirm({
-                  title: "Working folder locked",
-                  message:
-                    "Timeline clips still use files from the working folder. Remove those clips first, then try again.",
-                  confirmLabel: "OK",
-                  hideCancel: true,
-                });
-                return;
-              }
-              await setProjectBoundFolder(project.id, null);
-              setOpenProjectBoundFolderId(null);
-            })();
           }}
           onDeleteFromGroup={(target) => {
             void deleteMembersFromProjectGroup(target);

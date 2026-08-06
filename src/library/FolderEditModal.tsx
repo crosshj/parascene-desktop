@@ -3,12 +3,14 @@ import type { LibraryFolder } from "./folderClient";
 
 type FolderEditModalProps = {
   folder: LibraryFolder;
+  entityKind?: "folder" | "project";
   onCancel: () => void;
   onSave: (title: string, description: string) => void;
 };
 
 export function FolderEditModal({
   folder,
+  entityKind = "folder",
   onCancel,
   onSave,
 }: FolderEditModalProps) {
@@ -39,7 +41,9 @@ export function FolderEditModal({
         aria-labelledby="folder-edit-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id="folder-edit-title">Edit folder</h2>
+        <h2 id="folder-edit-title">
+          {entityKind === "project" ? "Rename project" : "Edit folder"}
+        </h2>
         <label className="folder-edit-field">
           <span>Name</span>
           <input
@@ -49,14 +53,16 @@ export function FolderEditModal({
             onChange={(event) => setTitle(event.target.value)}
           />
         </label>
-        <label className="folder-edit-field">
-          <span>Description</span>
-          <textarea
-            value={description}
-            rows={4}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
+        {entityKind === "folder" ? (
+          <label className="folder-edit-field">
+            <span>Description</span>
+            <textarea
+              value={description}
+              rows={4}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+        ) : null}
         <div className="confirm-dialog-actions">
           <button type="button" className="btn ghost" onClick={onCancel}>
             Cancel
@@ -64,7 +70,15 @@ export function FolderEditModal({
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => onSave(title.trim() || "Untitled folder", description)}
+            onClick={() =>
+              onSave(
+                title.trim() ||
+                  (entityKind === "project"
+                    ? "Untitled project"
+                    : "Untitled folder"),
+                description,
+              )
+            }
           >
             Save
           </button>
