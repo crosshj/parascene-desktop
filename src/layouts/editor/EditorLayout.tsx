@@ -376,7 +376,14 @@ export function EditorLayout() {
         console.error("Failed to load backend project assets", error);
       }
     })();
-  }, [boundFolderId, project.id]);
+  }, [
+    addCreationsToOpenProject,
+    boundFolderId,
+    project.assets,
+    project.id,
+    removeCreationsFromOpenProject,
+    setOpenProjectBoundFolderId,
+  ]);
 
   if (project.folderIds.length === 0 && projectFolders.length > 0) {
     setProjectFolders([]);
@@ -411,7 +418,7 @@ export function EditorLayout() {
 
   useEffect(() => {
     if (!boundFolderId) {
-      setBoundFolder(null);
+      queueMicrotask(() => setBoundFolder(null));
       return;
     }
     let cancelled = false;
@@ -437,11 +444,7 @@ export function EditorLayout() {
     return () => {
       cancelled = true;
     };
-  }, [
-    boundFolderId,
-    project.assets.length,
-    project.id,
-  ]);
+  }, [boundFolderId, project.assets, project.id]);
 
   const boundFolderLocked = useMemo(() => {
     if (!boundFolder) return false;

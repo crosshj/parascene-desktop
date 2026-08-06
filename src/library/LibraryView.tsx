@@ -2054,6 +2054,7 @@ function CreationsPanel({
     folders,
     openProjectId,
     project.boundFolderId,
+    project.id,
     selectedFolderIds,
     setOpenProjectBoundFolderId,
   ]);

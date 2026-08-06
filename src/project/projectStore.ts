@@ -517,6 +517,7 @@ function normalizeBoundFolderId(
   value: unknown,
   _folderIds: readonly string[],
 ): string | null {
+  void _folderIds;
   return normalizeOptionalId(value);
 }
 
@@ -902,6 +903,7 @@ export function setStoredProjectBoundFolderId(
   folderId: string | null,
   _memberCreationIds: string[] = [],
 ): StoredProject {
+  void _memberCreationIds;
   const nextBound = normalizeOptionalId(folderId);
   const prevBound = normalizeOptionalId(project.boundFolderId);
   if (nextBound === prevBound) {

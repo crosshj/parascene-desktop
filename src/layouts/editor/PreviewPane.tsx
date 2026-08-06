@@ -1409,7 +1409,7 @@ export function PreviewPane({
       const localPath = node.localPath?.trim();
       if (localPath) localUrls[node.id] = mediaUrlForBakePath(localPath);
     }
-    setWorkstreamNodePreviewUrls(localUrls);
+    queueMicrotask(() => setWorkstreamNodePreviewUrls(localUrls));
 
     const legacyNodes = nodes.filter(
       (node) => !node.localPath?.trim() && node.creationId,
@@ -1469,11 +1469,14 @@ export function PreviewPane({
       (row) => row.id === openCompositionId,
     );
     if (!stream) return;
-    setActiveWorkstreamId(stream.id);
-    setPlateRecipe(stream.recipe);
-    setPickedImageIds(stream.memberIds);
-    setSelectionIntentMode("composite");
     let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setActiveWorkstreamId(stream.id);
+      setPlateRecipe(stream.recipe);
+      setPickedImageIds(stream.memberIds);
+      setSelectionIntentMode("composite");
+    });
     void (async () => {
       try {
         const rows = await getCreations(stream.memberIds);
@@ -1549,9 +1552,11 @@ export function PreviewPane({
     const ids = activeImageIdsKey ? activeImageIdsKey.split("\0") : [];
     if (ids.length < 2) {
       platePreviewGenRef.current += 1;
-      setPlatePreviewPath(null);
-      setPlatePreviewGapPx(null);
-      setCompositePreviewBusy(false);
+      queueMicrotask(() => {
+        setPlatePreviewPath(null);
+        setPlatePreviewGapPx(null);
+        setCompositePreviewBusy(false);
+      });
       return;
     }
     const gen = ++platePreviewGenRef.current;
@@ -1725,7 +1730,7 @@ export function PreviewPane({
     activeWorkstream,
     addCreationsToOpenProject,
     compositeBusy,
-    project.boundFolderId,
+    project.id,
     upsertOpenStillWorkstream,
   ]);
 
@@ -1814,7 +1819,6 @@ export function PreviewPane({
     editModel,
     editPrompt,
     plateRecipe,
-    project.boundFolderId,
     upsertOpenStillWorkstream,
   ]);
 
@@ -1929,7 +1933,7 @@ export function PreviewPane({
       addCreationsToOpenProject,
       compositeBusy,
       confirm,
-      project.boundFolderId,
+      project.id,
       removeCreationsFromOpenProject,
       upsertOpenStillWorkstream,
     ],
