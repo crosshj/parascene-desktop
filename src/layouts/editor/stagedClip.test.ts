@@ -140,6 +140,9 @@ describe("stagedClip", () => {
       includeAudio: false,
       transform: "kenBurns",
       framing: "fill",
+      zoom: 1.75,
+      centerX: 12,
+      centerY: -8,
       thumbUrl: "asset://thumb",
     });
     expect(draft).toMatchObject({
@@ -149,6 +152,9 @@ describe("stagedClip", () => {
       outSec: 3,
       transform: "kenBurns",
       framing: "fill",
+      zoom: 1.75,
+      centerX: 12,
+      centerY: -8,
       thumbUrl: "asset://thumb",
     });
     expect(timelineClipToStagedDraft({ label: "x", startSec: 0, endSec: 1 })).toBeNull();

@@ -92,6 +92,10 @@ export type TimelineClip = {
   reverse?: boolean;
   transform?: "hold" | "kenBurns";
   framing?: "fit" | "fill" | "stretch";
+  /** Per-clip still-image positioning captured when the clip is placed. */
+  zoom?: number;
+  centerX?: number;
+  centerY?: number;
   /** Composite image slideshow recipe when kind is "slideshow". */
   slideshow?: SlideshowRecipe;
   /** Content-addressed key for the cached silent bake. */

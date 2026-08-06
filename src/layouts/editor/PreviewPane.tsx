@@ -391,12 +391,6 @@ export function PreviewPane({
     upsertOpenStillWorkstream,
   } = useShell();
   const [creation, setCreation] = useState<Creation | null>(null);
-  const [assetImageView, setAssetImageView] = useState({
-    assetId: null as string | null,
-    zoom: 1,
-    offsetX: 0,
-    offsetY: 0,
-  });
   const [selectionClass, setSelectionClass] =
     useState<MultiSelectionClass | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(false);
@@ -2333,16 +2327,17 @@ export function PreviewPane({
   const sourceViewportClass = `editor-preview-framing-viewport${
     sourceViewport ? " is-project-matte" : ""
   }`;
-  const currentAssetImageView =
-    assetImageView.assetId === assetId
-      ? assetImageView
-      : { assetId, zoom: 1, offsetX: 0, offsetY: 0 };
+  const currentAssetImageView = {
+    zoom: stagedDraft?.zoom ?? 1,
+    offsetX: stagedDraft?.centerX ?? 0,
+    offsetY: stagedDraft?.centerY ?? 0,
+  };
   const showAssetImageViewControls =
     monitorMode === "source" &&
     !addAssetMode &&
-    !editingClip &&
-    creationMatchesAsset &&
-    mediaType === "image" &&
+    (editingClip
+      ? stagedDraft?.kind === "image"
+      : creationMatchesAsset && mediaType === "image") &&
     !showCompositionWorkspace &&
     !showSelectionIntent;
   const assetImageViewStyle: CSSProperties | undefined =
@@ -2355,7 +2350,17 @@ export function PreviewPane({
   const patchAssetImageView = (
     patch: Partial<Pick<typeof currentAssetImageView, "zoom" | "offsetX" | "offsetY">>,
   ) => {
-    setAssetImageView({ ...currentAssetImageView, ...patch });
+    if (!stagedDraft) return;
+    const next = {
+      ...stagedDraft,
+      zoom: patch.zoom ?? stagedDraft.zoom ?? 1,
+      centerX: patch.offsetX ?? stagedDraft.centerX ?? 0,
+      centerY: patch.offsetY ?? stagedDraft.centerY ?? 0,
+    };
+    setStagedDraft(next);
+    // A selected timeline image is an editable clip instance. Asset-preview
+    // positioning remains local staging state until Place/Drag creates one.
+    if (stagingSeedKey) onClipDraftChange?.(stagingSeedKey, next);
   };
 
   const unsupportedMessage = unsupportedSelection

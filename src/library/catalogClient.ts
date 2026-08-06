@@ -322,11 +322,23 @@ export async function ensureClipThumb(
   id: string,
   reverse: boolean,
   timeSec: number,
+  composition?: {
+    framing: "fit" | "fill" | "stretch";
+    aspectRatio: string;
+    zoom: number;
+    centerX: number;
+    centerY: number;
+  },
 ): Promise<string> {
   return invoke<string>("library_ensure_clip_thumb", {
     id,
     reverse,
     timeSec,
+    framing: composition?.framing,
+    aspectRatio: composition?.aspectRatio,
+    zoom: composition?.zoom,
+    centerX: composition?.centerX,
+    centerY: composition?.centerY,
   });
 }
 

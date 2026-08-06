@@ -989,8 +989,14 @@ export function EditorLayout() {
   };
 
   const onSourceDraftChange = (draft: StagedClipDraft) => {
-    setPendingStagedDraft(draft);
-    setOpenProjectPendingStagedDraft(draft);
+    // Image positioning belongs to the eventual timeline clip, not the
+    // library asset/source draft restored on a later selection.
+    const sourceDraft = { ...draft };
+    delete sourceDraft.zoom;
+    delete sourceDraft.centerX;
+    delete sourceDraft.centerY;
+    setPendingStagedDraft(sourceDraft);
+    setOpenProjectPendingStagedDraft(sourceDraft);
   };
 
   const selectClip = (

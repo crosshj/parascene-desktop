@@ -14,6 +14,7 @@ import {
   clipThumbnailKey,
   ensureClipThumbnail,
   getCachedClipThumbnail,
+  type ClipThumbnailComposition,
 } from "../../library/clipThumbnail";
 import { creationPreviewUrl } from "../../library/previewUrl";
 import {
@@ -65,7 +66,6 @@ import {
   clampAddAssetDurationSec,
   withAddAssetDuration,
   type StagedClipDraft,
-  type StagedClipFraming,
   type TimelineGhostClip,
 } from "./stagedClip";
 import {
@@ -169,18 +169,37 @@ function clipDisplayThumbUrl(
   clip: TimelineClip,
   clipThumbByKey: Record<string, string>,
   catalogByAssetId: Record<string, string>,
+  aspectRatio: ProjectAspectRatio,
 ): string | null {
   const assetId = clip.assetId?.trim();
-  if (assetId && clip.kind !== "image" && clip.kind !== "audio") {
+  if (assetId && clip.kind !== "audio" && clip.kind !== "slideshow") {
+    const composition = clipThumbnailComposition(clip, aspectRatio);
     const key = clipThumbnailKey(
       assetId,
       Boolean(clip.reverse),
       Number(clip.inSec) || 0,
+      composition,
     );
     if (clipThumbByKey[key]) return clipThumbByKey[key];
+    // Do not substitute an uncomposed catalog poster: it visually lies about
+    // the clip instance while the backend frame is being generated.
+    return null;
   }
   if (assetId && catalogByAssetId[assetId]) return catalogByAssetId[assetId];
   return clip.thumbUrl || null;
+}
+
+function clipThumbnailComposition(
+  clip: Pick<TimelineClip, "framing" | "zoom" | "centerX" | "centerY">,
+  aspectRatio: ProjectAspectRatio,
+): ClipThumbnailComposition {
+  return {
+    framing: normalizeFraming(clip.framing),
+    aspectRatio,
+    zoom: Math.min(4, Math.max(1, Number(clip.zoom) || 1)),
+    centerX: Math.min(50, Math.max(-50, Number(clip.centerX) || 0)),
+    centerY: Math.min(50, Math.max(-50, Number(clip.centerY) || 0)),
+  };
 }
 
 function newClipId(): string {
@@ -267,6 +286,9 @@ function draftToClip(
     reverse: draft.reverse,
     transform: draft.transform,
     framing: draft.framing,
+    zoom: draft.zoom,
+    centerX: draft.centerX,
+    centerY: draft.centerY,
     slideshow,
     bakeKey: draft.bakeKey ?? null,
     bakePath: draft.bakePath ?? null,
@@ -355,7 +377,6 @@ function MiniClip({
   selected = false,
   audio = false,
   reversed = false,
-  framing = "fit",
   thumbAspectRatio = "16 / 9",
   bakeStatus,
   bakeError,
@@ -386,7 +407,6 @@ function MiniClip({
   audio?: boolean;
   /** Show a small left-pointing play mark (reversed clip). */
   reversed?: boolean;
-  framing?: StagedClipFraming;
   thumbAspectRatio?: string;
   bakeStatus?: BakeStatus;
   bakeError?: string | null;
@@ -583,22 +603,20 @@ function MiniClip({
         )
       ) : !audio ? (
         thumbUrl ? (
-          <img
-            className={`editor-timeline-clip-thumb${
-              framing === "fit"
-                ? " is-fit"
-                : framing === "stretch"
-                  ? " is-stretch"
-                  : ""
-            }`}
-            src={thumbUrl}
-            alt=""
-            draggable={false}
+          <span
+            className="editor-timeline-clip-thumb-frame"
             style={{ aspectRatio: thumbAspectRatio }}
-          />
+          >
+            <img
+              className="editor-timeline-clip-thumb"
+              src={thumbUrl}
+              alt=""
+              draggable={false}
+            />
+          </span>
         ) : (
           <span
-            className="editor-timeline-clip-thumb is-empty"
+            className="editor-timeline-clip-thumb-frame is-empty"
             style={{ aspectRatio: thumbAspectRatio }}
           />
         )
@@ -829,7 +847,12 @@ export function TimelinePane({
   const clipThumbRequestsKey = useMemo(() => {
     const requests = new Map<
       string,
-      { assetId: string; reverse: boolean; inSec: number }
+      {
+        assetId: string;
+        reverse: boolean;
+        inSec: number;
+        composition: ClipThumbnailComposition;
+      }
     >();
     for (const clip of clips) {
       const assetId = clip.assetId?.trim();
@@ -837,7 +860,6 @@ export function TimelinePane({
         !assetId ||
         clip.lane === "audio" ||
         clip.kind === "audio" ||
-        clip.kind === "image" ||
         clip.kind === "slideshow"
       ) {
         continue;
@@ -848,8 +870,9 @@ export function TimelinePane({
       const reverse =
         wantsReverse && Boolean(getCachedReversedMedia(assetId));
       const inSec = Math.max(0, Number(clip.inSec) || 0);
-      const key = clipThumbnailKey(assetId, reverse, inSec);
-      requests.set(key, { assetId, reverse, inSec });
+      const composition = clipThumbnailComposition(clip, aspectRatio);
+      const key = clipThumbnailKey(assetId, reverse, inSec, composition);
+      requests.set(key, { assetId, reverse, inSec, composition });
     }
     return JSON.stringify(
       [...requests.entries()]
@@ -858,7 +881,7 @@ export function TimelinePane({
     );
     // reverseCacheEpoch invalidates when reversed media lands on disk.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- external reverse cache
-  }, [clips, reverseCacheEpoch]);
+  }, [clips, reverseCacheEpoch, aspectRatio]);
 
   const [thumbKey, setThumbKey] = useState(clipAssetIdsKey);
   if (clipAssetIdsKey !== thumbKey) {
@@ -920,6 +943,7 @@ export function TimelinePane({
       assetId: string;
       reverse: boolean;
       inSec: number;
+      composition: ClipThumbnailComposition;
     }>;
     if (requests.length === 0) {
       void Promise.resolve().then(() => setClipThumbByKey({}));
@@ -931,15 +955,20 @@ export function TimelinePane({
     const load = async () => {
       const next: Record<string, string> = {};
       await Promise.all(
-        requests.map(async ({ assetId, reverse, inSec }) => {
-          const key = clipThumbnailKey(assetId, reverse, inSec);
-          const cached = getCachedClipThumbnail(assetId, reverse, inSec);
+        requests.map(async ({ assetId, reverse, inSec, composition }) => {
+          const key = clipThumbnailKey(assetId, reverse, inSec, composition);
+          const cached = getCachedClipThumbnail(assetId, reverse, inSec, composition);
           if (cached) {
             next[key] = cached;
             return;
           }
           try {
-            next[key] = await ensureClipThumbnail(assetId, reverse, inSec);
+            next[key] = await ensureClipThumbnail(
+              assetId,
+              reverse,
+              inSec,
+              composition,
+            );
           } catch {
             // Keep the catalog / stored thumbnail fallback.
           }
@@ -1497,6 +1526,9 @@ export function TimelinePane({
         label: draft.label,
         thumbUrl: draft.thumbUrl,
         framing: normalizeFraming(draft.framing),
+        zoom: draft.zoom,
+        centerX: draft.centerX,
+        centerY: draft.centerY,
       });
     },
     [clips, isOverTracks, magnetic, pointToStartSec],
@@ -1944,6 +1976,7 @@ export function TimelinePane({
                       clip,
                       clipThumbByKey,
                       thumbByAssetId,
+                      aspectRatio,
                     )}
                     label={
                       clip.kind === "slideshow"
@@ -1973,7 +2006,6 @@ export function TimelinePane({
                     resizing={resizingClipIds.includes(clip.id)}
                     selected={selectedClipIds.includes(clip.id)}
                     reversed={Boolean(clip.reverse)}
-                    framing={normalizeFraming(clip.framing)}
                     thumbAspectRatio={thumbAspectRatio}
                     bakeStatus={
                       isAddAssetPlaceholderClip(clip)
@@ -2025,7 +2057,6 @@ export function TimelinePane({
                   durationSec={ghost.durationSec}
                   thumbUrl={ghost.thumbUrl}
                   pxPerSec={pxPerSec}
-                  framing={ghost.framing}
                   thumbAspectRatio={thumbAspectRatio}
                 />
               ) : null}
@@ -2094,6 +2125,7 @@ export function TimelinePane({
                       clip,
                       clipThumbByKey,
                       thumbByAssetId,
+                      aspectRatio,
                     )}
                     label={clip.label}
                     title={clip.assetId ?? clip.label}

@@ -243,6 +243,15 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
       c.framing === "fit" || c.framing === "fill" || c.framing === "stretch"
         ? c.framing
         : undefined,
+    zoom: Number.isFinite(Number(c.zoom))
+      ? Math.min(4, Math.max(1, Number(c.zoom)))
+      : undefined,
+    centerX: Number.isFinite(Number(c.centerX))
+      ? Math.min(50, Math.max(-50, Number(c.centerX)))
+      : undefined,
+    centerY: Number.isFinite(Number(c.centerY))
+      ? Math.min(50, Math.max(-50, Number(c.centerY)))
+      : undefined,
     slideshow,
     bakeKey,
     bakePath,

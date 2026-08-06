@@ -309,6 +309,9 @@ export type StagedClipDraft = {
   reverse: boolean;
   transform: StagedClipTransform;
   framing: StagedClipFraming;
+  zoom?: number;
+  centerX?: number;
+  centerY?: number;
   thumbUrl: string | null;
   /** Composite slideshow recipe when kind is "slideshow". */
   slideshow?: SlideshowRecipe;
@@ -554,6 +557,9 @@ export function applyDraftToTimelineClip(
     reverse?: boolean;
     transform?: StagedClipTransform;
     framing?: StagedClipFraming;
+    zoom?: number;
+    centerX?: number;
+    centerY?: number;
     slideshow?: SlideshowRecipe;
     bakeKey?: string | null;
     bakePath?: string | null;
@@ -634,6 +640,9 @@ export function applyDraftToTimelineClip(
     reverse: draft.reverse,
     transform: draft.transform,
     framing: draft.framing,
+    zoom: draft.zoom,
+    centerX: draft.centerX,
+    centerY: draft.centerY,
     slideshow: draft.kind === "slideshow" ? draft.slideshow : undefined,
     bakeKey: recipeChanged ? null : (draft.bakeKey ?? clip.bakeKey ?? null),
     bakePath: recipeChanged ? null : (draft.bakePath ?? clip.bakePath ?? null),
@@ -757,6 +766,9 @@ export function timelineClipToStagedDraft(clip: {
   reverse?: boolean;
   transform?: StagedClipTransform;
   framing?: StagedClipFraming;
+  zoom?: number;
+  centerX?: number;
+  centerY?: number;
   thumbUrl?: string | null;
   slideshow?: SlideshowRecipe;
   bakeKey?: string | null;
@@ -837,6 +849,9 @@ export function timelineClipToStagedDraft(clip: {
     reverse: Boolean(clip.reverse),
     transform,
     framing,
+    zoom: typeof clip.zoom === "number" ? clip.zoom : undefined,
+    centerX: typeof clip.centerX === "number" ? clip.centerX : undefined,
+    centerY: typeof clip.centerY === "number" ? clip.centerY : undefined,
     thumbUrl: typeof clip.thumbUrl === "string" ? clip.thumbUrl : null,
     slideshow,
     bakeKey: typeof clip.bakeKey === "string" ? clip.bakeKey : null,
@@ -943,6 +958,9 @@ export type TimelineGhostClip = {
   label: string;
   thumbUrl: string | null;
   framing?: StagedClipFraming;
+  zoom?: number;
+  centerX?: number;
+  centerY?: number;
 };
 
 /** Active staged-clip drag (HTML5 getData is drop-only in most browsers). */

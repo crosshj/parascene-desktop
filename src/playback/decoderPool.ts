@@ -123,6 +123,15 @@ function applyMediaClass(
   )}${standby ? " is-standby" : ""}`;
 }
 
+function applyImagePosition(media: HTMLElement, clip: TimelineClip | null): void {
+  if (!(media instanceof HTMLImageElement)) return;
+  const zoom = Math.min(4, Math.max(1, Number(clip?.zoom) || 1));
+  const centerX = Math.min(50, Math.max(-50, Number(clip?.centerX) || 0));
+  const centerY = Math.min(50, Math.max(-50, Number(clip?.centerY) || 0));
+  media.style.transform = `translate(${centerX}%, ${centerY}%) scale(${zoom})`;
+  media.style.transformOrigin = "center";
+}
+
 function applyStretchStyle(video: HTMLVideoElement, framing: StagedClipFraming): void {
   if (framing !== "stretch") {
     video.style.objectFit = "";
@@ -762,6 +771,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         if (slot.kind === "image") {
           setImageSrc(slot, resolved.src);
           applyMediaClass(slot.media, slot.paintedFraming, !isVisible);
+          if (isActive) applyImagePosition(slot.media, visual?.clip ?? null);
           if (isActive) markReady(slot.key);
           continue;
         }
