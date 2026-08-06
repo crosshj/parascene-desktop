@@ -9,10 +9,7 @@ import {
   type ReplicateInputField,
   type ReplicateModelDetail,
 } from "../../replicate/replicateClient";
-import {
-  importLocalPaths,
-} from "../../library/catalogClient";
-import { importLocalPathsForProject } from "../../project/boundFolderLanding";
+import { cacheCompositionRun } from "../../library/catalogClient";
 
 export function pickImageInputField(
   inputs: readonly ReplicateInputField[],
@@ -32,7 +29,13 @@ export function pickImageInputField(
   ];
   const candidates = inputs.flatMap((field) => {
     const blob = `${field.name} ${field.title ?? ""} ${field.description ?? ""}`.toLowerCase();
-    if (!/image|photo|picture|frame/.test(blob) || /mask/.test(blob)) return [];
+    if (
+      /prompt|caption|description|negative/.test(field.name.toLowerCase()) ||
+      !/image|photo|picture|frame/.test(blob) ||
+      /mask/.test(blob)
+    ) {
+      return [];
+    }
     const array =
       field.arrayItemFileLike ||
       (field.typeName === "array" &&
@@ -40,8 +43,7 @@ export function pickImageInputField(
     const scalar =
       field.fileLike ||
       field.format === "uri" ||
-      ((field.typeName === "string" || field.typeName.includes("uri")) &&
-        !field.enumValues?.length);
+      field.typeName.includes("uri");
     return array || scalar ? [{ field, array }] : [];
   });
   for (const name of preferred) {
@@ -49,6 +51,83 @@ export function pickImageInputField(
     if (match) return match;
   }
   return candidates[0] ?? null;
+}
+
+type JsonObject = Record<string, unknown>;
+
+function asObject(value: unknown): JsonObject | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : null;
+}
+
+function collectStrings(value: unknown, result: string[] = []): string[] {
+  if (typeof value === "string") result.push(value);
+  else if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, result);
+  } else {
+    const object = asObject(value);
+    if (object) {
+      for (const item of Object.values(object)) collectStrings(item, result);
+    }
+  }
+  return result;
+}
+
+function outputSchema(raw: unknown): unknown {
+  const root = asObject(raw);
+  const latest = asObject(root?.latest_version);
+  const openApi = asObject(latest?.openapi_schema);
+  const components = asObject(openApi?.components);
+  const schemas = asObject(components?.schemas);
+  return schemas?.Output;
+}
+
+/** True only when the model's Replicate metadata indicates a still-image output. */
+export function modelProducesImageOutput(
+  detail: Pick<
+    ReplicateModelDetail,
+    "raw" | "name" | "description" | "features"
+  >,
+): boolean {
+  const raw = asObject(detail.raw);
+  const example = asObject(raw?.default_example);
+  const exampleOutput = collectStrings(example?.output);
+  const imageFile = /\.(?:avif|bmp|gif|heic|jpe?g|png|tiff?|webp)(?:[?#]|$)/i;
+  const otherMediaFile =
+    /\.(?:aac|avi|flac|m4a|m4v|mkv|mov|mp3|mp4|mpeg|ogg|wav|webm)(?:[?#]|$)/i;
+  if (exampleOutput.some((value) => imageFile.test(value))) return true;
+  if (exampleOutput.some((value) => otherMediaFile.test(value))) return false;
+
+  const schema = outputSchema(detail.raw);
+  const schemaText = collectStrings(schema).join(" ").toLowerCase();
+  if (/image\/(?:avif|bmp|gif|jpeg|png|tiff|webp)|\b(?:image|picture|photo)\b/.test(schemaText)) {
+    return true;
+  }
+  if (/video\/|audio\/|\b(?:video|audio|music|speech)\b/.test(schemaText)) {
+    return false;
+  }
+
+  // Replicate commonly describes all downloadable outputs as an untyped URI.
+  // In that case require an image-oriented model and reject other image-input
+  // tasks (video generation, captioning, detection, embeddings, and so on).
+  const schemaObject = asObject(schema);
+  const items = asObject(schemaObject?.items);
+  const uriOutput =
+    schemaObject?.format === "uri" ||
+    items?.format === "uri" ||
+    schemaText.includes("uri");
+  if (!uriOutput) return false;
+
+  const metadata = `${detail.name} ${detail.description ?? ""} ${detail.features.join(" ")}`.toLowerCase();
+  if (
+    /\b(?:video|audio|music|speech|caption|ocr|detect(?:ion|or)?|classif(?:y|ier|ication)|embedding|segment(?:ation)?|depth|pose|recognition|vision.language)\b/.test(
+      metadata,
+    )
+  ) {
+    return false;
+  }
+  return /\bimage\b|image_(?:in|out)|photo|picture|inpaint|upscal/.test(metadata);
 }
 
 function pickPromptField(
@@ -93,17 +172,13 @@ export type RunStillImageEditOpts = {
   name: string;
   prompt: string;
   sourceLocalPath: string;
-  boundFolderId: string | null | undefined;
-  /**
-   * When false (default), import into Library only — stays inside the
-   * composition until the user promotes it into project Assets.
-   */
-  landInProject?: boolean;
+  compositionId: string;
   onProgress?: (note: string) => void;
 };
 
 export async function runStillImageEdit(opts: RunStillImageEditOpts): Promise<{
-  creationId: string;
+  creationId: null;
+  localPath: string;
   modelId: string;
   predictionId: string | null;
 }> {
@@ -151,24 +226,15 @@ export async function runStillImageEdit(opts: RunStillImageEditOpts): Promise<{
     throw new Error("Replicate still edit finished with no local output file.");
   }
 
-  opts.onProgress?.("Importing edit into library…");
-  const landInProject = opts.landInProject === true;
-  const imported = landInProject
-    ? await importLocalPathsForProject({
-        paths: [outputPath],
-        boundFolderId: opts.boundFolderId,
-      })
-    : await importLocalPaths([outputPath]);
-  const created = imported.creations[0];
-  if (!created?.id) {
-    throw new Error("Import produced no Library creation from still edit.");
-  }
+  opts.onProgress?.("Saving edit in composition cache…");
+  const cachedPath = await cacheCompositionRun(outputPath, opts.compositionId);
 
   // Keep schema detail referenced so unused warnings stay quiet if we expand later.
   void detail.owner;
 
   return {
-    creationId: created.id,
+    creationId: null,
+    localPath: cachedPath,
     modelId,
     predictionId: result.predictionId?.trim() || predictionId,
   };

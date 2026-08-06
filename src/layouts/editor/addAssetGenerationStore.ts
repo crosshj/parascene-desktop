@@ -319,6 +319,7 @@ export function retryAddAssetDownloadJob(
 
   void resumeReplicateAddAssetDownload({
     predictionId,
+    projectId,
     imagesGroupId,
     boundFolderId,
     continuityMode: continuityMode as ReplicateVideoContinuity,

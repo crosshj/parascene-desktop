@@ -71,6 +71,8 @@ import { LibraryPageSkeleton } from "./LibraryLoadingSkeleton";
 import {
   cacheMissingMedia,
   cacheMissingThumbs,
+  deleteLocal,
+  deleteProjectAsset,
   ensureLocal,
   getCatalogFilterCounts,
   getCreation,
@@ -82,6 +84,8 @@ import {
   listCreationsPage,
   listGroupMemberIds,
   mergeCreationsById,
+  removeProjectAssets,
+  setProjectBoundFolder,
 } from "./catalogClient";
 import { CreationLightbox } from "./CreationLightbox";
 import { FolderCreateModal } from "./FolderCreateModal";
@@ -1218,12 +1222,39 @@ function CreationsPanel({
     project,
     createProject,
     addCreationsToOpenProject,
+    removeCreationsFromOpenProject,
     addFoldersToOpenProject,
     setOpenProjectBoundFolderId,
     creationsFilterId,
     setCreationsFilterId,
   } = useShell();
   const [active, setActive] = useState<Creation | null>(null);
+
+  const deleteCreationFromLibrary = useCallback(
+    async (creationId: string) => {
+      const boundId = project.boundFolderId?.trim();
+      const isBoundProjectAsset = Boolean(boundId) &&
+        project.assets.some((asset) => asset.id === creationId);
+      if (!isBoundProjectAsset) {
+        await deleteLocal(creationId);
+        return;
+      }
+      const used = project.timeline.some(
+        (clip) =>
+          clip.assetId === creationId ||
+          clip.slideshow?.audioAssetId === creationId ||
+          clip.slideshow?.imageAssetIds.includes(creationId),
+      );
+      if (used) {
+        throw new Error(
+          "This project asset is used on the timeline. Remove its clips first, then delete it.",
+        );
+      }
+      await deleteProjectAsset(project.id, creationId);
+      removeCreationsFromOpenProject([creationId]);
+    },
+    [project.assets, project.boundFolderId, project.id, project.timeline, removeCreationsFromOpenProject],
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(
     () => new Set(),
@@ -1960,14 +1991,36 @@ function CreationsPanel({
   const onRemoveSelectionFromFolder = useCallback(async () => {
     if (selectedIds.size === 0) return;
     try {
-      await removeFromFolder([...selectedIds]);
+      const ids = [...selectedIds];
+      const isBoundFolder = Boolean(folderViewId) &&
+        folderViewId === project.boundFolderId?.trim();
+      if (isBoundFolder) {
+        const used = ids.filter((id) =>
+          project.timeline.some(
+            (clip) =>
+              clip.assetId === id ||
+              clip.slideshow?.audioAssetId === id ||
+              clip.slideshow?.imageAssetIds.includes(id),
+          ),
+        );
+        if (used.length > 0) {
+          throw new Error(
+            "One or more selected project assets are used on the timeline. Remove their clips first.",
+          );
+        }
+        await removeProjectAssets(project.id, ids);
+        removeCreationsFromOpenProject(ids);
+      } else {
+        await removeFromFolder(ids);
+      }
       setSelectedIds(new Set());
       setDeferredKeepIds(new Set());
       await refreshFolders();
     } catch (error) {
       console.error(error);
+      window.alert(error instanceof Error ? error.message : String(error));
     }
-  }, [refreshFolders, selectedIds]);
+  }, [folderViewId, project.boundFolderId, project.id, project.timeline, refreshFolders, removeCreationsFromOpenProject, selectedIds]);
 
   const onAddSelectedFoldersToProject = useCallback(() => {
     if (!openProjectId || selectedFolderIds.size === 0) return;
@@ -1993,8 +2046,10 @@ function CreationsPanel({
     const folderId = [...selectedFolderIds][0];
     const folder = folders.find((row) => row.id === folderId);
     if (!folder) return;
-    setOpenProjectBoundFolderId(folder.id, folder.memberIds);
-    setSelectedFolderIds(new Set());
+    void setProjectBoundFolder(project.id, folder.id).then(() => {
+      setOpenProjectBoundFolderId(folder.id);
+      setSelectedFolderIds(new Set());
+    });
   }, [
     folders,
     openProjectId,
@@ -2021,12 +2076,15 @@ function CreationsPanel({
       );
       return;
     }
-    setOpenProjectBoundFolderId(null);
-    setSelectedFolderIds(new Set());
+    void setProjectBoundFolder(project.id, null).then(() => {
+      setOpenProjectBoundFolderId(null);
+      setSelectedFolderIds(new Set());
+    });
   }, [
     folders,
     openProjectId,
     project.boundFolderId,
+    project.id,
     project.timeline,
     selectedFolderIds,
     setOpenProjectBoundFolderId,
@@ -2333,6 +2391,7 @@ function CreationsPanel({
                   ) ?? active
                 }
                 onClose={() => setActive(null)}
+                deleteCreation={deleteCreationFromLibrary}
                 onDeleted={() => setActive(null)}
               />
             ) : null}

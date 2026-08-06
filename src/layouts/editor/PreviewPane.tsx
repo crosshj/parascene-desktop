@@ -10,7 +10,10 @@ import {
 } from "react";
 import { useShell } from "../../app/ShellProvider";
 import {
+  addExistingProjectAsset,
   applyManifest,
+  cacheCompositionRun,
+  deleteCompositionRun,
   deleteLocal,
   ensureLocal,
   getCreation,
@@ -29,8 +32,15 @@ import {
   type StillWorkstream,
 } from "../../project/stillWorkstream";
 import { creationUpsertWithStillCompositionOrigin } from "../../project/stillCompositionProvenance";
-import { replicateModelsListEnabled } from "../../replicate/replicateClient";
-import { runStillImageEdit } from "./stillImageEdit";
+import {
+  replicateModelGet,
+  replicateModelsListEnabled,
+} from "../../replicate/replicateClient";
+import {
+  modelProducesImageOutput,
+  pickImageInputField,
+  runStillImageEdit,
+} from "./stillImageEdit";
 import { AudioWaveform } from "../../library/AudioWaveform";
 import {
   clipThumbnailKey,
@@ -1346,14 +1356,19 @@ export function PreviewPane({
     );
   }, [activeWorkstreamId, project.stillWorkstreams]);
 
-  const selectedWorkstreamCreationId = useMemo(() => {
+  const selectedWorkstreamNode = useMemo(() => {
     if (!activeWorkstream?.selectedNodeId) return null;
     return (
-      activeWorkstream.nodes
-        .find((node) => node.id === activeWorkstream.selectedNodeId)
-        ?.creationId?.trim() || null
+      activeWorkstream.nodes.find(
+        (node) => node.id === activeWorkstream.selectedNodeId,
+      ) ?? null
     );
   }, [activeWorkstream]);
+  const selectedWorkstreamCreationId =
+    selectedWorkstreamNode?.creationId?.trim() || null;
+  const selectedWorkstreamLocalUrl = selectedWorkstreamNode?.localPath
+    ? mediaUrlForBakePath(selectedWorkstreamNode.localPath)
+    : null;
 
   // A committed plate or AI edit is a Library creation. Resolve the selected
   // history node so the inline preview follows the current composition head.
@@ -1378,24 +1393,53 @@ export function PreviewPane({
   }, [selectedWorkstreamCreationId]);
 
   const compositionPreviewUrl =
-    selectedNodePreview?.creationId === selectedWorkstreamCreationId
+    selectedWorkstreamLocalUrl ??
+    (selectedNodePreview?.creationId === selectedWorkstreamCreationId
       ? selectedNodePreview.url
       : platePreviewPath
         ? mediaUrlForBakePath(platePreviewPath)
-        : null;
+        : null);
 
   useEffect(() => {
-    const nodes = activeWorkstream?.nodes.filter(
-      (node) => node.status !== "discarded" && node.creationId,
+    const nodes =
+      activeWorkstream?.nodes.filter((node) => node.status !== "discarded") ??
+      [];
+    const localUrls: Record<string, string> = {};
+    for (const node of nodes) {
+      const localPath = node.localPath?.trim();
+      if (localPath) localUrls[node.id] = mediaUrlForBakePath(localPath);
+    }
+    setWorkstreamNodePreviewUrls(localUrls);
+
+    const legacyNodes = nodes.filter(
+      (node) => !node.localPath?.trim() && node.creationId,
     );
-    if (!nodes?.length) return;
+    if (legacyNodes.length === 0) return;
     let cancelled = false;
-    void getCreations(nodes.map((node) => node.creationId!))
+    void getCreations(legacyNodes.map((node) => node.creationId!))
       .then((rows) => {
         if (cancelled) return;
-        const urls: Record<string, string> = {};
+        const urls: Record<string, string> = { ...localUrls };
         const byCreationId = new Map(rows.map((row) => [row.id, row]));
-        for (const node of nodes) {
+        let hydrated = false;
+        const nextNodes = activeWorkstream!.nodes.map((node) => {
+          if (node.localPath) {
+            urls[node.id] = mediaUrlForBakePath(node.localPath);
+            return node;
+          }
+          const row = node.creationId
+            ? byCreationId.get(node.creationId)
+            : undefined;
+          const localPath = row?.localPath?.trim();
+          if (localPath) {
+            urls[node.id] = mediaUrlForBakePath(localPath);
+            hydrated = true;
+            return { ...node, localPath };
+          }
+          return node;
+        });
+        for (const node of legacyNodes) {
+          if (urls[node.id]) continue;
           const row = byCreationId.get(node.creationId!);
           const url = row
             ? creationPreviewUrl(row) ?? creationDetailUrl(row)
@@ -1403,6 +1447,12 @@ export function PreviewPane({
           if (url) urls[node.id] = url;
         }
         setWorkstreamNodePreviewUrls(urls);
+        if (hydrated) {
+          upsertOpenStillWorkstream({
+            ...activeWorkstream!,
+            nodes: nextNodes,
+          });
+        }
       })
       .catch((error) => {
         console.error("Failed to load composition run previews", error);
@@ -1410,7 +1460,7 @@ export function PreviewPane({
     return () => {
       cancelled = true;
     };
-  }, [activeWorkstream]);
+  }, [activeWorkstream, upsertOpenStillWorkstream]);
 
   // Open composition from Assets card.
   useEffect(() => {
@@ -1459,10 +1509,29 @@ export function PreviewPane({
   useEffect(() => {
     let cancelled = false;
     void replicateModelsListEnabled()
-      .then((ids) => {
+      .then(async (ids) => {
+        const compatible = (
+          await Promise.all(
+            ids.map(async (id) => {
+              const slash = id.indexOf("/");
+              if (slash <= 0) return null;
+              const detail = await replicateModelGet(
+                id.slice(0, slash),
+                id.slice(slash + 1),
+              ).catch(() => null);
+              return detail &&
+                pickImageInputField(detail.inputs) &&
+                modelProducesImageOutput(detail)
+                ? id
+                : null;
+            }),
+          )
+        ).filter((id): id is string => Boolean(id));
         if (cancelled) return;
-        setEnabledEditModels(ids);
-        setEditModel((prev) => prev || ids[0] || "");
+        setEnabledEditModels(compatible);
+        setEditModel((prev) =>
+          prev && compatible.includes(prev) ? prev : compatible[0] || "",
+        );
       })
       .catch(() => {
         if (!cancelled) setEnabledEditModels([]);
@@ -1586,8 +1655,8 @@ export function PreviewPane({
     const selected = activeWorkstream.nodes.find(
       (n) => n.id === nodeId,
     );
-    const creationId = selected?.creationId?.trim();
-    if (!creationId || !selected) {
+    const creationId = selected?.creationId?.trim() || null;
+    if (!selected || (!creationId && !selected.localPath?.trim())) {
       setCompositeError("This run no longer has an image to export.");
       return;
     }
@@ -1595,29 +1664,55 @@ export function PreviewPane({
     setCompositeError(null);
     setCompositeStatus("Exporting run to Assets…");
     try {
-      await ensureLocal([creationId]);
-      const source = await getCreation(creationId);
-      const sourcePath = source.localPath?.trim();
+      let sourcePath = selected.localPath?.trim() || null;
+      if (!sourcePath) {
+        if (!creationId) throw new Error("This run has no backing image.");
+        await ensureLocal([creationId]);
+        const source = await getCreation(creationId);
+        sourcePath = source.localPath?.trim() || null;
+      }
       if (!sourcePath) throw new Error("Could not resolve the run's cached file.");
-      const imported = await importLocalPathsForProject({
-        paths: [sourcePath],
-        boundFolderId: project.boundFolderId,
-      });
-      const outside = imported.creations[0];
-      if (!outside?.id) throw new Error("Could not create the Asset copy.");
+      let outside;
+      if (creationId) {
+        // Legacy internal runs were incorrectly stored as Library creations.
+        // Preserve an independent cache copy, then promote that same row so
+        // Export does not manufacture a duplicate.
+        const cachedPath = await cacheCompositionRun(
+          sourcePath,
+          activeWorkstream.id,
+        );
+        outside = await getCreation(creationId);
+        upsertOpenStillWorkstream({
+          ...activeWorkstream,
+          nodes: activeWorkstream.nodes.map((node) =>
+            node.id === selected.id
+              ? { ...node, creationId: null, localPath: cachedPath }
+              : node,
+          ),
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        const imported = await importLocalPathsForProject({
+          paths: [sourcePath],
+          projectId: project.id,
+        });
+        outside = imported.creations[0];
+      }
+      if (!outside?.id) throw new Error("Could not create the Asset.");
       await applyManifest([
         creationUpsertWithStillCompositionOrigin(outside, {
           compositionId: activeWorkstream.id,
           runNodeId: selected.id,
-          sourceCreationId: creationId,
+          sourceCreationId: creationId ?? selected.id,
           promotedAt: new Date().toISOString(),
           prompt: selected.prompt,
           model: selected.model,
         }),
       ]);
+      await addExistingProjectAsset(project.id, outside.id);
       addCreationsToOpenProject([outside.id]);
       setCompositeStatus(
-        "Created an independent Asset copy. The composition run remains internal.",
+        "Exported one project Asset into the working folder.",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1631,6 +1726,7 @@ export function PreviewPane({
     addCreationsToOpenProject,
     compositeBusy,
     project.boundFolderId,
+    upsertOpenStillWorkstream,
   ]);
 
   const onCompositeEdit = useCallback(async () => {
@@ -1655,7 +1751,9 @@ export function PreviewPane({
     setCompositeError(null);
     try {
       let sourcePath: string | null = null;
-      if (creationId) {
+      if (selected?.localPath) {
+        sourcePath = selected.localPath;
+      } else if (creationId) {
         await ensureLocal([creationId]);
         const [row] = await getCreations([creationId]);
         sourcePath = row?.localPath?.trim() || null;
@@ -1686,14 +1784,14 @@ export function PreviewPane({
         name,
         prompt: editPrompt,
         sourceLocalPath: sourcePath,
-        boundFolderId: project.boundFolderId,
-        landInProject: false,
+        compositionId: activeWorkstream.id,
         onProgress: setCompositeStatus,
       });
       const next = appendWorkstreamEditNode(
         { ...activeWorkstream, recipe: plateRecipe, memberIds: activeImageIds },
         {
           creationId: result.creationId,
+          localPath: result.localPath,
           parentNodeId: selected?.id ?? null,
           prompt: editPrompt.trim(),
           model: result.modelId,
@@ -1772,7 +1870,7 @@ export function PreviewPane({
             }
             const imported = await importLocalPathsForProject({
               paths: [sourcePath],
-              boundFolderId: project.boundFolderId,
+              projectId: project.id,
             });
             const outside = imported.creations[0];
             if (!outside?.id) throw new Error("Asset copy was not created.");
@@ -1797,6 +1895,14 @@ export function PreviewPane({
         // The composition record is authoritative. Remove the run first so a
         // missing/stale cache row cannot make the UI deletion fail.
         upsertOpenStillWorkstream(result.stream);
+        if (node.localPath) {
+          try {
+            await deleteCompositionRun(node.localPath);
+          } catch (error) {
+            cleanupWarning ??=
+              error instanceof Error ? error.message : String(error);
+          }
+        }
         if (result.creationIdToDelete && shouldDeleteBackingCreation) {
           try {
             await deleteLocal(result.creationIdToDelete);

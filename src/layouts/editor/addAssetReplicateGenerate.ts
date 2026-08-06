@@ -197,6 +197,7 @@ export type RunReplicateAddAssetGenerationOpts = {
 
 async function importReplicateOutput(opts: {
   outputPath: string;
+  projectId: string;
   imagesGroupId: string | null;
   boundFolderId?: string | null;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
@@ -221,7 +222,7 @@ async function importReplicateOutput(opts: {
   opts.onProgress("Importing video into library…");
   const imported = await importLocalPathsForProject({
     paths: [opts.outputPath],
-    boundFolderId: opts.boundFolderId,
+    projectId: opts.projectId,
   });
   const created = imported.creations[0];
   if (!created?.id) {
@@ -448,6 +449,7 @@ export async function runReplicateAddAssetGeneration(
   try {
     return await importReplicateOutput({
       outputPath,
+      projectId: opts.projectId,
       imagesGroupId: opts.imagesGroupId,
       boundFolderId: opts.boundFolderId,
       onSteps: opts.onSteps,
@@ -468,6 +470,7 @@ export async function runReplicateAddAssetGeneration(
 
 export type ResumeReplicateDownloadOpts = {
   predictionId: string;
+  projectId: string;
   imagesGroupId: string | null;
   boundFolderId?: string | null;
   continuityMode: ReplicateVideoContinuity;
@@ -526,6 +529,7 @@ export async function resumeReplicateAddAssetDownload(
   try {
     return await importReplicateOutput({
       outputPath,
+      projectId: opts.projectId,
       imagesGroupId: opts.imagesGroupId,
       boundFolderId: opts.boundFolderId,
       onSteps: opts.onSteps,

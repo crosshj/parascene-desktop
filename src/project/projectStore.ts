@@ -27,6 +27,7 @@ import {
 } from "./aspectRatios";
 import { normalizeAddAssetGeneration } from "./desktopAddAssetGeneration";
 import {
+  compositionInternalCreationIds,
   normalizeStillWorkstream,
   normalizeStillWorkstreams,
   type StillWorkstream,
@@ -454,6 +455,9 @@ export function normalizeFolderIds(value: unknown): string[] {
 }
 
 function normalizeStoredProject(project: StoredProject): StoredProject {
+  const stillWorkstreams = normalizeStillWorkstreams(project.stillWorkstreams);
+  const internalIds = compositionInternalCreationIds(stillWorkstreams);
+  const creationIds = project.creationIds.filter((id) => !internalIds.has(id));
   const aspectRatio = isProjectAspectRatio(project.aspectRatio)
     ? project.aspectRatio
     : DEFAULT_PROJECT_ASPECT_RATIO;
@@ -468,15 +472,16 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
   const selectedAssetId =
     selectedTimelineClipId || timelineMonitorActive
       ? null
-      : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
+      : normalizeSelectedAssetId(project.selectedAssetId, creationIds);
   const selectedClipId = timelineMonitorActive ? null : selectedTimelineClipId;
   const folderIds = normalizeFolderIds(project.folderIds);
   const boundFolderId = normalizeBoundFolderId(project.boundFolderId, folderIds);
   return {
     ...project,
+    creationIds,
     folderIds,
     boundFolderId,
-    stillWorkstreams: normalizeStillWorkstreams(project.stillWorkstreams),
+    stillWorkstreams,
     aspectRatio,
     looks: normalizeProjectLooks(project.looks),
     timeline,
@@ -895,11 +900,11 @@ export function removeFolderIds(
 export function setStoredProjectBoundFolderId(
   project: StoredProject,
   folderId: string | null,
-  memberCreationIds: string[] = [],
+  _memberCreationIds: string[] = [],
 ): StoredProject {
   const nextBound = normalizeOptionalId(folderId);
   const prevBound = normalizeOptionalId(project.boundFolderId);
-  if (nextBound === prevBound && memberCreationIds.length === 0) {
+  if (nextBound === prevBound) {
     return project;
   }
   if (!nextBound) {
@@ -912,16 +917,10 @@ export function setStoredProjectBoundFolderId(
   }
 
   // Drop all attached folder cards — bind is the sole container (no nesting).
-  const nextCreations = new Set(project.creationIds);
-  for (const id of memberCreationIds) {
-    const trimmed = String(id).trim();
-    if (trimmed) nextCreations.add(trimmed);
-  }
   return {
     ...project,
     folderIds: [],
     boundFolderId: nextBound,
-    creationIds: [...nextCreations],
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1406,7 +1405,10 @@ export function setStoredProjectLabStoryboardDirection(
 
 /** Map a stored project into the shell UI Project shape. */
 export function storedProjectToUi(project: StoredProject): Project {
-  const assets: ProjectAsset[] = project.creationIds.map((id) => ({
+  const stillWorkstreams = normalizeStillWorkstreams(project.stillWorkstreams);
+  const internalIds = compositionInternalCreationIds(stillWorkstreams);
+  const creationIds = project.creationIds.filter((id) => !internalIds.has(id));
+  const assets: ProjectAsset[] = creationIds.map((id) => ({
     id,
     name: id,
     kind: "image",
@@ -1421,7 +1423,7 @@ export function storedProjectToUi(project: StoredProject): Project {
   const selectedAssetId =
     selectedTimelineClipId || timelineMonitorActive
       ? null
-      : normalizeSelectedAssetId(project.selectedAssetId, project.creationIds);
+      : normalizeSelectedAssetId(project.selectedAssetId, creationIds);
   return {
     id: project.id,
     title: project.title,
@@ -1442,7 +1444,7 @@ export function storedProjectToUi(project: StoredProject): Project {
       project.boundFolderId,
       normalizeFolderIds(project.folderIds),
     ),
-    stillWorkstreams: normalizeStillWorkstreams(project.stillWorkstreams),
+    stillWorkstreams,
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
     labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),

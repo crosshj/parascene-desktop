@@ -175,7 +175,7 @@ fn get_folder(conn: &Connection, id: &str) -> Result<Option<LibraryFolder>, Stri
     )?))
 }
 
-fn list_folders(conn: &Connection) -> Result<Vec<LibraryFolder>, String> {
+pub(crate) fn list_folders(conn: &Connection) -> Result<Vec<LibraryFolder>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, description, created_at, updated_at
@@ -369,7 +369,7 @@ pub(crate) fn ensure_folder_sync_ready(conn: &Connection) -> Result<(), String> 
 }
 
 /// Remove prior memberships, then insert into `folder_id`.
-fn move_creations_into_folder(
+pub(crate) fn move_creations_into_folder(
     conn: &Connection,
     folder_id: &str,
     creation_ids: &[String],
@@ -488,7 +488,7 @@ fn delete_folder(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_from_folder(conn: &Connection, creation_ids: &[String]) -> Result<(), String> {
+pub(crate) fn remove_from_folder(conn: &Connection, creation_ids: &[String]) -> Result<(), String> {
     if creation_ids.is_empty() {
         return Ok(());
     }
@@ -726,7 +726,7 @@ fn sync_state(conn: &Connection) -> Result<FolderSyncState, String> {
     })
 }
 
-fn emit_folders_updated(app: &AppHandle, folders: &[LibraryFolder]) {
+pub(crate) fn emit_folders_updated(app: &AppHandle, folders: &[LibraryFolder]) {
     let _ = app.emit("library-folders-updated", folders);
 }
 
@@ -764,27 +764,34 @@ pub async fn library_get_folder(id: String) -> Result<LibraryFolder, String> {
 
 #[tauri::command]
 pub async fn library_create_folder(
+    app: AppHandle,
     title: String,
     creation_ids: Vec<String>,
 ) -> Result<LibraryFolder, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    create_folder(&conn, &title, &creation_ids)
+    let folder = create_folder(&conn, &title, &creation_ids)?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(folder)
 }
 
 #[tauri::command]
 pub async fn library_rename_folder(
+    app: AppHandle,
     id: String,
     title: String,
     description: String,
 ) -> Result<LibraryFolder, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    rename_folder(&conn, &id, &title, &description)
+    let folder = rename_folder(&conn, &id, &title, &description)?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(folder)
 }
 
 #[tauri::command]
 pub async fn library_add_to_folder(
+    app: AppHandle,
     folder_id: String,
     creation_ids: Vec<String>,
 ) -> Result<LibraryFolder, String> {
@@ -806,21 +813,31 @@ pub async fn library_add_to_folder(
             }),
         )?;
     }
-    get_folder(&conn, &folder_id)?.ok_or_else(|| "Folder not found".into())
+    let folder = get_folder(&conn, &folder_id)?
+        .ok_or_else(|| String::from("Folder not found"))?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(folder)
 }
 
 #[tauri::command]
-pub async fn library_remove_from_folder(creation_ids: Vec<String>) -> Result<(), String> {
+pub async fn library_remove_from_folder(
+    app: AppHandle,
+    creation_ids: Vec<String>,
+) -> Result<(), String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    remove_from_folder(&conn, &creation_ids)
+    remove_from_folder(&conn, &creation_ids)?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn library_delete_folder(id: String) -> Result<(), String> {
+pub async fn library_delete_folder(app: AppHandle, id: String) -> Result<(), String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    delete_folder(&conn, &id)
+    delete_folder(&conn, &id)?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(())
 }
 
 #[tauri::command]

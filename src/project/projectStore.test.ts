@@ -73,13 +73,13 @@ describe("projectStore", () => {
     expect(next.creationIds).toEqual(["c1", "c2"]);
   });
 
-  it("binds a working folder without attaching it as a folder card", () => {
+  it("binds a working folder without importing its members into Assets", () => {
     let a = createStoredProject("Demo", ["c1"]);
     expect(a.boundFolderId).toBeNull();
     a = setStoredProjectBoundFolderId(a, "f1", ["c2"]);
     expect(a.boundFolderId).toBe("f1");
     expect(a.folderIds).toEqual([]);
-    expect(a.creationIds).toEqual(["c1", "c2"]);
+    expect(a.creationIds).toEqual(["c1"]);
   });
 
   it("clears all attached folders when binding", () => {
@@ -89,7 +89,7 @@ describe("projectStore", () => {
     a = setStoredProjectBoundFolderId(a, "f1", ["c2", "c3"]);
     expect(a.boundFolderId).toBe("f1");
     expect(a.folderIds).toEqual([]);
-    expect(a.creationIds).toEqual(["c1", "c2", "c3"]);
+    expect(a.creationIds).toEqual(["c1", "c2"]);
   });
 
   it("clears bound folder id when removeFolderIds targets it", () => {

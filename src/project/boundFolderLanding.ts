@@ -2,11 +2,22 @@
  * Land newly imported local creations into the project's bound working folder.
  */
 
-import {
-  importLocalPaths,
-  type ImportLocalResult,
-} from "../library/catalogClient";
-import { addToFolder } from "../library/folderClient";
+import { importProjectAssetPaths, type ImportLocalResult } from "../library/catalogClient";
+import { addToFolder, getFolder } from "../library/folderClient";
+
+async function assertFolderMembership(
+  folderId: string,
+  creationIds: readonly string[],
+): Promise<void> {
+  const folder = await getFolder(folderId);
+  const members = new Set(folder.memberIds);
+  const missing = creationIds.filter((id) => !members.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `Project asset write did not land in working folder ${folderId}: ${missing.join(", ")}`,
+    );
+  }
+}
 
 /**
  * Import local paths into the Library, then (when bound) file them into the
@@ -15,28 +26,9 @@ import { addToFolder } from "../library/folderClient";
  */
 export async function importLocalPathsForProject(opts: {
   paths: string[];
-  boundFolderId: string | null | undefined;
+  projectId: string;
 }): Promise<ImportLocalResult> {
-  const imported = await importLocalPaths(opts.paths);
-  const folderId = opts.boundFolderId?.trim() || "";
-  if (!folderId || imported.creations.length === 0) {
-    return imported;
-  }
-  const creationIds = imported.creations
-    .map((c) => c.id?.trim())
-    .filter((id): id is string => Boolean(id));
-  if (creationIds.length === 0) return imported;
-  try {
-    await addToFolder(folderId, creationIds);
-  } catch (error) {
-    console.error(
-      "[importLocalPathsForProject] Failed to file into bound folder",
-      folderId,
-      error,
-    );
-    // Import succeeded; landing is best-effort so callers still get creations.
-  }
-  return imported;
+  return importProjectAssetPaths(opts.projectId, opts.paths);
 }
 
 /** File existing creation ids into the bound folder (no-op when unbound). */
@@ -51,4 +43,5 @@ export async function landCreationsInBoundFolder(opts: {
     .filter(Boolean);
   if (creationIds.length === 0) return;
   await addToFolder(folderId, creationIds);
+  await assertFolderMembership(folderId, creationIds);
 }

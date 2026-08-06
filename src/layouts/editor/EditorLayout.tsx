@@ -10,18 +10,26 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { useShell } from "../../app/ShellProvider";
 import {
+  deleteCompositionRun,
   deleteLocal,
+  deleteProjectAsset,
   getCreations,
+  getProjectBoundFolder,
+  listProjectAssetIds,
   mergeTimelineClips,
+  removeProjectAssets,
+  setProjectBoundFolder,
   type MergeProgress,
 } from "../../library/catalogClient";
 import { groupSourceCreationIds } from "../../library/creationFlags";
 import {
+  addToFolder,
   getFolder,
   listFolders,
   type LibraryFolder,
 } from "../../library/folderClient";
 import { isBoundFolderLockedByTimeline } from "../../project/projectStore";
+import { landCreationsInBoundFolder } from "../../project/boundFolderLanding";
 import {
   ensureSlideshowMedia,
   formatBakeError,
@@ -340,6 +348,36 @@ export function EditorLayout() {
   const projectFolderIdsKey = project.folderIds.join("\0");
   const boundFolderId = project.boundFolderId?.trim() || null;
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        // One-time migration of existing frontend projects, then backend is
+        // queried as the project-asset authority.
+        if (boundFolderId) {
+          await setProjectBoundFolder(
+            project.id,
+            boundFolderId,
+            project.assets.map((asset) => asset.id),
+          );
+        } else {
+          const backendFolderId = await getProjectBoundFolder(project.id);
+          if (backendFolderId) {
+            setOpenProjectBoundFolderId(backendFolderId);
+          }
+        }
+        const backendIds = await listProjectAssetIds(project.id);
+        const backend = new Set(backendIds);
+        const frontendIds = project.assets.map((asset) => asset.id);
+        const missing = backendIds.filter((id) => !frontendIds.includes(id));
+        const stale = frontendIds.filter((id) => !backend.has(id));
+        if (missing.length > 0) addCreationsToOpenProject(missing);
+        if (stale.length > 0) removeCreationsFromOpenProject(stale);
+      } catch (error) {
+        console.error("Failed to load backend project assets", error);
+      }
+    })();
+  }, [boundFolderId, project.id]);
+
   if (project.folderIds.length === 0 && projectFolders.length > 0) {
     setProjectFolders([]);
   }
@@ -381,10 +419,16 @@ export function EditorLayout() {
       try {
         const folder = await getFolder(boundFolderId);
         if (cancelled) return;
-        setBoundFolder(folder);
-        const known = new Set(project.assets.map((asset) => asset.id));
-        const missing = folder.memberIds.filter((id) => !known.has(id));
-        if (missing.length > 0) addCreationsToOpenProject(missing);
+        let resolvedFolder = folder;
+        const members = new Set(folder.memberIds);
+        const unfiledProjectIds = project.assets
+          .map((asset) => asset.id.trim())
+          .filter((id) => id && !members.has(id));
+        if (unfiledProjectIds.length > 0) {
+          resolvedFolder = await addToFolder(boundFolderId, unfiledProjectIds);
+          if (cancelled) return;
+        }
+        setBoundFolder(resolvedFolder);
       } catch (error) {
         console.error("Failed to load bound working folder", error);
         if (!cancelled) setBoundFolder(null);
@@ -394,7 +438,6 @@ export function EditorLayout() {
       cancelled = true;
     };
   }, [
-    addCreationsToOpenProject,
     boundFolderId,
     project.assets.length,
     project.id,
@@ -1485,11 +1528,15 @@ export function EditorLayout() {
     setJoinStudioPair(null);
   };
 
-  const applyJoinCommit = (creationId: string, params: JoinStudioParams) => {
+  const applyJoinCommit = async (creationId: string, params: JoinStudioParams) => {
     const pair = joinStudioPair;
     if (!pair) return;
     joinBusyRef.current = true;
     try {
+      await landCreationsInBoundFolder({
+        creationIds: [creationId],
+        boundFolderId: project.boundFolderId,
+      });
       addCreationsToOpenProject([creationId]);
       const span = joinReplacementSpan(pair, params);
       const joinedClip: TimelineClip = {
@@ -1563,6 +1610,10 @@ export function EditorLayout() {
           reverse: Boolean(clip.reverse),
         })),
       );
+      await landCreationsInBoundFolder({
+        creationIds: [creation.id],
+        boundFolderId: project.boundFolderId,
+      });
       addCreationsToOpenProject([creation.id]);
 
       const duration = Math.max(
@@ -1625,6 +1676,8 @@ export function EditorLayout() {
       for (const id of clip.slideshow?.imageAssetIds ?? []) {
         if (selected.has(id)) used.add(id);
       }
+      const audioId = clip.slideshow?.audioAssetId;
+      if (audioId && selected.has(audioId)) used.add(audioId);
     }
     return used;
   };
@@ -1668,6 +1721,9 @@ export function EditorLayout() {
       cancelLabel: "Cancel",
     });
     if (!ok) return;
+    if (boundFolderId) {
+      await removeProjectAssets(project.id, assetIds);
+    }
     removeCreationsFromOpenProject(assetIds);
     if (selectedAssetId && assetIds.includes(selectedAssetId)) {
       setSelectedAssetId(null);
@@ -1744,14 +1800,20 @@ export function EditorLayout() {
     if (!ok) return;
 
     const internalCreationIds = new Set<string>();
+    const internalCachePaths = new Set<string>();
     for (const stream of streams) {
       for (const node of stream.nodes) {
         if (node.status === "discarded") continue;
         if (node.showOutside) continue;
         const creationId = node.creationId?.trim();
         if (creationId) internalCreationIds.add(creationId);
+        const localPath = node.localPath?.trim();
+        if (localPath) internalCachePaths.add(localPath);
       }
     }
+    await Promise.allSettled(
+      [...internalCachePaths].map((path) => deleteCompositionRun(path)),
+    );
     if (internalCreationIds.size > 0) {
       const toDelete = [...internalCreationIds];
       const results = await Promise.allSettled(
@@ -1799,7 +1861,7 @@ export function EditorLayout() {
     });
     if (!ok) return;
     const results = await Promise.allSettled(
-      assetIds.map((assetId) => deleteLocal(assetId)),
+      assetIds.map((assetId) => deleteProjectAsset(project.id, assetId)),
     );
     const deletedIds = assetIds.filter(
       (_, index) => results[index]?.status === "fulfilled",
@@ -2167,10 +2229,8 @@ export function EditorLayout() {
                 return;
               }
               try {
-                const folder =
-                  projectFolders.find((row) => row.id === folderId) ??
-                  (await getFolder(folderId));
-                setOpenProjectBoundFolderId(folderId, folder.memberIds);
+                await setProjectBoundFolder(project.id, folderId);
+                setOpenProjectBoundFolderId(folderId);
               } catch (error) {
                 console.error("Failed to bind working folder", error);
               }
@@ -2188,6 +2248,7 @@ export function EditorLayout() {
                 });
                 return;
               }
+              await setProjectBoundFolder(project.id, null);
               setOpenProjectBoundFolderId(null);
             })();
           }}

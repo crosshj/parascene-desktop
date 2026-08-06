@@ -208,6 +208,19 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           op_json TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS project_library_bindings (
+          project_id TEXT PRIMARY KEY NOT NULL,
+          folder_id TEXT,
+          binding_known INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS project_assets (
+          project_id TEXT NOT NULL,
+          creation_id TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (project_id, creation_id)
+        );
         "#,
     )
     .map_err(|e| format!("Catalog migrate failed: {e}"))?;
@@ -229,6 +242,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE creations ADD COLUMN is_moderated_error INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE creations ADD COLUMN remote_json TEXT",
         "ALTER TABLE creations ADD COLUMN fit_thumbnail_url TEXT",
+        "ALTER TABLE project_library_bindings ADD COLUMN binding_known INTEGER NOT NULL DEFAULT 0",
     ] {
         let _ = conn.execute(ddl, []);
     }
@@ -255,6 +269,17 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           seq INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
           op_json TEXT NOT NULL,
           created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_library_bindings (
+          project_id TEXT PRIMARY KEY NOT NULL,
+          folder_id TEXT,
+          binding_known INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS project_assets (
+          project_id TEXT NOT NULL,
+          creation_id TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (project_id, creation_id)
         );
         CREATE TABLE IF NOT EXISTS jobs (
           id TEXT PRIMARY KEY NOT NULL,
@@ -1285,6 +1310,12 @@ pub(crate) fn delete_creation_local(
         get_creation_by_id(conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?;
     remove_file_under_root(&paths.media, creation.local_path.as_deref());
     remove_file_under_root(&paths.thumbs, creation.local_thumb_path.as_deref());
+    // A deleted creation must stop counting as a folder member. This also
+    // records the folder move for cloud-backed rows; local-only project output
+    // simply has its local membership removed.
+    super::folders::remove_from_folder(conn, &[id.to_string()])?;
+    conn.execute("DELETE FROM project_assets WHERE creation_id = ?1", params![id])
+        .map_err(|e| format!("Delete project asset membership failed: {e}"))?;
     let n = conn
         .execute("DELETE FROM creations WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -1997,11 +2028,31 @@ mod tests {
             Some(&thumb.display().to_string()),
         )
         .expect("mark");
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at)
+             VALUES ('f1', 'Project', '', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("folder");
+        conn.execute(
+            "INSERT INTO folder_items(folder_id, creation_id, added_at)
+             VALUES ('f1', '7', '2026-01-01')",
+            [],
+        )
+        .expect("membership");
 
         delete_creation_local(&conn, &paths, "7").expect("delete");
         assert!(get_creation_by_id(&conn, "7").expect("get").is_none());
         assert!(!media.exists());
         assert!(!thumb.exists());
+        let membership_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM folder_items WHERE creation_id = '7'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("membership count");
+        assert_eq!(membership_count, 0);
 
         let _ = fs::remove_dir_all(&paths.root);
     }

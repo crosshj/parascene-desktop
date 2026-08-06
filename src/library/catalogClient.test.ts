@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cacheCompositionRun,
+  deleteCompositionRun,
   existingCreationIds,
+  importLocalPaths,
   isCatalogListFilterId,
   listCreationsForFilter,
   mergeCreationsById,
@@ -65,6 +68,61 @@ describe("catalogClient existingCreationIds", () => {
     ]);
     expect(invoke).toHaveBeenCalledWith("library_existing_creation_ids", {
       ids: ["1", "2", "3"],
+    });
+  });
+});
+
+describe("catalogClient project imports", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("sends bound-folder membership in the same native import command", async () => {
+    const result = { imported: 0, cancelled: false, creations: [], status: {} };
+    invoke.mockResolvedValueOnce(result);
+
+    await expect(importLocalPaths(["/tmp/output.png"], " folder-1 ")).resolves.toBe(result);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("library_import_local_paths", {
+      paths: ["/tmp/output.png"],
+      folderId: "folder-1",
+    });
+  });
+
+  it("explicitly sends no folder for an unbound import", async () => {
+    const result = { imported: 0, cancelled: false, creations: [], status: {} };
+    invoke.mockResolvedValueOnce(result);
+
+    await importLocalPaths(["/tmp/output.png"]);
+
+    expect(invoke).toHaveBeenCalledWith("library_import_local_paths", {
+      paths: ["/tmp/output.png"],
+      folderId: null,
+    });
+  });
+
+  it("keeps composition runs in cache without a Library import", async () => {
+    invoke.mockResolvedValueOnce("/cache/composition-runs/sw-1/run.png");
+
+    await expect(cacheCompositionRun("/runs/output.png", "sw-1")).resolves.toBe(
+      "/cache/composition-runs/sw-1/run.png",
+    );
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("library_cache_composition_run", {
+      sourcePath: "/runs/output.png",
+      compositionId: "sw-1",
+    });
+  });
+
+  it("deletes composition cache through its restricted native command", async () => {
+    invoke.mockResolvedValueOnce(undefined);
+
+    await deleteCompositionRun("/cache/composition-runs/sw-1/run.png");
+
+    expect(invoke).toHaveBeenCalledWith("library_delete_composition_run", {
+      path: "/cache/composition-runs/sw-1/run.png",
     });
   });
 });

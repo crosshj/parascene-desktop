@@ -213,8 +213,90 @@ export async function importFromDisk(): Promise<ImportLocalResult> {
 /** Copy explicit filesystem paths into Library/media as local-only creations. */
 export async function importLocalPaths(
   paths: string[],
+  folderId?: string | null,
 ): Promise<ImportLocalResult> {
-  return invoke<ImportLocalResult>("library_import_local_paths", { paths });
+  return invoke<ImportLocalResult>("library_import_local_paths", {
+    paths,
+    folderId: folderId?.trim() || null,
+  });
+}
+
+export async function setProjectBoundFolder(
+  projectId: string,
+  folderId: string | null,
+  creationIds: string[] = [],
+): Promise<void> {
+  return invoke("library_set_project_bound_folder", {
+    projectId,
+    folderId,
+    creationIds,
+  });
+}
+
+export async function getProjectBoundFolder(
+  projectId: string,
+): Promise<string | null> {
+  return invoke<string | null>("library_get_project_bound_folder", {
+    projectId,
+  });
+}
+
+/** Backend-routed project asset write; the frontend never supplies a folder. */
+export async function importProjectAssetPaths(
+  projectId: string,
+  paths: string[],
+): Promise<ImportLocalResult> {
+  return invoke<ImportLocalResult>("library_import_project_asset_paths", {
+    projectId,
+    paths,
+  });
+}
+
+export async function listProjectAssetIds(projectId: string): Promise<string[]> {
+  return invoke<string[]>("library_list_project_asset_ids", { projectId });
+}
+
+export async function deleteProjectAsset(
+  projectId: string,
+  creationId: string,
+): Promise<SyncStatus> {
+  return invoke<SyncStatus>("library_delete_project_asset", {
+    projectId,
+    creationId,
+  });
+}
+
+export async function addExistingProjectAsset(
+  projectId: string,
+  creationId: string,
+): Promise<void> {
+  return invoke("library_add_existing_project_asset", {
+    projectId,
+    creationId,
+  });
+}
+
+export async function removeProjectAssets(
+  projectId: string,
+  creationIds: string[],
+): Promise<void> {
+  return invoke("library_remove_project_assets", { projectId, creationIds });
+}
+
+/** Persist an internal composition run without adding it to the Library. */
+export async function cacheCompositionRun(
+  sourcePath: string,
+  compositionId: string,
+): Promise<string> {
+  return invoke<string>("library_cache_composition_run", {
+    sourcePath,
+    compositionId,
+  });
+}
+
+/** Delete a composition-owned cache file; refuses paths outside that cache. */
+export async function deleteCompositionRun(path: string): Promise<void> {
+  return invoke("library_delete_composition_run", { path });
 }
 
 /** Regenerate local board preview from full local media (native aspect JPEG). */

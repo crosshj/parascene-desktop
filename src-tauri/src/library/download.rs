@@ -5,6 +5,7 @@ use super::catalog::{
     set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
 use super::thumb_fill::fill_and_record_local_thumb;
+use super::folders::{emit_folders_updated, list_folders};
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1857,6 +1858,7 @@ pub fn library_delete_local(app: AppHandle, id: String) -> Result<SyncStatus, St
     {
         let conn = ready_connection(&paths)?;
         delete_creation_local(&conn, &paths, &id)?;
+        emit_folders_updated(&app, &list_folders(&conn)?);
     }
     let _ = app.emit("library-creation-deleted", id);
     sync_status_for(&paths)

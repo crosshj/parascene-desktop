@@ -49,11 +49,14 @@ export function CreationLightbox({
   creation,
   onClose,
   onDeleted,
+  deleteCreation,
 }: {
   creation: Creation;
   onClose: () => void;
   /** Called after a successful local catalog delete (files + DB row). */
   onDeleted?: (id: string) => void;
+  /** Project-aware deletion hook; defaults to a plain local Library delete. */
+  deleteCreation?: (id: string) => Promise<unknown>;
 }) {
   const confirm = useConfirm();
   const groupIds = useMemo(
@@ -257,7 +260,7 @@ export function CreationLightbox({
     setBusyKind("delete");
     setActionError(null);
     try {
-      await deleteLocal(creation.id);
+      await (deleteCreation?.(creation.id) ?? deleteLocal(creation.id));
       onDeleted?.(creation.id);
       onClose();
     } catch (e: unknown) {

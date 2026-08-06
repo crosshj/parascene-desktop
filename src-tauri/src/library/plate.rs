@@ -455,3 +455,55 @@ pub async fn library_bake_plate_still(input: PlateBakeInput) -> Result<PlateBake
         .await
         .map_err(|e| format!("Plate bake task failed: {e}"))?
 }
+
+fn safe_cache_part(value: &str) -> String {
+    let value: String = value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .collect();
+    let value = value.trim_matches('_');
+    if value.is_empty() { "composition".into() } else { value.into() }
+}
+
+/// Copy a generated still into composition-owned cache without creating a
+/// Library row. Library ownership begins only when the user exports the run.
+#[tauri::command]
+pub fn library_cache_composition_run(
+    source_path: String,
+    composition_id: String,
+) -> Result<String, String> {
+    let source = PathBuf::from(source_path);
+    if !source.is_file() {
+        return Err("Composition run source file was not found".into());
+    }
+    let paths = default_paths()?;
+    let dir = paths
+        .cache
+        .join("composition-runs")
+        .join(safe_cache_part(&composition_id));
+    fs::create_dir_all(&dir).map_err(|e| format!("composition cache dir: {e}"))?;
+    let ext = source.extension().and_then(|value| value.to_str()).unwrap_or("png");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let dest = dir.join(format!("run-{stamp}.{}", safe_cache_part(ext)));
+    fs::copy(&source, &dest).map_err(|e| format!("Could not cache composition run: {e}"))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// Delete only a file owned by the composition cache.
+#[tauri::command]
+pub fn library_delete_composition_run(path: String) -> Result<(), String> {
+    let paths = default_paths()?;
+    let root = paths.cache.join("composition-runs");
+    let file = PathBuf::from(path);
+    if !file.starts_with(&root) {
+        return Err("Refusing to delete a file outside composition cache".into());
+    }
+    match fs::remove_file(file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not delete composition run: {error}")),
+    }
+}

@@ -3,6 +3,7 @@
 use super::catalog::{
     default_paths, get_creation_by_id, ready_connection, sync_status_for, Creation, SyncStatus,
 };
+use super::folders::{emit_folders_updated, list_folders, move_creations_into_folder};
 use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use rusqlite::params;
@@ -139,9 +140,28 @@ pub(crate) fn insert_local_creation(
     Ok(())
 }
 
-fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResult, String> {
+pub(crate) fn import_paths(
+    app: &AppHandle,
+    sources: &[PathBuf],
+    folder_id: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<ImportLocalResult, String> {
     let paths = default_paths()?;
     let mut imported = Vec::new();
+
+    if let Some(folder_id) = folder_id {
+        let conn = ready_connection(&paths)?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM folders WHERE id = ?1)",
+                params![folder_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Err(format!("Project working folder {folder_id} was not found"));
+        }
+    }
 
     for (index, source) in sources.iter().enumerate() {
         let Some(media_type) = media_type_for_path(source) else {
@@ -173,9 +193,10 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
         };
 
         {
-            let conn = ready_connection(&paths)?;
+            let mut conn = ready_connection(&paths)?;
+            let transaction = conn.transaction().map_err(|e| e.to_string())?;
             insert_local_creation(
-                &conn,
+                &transaction,
                 &id,
                 stem,
                 media_type,
@@ -185,6 +206,24 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
                 height,
                 aspect_ratio.as_deref(),
             )?;
+            if let Some(folder_id) = folder_id {
+                move_creations_into_folder(
+                    &transaction,
+                    folder_id,
+                    std::slice::from_ref(&id),
+                    &Utc::now().to_rfc3339(),
+                )?;
+            }
+            if let Some(project_id) = project_id {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO project_assets(project_id, creation_id, added_at)
+                         VALUES (?1, ?2, ?3)",
+                        params![project_id, id, Utc::now().to_rfc3339()],
+                    )
+                    .map_err(|e| format!("Could not add project asset: {e}"))?;
+            }
+            transaction.commit().map_err(|e| e.to_string())?;
         }
 
         // Best-effort native thumb: image decode, video first frame, or audio cover art.
@@ -202,6 +241,11 @@ fn import_paths(app: &AppHandle, sources: &[PathBuf]) -> Result<ImportLocalResul
             get_creation_by_id(&conn, &id)?.ok_or_else(|| format!("Missing {id} after thumb"))?;
         let _ = app.emit("library-creation-updated", &updated);
         imported.push(updated);
+    }
+
+    if folder_id.is_some() && !imported.is_empty() {
+        let conn = ready_connection(&paths)?;
+        emit_folders_updated(app, &list_folders(&conn)?);
     }
 
     let status = sync_status_for(&paths)?;
@@ -230,7 +274,7 @@ pub async fn library_import_from_disk(app: AppHandle) -> Result<ImportLocalResul
         });
     };
 
-    import_paths(&app, &files)
+    import_paths(&app, &files, None, None)
 }
 
 fn pick_media_files() -> Result<Option<Vec<PathBuf>>, String> {
@@ -245,7 +289,78 @@ fn pick_media_files() -> Result<Option<Vec<PathBuf>>, String> {
 pub fn library_import_local_paths(
     app: AppHandle,
     paths: Vec<String>,
+    folder_id: Option<String>,
 ) -> Result<ImportLocalResult, String> {
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    import_paths(&app, &files)
+    let folder_id = folder_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    import_paths(&app, &files, folder_id, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::paths::{ensure_directories, resolve_paths};
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn bound_import_commits_creation_with_folder_membership() {
+        let root = std::env::temp_dir().join(format!(
+            "parascene-bound-import-test-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let paths = resolve_paths(root.clone());
+        ensure_directories(&paths).expect("directories");
+        let mut conn = ready_connection(&paths).expect("connection");
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at)
+             VALUES ('project-folder', 'Project', '', 't', 't')",
+            [],
+        )
+        .expect("folder");
+
+        let transaction = conn.transaction().expect("transaction");
+        insert_local_creation(
+            &transaction,
+            "local-output",
+            "Output",
+            "image",
+            "output.png",
+            "/tmp/output.png",
+            Some(100),
+            Some(100),
+            Some("1:1"),
+        )
+        .expect("creation");
+        move_creations_into_folder(
+            &transaction,
+            "project-folder",
+            &[String::from("local-output")],
+            "t",
+        )
+        .expect("membership");
+        transaction.commit().expect("commit");
+
+        let folder_id: String = conn
+            .query_row(
+                "SELECT folder_id FROM folder_items WHERE creation_id = 'local-output'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("filed creation");
+        let root_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM creations c
+                 LEFT JOIN folder_items fi ON fi.creation_id = c.id
+                 WHERE c.id = 'local-output' AND fi.creation_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("root count");
+        assert_eq!(folder_id, "project-folder");
+        assert_eq!(root_count, 0);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

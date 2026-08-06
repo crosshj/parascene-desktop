@@ -27,6 +27,8 @@ export type StillWorkstreamNode = {
   id: string;
   /** Null after discard deletes the local file. */
   creationId: string | null;
+  /** Stable backing file for preview/edit, independent of Library UI sync. */
+  localPath?: string;
   parentNodeId: string | null;
   status: StillWorkstreamNodeStatus;
   /**
@@ -110,7 +112,8 @@ export function createPlateWorkstream(opts: {
 export function appendWorkstreamEditNode(
   stream: StillWorkstream,
   opts: {
-    creationId: string;
+    creationId: string | null;
+    localPath?: string;
     parentNodeId: string | null;
     prompt?: string;
     model?: string;
@@ -130,6 +133,7 @@ export function appendWorkstreamEditNode(
   nodes.push({
     id: nodeId,
     creationId: opts.creationId,
+    localPath: opts.localPath?.trim() || undefined,
     parentNodeId: opts.parentNodeId,
     status: select ? "selected" : "candidate",
     showOutside: opts.showOutside === true,
@@ -237,7 +241,12 @@ export function discardWorkstreamNode(
     stream.selectedNodeId === nodeId ? fallback?.id ?? null : stream.selectedNodeId;
   const nodes = stream.nodes.map((node) => {
     if (node.id === nodeId) {
-      return { ...node, creationId: null, status: "discarded" as const };
+      return {
+        ...node,
+        creationId: null,
+        localPath: undefined,
+        status: "discarded" as const,
+      };
     }
     if (stream.selectedNodeId === nodeId && node.id === selectedNodeId) {
       return { ...node, status: "selected" as const };
@@ -273,6 +282,7 @@ export function discardInterimWorkstreamNodes(stream: StillWorkstream): {
     return {
       ...node,
       creationId: null,
+      localPath: undefined,
       status: "discarded" as const,
     };
   });
@@ -345,6 +355,10 @@ export function normalizeStillWorkstreamNode(
     typeof row.creationId === "string" && row.creationId.trim()
       ? row.creationId.trim()
       : null;
+  const localPath =
+    typeof row.localPath === "string" && row.localPath.trim()
+      ? row.localPath.trim()
+      : undefined;
   const parentNodeId =
     typeof row.parentNodeId === "string" && row.parentNodeId.trim()
       ? row.parentNodeId.trim()
@@ -356,6 +370,7 @@ export function normalizeStillWorkstreamNode(
   return {
     id: row.id.trim(),
     creationId,
+    localPath,
     parentNodeId,
     status,
     showOutside: row.showOutside === true,

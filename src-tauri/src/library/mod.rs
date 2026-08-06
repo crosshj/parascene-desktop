@@ -16,6 +16,7 @@ mod join;
 mod parascene_api;
 pub(crate) mod paths;
 mod plate;
+mod project_assets;
 mod render;
 mod reverse;
 mod slideshow;
@@ -54,7 +55,16 @@ pub use lab_deps::{
 pub use lab_transcribe::library_transcribe_local;
 pub use merge::library_merge_timeline_clips;
 pub use join::{library_join_bake, library_join_preview};
-pub use plate::library_bake_plate_still;
+pub use plate::{
+    library_bake_plate_still, library_cache_composition_run,
+    library_delete_composition_run,
+};
+pub use project_assets::{
+    library_add_existing_project_asset, library_delete_project_asset,
+    library_get_project_bound_folder, library_import_project_asset_paths,
+    library_list_project_asset_ids, library_remove_project_assets,
+    library_set_project_bound_folder,
+};
 pub use render::{
     publisher_delete_render, publisher_export_render, publisher_get_render, publisher_list_renders,
     publisher_render_timeline,
