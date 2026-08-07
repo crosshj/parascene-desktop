@@ -47,7 +47,7 @@ use library::{
     library_install_demucs, library_lab_deps_status, library_open_local_tools_doc,
     library_transcribe_local,
     library_read_local_thumb_base64, library_rebuild_reversed, library_remove_from_folder,
-    library_rename_folder, library_sync_status, jobs_cancel, jobs_enqueue, jobs_get, jobs_list,
+    library_rename_folder, library_set_folder_cover, library_sync_status, jobs_cancel, jobs_enqueue, jobs_get, jobs_list,
     publisher_delete_render, publisher_export_render, publisher_get_render,
     publisher_list_renders, publisher_render_timeline,
 };
@@ -315,6 +315,7 @@ pub fn run() {
             library_get_folder,
             library_create_folder,
             library_rename_folder,
+            library_set_folder_cover,
             library_add_to_folder,
             library_remove_from_folder,
             library_delete_folder,

@@ -2,7 +2,9 @@ import { createAuthedSdk, ensureAccessToken } from "../auth/session";
 import {
   ackFolderOps,
   applyFolderSnapshot,
+  desktopFolderMeta,
   getFolderSyncState,
+  projectIdFromFolderMeta as projectIdFromClientFolderMeta,
   remoteFoldersToCloudRows,
   setFolderPendingOps,
   type CloudFolderRow,
@@ -25,20 +27,17 @@ import {
 export const LIBRARY_FOLDER_OPS_MAX = 100;
 export const LIBRARY_FOLDER_CREATION_IDS_MAX = 500;
 
-function projectMeta(projectId: string): Record<string, unknown> {
-  return { parascene_desktop: { project_id: projectId } };
+function projectMeta(
+  projectId: string,
+  coverCreationId?: string | null,
+): Record<string, unknown> {
+  return desktopFolderMeta({ projectId, coverCreationId });
 }
 
 function projectIdFromFolderMeta(
   meta: Record<string, unknown> | undefined | null,
 ): string | null {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
-  const desktop = meta.parascene_desktop;
-  if (!desktop || typeof desktop !== "object" || Array.isArray(desktop)) {
-    return null;
-  }
-  const id = (desktop as Record<string, unknown>).project_id;
-  return typeof id === "string" && id.trim() ? id.trim() : null;
+  return projectIdFromClientFolderMeta(meta);
 }
 
 function metaClearsProjectMarker(meta: unknown): boolean {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  coverCreationIdFromFolderMeta,
+  desktopFolderMeta,
   filedIdSet,
   omitFiledCreations,
   projectIdFromFolderMeta,
@@ -62,5 +64,31 @@ describe("remoteFoldersToCloudRows", () => {
       }),
     ).toBe("project-1");
     expect(projectIdFromFolderMeta({ color: "blue" })).toBeNull();
+  });
+
+  it("reads and builds cover_creation_id in desktop folder meta", () => {
+    expect(
+      coverCreationIdFromFolderMeta({
+        parascene_desktop: {
+          project_id: "project-1",
+          cover_creation_id: "18848",
+        },
+      }),
+    ).toBe("18848");
+    expect(
+      desktopFolderMeta({
+        projectId: "project-1",
+        coverCreationId: "18848",
+      }),
+    ).toEqual({
+      parascene_desktop: {
+        project_id: "project-1",
+        cover_creation_id: "18848",
+      },
+    });
+    expect(desktopFolderMeta({ coverCreationId: "9" })).toEqual({
+      parascene_desktop: { cover_creation_id: "9" },
+    });
+    expect(desktopFolderMeta({})).toEqual({});
   });
 });

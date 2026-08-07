@@ -104,7 +104,10 @@ export const FolderCard = memo(function FolderCard({
   onContextMenu,
 }: FolderCardProps) {
   const isBoard = variant === "board";
-  const thumbIds = collageMemberIds ?? folder.memberIds;
+  const coverId = folder.coverCreationId?.trim() || null;
+  const thumbIds = coverId
+    ? [coverId]
+    : (collageMemberIds ?? folder.memberIds);
   const memberCount = displayMemberCount ?? folder.memberCount;
   return (
     <button

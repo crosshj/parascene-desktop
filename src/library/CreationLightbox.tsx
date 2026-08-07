@@ -50,6 +50,7 @@ export function CreationLightbox({
   onClose,
   onDeleted,
   deleteCreation,
+  folderCover,
 }: {
   creation: Creation;
   onClose: () => void;
@@ -57,6 +58,13 @@ export function CreationLightbox({
   onDeleted?: (id: string) => void;
   /** Project-aware deletion hook; defaults to a plain local Library delete. */
   deleteCreation?: (id: string) => Promise<unknown>;
+  /** When browsing inside a folder, allow setting the displayed creation as cover. */
+  folderCover?: {
+    folderId: string;
+    folderKind: "regular" | "project";
+    coverCreationId: string | null;
+    onSetCover: (creationId: string | null) => Promise<void>;
+  } | null;
 }) {
   const confirm = useConfirm();
   const groupIds = useMemo(
@@ -97,9 +105,31 @@ export function CreationLightbox({
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
   const webUrl = creationPageUrl(getEnvConfig().baseUrl, creation.id);
-  const [busyKind, setBusyKind] = useState<"fill" | "delete" | null>(null);
+  const [busyKind, setBusyKind] = useState<"fill" | "delete" | "cover" | null>(
+    null,
+  );
   const busy = busyKind !== null;
   const [actionError, setActionError] = useState<string | null>(null);
+  const isFolderCover =
+    Boolean(folderCover) &&
+    folderCover!.coverCreationId === displayedCreation.id;
+  const coverLabel =
+    folderCover?.folderKind === "project"
+      ? "Set as project cover"
+      : "Set as folder cover";
+
+  async function onToggleFolderCover() {
+    if (!folderCover) return;
+    setActionError(null);
+    setBusyKind("cover");
+    try {
+      await folderCover.onSetCover(isFolderCover ? null : displayedCreation.id);
+    } catch (e) {
+      setActionError(formatInvokeError(e));
+    } finally {
+      setBusyKind(null);
+    }
+  }
 
   const stepGroup = useCallback((direction: -1 | 1) => {
     setGroupIndex((current) => {
@@ -304,6 +334,22 @@ export function CreationLightbox({
           >
             {busyKind === "fill" ? "Re-genning…" : "Re-gen thumb"}
           </button>
+          {folderCover ? (
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={busy}
+              onClick={() => {
+                void onToggleFolderCover();
+              }}
+            >
+              {busyKind === "cover"
+                ? "Saving…"
+                : isFolderCover
+                  ? "Clear cover"
+                  : coverLabel}
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn ghost"

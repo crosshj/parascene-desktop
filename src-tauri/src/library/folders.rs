@@ -25,6 +25,9 @@ pub struct LibraryFolder {
     pub member_count: u32,
     pub kind: String,
     pub project_id: Option<String>,
+    /// Catalog creation id used as Library/Director folder artwork (synced in meta).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_creation_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,8 +48,28 @@ fn empty_folder_meta() -> JsonValue {
     json!({})
 }
 
+pub(crate) fn desktop_folder_meta(
+    project_id: Option<&str>,
+    cover_creation_id: Option<&str>,
+) -> JsonValue {
+    let mut desktop = serde_json::Map::new();
+    if let Some(pid) = project_id.map(str::trim).filter(|id| !id.is_empty()) {
+        desktop.insert("project_id".into(), json!(pid));
+    }
+    if let Some(cid) = cover_creation_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        desktop.insert("cover_creation_id".into(), json!(cid));
+    }
+    if desktop.is_empty() {
+        return empty_folder_meta();
+    }
+    json!({ "parascene_desktop": desktop })
+}
+
 pub(crate) fn project_folder_meta(project_id: &str) -> JsonValue {
-    json!({ "parascene_desktop": { "project_id": project_id } })
+    desktop_folder_meta(Some(project_id), None)
 }
 
 fn project_id_from_meta(meta: &JsonValue) -> Option<&str> {
@@ -57,13 +80,28 @@ fn project_id_from_meta(meta: &JsonValue) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-fn cloud_meta_for_folder(folder: &LibraryFolder) -> JsonValue {
-    folder
+fn cover_creation_id_from_meta(meta: &JsonValue) -> Option<String> {
+    let raw = meta.get("parascene_desktop")?.get("cover_creation_id")?;
+    match raw {
+        JsonValue::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        JsonValue::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+pub(crate) fn cloud_meta_for_folder(folder: &LibraryFolder) -> JsonValue {
+    let project_id = folder
         .project_id
         .as_deref()
-        .filter(|_| folder.kind == "project")
-        .map(project_folder_meta)
-        .unwrap_or_else(empty_folder_meta)
+        .filter(|_| folder.kind == "project");
+    desktop_folder_meta(project_id, folder.cover_creation_id.as_deref())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,9 +220,18 @@ fn folder_from_row(
     updated_at: String,
     kind: String,
     project_id: Option<String>,
+    cover_creation_id: Option<String>,
 ) -> Result<LibraryFolder, String> {
     let member_ids = load_member_ids(conn, &id)?;
     let member_count = member_ids.len() as u32;
+    let cover_creation_id = cover_creation_id.and_then(|id| {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     Ok(LibraryFolder {
         id,
         title,
@@ -195,13 +242,14 @@ fn folder_from_row(
         member_count,
         kind,
         project_id,
+        cover_creation_id,
     })
 }
 
 pub(crate) fn get_folder(conn: &Connection, id: &str) -> Result<Option<LibraryFolder>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, description, created_at, updated_at, kind, project_id
+            "SELECT id, title, description, created_at, updated_at, kind, project_id, cover_creation_id
              FROM folders WHERE id = ?1 LIMIT 1",
         )
         .map_err(|e| e.to_string())?;
@@ -218,13 +266,14 @@ pub(crate) fn get_folder(conn: &Connection, id: &str) -> Result<Option<LibraryFo
         row.get(4).map_err(|e| e.to_string())?,
         row.get(5).map_err(|e| e.to_string())?,
         row.get(6).map_err(|e| e.to_string())?,
+        row.get(7).map_err(|e| e.to_string())?,
     )?))
 }
 
 pub(crate) fn list_folders(conn: &Connection) -> Result<Vec<LibraryFolder>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, description, created_at, updated_at, kind, project_id
+            "SELECT id, title, description, created_at, updated_at, kind, project_id, cover_creation_id
              FROM folders
              ORDER BY updated_at DESC, title ASC",
         )
@@ -239,12 +288,13 @@ pub(crate) fn list_folders(conn: &Connection) -> Result<Vec<LibraryFolder>, Stri
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, description, created_at, updated_at, kind, project_id) =
+        let (id, title, description, created_at, updated_at, kind, project_id, cover_creation_id) =
             row.map_err(|e| e.to_string())?;
         out.push(folder_from_row(
             conn,
@@ -255,6 +305,7 @@ pub(crate) fn list_folders(conn: &Connection) -> Result<Vec<LibraryFolder>, Stri
             updated_at,
             kind,
             project_id,
+            cover_creation_id,
         )?);
     }
     Ok(out)
@@ -530,6 +581,7 @@ fn rename_folder(
     }
     let title = normalize_title(title);
     let now = Utc::now().to_rfc3339();
+    let folder = get_folder(conn, id)?.ok_or_else(|| String::from("Folder not found"))?;
     let n = conn
         .execute(
             "UPDATE folders SET title = ?1, description = ?2, updated_at = ?3 WHERE id = ?4",
@@ -539,6 +591,10 @@ fn rename_folder(
     if n == 0 {
         return Err("Folder not found".into());
     }
+    let mut updated = folder;
+    updated.title = title.clone();
+    updated.description = description.to_string();
+    updated.updated_at = now;
     enqueue_op(
         conn,
         json!({
@@ -546,9 +602,117 @@ fn rename_folder(
             "id": id,
             "title": title,
             "description": description,
+            "meta": cloud_meta_for_folder(&updated),
         }),
     )?;
     get_folder(conn, id)?.ok_or_else(|| "Folder not found".into())
+}
+
+fn creation_exists(conn: &Connection, creation_id: &str) -> Result<bool, String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM creations WHERE id = ?1",
+            params![creation_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(count > 0)
+}
+
+fn creation_allowed_as_folder_cover(
+    conn: &Connection,
+    folder: &LibraryFolder,
+    creation_id: &str,
+) -> Result<bool, String> {
+    if folder.member_ids.iter().any(|id| id == creation_id) {
+        return Ok(true);
+    }
+    for member_id in &folder.member_ids {
+        let remote_json: Option<Option<String>> = conn
+            .query_row(
+                "SELECT remote_json FROM creations WHERE id = ?1",
+                params![member_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(Some(raw)) = remote_json else {
+            continue;
+        };
+        if super::catalog::group_member_ids_from_remote_json(&raw)
+            .iter()
+            .any(|id| id == creation_id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn set_folder_cover(
+    conn: &Connection,
+    folder_id: &str,
+    creation_id: Option<&str>,
+) -> Result<LibraryFolder, String> {
+    let folder = get_folder(conn, folder_id)?.ok_or_else(|| String::from("Folder not found"))?;
+    let next_cover = match creation_id.map(str::trim).filter(|id| !id.is_empty()) {
+        None => None,
+        Some(id) => {
+            if !creation_exists(conn, id)? {
+                return Err(format!("Creation {id} not found"));
+            }
+            if !creation_allowed_as_folder_cover(conn, &folder, id)? {
+                return Err(
+                    "Cover must be a folder member or a member of a group cover in this folder"
+                        .into(),
+                );
+            }
+            Some(id.to_string())
+        }
+    };
+    if folder.cover_creation_id == next_cover {
+        return Ok(folder);
+    }
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE folders SET cover_creation_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![next_cover, now, folder_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let updated = get_folder(conn, folder_id)?.ok_or_else(|| String::from("Folder not found"))?;
+    let mut op = json!({
+        "op": "update",
+        "id": updated.id,
+        "title": updated.title,
+        "description": updated.description,
+        "meta": cloud_meta_for_folder(&updated),
+    });
+    if updated.kind == "project" {
+        if let Some(project_id) = updated.project_id.as_deref() {
+            op["project_id"] = json!(project_id);
+        }
+    }
+    enqueue_op(conn, op)?;
+    Ok(updated)
+}
+
+/// Clear folder covers that pointed at a deleted catalog creation and queue meta sync.
+pub(crate) fn clear_folder_covers_for_creation(
+    conn: &Connection,
+    creation_id: &str,
+) -> Result<(), String> {
+    let id = creation_id.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    let folders: Vec<LibraryFolder> = list_folders(conn)?
+        .into_iter()
+        .filter(|folder| folder.cover_creation_id.as_deref() == Some(id))
+        .collect();
+    for folder in folders {
+        set_folder_cover(conn, &folder.id, None)?;
+    }
+    Ok(())
 }
 
 fn delete_folder(conn: &Connection, id: &str) -> Result<(), String> {
@@ -976,7 +1140,7 @@ fn apply_snapshot(
                         "id": local.id,
                         "title": local.title,
                         "description": local.description,
-                        "meta": project_folder_meta(local_project_id),
+                        "meta": cloud_meta_for_folder(local),
                         "project_id": local_project_id,
                     }),
                 )?;
@@ -1008,11 +1172,12 @@ fn apply_snapshot(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| now.clone());
         if existing_owned_project {
-            // The project document owns title; keep the synced description only.
+            // The project document owns title; keep synced description + cover.
+            let remote_cover = cover_creation_id_from_meta(&folder.meta);
             transaction
                 .execute(
-                    "UPDATE folders SET description = ?1 WHERE id = ?2",
-                    params![folder.description, folder.id],
+                    "UPDATE folders SET description = ?1, cover_creation_id = ?2 WHERE id = ?3",
+                    params![folder.description, remote_cover, folder.id],
                 )
                 .map_err(|e| e.to_string())?;
         } else if pending_release {
@@ -1058,6 +1223,17 @@ fn apply_snapshot(
                             None
                         },
                     ],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Cover art lives in folder meta; apply from the cloud snapshot for all paths.
+        if !existing_owned_project {
+            let remote_cover = cover_creation_id_from_meta(&folder.meta);
+            transaction
+                .execute(
+                    "UPDATE folders SET cover_creation_id = ?1 WHERE id = ?2",
+                    params![remote_cover, folder.id],
                 )
                 .map_err(|e| e.to_string())?;
         }
@@ -1362,6 +1538,23 @@ pub async fn library_rename_folder(
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
     let folder = rename_folder(&conn, &id, &title, &description)?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(folder)
+}
+
+#[tauri::command]
+pub async fn library_set_folder_cover(
+    app: AppHandle,
+    folder_id: String,
+    creation_id: Option<String>,
+) -> Result<LibraryFolder, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    let folder = set_folder_cover(
+        &conn,
+        &folder_id,
+        creation_id.as_deref(),
+    )?;
     emit_folders_updated(&app, &list_folders(&conn)?);
     Ok(folder)
 }
@@ -1888,6 +2081,116 @@ mod tests {
         let owned = get_folder(&conn, "owned-folder").unwrap().unwrap();
         assert_eq!(owned.kind, "project");
         assert_eq!(owned.project_id.as_deref(), Some("owned-1"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn insert_creation(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO creations(
+               id, title, media_type, remote_url, published, created_at, download_state, updated_at
+             ) VALUES (?1, ?1, 'image', NULL, 0, 't', 'ready', 't')",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cloud_meta_preserves_project_id_and_cover() {
+        let meta = desktop_folder_meta(Some("project-1"), Some("42"));
+        assert_eq!(
+            meta,
+            json!({
+                "parascene_desktop": {
+                    "project_id": "project-1",
+                    "cover_creation_id": "42",
+                }
+            })
+        );
+        assert_eq!(cover_creation_id_from_meta(&meta).as_deref(), Some("42"));
+        assert_eq!(project_id_from_meta(&meta), Some("project-1"));
+
+        let folder = LibraryFolder {
+            id: "f".into(),
+            title: "T".into(),
+            description: "".into(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            member_ids: vec![],
+            member_count: 0,
+            kind: "project".into(),
+            project_id: Some("project-1".into()),
+            cover_creation_id: Some("42".into()),
+        };
+        assert_eq!(cloud_meta_for_folder(&folder), meta);
+    }
+
+    #[test]
+    fn set_folder_cover_member_and_reject_outsider() {
+        let (conn, root) = temp_conn();
+        insert_creation(&conn, "101");
+        insert_creation(&conn, "999");
+        let folder = create_folder(&conn, "Covered", &["101".into()]).expect("create");
+        let seqs: Vec<i64> = list_pending_ops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|op| op.seq)
+            .collect();
+        ack_ops(&conn, &seqs).unwrap();
+
+        let updated = set_folder_cover(&conn, &folder.id, Some("101")).expect("set cover");
+        assert_eq!(updated.cover_creation_id.as_deref(), Some("101"));
+        let pending = list_pending_ops(&conn).expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].op["op"], "update");
+        assert_eq!(
+            pending[0].op["meta"],
+            json!({ "parascene_desktop": { "cover_creation_id": "101" } })
+        );
+
+        let err = set_folder_cover(&conn, &folder.id, Some("999")).expect_err("outsider");
+        assert!(
+            err.contains("Cover must be"),
+            "unexpected reject message: {err}"
+        );
+
+        let cleared = set_folder_cover(&conn, &folder.id, None).expect("clear");
+        assert!(cleared.cover_creation_id.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_snapshot_reads_cover_from_meta() {
+        let (conn, root) = temp_conn();
+        let folder = create_folder(&conn, "Snap", &["101".into()]).expect("create");
+        let seqs: Vec<i64> = list_pending_ops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|op| op.seq)
+            .collect();
+        ack_ops(&conn, &seqs).unwrap();
+
+        let listed = apply_snapshot(
+            &conn,
+            3,
+            &[CloudFolderRow {
+                id: folder.id.clone(),
+                title: "Snap".into(),
+                description: "".into(),
+                created_at: Some("t".into()),
+                updated_at: Some("t".into()),
+                creation_ids: vec!["101".into()],
+                member_count: 1,
+                meta: desktop_folder_meta(None, Some("101")),
+            }],
+        )
+        .expect("snapshot");
+        assert_eq!(listed[0].cover_creation_id.as_deref(), Some("101"));
+        assert_eq!(
+            cloud_meta_for_folder(&listed[0]),
+            json!({ "parascene_desktop": { "cover_creation_id": "101" } })
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

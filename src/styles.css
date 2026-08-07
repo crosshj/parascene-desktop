@@ -3475,6 +3475,23 @@ input[type="checkbox"].control,
   place-items: center;
   align-content: center;
   gap: 0.35rem;
+  overflow: hidden;
+  position: relative;
+}
+
+.preview-placeholder.director-preview-frame.has-cover {
+  border-style: solid;
+  padding: 0;
+  display: block;
+}
+
+.director-preview-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .director-preview-aspect {

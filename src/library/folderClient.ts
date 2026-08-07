@@ -11,6 +11,8 @@ export type LibraryFolder = {
   memberCount: number;
   kind: "regular" | "project";
   projectId: string | null;
+  /** Catalog creation used as Library / Director artwork when set. */
+  coverCreationId?: string | null;
 };
 
 export type CloudFolderRow = {
@@ -68,6 +70,16 @@ export async function renameFolder(
     id,
     title,
     description,
+  });
+}
+
+export async function setFolderCover(
+  folderId: string,
+  creationId: string | null,
+): Promise<LibraryFolder> {
+  return invoke<LibraryFolder>("library_set_folder_cover", {
+    folderId,
+    creationId,
   });
 }
 
@@ -137,6 +149,32 @@ export function projectIdFromFolderMeta(
   return typeof projectId === "string" && projectId.trim()
     ? projectId.trim()
     : null;
+}
+
+export function coverCreationIdFromFolderMeta(
+  meta: Record<string, unknown> | null | undefined,
+): string | null {
+  const namespace = meta?.parascene_desktop;
+  if (!namespace || typeof namespace !== "object" || Array.isArray(namespace)) {
+    return null;
+  }
+  const raw = (namespace as Record<string, unknown>).cover_creation_id;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  return null;
+}
+
+export function desktopFolderMeta(opts: {
+  projectId?: string | null;
+  coverCreationId?: string | null;
+}): Record<string, unknown> {
+  const desktop: Record<string, unknown> = {};
+  const projectId = opts.projectId?.trim();
+  if (projectId) desktop.project_id = projectId;
+  const coverCreationId = opts.coverCreationId?.trim();
+  if (coverCreationId) desktop.cover_creation_id = coverCreationId;
+  if (Object.keys(desktop).length === 0) return {};
+  return { parascene_desktop: desktop };
 }
 
 export function remoteFoldersToCloudRows(

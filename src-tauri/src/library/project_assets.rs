@@ -2,10 +2,10 @@ use super::catalog::{
     default_paths, delete_creation_local, ready_connection, sync_status_for, SyncStatus,
 };
 use super::folders::{
-    convert_marked_project_folder_to_regular, emit_folders_updated, enqueue_op, get_folder,
-    liberate_orphan_project_folders, list_folders, move_creations_into_folder,
-    normalize_project_title, project_folder_meta, remove_from_folder, remove_from_project_folder,
-    LibraryFolder,
+    cloud_meta_for_folder, convert_marked_project_folder_to_regular, emit_folders_updated,
+    enqueue_op, get_folder, liberate_orphan_project_folders, list_folders,
+    move_creations_into_folder, normalize_project_title, project_folder_meta, remove_from_folder,
+    remove_from_project_folder, LibraryFolder,
 };
 use super::import_local::{import_paths, ImportLocalResult};
 use super::parascene_api::group_member_ids;
@@ -193,7 +193,10 @@ fn create_marked_project_folder(
                 "id": folder.id,
                 "title": title,
                 "description": folder.description,
-                "meta": project_folder_meta(project_id),
+                "meta": cloud_meta_for_folder(&LibraryFolder {
+                    title: title.clone(),
+                    ..folder.clone()
+                }),
                 "project_id": project_id,
             }),
         )?;
@@ -252,7 +255,12 @@ fn claim_regular_folder(
             "project_id": project_id,
             "title": title,
             "description": existing.description,
-            "meta": project_folder_meta(project_id),
+            "meta": cloud_meta_for_folder(&LibraryFolder {
+                title: title.clone(),
+                kind: "project".into(),
+                project_id: Some(project_id.to_string()),
+                ..existing
+            }),
         }),
     )?;
     get_folder(conn, folder_id)?.ok_or_else(|| "Project folder disappeared after claim".into())
@@ -513,7 +521,10 @@ pub fn library_reconcile_legacy_project_folder(
                     "id": marked.id,
                     "title": canonical_title,
                     "description": marked.description,
-                    "meta": project_folder_meta(project_id),
+                    "meta": cloud_meta_for_folder(&LibraryFolder {
+                        title: canonical_title.clone(),
+                        ..marked.clone()
+                    }),
                     "project_id": project_id,
                 }),
             )?;
@@ -793,7 +804,10 @@ pub fn library_rename_project(
             "id": folder.id,
             "title": title,
             "description": folder.description,
-            "meta": project_folder_meta(project_id.trim()),
+            "meta": cloud_meta_for_folder(&LibraryFolder {
+                title: title.clone(),
+                ..folder.clone()
+            }),
             "project_id": project_id.trim(),
         }),
     )?;

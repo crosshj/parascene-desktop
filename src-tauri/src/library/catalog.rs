@@ -191,7 +191,8 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           kind TEXT NOT NULL DEFAULT 'regular',
-          project_id TEXT
+          project_id TEXT,
+          cover_creation_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS folder_items (
@@ -272,6 +273,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE project_library_bindings ADD COLUMN binding_known INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE folders ADD COLUMN kind TEXT NOT NULL DEFAULT 'regular'",
         "ALTER TABLE folders ADD COLUMN project_id TEXT",
+        "ALTER TABLE folders ADD COLUMN cover_creation_id TEXT",
     ] {
         let _ = conn.execute(ddl, []);
     }
@@ -286,7 +288,8 @@ fn migrate(conn: &Connection) -> Result<(), String> {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           kind TEXT NOT NULL DEFAULT 'regular',
-          project_id TEXT
+          project_id TEXT,
+          cover_creation_id TEXT
         );
         CREATE TABLE IF NOT EXISTS folder_items (
           folder_id TEXT NOT NULL,
@@ -611,7 +614,7 @@ fn collect_group_member_ids(conn: &Connection) -> Result<Vec<String>, String> {
     Ok(list)
 }
 
-fn group_member_ids_from_remote_json(raw: &str) -> Vec<String> {
+pub(crate) fn group_member_ids_from_remote_json(raw: &str) -> Vec<String> {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Vec::new();
     };
@@ -1421,6 +1424,8 @@ pub(crate) fn delete_creation_local(
     // records the folder move for cloud-backed rows; local-only project output
     // simply has its local membership removed.
     super::folders::remove_from_folder(conn, &[id.to_string()])?;
+    // Drop folder/project artwork pointers that referenced this creation.
+    super::folders::clear_folder_covers_for_creation(conn, id)?;
     conn.execute("DELETE FROM project_assets WHERE creation_id = ?1", params![id])
         .map_err(|e| format!("Delete project asset membership failed: {e}"))?;
     let n = conn

@@ -24,6 +24,7 @@
 | **Display-expanded member** | Cabinet member shown in Assets / under a group cover in UI **without** being filed as a loose folder tile for that reason. |
 | **`provisioning` / `ready` / `repair-needed` / `legacy`** | Project lifecycle for folder setup. `legacy` = intentional unbound open (pre–folder-era docs only). |
 | **`folderSetupIssue: "blocked"`** | Sticky chooser badge: open blocked on folder layout until fixed (or opened as legacy). |
+| **Folder / project cover** | Optional `meta.parascene_desktop.cover_creation_id` on a Library folder — artwork for the folder card and (for project folders) Director preview. Independent of cabinet group artwork (`cover_source_id`). Catalog pointer: survives cabinet membership changes; cleared on creation delete or user clear. |
 
 ---
 

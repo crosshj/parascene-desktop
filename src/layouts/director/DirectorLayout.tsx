@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useShell } from "../../app/ShellProvider";
+import { getCreation } from "../../library/catalogClient";
+import { creationPreviewUrl } from "../../library/previewUrl";
 import {
   PROJECT_ASPECT_OPTIONS,
   projectAspectCss,
@@ -10,6 +12,7 @@ import {
   PROJECT_LOOK_OPTIONS,
   type ProjectLookId,
 } from "../../project/looks";
+import { getProjectFolder } from "../../project/projectFolderClient";
 
 export function DirectorLayout() {
   const {
@@ -26,10 +29,33 @@ export function DirectorLayout() {
     id: project.id,
     title: project.title,
   });
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
   if (project.id !== syncedTitle.id || project.title !== syncedTitle.title) {
     setSyncedTitle({ id: project.id, title: project.title });
     setTitleDraft(project.title);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const folder = await getProjectFolder(project.id);
+        const coverId = folder.coverCreationId?.trim();
+        if (!coverId) {
+          if (!cancelled) setCoverUrl(null);
+          return;
+        }
+        const creation = await getCreation(coverId);
+        const url = creationPreviewUrl(creation);
+        if (!cancelled) setCoverUrl(url);
+      } catch {
+        if (!cancelled) setCoverUrl(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
 
   const commitTitle = () => {
     const next = titleDraft.trim() || "Untitled project";
@@ -53,13 +79,24 @@ export function DirectorLayout() {
     <div className="layout director">
       <section className="preview-pane" aria-label="Video preview">
         <div
-          className="preview-placeholder director-preview-frame"
+          className={`preview-placeholder director-preview-frame${coverUrl ? " has-cover" : ""}`}
           style={{ aspectRatio: projectAspectCss(project.aspectRatio) }}
         >
-          Preview
-          <span className="muted director-preview-aspect">
-            {project.aspectRatio}
-          </span>
+          {coverUrl ? (
+            <img
+              className="director-preview-cover"
+              src={coverUrl}
+              alt=""
+              draggable={false}
+            />
+          ) : (
+            <>
+              Preview
+              <span className="muted director-preview-aspect">
+                {project.aspectRatio}
+              </span>
+            </>
+          )}
         </div>
       </section>
       <aside className="director-side">

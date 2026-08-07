@@ -94,6 +94,7 @@ import {
   omitFiledCreations,
   removeFromFolder,
   renameFolder,
+  setFolderCover,
   type FolderSyncState,
   type LibraryFolder,
 } from "./folderClient";
@@ -2050,6 +2051,15 @@ function CreationsPanel({
     }
   }, [folderView, refreshFolders, removeCreationsFromProject, selectedIds]);
 
+  const onSetFolderCoverFromLightbox = useCallback(
+    async (creationId: string | null) => {
+      if (!folderView) return;
+      await setFolderCover(folderView.id, creationId);
+      await refreshFolders();
+    },
+    [folderView, refreshFolders],
+  );
+
   const onSaveFolderEdit = useCallback(
     async (title: string, description: string) => {
       if (!editFolder) return;
@@ -2346,6 +2356,16 @@ function CreationsPanel({
                 onClose={() => setActive(null)}
                 deleteCreation={deleteCreationFromLibrary}
                 onDeleted={() => setActive(null)}
+                folderCover={
+                  folderView
+                    ? {
+                        folderId: folderView.id,
+                        folderKind: folderView.kind,
+                        coverCreationId: folderView.coverCreationId ?? null,
+                        onSetCover: onSetFolderCoverFromLightbox,
+                      }
+                    : null
+                }
               />
             ) : null}
             {createFolderOpen ? (
