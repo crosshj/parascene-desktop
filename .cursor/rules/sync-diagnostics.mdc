@@ -1,0 +1,20 @@
+---
+description: Folder/Sync failures must leave a [folder-sync] console trace + pending-ops context — triage SQLite pending ops before guessing
+globs: src/sync/**/*.ts,src/library/folderClient.ts,src/library/LibraryView.tsx,src/app/ShellProvider.tsx,src-tauri/src/library/folders.rs,src-tauri/src/library/project_assets.rs,docs/STANDARDS-sync-diagnostics.md,docs/REQUIREMENTS-project-folders-cabinets.md,docs/PLAN-project-owned-folders.md
+alwaysApply: false
+---
+
+# Sync / folder failure diagnostics
+
+Before spending time on Sync folder failures (especially opaque API strings):
+
+1. **Read** [docs/STANDARDS-sync-diagnostics.md](docs/STANDARDS-sync-diagnostics.md).
+2. Read **`Library/logs/folder-sync.jsonl`** first (on-disk trace). Console `[folder-sync]` is secondary.
+3. If needed: `folder_pending_ops` in `catalog.sqlite` under the Library path.
+
+## Non-negotiables
+
+- New folder-sync failure/heal paths must call `logFolderSyncFailure` so events land on disk under `Library/logs/`.
+- User-visible sync error strings should include the pending-ops headline when ops remain.
+- “Locked on this client” = **user-edit lock** for a project-marked folder with no local project document — not a filesystem lock. Do not auto-take over foreign project markers on Sync.
+- Marker clears require ownership assertion (`project_id`). Unowned empty-meta clears are dropped; do not rewrite them from cloud markers to force upload.

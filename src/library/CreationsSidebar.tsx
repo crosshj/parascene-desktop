@@ -360,6 +360,21 @@ export function CreationsSidebar({
         />
       ))}
 
+      {folderViewLocked && onReleaseOrphanFolder ? (
+        <div className="creations-sidebar-locked" aria-label="Locked project folder">
+          <p className="muted">
+            Project assets are locked on this device.
+          </p>
+          <button
+            type="button"
+            className="creations-sidebar-action-btn"
+            onClick={onReleaseOrphanFolder}
+          >
+            Release as regular folder
+          </button>
+        </div>
+      ) : null}
+
       {showSelectionActions ? (
         <div className="creations-sidebar-actions" aria-label="Selection actions">
           <p className="creations-sidebar-actions-count">
@@ -409,21 +424,6 @@ export function CreationsSidebar({
                 </button>
               ) : null}
             </>
-          ) : folderViewLocked ? (
-            <div className="creations-sidebar-locked">
-              <p className="muted">
-                Project assets are locked on this device.
-              </p>
-              {onReleaseOrphanFolder ? (
-                <button
-                  type="button"
-                  className="creations-sidebar-action-btn"
-                  onClick={onReleaseOrphanFolder}
-                >
-                  Release as regular folder
-                </button>
-              ) : null}
-            </div>
           ) : null}
           <button
             type="button"

@@ -1,6 +1,6 @@
 ---
 description: Project folders & cabinets — load ownership/display requirements before changing membership, Lab filing, or Assets expand
-globs: docs/REQUIREMENTS-project-folders-cabinets.md,docs/PLAN-project-owned-folders.md,src/project/**/*.ts,src/project/**/*.tsx,src/lab/projectGroups.ts,src/lab/**/*Group*,src/layouts/editor/cabinetDisplay.ts,src/layouts/editor/EditorLayout.tsx,src/layouts/editor/AssetBrowserPane.tsx,src/layouts/lab/LabLayout.tsx,src/library/creationFlags.ts,src/library/LibraryView.tsx,src/app/ShellProvider.tsx,src/app/projectListHeal.ts,src-tauri/src/library/project_assets.rs,src-tauri/src/library/folders.rs,src-tauri/src/library/jobs.rs
+globs: docs/REQUIREMENTS-project-folders-cabinets.md,docs/PLAN-project-owned-folders.md,docs/STANDARDS-sync-diagnostics.md,src/project/**/*.ts,src/project/**/*.tsx,src/lab/projectGroups.ts,src/lab/**/*Group*,src/layouts/editor/cabinetDisplay.ts,src/layouts/editor/EditorLayout.tsx,src/layouts/editor/AssetBrowserPane.tsx,src/layouts/lab/LabLayout.tsx,src/library/creationFlags.ts,src/library/LibraryView.tsx,src/sync/**/*.ts,src/app/ShellProvider.tsx,src/app/projectListHeal.ts,src-tauri/src/library/project_assets.rs,src-tauri/src/library/folders.rs,src-tauri/src/library/jobs.rs
 alwaysApply: false
 ---
 
@@ -20,5 +20,6 @@ Before changing project folder membership, Images/Videos cabinets, legacy open/r
 - **Legacy open** claims/binds/creates/blocks a folder. It does **not** invent cabinets or silently drop timeline refs. **Open as legacy** is only for pre–folder-era docs (`lifecycle` unset) and skips folder work entirely.
 - Remirror copies folder `memberIds` only — never expand ordinary groups into `creationIds`.
 - Polluted folders are healed by **collapse** (on open + Lab repair).
+- Opaque Sync folder failures: follow [docs/STANDARDS-sync-diagnostics.md](docs/STANDARDS-sync-diagnostics.md) (`[folder-sync]` + pending ops) — do not treat `project folder is locked on this client` as a filesystem/double-instance lock.
 
 If a change would flatten cabinet members into the project folder “so Assets works,” stop and follow the requirements doc instead.

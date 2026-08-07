@@ -2,6 +2,7 @@ mod beats;
 mod catalog;
 mod clip_thumb;
 mod crt_gpu;
+mod diag;
 mod download;
 mod ffmpeg;
 mod folders;
@@ -30,6 +31,7 @@ pub use catalog::{
     library_list_filter_creations, library_list_group_member_ids, library_sync_status,
 };
 pub use clip_thumb::library_ensure_clip_thumb;
+pub use diag::library_append_diag_log;
 pub use download::{
     library_cache_missing_media, library_cache_missing_thumbs, library_delete_local,
     library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,

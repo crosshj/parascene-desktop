@@ -1,6 +1,6 @@
 [package]
 name = "parascene-desktop"
-version = "1.1.31"
+version = "1.1.32"
 description = "Parascene Desktop"
 authors = ["Parascene"]
 edition = "2021"
@@ -40,6 +40,11 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
 arboard = "3"
 unicode-segmentation = "1"
+
+# Deep-link handoff on Windows/Linux starts a second process; single-instance
+# forwards argv (incl. parascene://) into the first process and exits the second.
+[target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # Force gpu-allocator onto the same windows version as wgpu-hal (0.62).
 # Without this, Cargo can resolve gpu-allocator to windows 0.61 while wgpu-hal

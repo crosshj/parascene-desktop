@@ -18,6 +18,7 @@ use library::{
     library_delete_folder,
     library_delete_local, library_detect_beats, library_download_ids, library_download_pending,
     library_download_thumbs, library_ensure_clip_thumb, library_ensure_local, library_ensure_ready,
+    library_append_diag_log,
     library_ensure_reversed, library_ensure_slideshow, library_bake_plate_still, library_fill_thumb, library_filter_counts,
     library_existing_creation_ids, library_get_creation, library_get_creations, library_get_folder,
     library_import_from_disk, library_import_local_paths, library_invalidate_mismatched_thumbs,
@@ -63,9 +64,33 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::webview::PageLoadEvent;
 
+/// Bring the main window forward (post-auth deep link, second-instance launch).
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        #[cfg(target_os = "macos")]
+        {
+            let _ = app.show();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Must be first: second launches (incl. parascene:// after browser auth)
+    // notify this process and exit instead of opening another window.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            focus_main_window(app);
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -196,10 +221,7 @@ pub fn run() {
 
                 let handle = app.handle().clone();
                 let _ = app.deep_link().on_open_url(move |_event| {
-                    if let Some(window) = handle.get_webview_window("main") {
-                        let _ = window.set_focus();
-                        let _ = window.unminimize();
-                    }
+                    focus_main_window(&handle);
                 });
             }
             Ok(())
@@ -218,6 +240,7 @@ pub fn run() {
             http_get_bearer,
             http_delete_bearer,
             library_ensure_ready,
+            library_append_diag_log,
             library_get_creation,
             library_get_creations,
             library_existing_creation_ids,

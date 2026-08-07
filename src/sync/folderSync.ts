@@ -16,6 +16,11 @@ import {
   type LibraryFoldersSnapshot,
   type RemoteLibraryFolder,
 } from "../sdk/parascene";
+import {
+  buildFolderSyncFailureTrace,
+  logFolderSyncFailure,
+  withPendingOpsContext,
+} from "./folderSyncDiagnostics";
 
 export const LIBRARY_FOLDER_OPS_MAX = 100;
 export const LIBRARY_FOLDER_CREATION_IDS_MAX = 500;
@@ -24,8 +29,27 @@ function projectMeta(projectId: string): Record<string, unknown> {
   return { parascene_desktop: { project_id: projectId } };
 }
 
+function projectIdFromFolderMeta(
+  meta: Record<string, unknown> | undefined | null,
+): string | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const desktop = meta.parascene_desktop;
+  if (!desktop || typeof desktop !== "object" || Array.isArray(desktop)) {
+    return null;
+  }
+  const id = (desktop as Record<string, unknown>).project_id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+function metaClearsProjectMarker(meta: unknown): boolean {
+  if (meta == null || typeof meta !== "object" || Array.isArray(meta)) {
+    return false;
+  }
+  return projectIdFromFolderMeta(meta as Record<string, unknown>) == null;
+}
+
 /** One-release adapter for pending ops written by the pre-metadata desktop build. */
-function normalizePendingOperation(
+export function normalizePendingOperation(
   operation: LibraryFolderOperation,
 ): LibraryFolderOperation {
   const raw = operation as unknown as Record<string, unknown>;
@@ -62,6 +86,201 @@ function normalizePendingOperation(
     } as LibraryFolderOperation;
   }
   return operation;
+}
+
+/**
+ * Marker clears must assert ownership (`project_id` matching the cloud marker).
+ * Clears that already include `project_id` (delete-project / manual Release) are
+ * kept. Stuck empty-meta clears **without** project_id came from auto-liberate of
+ * foreign/unavailable project folders — drop them so this client does not try to
+ * take over another device's project marker.
+ */
+export function assertProjectIdOnMarkerClear(
+  operation: LibraryFolderOperation,
+): LibraryFolderOperation {
+  const normalized = normalizePendingOperation(operation);
+  if (normalized.op !== "update") return normalized;
+  // Only explicit empty meta is a marker clear. Title-only updates omit meta.
+  if (normalized.meta === undefined) return normalized;
+  if (!metaClearsProjectMarker(normalized.meta)) return normalized;
+  const existing =
+    typeof normalized.project_id === "string" && normalized.project_id.trim()
+      ? normalized.project_id.trim()
+      : null;
+  if (existing) {
+    return { ...normalized, project_id: existing, meta: {} };
+  }
+  return normalized;
+}
+
+/**
+ * Empty-meta `update` cannot clear markers on the server ("marker cannot be
+ * changed"). Owned clears (have project_id) expand to delete + create regular.
+ * Unowned clears (no project_id) are dropped elsewhere.
+ */
+export function isOwnedMarkerClear(operation: LibraryFolderOperation): boolean {
+  const normalized = normalizePendingOperation(operation);
+  if (normalized.op !== "update") return false;
+  if (normalized.meta === undefined) return false;
+  if (!metaClearsProjectMarker(normalized.meta)) return false;
+  return (
+    typeof normalized.project_id === "string" &&
+    Boolean(normalized.project_id.trim())
+  );
+}
+
+export type FolderReleaseLookup = {
+  title: string;
+  description: string;
+  creationIds: number[];
+};
+
+/**
+ * Replace owned empty-meta clears with delete+create, and drop redundant
+ * title-only updates for those same folder ids.
+ */
+export function rewriteOwnedMarkerClearsToDeleteCreate(
+  pending: PendingFolderOp[],
+  lookup: Map<string, FolderReleaseLookup>,
+): LibraryFolderOperation[] {
+  const releaseIds = new Set<string>();
+  const titleOverride = new Map<string, { title?: string; description?: string }>();
+
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (isOwnedMarkerClear(op) && op.op === "update") {
+      releaseIds.add(op.id);
+    }
+  }
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (
+      op.op === "update" &&
+      op.meta === undefined &&
+      releaseIds.has(op.id)
+    ) {
+      titleOverride.set(op.id, {
+        title: typeof op.title === "string" ? op.title : undefined,
+        description:
+          typeof op.description === "string" ? op.description : undefined,
+      });
+    }
+  }
+
+  const out: LibraryFolderOperation[] = [];
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (isOwnedMarkerClear(op) && op.op === "update") {
+      const info = lookup.get(op.id);
+      const override = titleOverride.get(op.id);
+      const title =
+        (override?.title && override.title.trim()) ||
+        (typeof op.title === "string" && op.title.trim() ? op.title.trim() : null) ||
+        info?.title ||
+        "Untitled folder";
+      const description =
+        override?.description ??
+        (typeof op.description === "string"
+          ? op.description
+          : (info?.description ?? ""));
+      const creationIds = info?.creationIds ?? [];
+      const projectId = op.project_id!.trim();
+      out.push({ op: "delete", id: op.id, project_id: projectId });
+      out.push({
+        op: "create",
+        id: op.id,
+        title,
+        description,
+        meta: {},
+        ...(creationIds.length > 0 ? { creation_ids: creationIds } : {}),
+      });
+      continue;
+    }
+    if (
+      op.op === "update" &&
+      op.meta === undefined &&
+      releaseIds.has(op.id)
+    ) {
+      continue;
+    }
+    out.push(op);
+  }
+  return out;
+}
+
+export function buildFolderReleaseLookup(
+  cloud: RemoteLibraryFolder[],
+  local: Array<{
+    id: string;
+    title: string;
+    description: string;
+    memberIds?: string[];
+  }>,
+  baseline: CloudFolderRow[],
+): Map<string, FolderReleaseLookup> {
+  const out = new Map<string, FolderReleaseLookup>();
+  const put = (
+    id: string,
+    title: string,
+    description: string,
+    creationIds: Array<string | number>,
+  ) => {
+    const nums = creationIds
+      .map((v) => (typeof v === "number" ? v : Number(v)))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const prev = out.get(id);
+    out.set(id, {
+      title: title.trim() || prev?.title || "Untitled folder",
+      description,
+      creationIds: nums.length > 0 ? nums : (prev?.creationIds ?? []),
+    });
+  };
+  for (const folder of baseline) {
+    put(folder.id, folder.title, folder.description, folder.creationIds ?? []);
+  }
+  for (const folder of cloud) {
+    put(folder.id, folder.title, folder.description, folder.creation_ids ?? []);
+  }
+  for (const folder of local) {
+    put(folder.id, folder.title, folder.description, folder.memberIds ?? []);
+  }
+  return out;
+}
+
+/** True when this op is an empty-meta clear that never asserted ownership. */
+export function isUnownedMarkerClear(operation: LibraryFolderOperation): boolean {
+  const normalized = normalizePendingOperation(operation);
+  if (normalized.op !== "update") return false;
+  if (normalized.meta === undefined) return false;
+  if (!metaClearsProjectMarker(normalized.meta)) return false;
+  const existing =
+    typeof normalized.project_id === "string" && normalized.project_id.trim()
+      ? normalized.project_id.trim()
+      : null;
+  return !existing;
+}
+
+/** Drop mistaken foreign marker clears; keep ownership-asserted clears. */
+export function dropUnownedMarkerClears(
+  pending: PendingFolderOp[],
+): { kept: PendingFolderOp[]; dropped: PendingFolderOp[] } {
+  const kept: PendingFolderOp[] = [];
+  const dropped: PendingFolderOp[] = [];
+  for (const row of pending) {
+    if (isUnownedMarkerClear(row.op)) dropped.push(row);
+    else kept.push(row);
+  }
+  return { kept, dropped };
+}
+
+/** Normalize owned marker-clear updates (preserve project_id on empty meta). */
+export function rewritePendingMarkerClears(
+  pending: PendingFolderOp[],
+): PendingFolderOp[] {
+  return pending.map((row) => ({
+    ...row,
+    op: assertProjectIdOnMarkerClear(row.op),
+  }));
 }
 
 export type FolderConflictKind =
@@ -213,7 +432,7 @@ export function prepareOpsForUpload(
   const expanded: LibraryFolderOperation[] = [];
   for (const row of pending) {
     const prepared = splitLargeMoveOps(
-      splitLargeCreateOps([normalizePendingOperation(row.op)]),
+      splitLargeCreateOps([assertProjectIdOnMarkerClear(row.op)]),
     );
     for (const op of prepared) {
       expanded.push(op);
@@ -471,6 +690,11 @@ export async function syncLibraryFolders(opts?: {
   resolutions?: Record<string, "local" | "cloud">;
   /** Existing conflicts from a prior pass (with resolutions). */
   priorConflicts?: FolderConflict[];
+  /**
+   * After snapshot adopt / before upload. Optional; do not use for auto-liberating
+   * foreign/unavailable project folders.
+   */
+  beforeUpload?: () => Promise<void>;
 }): Promise<FolderSyncResult> {
   let state = await getFolderSyncState();
   let uploadedBatches = 0;
@@ -489,10 +713,19 @@ export async function syncLibraryFolders(opts?: {
     cloud = await pullSnapshot();
   } catch (e) {
     if (e instanceof LibraryFoldersUnavailableError) {
+      const message = withPendingOpsContext(e.message, state.pendingOps);
+      logFolderSyncFailure(
+        buildFolderSyncFailureTrace({
+          phase: "pull",
+          message,
+          revision: state.revision,
+          pending: state.pendingOps,
+        }),
+      );
       return resultFromState(state, {
         ok: false,
         unavailable: true,
-        message: e.message,
+        message,
       });
     }
     const message = e instanceof Error ? e.message : String(e);
@@ -501,6 +734,14 @@ export async function syncLibraryFolders(opts?: {
         "Your Parascene session expired. Reconnect in the browser, then retry Sync.",
       );
     }
+    logFolderSyncFailure(
+      buildFolderSyncFailureTrace({
+        phase: "pull",
+        message,
+        revision: state.revision,
+        pending: state.pendingOps,
+      }),
+    );
     throw e;
   }
 
@@ -510,45 +751,105 @@ export async function syncLibraryFolders(opts?: {
       cloud.revision,
       remoteFoldersToCloudRows(cloud.folders),
     );
-    // Native snapshot reconciliation may enqueue marker/title/membership
-    // repairs for a locally owned project. Upload them in this same Sync pass.
-    if (state.pendingOps.length === 0) {
-      return resultFromState(state, { ok: true, uploadedBatches: 0 });
-    }
-  }
+  } else {
+    const localRevision = state.revision;
+    const cloudAhead =
+      localRevision == null || cloud.revision !== localRevision;
 
-  const localRevision = state.revision;
-  const cloudAhead =
-    localRevision == null || cloud.revision !== localRevision;
+    if (cloudAhead) {
+      const conflicts = detectFolderConflicts(
+        state.baselineFolders,
+        cloud.folders,
+        state.pendingOps,
+      );
+      if (conflicts.length > 0) {
+        // Install cloud baseline snapshot into meta without dropping pending ops:
+        // apply snapshot replaces folders; keep pending for retry after resolution.
+        state = await applyFolderSnapshot(
+          cloud.revision,
+          remoteFoldersToCloudRows(cloud.folders),
+        );
+        // Re-read pending (apply_snapshot does not clear pending).
+        state = await getFolderSyncState();
+        return resultFromState(state, {
+          ok: false,
+          conflicts,
+          message:
+            "Folder changes conflict with the cloud. Resolve them to continue.",
+        });
+      }
 
-  if (cloudAhead) {
-    const conflicts = detectFolderConflicts(
-      state.baselineFolders,
-      cloud.folders,
-      state.pendingOps,
-    );
-    if (conflicts.length > 0) {
-      // Install cloud baseline snapshot into meta without dropping pending ops:
-      // apply snapshot replaces folders; keep pending for retry after resolution.
+      // Safe: adopt cloud folders as the new baseline/local view, keep pending.
       state = await applyFolderSnapshot(
         cloud.revision,
         remoteFoldersToCloudRows(cloud.folders),
       );
-      // Re-read pending (apply_snapshot does not clear pending).
       state = await getFolderSyncState();
-      return resultFromState(state, {
-        ok: false,
-        conflicts,
-        message: "Folder changes conflict with the cloud. Resolve them to continue.",
-      });
     }
+  }
 
-    // Safe: adopt cloud folders as the new baseline/local view, keep pending.
+  // Optional hook after snapshot (kept for callers that need to enqueue owned
+  // ops before upload). Do not auto-liberate foreign project folders here.
+  if (opts?.beforeUpload) {
+    await opts.beforeUpload();
+    state = await getFolderSyncState();
+  }
+
+  // Drop mistaken foreign marker clears (empty meta, no project_id). Those came
+  // from auto-liberating unavailable project folders — this client must not take
+  // over another device's marker. Re-apply cloud so locked project folders return.
+  const { kept, dropped } = dropUnownedMarkerClears(state.pendingOps);
+  if (dropped.length > 0) {
+    logFolderSyncFailure(
+      buildFolderSyncFailureTrace({
+        phase: "drop-unowned-clears",
+        message: `Dropped ${dropped.length} unowned project-marker clear(s); restoring cloud project folders as browse-only on this device.`,
+        revision: state.revision,
+        pending: dropped,
+      }),
+    );
+    state = await setFolderPendingOps(kept.map((row) => row.op));
     state = await applyFolderSnapshot(
       cloud.revision,
       remoteFoldersToCloudRows(cloud.folders),
     );
     state = await getFolderSyncState();
+  }
+
+  // Owned empty-meta clears are rejected by the API ("marker cannot be changed").
+  // Expand them to ownership-asserted delete + create regular (same id/members).
+  if (state.pendingOps.some((row) => isOwnedMarkerClear(row.op))) {
+    const lookup = buildFolderReleaseLookup(
+      cloud.folders,
+      state.folders,
+      state.baselineFolders,
+    );
+    const expanded = rewriteOwnedMarkerClearsToDeleteCreate(
+      state.pendingOps,
+      lookup,
+    );
+    logFolderSyncFailure(
+      buildFolderSyncFailureTrace({
+        phase: "expand-marker-release",
+        message: `Rewrote owned marker clear(s) to delete+create (${expanded.length} op(s)).`,
+        revision: state.revision,
+        pending: state.pendingOps,
+      }),
+    );
+    state = await setFolderPendingOps(expanded);
+  }
+
+  if (state.pendingOps.length === 0) {
+    return resultFromState(state, { ok: true, uploadedBatches: 0 });
+  }
+
+  const rewritten = rewritePendingMarkerClears(state.pendingOps);
+  const rewriteChanged = rewritten.some((row, i) => {
+    const prev = state.pendingOps[i]!;
+    return JSON.stringify(prev.op) !== JSON.stringify(row.op);
+  });
+  if (rewriteChanged) {
+    state = await setFolderPendingOps(rewritten.map((row) => row.op));
   }
 
   // Upload pending ops in batches.
@@ -565,6 +866,7 @@ export async function syncLibraryFolders(opts?: {
 
     try {
       const next = await pushOps(baseRevision, batch);
+      cloud = next;
       state = await applyFolderSnapshot(
         next.revision,
         remoteFoldersToCloudRows(next.folders),
@@ -573,6 +875,7 @@ export async function syncLibraryFolders(opts?: {
       uploadedBatches += 1;
     } catch (e) {
       if (e instanceof LibraryFoldersConflictError) {
+        cloud = { revision: e.revision, folders: e.folders };
         state = await applyFolderSnapshot(
           e.revision,
           remoteFoldersToCloudRows(e.folders),
@@ -596,16 +899,27 @@ export async function syncLibraryFolders(opts?: {
         continue;
       }
       if (e instanceof LibraryFoldersUnavailableError) {
+        const message = withPendingOpsContext(e.message, state.pendingOps);
+        logFolderSyncFailure(
+          buildFolderSyncFailureTrace({
+            phase: "mutate",
+            message,
+            revision: state.revision,
+            pending: state.pendingOps,
+            uploadBatch: batch,
+          }),
+        );
         return resultFromState(state, {
           ok: false,
           unavailable: true,
           uploadedBatches,
-          message: e.message,
+          message,
         });
       }
       // On 400 / other errors: re-pull then surface.
       try {
         const fresh = await pullSnapshot();
+        cloud = fresh;
         state = await applyFolderSnapshot(
           fresh.revision,
           remoteFoldersToCloudRows(fresh.folders),
@@ -614,7 +928,17 @@ export async function syncLibraryFolders(opts?: {
       } catch {
         /* keep prior state */
       }
-      const message = e instanceof Error ? e.message : String(e);
+      const rawMessage = e instanceof Error ? e.message : String(e);
+      const message = withPendingOpsContext(rawMessage, state.pendingOps);
+      logFolderSyncFailure(
+        buildFolderSyncFailureTrace({
+          phase: "mutate",
+          message,
+          revision: state.revision,
+          pending: state.pendingOps,
+          uploadBatch: batch,
+        }),
+      );
       return resultFromState(state, {
         ok: false,
         uploadedBatches,
@@ -624,13 +948,28 @@ export async function syncLibraryFolders(opts?: {
   }
 
   state = await getFolderSyncState();
+  if (state.pendingOps.length > 0) {
+    const message = withPendingOpsContext(
+      "Some folder changes are still pending",
+      state.pendingOps,
+    );
+    logFolderSyncFailure(
+      buildFolderSyncFailureTrace({
+        phase: "incomplete",
+        message,
+        revision: state.revision,
+        pending: state.pendingOps,
+      }),
+    );
+    return resultFromState(state, {
+      ok: false,
+      uploadedBatches,
+      message,
+    });
+  }
   return resultFromState(state, {
-    ok: state.pendingOps.length === 0,
+    ok: true,
     uploadedBatches,
-    message:
-      state.pendingOps.length === 0
-        ? undefined
-        : "Some folder changes are still pending",
   });
 }
 

@@ -59,7 +59,6 @@ import {
   addProjectAssets,
   deleteProjectNative,
   getProjectFolder,
-  liberateOrphanProjectFolders,
   reconcileLegacyProjectFolder,
   releaseOrphanProjectFolder,
   removeProjectAssetsChecked,
@@ -1252,7 +1251,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           setBlockedProjectId(null);
         }
         publishStoredProjects();
-        setChromeStatus(`Deleted project “${title}”. Its Library folder was kept as a regular folder.`);
+        // Ownership-asserted marker clear must reach the cloud in this action.
+        const folderResult = await syncLibraryFolders();
+        if (!folderResult.ok && folderResult.message) {
+          setChromeStatus(
+            `Deleted project “${title}”. Folder kept as regular, but Sync still needs attention: ${folderResult.message}`,
+          );
+        } else {
+          setChromeStatus(
+            `Deleted project “${title}”. Its Library folder was kept as a regular folder.`,
+          );
+        }
         return true;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1482,13 +1491,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       const { result } =
         await mutateStoredProjectsWithNativeMutation(
           async () => {
+            // Do not auto-liberate foreign/unavailable project folders on Sync.
+            // Those stay browse-only; cloud remains authoritative. Marker clears
+            // only happen from Delete project or explicit "Release as regular".
             const folderResult = await syncLibraryFolders(opts);
-            const liberated = await liberateOrphanProjectFolders();
             return {
               folderResult,
               folders: await listFolders(),
-              liberatedCount: liberated.released.length,
-              liberatedTitles: liberated.released.map((folder) => folder.title),
             };
           },
           (current, payload) =>
@@ -1499,30 +1508,26 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           },
         );
       publishStoredProjects();
-      if (result.liberatedCount > 0) {
-        const sample = result.liberatedTitles.slice(0, 2).join(", ");
-        const more =
-          result.liberatedCount > 2
-            ? ` (+${result.liberatedCount - 2} more)`
-            : "";
-        setChromeStatus(
-          `Released ${result.liberatedCount} orphaned project folder${
-            result.liberatedCount === 1 ? "" : "s"
-          } as regular: ${sample}${more}.`,
-        );
-      }
       return result.folderResult;
     },
-    [publishStoredProjects, setChromeStatus],
+    [publishStoredProjects],
   );
 
   const releaseOrphanFolder = useCallback(
     async (folderId: string) => {
       const released = await releaseOrphanProjectFolder(folderId);
+      // Upload ownership-asserted marker clear in the same user action.
+      const folderResult = await syncLibraryFolders();
       publishStoredProjects();
-      setChromeStatus(
-        `Released “${released.title}” as a regular Library folder.`,
-      );
+      if (!folderResult.ok && folderResult.message) {
+        setChromeStatus(
+          `Released “${released.title}” locally, but Sync still needs attention: ${folderResult.message}`,
+        );
+      } else {
+        setChromeStatus(
+          `Released “${released.title}” as a regular Library folder.`,
+        );
+      }
       return released;
     },
     [publishStoredProjects, setChromeStatus],

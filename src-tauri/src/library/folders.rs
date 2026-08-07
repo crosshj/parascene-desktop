@@ -622,8 +622,11 @@ fn pending_release_folder_ids(
     Ok(out)
 }
 
-/// Convert a marked project folder to a regular folder, keep members, clear cloud marker.
-/// Call from Delete project and orphan heal.
+/// Convert a marked project folder to a regular folder, keep members.
+///
+/// Cloud markers are immutable via `update` (even with `project_id`) — the Folder
+/// API returns "project folder marker cannot be changed". Release is therefore
+/// ownership-asserted **delete** + **create** the same id as a regular folder.
 pub(crate) fn convert_marked_project_folder_to_regular(
     conn: &Connection,
     project_id: &str,
@@ -647,16 +650,26 @@ pub(crate) fn convert_marked_project_folder_to_regular(
     if n == 0 {
         return Err("Folder not found".into());
     }
+    let cloud_ids = cloud_creation_ids(&folder.member_ids);
     enqueue_op(
         conn,
         json!({
-            "op": "update",
+            "op": "delete",
             "id": folder_id,
-            "title": folder.title,
-            "description": folder.description,
-            "meta": empty_folder_meta(),
+            "project_id": project_id,
         }),
     )?;
+    let mut create_op = json!({
+        "op": "create",
+        "id": folder_id,
+        "title": folder.title,
+        "description": folder.description,
+        "meta": empty_folder_meta(),
+    });
+    if !cloud_ids.is_empty() {
+        create_op["creation_ids"] = json!(cloud_ids);
+    }
+    enqueue_op(conn, create_op)?;
     get_folder(conn, folder_id)?.ok_or_else(|| "Folder disappeared after project release".into())
 }
 
@@ -672,7 +685,11 @@ pub(crate) fn liberate_orphan_project_folders(
             continue;
         }
         let Some(project_id) = folder.project_id.clone() else {
-            // Broken marker row: demote without a project_id match check.
+            // Broken local row (kind=project, no project_id): demote locally.
+            // Do not enqueue a generic meta clear — the server needs an
+            // ownership assertion. Upload rewrite may attach project_id from
+            // cloud/baseline if a clear is already queued; otherwise the next
+            // snapshot keeps cloud truth until a proper release is possible.
             scrub_pending_ops_for_folder(conn, &folder.id)?;
             let now = Utc::now().to_rfc3339();
             conn.execute(
@@ -680,16 +697,6 @@ pub(crate) fn liberate_orphan_project_folders(
                 params![now, folder.id],
             )
             .map_err(|e| e.to_string())?;
-            enqueue_op(
-                conn,
-                json!({
-                    "op": "update",
-                    "id": folder.id,
-                    "title": folder.title,
-                    "description": folder.description,
-                    "meta": empty_folder_meta(),
-                }),
-            )?;
             if let Some(updated) = get_folder(conn, &folder.id)? {
                 released.push(updated);
             }
@@ -1748,11 +1755,15 @@ mod tests {
         assert!(released.project_id.is_none());
         assert_eq!(released.member_ids, vec!["101".to_string(), "102".to_string()]);
         let pending = list_pending_ops(&conn).expect("pending");
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].op["op"], "update");
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].op["op"], "delete");
         assert_eq!(pending[0].op["id"], "project-folder");
-        assert_eq!(pending[0].op["meta"], json!({}));
-        assert!(pending[0].op.get("title").is_some());
+        assert_eq!(pending[0].op["project_id"], "project-1");
+        assert_eq!(pending[1].op["op"], "create");
+        assert_eq!(pending[1].op["id"], "project-folder");
+        assert_eq!(pending[1].op["meta"], json!({}));
+        assert_eq!(pending[1].op["creation_ids"], json!([101, 102]));
+        assert!(pending[1].op.get("project_id").is_none());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1866,6 +1877,13 @@ mod tests {
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].id, "orphan-folder");
         assert_eq!(released[0].kind, "regular");
+
+        let pending = list_pending_ops(&conn).expect("pending");
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].op["op"], "delete");
+        assert_eq!(pending[0].op["project_id"], "orphan-1");
+        assert_eq!(pending[1].op["op"], "create");
+        assert_eq!(pending[1].op["id"], "orphan-folder");
 
         let owned = get_folder(&conn, "owned-folder").unwrap().unwrap();
         assert_eq!(owned.kind, "project");

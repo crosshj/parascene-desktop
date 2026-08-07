@@ -493,4 +493,136 @@ describe("syncLibraryFolders", () => {
     expect(result.ok).toBe(true);
     expect(mutateLibraryFolders).toHaveBeenCalledTimes(2);
   });
+
+  it("drops stuck unowned empty-meta clears and restores cloud project folders", async () => {
+    const folderId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const stuck = pending(3, {
+      op: "update",
+      id: folderId,
+      title: "Untitled project",
+      meta: {},
+    });
+    const initial = state({
+      revision: 2,
+      pendingOps: [stuck],
+      baselineFolders: [],
+    });
+    getFolderSyncState
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(state({ revision: 2, pendingOps: [] }));
+    getLibraryFolders.mockResolvedValue({
+      revision: 2,
+      folders: [
+        remoteFolder({
+          id: folderId,
+          title: "Untitled project",
+          meta: { parascene_desktop: { project_id: projectId } },
+        }),
+      ],
+    });
+    setFolderPendingOps.mockResolvedValue(state({ revision: 2, pendingOps: [] }));
+    applyFolderSnapshot.mockResolvedValue(
+      state({
+        revision: 2,
+        pendingOps: [],
+        folders: [
+          {
+            id: folderId,
+            title: "Untitled project",
+            description: "",
+            createdAt: "t",
+            updatedAt: "t",
+            memberIds: [],
+            memberCount: 0,
+            kind: "project",
+            projectId,
+          },
+        ],
+      }),
+    );
+
+    const result = await syncLibraryFolders();
+    expect(result.ok).toBe(true);
+    expect(setFolderPendingOps).toHaveBeenCalledWith([]);
+    expect(mutateLibraryFolders).not.toHaveBeenCalled();
+  });
+
+  it("expands owned marker clears to delete+create before upload", async () => {
+    const folderId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const clearOp = pending(4, {
+      op: "update",
+      id: folderId,
+      title: "Orphan",
+      meta: {},
+      project_id: projectId,
+    });
+    getFolderSyncState
+      .mockResolvedValueOnce(
+        state({ revision: 1, pendingOps: [clearOp], baselineFolders: [] }),
+      )
+      .mockResolvedValueOnce(state({ revision: 2, pendingOps: [] }));
+    getLibraryFolders.mockResolvedValue({
+      revision: 1,
+      folders: [
+        remoteFolder({
+          id: folderId,
+          title: "Orphan",
+          creation_ids: [101],
+          meta: { parascene_desktop: { project_id: projectId } },
+        }),
+      ],
+    });
+    setFolderPendingOps.mockImplementation(async (ops) =>
+      state({
+        revision: 1,
+        pendingOps: ops.map((op: LibraryFolderOperation, i: number) =>
+          pending(200 + i, op),
+        ),
+        baselineFolders: [],
+        folders: [
+          {
+            id: folderId,
+            title: "Orphan",
+            description: "",
+            createdAt: "t",
+            updatedAt: "t",
+            memberIds: ["101"],
+            memberCount: 1,
+            kind: "regular",
+            projectId: null,
+          },
+        ],
+      }),
+    );
+    applyFolderSnapshot.mockResolvedValue(
+      state({ revision: 2, pendingOps: [] }),
+    );
+    mutateLibraryFolders.mockResolvedValue({
+      revision: 2,
+      folders: [remoteFolder({ id: folderId, title: "Orphan", creation_ids: [101], meta: {} })],
+    });
+    ackFolderOps.mockResolvedValue(state({ revision: 2, pendingOps: [] }));
+
+    const result = await syncLibraryFolders();
+    expect(result.ok).toBe(true);
+    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+      baseRevision: 1,
+      operations: [
+        expect.objectContaining({
+          op: "delete",
+          id: folderId,
+          project_id: projectId,
+        }),
+        expect.objectContaining({
+          op: "create",
+          id: folderId,
+          title: "Orphan",
+          meta: {},
+          creation_ids: [101],
+        }),
+      ],
+    });
+  });
 });

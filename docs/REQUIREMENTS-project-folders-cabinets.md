@@ -94,9 +94,9 @@ For each process: **When**, **Writes**, **Why**, **Risk**.
 ### 4.3c Delete project
 
 - **When:** Chooser **Delete** (after confirm).
-- **Writes:** Native `library_delete_project` first (convert marked folder to a regular folder with the same id/title/members; queue cloud meta clear; clear usage/membership rows; **keep** catalog media). Then remove the project document from localStorage (healthy or corrupt).
+- **Writes:** Native `library_delete_project` first (convert marked folder to a regular folder with the same id/title/members; queue ownership-asserted cloud meta clear with `project_id`; clear usage/membership rows; **keep** catalog media). Then remove the project document from localStorage (healthy or corrupt). Sync uploads the marker clear in the same delete action.
 - **Why:** Projects can be retired without deleting Library files or exploding folder membership; never leave a marked folder without a document.
-- **Risk:** Confirm is mandatory. Do not delete media as part of this action. Empty project list is allowed after the last delete.
+- **Risk:** Confirm is mandatory. Do not delete media as part of this action. Empty project list is allowed after the last delete. Marker clears without `project_id` are rejected by the Folder API (`project folder is locked on this client`) — see [STANDARDS-sync-diagnostics.md](./STANDARDS-sync-diagnostics.md).
 
 Library delete of a creation is **item-scoped**: block only when that creation has usage rows or belongs to a project folder that cannot be audited on this device. Unrelated orphan/stale project folders must not lock the whole catalog.
 
@@ -287,6 +287,7 @@ Legacy flat projects are valid forever without cabinets. Cabinets are additive o
 | Sync remirror helpers | `src/project/reconcileProjectLibrary.ts` |
 | Mutation / usage lock | `src/project/projectMutationCoordinator.ts` |
 | Prior ownership plan | `docs/PLAN-project-owned-folders.md` |
+| Sync failure diagnostics | `docs/STANDARDS-sync-diagnostics.md` |
 
 ---
 
@@ -312,3 +313,4 @@ Before changing folder/cabinet code:
 4. Is the chooser missing a project? Check storage heal / corrupt isolation — **not** folder membership.
 5. After filing media, did you update **group meta** and file the **cover** (not every member)? Timeline may reference members via cabinet ownership.
 6. Read this doc + `PLAN-project-owned-folders.md` before “simplifying” ownership.
+7. Sync folders failing with a cryptic API string? Follow `docs/STANDARDS-sync-diagnostics.md` (`[folder-sync]` console + `folder_pending_ops`) before guessing double-instance / locks.

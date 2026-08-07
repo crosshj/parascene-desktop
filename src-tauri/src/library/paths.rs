@@ -10,6 +10,7 @@ pub struct ParascenePaths {
     pub projects: PathBuf,
     pub exports: PathBuf,
     pub cache: PathBuf,
+    pub logs: PathBuf,
     pub catalog_db: PathBuf,
 }
 
@@ -26,6 +27,7 @@ pub fn resolve_paths(root: PathBuf) -> ParascenePaths {
         catalog_db: library.join("catalog.sqlite"),
         media: library.join("media"),
         thumbs: library.join("thumbs"),
+        logs: library.join("logs"),
         library,
         projects: root.join("Projects"),
         exports: root.join("Exports"),
@@ -43,6 +45,7 @@ pub fn ensure_directories(paths: &ParascenePaths) -> Result<(), String> {
         &paths.projects,
         &paths.exports,
         &paths.cache,
+        &paths.logs,
     ] {
         fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
     }
@@ -66,6 +69,7 @@ mod tests {
         assert!(paths.projects.is_dir());
         assert!(paths.exports.is_dir());
         assert!(paths.cache.is_dir());
+        assert!(paths.logs.is_dir());
         let _ = fs::remove_dir_all(&root);
     }
 }

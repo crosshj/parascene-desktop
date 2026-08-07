@@ -503,7 +503,7 @@ Until all-project checked delete exists, hide/disable global Delete in project f
 
 ### Delete a project
 
-There is no project deletion flow today, so a project folder cannot be deleted as a substitute. If project deletion is added later, make it a project lifecycle action with explicit choices (recommended default: convert its folder to a regular folder and preserve files). That future flow also needs an explicit server operation that releases the immutable metadata marker. It does not block creation/rename/membership phases in this plan.
+There is no project deletion flow today, so a project folder cannot be deleted as a substitute. If project deletion is added later, make it a project lifecycle action with explicit choices (recommended default: convert its folder to a regular folder and preserve files). **Shipped release path:** convert locally and enqueue ownership-asserted **delete** + **create** of the same folder id as a regular folder (empty-meta `update` is rejected with `project folder marker cannot be changed`). Sync uploads that pair in the same delete/release action.
 
 ### Composition behavior
 
