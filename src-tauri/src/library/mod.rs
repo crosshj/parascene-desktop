@@ -64,9 +64,10 @@ pub use project_assets::{
     library_check_creation_usage, library_delete_creation_checked,
     library_delete_project, library_delete_project_asset,
     library_get_project_bound_folder, library_get_project_folder,
-    library_import_project_asset_paths, library_list_project_asset_ids,
-    library_mark_project_usage_stale, library_reconcile_legacy_project_folder,
-    library_provision_project_folder, library_remove_project_assets,
+    library_import_project_asset_paths, library_liberate_orphan_project_folders,
+    library_list_project_asset_ids, library_mark_project_usage_stale,
+    library_provision_project_folder, library_reconcile_legacy_project_folder,
+    library_release_orphan_project_folder, library_remove_project_assets,
     library_rename_project, library_repair_project_usage,
     library_replace_project_usage, library_set_project_bound_folder,
 };

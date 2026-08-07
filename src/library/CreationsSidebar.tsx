@@ -259,6 +259,7 @@ export function CreationsSidebar({
   hasOpenProject = false,
   inFolderView = false,
   folderViewLocked = false,
+  onReleaseOrphanFolder,
   hasFolders = false,
   onNewProject,
   onAddToProject,
@@ -278,6 +279,7 @@ export function CreationsSidebar({
   hasOpenProject?: boolean;
   inFolderView?: boolean;
   folderViewLocked?: boolean;
+  onReleaseOrphanFolder?: () => void;
   hasFolders?: boolean;
   onNewProject?: () => void;
   onAddToProject?: () => void;
@@ -408,7 +410,20 @@ export function CreationsSidebar({
               ) : null}
             </>
           ) : folderViewLocked ? (
-            <p className="muted">Project assets are locked on this device.</p>
+            <div className="creations-sidebar-locked">
+              <p className="muted">
+                Project assets are locked on this device.
+              </p>
+              {onReleaseOrphanFolder ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onReleaseOrphanFolder}
+                >
+                  Release as regular folder
+                </button>
+              ) : null}
+            </div>
           ) : null}
           <button
             type="button"

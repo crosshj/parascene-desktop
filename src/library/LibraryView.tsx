@@ -1220,6 +1220,7 @@ function CreationsPanel({
     addCreationsToProject,
     removeCreationsFromProject,
     deleteLibraryCreation,
+    releaseOrphanFolder,
     creationsFilterId,
     setCreationsFilterId,
   } = useShell();
@@ -2179,6 +2180,28 @@ function CreationsPanel({
               folderView?.kind === "project" &&
                 (!folderView.projectId || !localProjectIds.has(folderView.projectId)),
             )}
+            onReleaseOrphanFolder={
+              folderView?.kind === "project" &&
+              folderView.id &&
+              (!folderView.projectId || !localProjectIds.has(folderView.projectId))
+                ? () => {
+                    void releaseOrphanFolder(folderView.id)
+                      .then((released) => {
+                        setFolders((prev) =>
+                          prev.map((folder) =>
+                            folder.id === released.id ? released : folder,
+                          ),
+                        );
+                        setFolderViewId(released.id);
+                      })
+                      .catch((error) => {
+                        const message =
+                          error instanceof Error ? error.message : String(error);
+                        setChromeStatus(`Could not release folder: ${message}`);
+                      });
+                  }
+                : undefined
+            }
             hasFolders={folders.length > 0 || seedFolders.length > 0}
             onNewProject={onNewProjectFromSelection}
             onAddToProject={onAddSelectionToProject}

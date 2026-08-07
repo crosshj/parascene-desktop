@@ -86,9 +86,23 @@ export type DeleteProjectResult = {
   releasedMemberIds: string[];
 };
 
-/** Release the project folder (media kept) and clear native usage indexes. */
+/** Convert the project folder to a regular folder (media kept) and clear native usage indexes. */
 export function deleteProjectNative(projectId: string): Promise<DeleteProjectResult> {
   return invoke("library_delete_project", { projectId });
+}
+
+export type LiberateOrphanFoldersResult = {
+  released: LibraryFolder[];
+};
+
+/** Convert orphan project folders (no local project document) to regular folders. */
+export function liberateOrphanProjectFolders(): Promise<LiberateOrphanFoldersResult> {
+  return invoke("library_liberate_orphan_project_folders");
+}
+
+/** Release one orphan project folder as a regular folder. */
+export function releaseOrphanProjectFolder(folderId: string): Promise<LibraryFolder> {
+  return invoke("library_release_orphan_project_folder", { folderId });
 }
 
 export function markProjectUsageStale(

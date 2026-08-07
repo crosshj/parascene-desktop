@@ -59,7 +59,9 @@ import {
   addProjectAssets,
   deleteProjectNative,
   getProjectFolder,
+  liberateOrphanProjectFolders,
   reconcileLegacyProjectFolder,
+  releaseOrphanProjectFolder,
   removeProjectAssetsChecked,
   renameProjectFolder,
   provisionProjectFolder,
@@ -225,13 +227,15 @@ type ShellState = {
     projectId: string,
     creationIds: string[],
   ) => Promise<void>;
-  /** Globally delete after a strict all-project audit. */
+  /** Globally delete after an item-scoped project usage/membership audit. */
   deleteLibraryCreation: (creationId: string) => Promise<void>;
   /** Sync cloud folders while project saves/removals are serialized. */
   syncProjectFolders: (opts?: {
     resolutions?: Record<string, "local" | "cloud">;
     priorConflicts?: FolderConflict[];
   }) => Promise<FolderSyncResult>;
+  /** Convert one orphan/foreign project folder into a regular Library folder. */
+  releaseOrphanFolder: (folderId: string) => Promise<LibraryFolder>;
   /** Create or replace a still workstream on the open project. */
   upsertOpenStillWorkstream: (
     stream: import("../project/stillWorkstream").StillWorkstream,
@@ -1248,7 +1252,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           setBlockedProjectId(null);
         }
         publishStoredProjects();
-        setChromeStatus(`Deleted project “${title}”. Library media was kept.`);
+        setChromeStatus(`Deleted project “${title}”. Its Library folder was kept as a regular folder.`);
         return true;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1479,7 +1483,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         await mutateStoredProjectsWithNativeMutation(
           async () => {
             const folderResult = await syncLibraryFolders(opts);
-            return { folderResult, folders: await listFolders() };
+            const liberated = await liberateOrphanProjectFolders();
+            return {
+              folderResult,
+              folders: await listFolders(),
+              liberatedCount: liberated.released.length,
+              liberatedTitles: liberated.released.map((folder) => folder.title),
+            };
           },
           (current, payload) =>
             mirrorProjectFolderMembership(current, payload.folders),
@@ -1489,9 +1499,33 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           },
         );
       publishStoredProjects();
+      if (result.liberatedCount > 0) {
+        const sample = result.liberatedTitles.slice(0, 2).join(", ");
+        const more =
+          result.liberatedCount > 2
+            ? ` (+${result.liberatedCount - 2} more)`
+            : "";
+        setChromeStatus(
+          `Released ${result.liberatedCount} orphaned project folder${
+            result.liberatedCount === 1 ? "" : "s"
+          } as regular: ${sample}${more}.`,
+        );
+      }
       return result.folderResult;
     },
-    [publishStoredProjects],
+    [publishStoredProjects, setChromeStatus],
+  );
+
+  const releaseOrphanFolder = useCallback(
+    async (folderId: string) => {
+      const released = await releaseOrphanProjectFolder(folderId);
+      publishStoredProjects();
+      setChromeStatus(
+        `Released “${released.title}” as a regular Library folder.`,
+      );
+      return released;
+    },
+    [publishStoredProjects, setChromeStatus],
   );
 
   const upsertOpenStillWorkstream = useCallback(
@@ -1740,6 +1774,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       removeCreationsFromProject,
       deleteLibraryCreation,
       syncProjectFolders,
+      releaseOrphanFolder,
       upsertOpenStillWorkstream,
       removeOpenStillWorkstream,
       creationsFilterId,
@@ -1795,6 +1830,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       removeCreationsFromProject,
       deleteLibraryCreation,
       syncProjectFolders,
+      releaseOrphanFolder,
       upsertOpenStillWorkstream,
       removeOpenStillWorkstream,
       creationsFilterId,

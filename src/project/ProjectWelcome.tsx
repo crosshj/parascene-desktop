@@ -62,7 +62,7 @@ export function ProjectWelcome() {
     await confirm({
       title: `Delete “${label}”?`,
       message:
-        "This removes the project from this device. Library media files are kept. If the project has a folder, that folder is removed and its files return to Library root (they are not deleted).",
+        "This removes the project from this device. Library media files are kept. If the project has a folder, that folder becomes a regular Library folder (same name and members) and is no longer marked as a project.",
       confirmLabel: "Delete project",
       danger: true,
       errorTitle: "Could not delete project",

@@ -2,9 +2,10 @@ use super::catalog::{
     default_paths, delete_creation_local, ready_connection, sync_status_for, SyncStatus,
 };
 use super::folders::{
-    delete_marked_project_folder, emit_folders_updated, enqueue_op, get_folder, list_folders,
-    move_creations_into_folder, normalize_project_title, project_folder_meta, remove_from_folder,
-    remove_from_project_folder, LibraryFolder,
+    convert_marked_project_folder_to_regular, emit_folders_updated, enqueue_op, get_folder,
+    liberate_orphan_project_folders, list_folders, move_creations_into_folder,
+    normalize_project_title, project_folder_meta, remove_from_folder, remove_from_project_folder,
+    LibraryFolder,
 };
 use super::import_local::{import_paths, ImportLocalResult};
 use super::parascene_api::group_member_ids;
@@ -1333,69 +1334,28 @@ pub fn library_check_creation_usage(
     Ok(out)
 }
 
+fn project_usage_state(conn: &Connection, project_id: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT state FROM project_usage_revisions WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Item-scoped Library delete: only this creation's usage and owning project folder matter.
+/// Unrelated orphan/stale project folders do not block deletion.
 #[tauri::command]
 pub fn library_delete_creation_checked(
     app: AppHandle,
     creation_id: String,
-    audited_project_ids: Vec<String>,
+    #[allow(unused_variables)] audited_project_ids: Vec<String>,
 ) -> Result<SyncStatus, String> {
     let id = creation_id.trim();
     let paths = default_paths()?;
     let mut conn = ready_connection(&paths)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
-    let unaudited: bool = transaction
-        .query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM project_usage_revisions WHERE state != 'ready'
-               UNION ALL
-               SELECT 1 FROM folders f WHERE f.kind = 'project' AND NOT EXISTS (
-                 SELECT 1 FROM project_usage_revisions r WHERE r.project_id = f.project_id
-               )
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if unaudited {
-        return Err("Delete is unavailable until every project can be audited".into());
-    }
-    let audited: BTreeSet<String> = audited_project_ids
-        .into_iter()
-        .map(|project_id| project_id.trim().to_string())
-        .filter(|project_id| !project_id.is_empty())
-        .collect();
-    let mut known_stmt = transaction
-        .prepare(
-            "SELECT project_id FROM project_usage_revisions
-             UNION SELECT project_id FROM folders WHERE kind = 'project' AND project_id IS NOT NULL
-             UNION SELECT project_id FROM project_library_bindings",
-        )
-        .map_err(|e| e.to_string())?;
-    let known: BTreeSet<String> = known_stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .collect();
-    drop(known_stmt);
-    if known != audited {
-        let missing = known.difference(&audited).cloned().collect::<Vec<_>>();
-        let unexpected = audited.difference(&known).cloned().collect::<Vec<_>>();
-        return Err(format!(
-            "Delete audit does not cover the native project set (missing: {}; unexpected: {})",
-            if missing.is_empty() {
-                "none".into()
-            } else {
-                missing.join(", ")
-            },
-            if unexpected.is_empty() {
-                "none".into()
-            } else {
-                unexpected.join(", ")
-            },
-        ));
-    }
     let mut stmt = transaction
         .prepare(
             "SELECT project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label
@@ -1424,21 +1384,24 @@ pub fn library_delete_creation_checked(
             .join(", ");
         return Err(format!("This creation is used by {details}"));
     }
-    let owner_project: Option<String> = transaction
+    let owner: Option<(String, String, String)> = transaction
         .query_row(
-            "SELECT f.project_id FROM folder_items fi JOIN folders f ON f.id = fi.folder_id
+            "SELECT f.project_id, f.id, f.title FROM folder_items fi
+             JOIN folders f ON f.id = fi.folder_id
              WHERE fi.creation_id = ?1 AND f.kind = 'project' LIMIT 1",
             params![id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    if let Some(project_id) = owner_project.as_deref() {
+    if let Some((project_id, _folder_id, title)) = owner.as_ref() {
+        let state = project_usage_state(&transaction, project_id)?;
+        if state.as_deref() != Some("ready") {
+            return Err(format!(
+                "This creation belongs to project folder \"{title}\" which cannot be audited on this device"
+            ));
+        }
         remove_from_project_folder(&transaction, project_id, &[id.to_string()])?;
-    } else {
-        remove_from_folder(&transaction, &[id.to_string()])?;
-    }
-    if let Some(project_id) = owner_project.as_deref() {
         transaction
             .execute(
                 "DELETE FROM project_assets WHERE project_id = ?1 AND creation_id = ?2",
@@ -1446,9 +1409,11 @@ pub fn library_delete_creation_checked(
             )
             .map_err(|e| e.to_string())?;
         increment_membership_revision(&transaction, project_id)?;
+    } else {
+        remove_from_folder(&transaction, &[id.to_string()])?;
     }
     delete_creation_local(&transaction, &paths, id)?;
-    if let Some(project_id) = owner_project.as_deref() {
+    if let Some((project_id, _, _)) = owner.as_ref() {
         mark_membership_mirror_stale(&transaction, project_id)?;
     }
     transaction.commit().map_err(|e| e.to_string())?;
@@ -1491,11 +1456,18 @@ pub fn library_delete_project_asset(
 pub struct DeleteProjectResult {
     pub project_id: String,
     pub folder_id: Option<String>,
+    /// Former project-folder members (still filed in the released regular folder).
     pub released_member_ids: Vec<String>,
 }
 
-/// Delete a project's marked folder (if any) and native usage/membership rows.
-/// Catalog media is kept; former folder members become unfiled (Library root).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiberateOrphanFoldersResult {
+    pub released: Vec<LibraryFolder>,
+}
+
+/// Convert a project's marked folder to a regular folder (members kept) and clear
+/// native usage/membership rows. Catalog media is kept.
 #[tauri::command]
 pub fn library_delete_project(
     app: AppHandle,
@@ -1515,7 +1487,7 @@ pub fn library_delete_project(
         .unwrap_or_default();
     let folder_id = folder.as_ref().map(|f| f.id.clone());
     if let Some(folder) = folder.as_ref() {
-        delete_marked_project_folder(&transaction, &project_id, &folder.id)?;
+        convert_marked_project_folder_to_regular(&transaction, &project_id, &folder.id)?;
     }
     transaction
         .execute(
@@ -1556,4 +1528,60 @@ pub fn library_delete_project(
     };
     let _ = app.emit("project-deleted", &result);
     Ok(result)
+}
+
+/// Convert orphan/foreign project folders (no local usage revision) to regular folders.
+#[tauri::command]
+pub fn library_liberate_orphan_project_folders(
+    app: AppHandle,
+) -> Result<LiberateOrphanFoldersResult, String> {
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let released = liberate_orphan_project_folders(&transaction)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(LiberateOrphanFoldersResult { released })
+}
+
+/// Release one orphan project folder (no local usage revision) as a regular folder.
+#[tauri::command]
+pub fn library_release_orphan_project_folder(
+    app: AppHandle,
+    folder_id: String,
+) -> Result<LibraryFolder, String> {
+    let folder_id = folder_id.trim().to_string();
+    if folder_id.is_empty() {
+        return Err("Folder id is required".into());
+    }
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let folder = get_folder(&transaction, &folder_id)?
+        .ok_or_else(|| format!("Folder {folder_id} was not found"))?;
+    if folder.kind != "project" {
+        return Err("Only project folders can be released this way".into());
+    }
+    let project_id = folder
+        .project_id
+        .as_deref()
+        .ok_or_else(|| "Project folder is missing a project id".to_string())?;
+    let known: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_usage_revisions WHERE project_id = ?1)",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if known {
+        return Err(
+            "This project folder still has a local project document. Delete the project instead."
+                .into(),
+        );
+    }
+    let released =
+        convert_marked_project_folder_to_regular(&transaction, project_id, &folder_id)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    Ok(released)
 }

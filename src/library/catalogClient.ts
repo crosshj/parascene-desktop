@@ -198,7 +198,7 @@ export async function deleteLocal(id: string): Promise<SyncStatus> {
   return invoke<SyncStatus>("library_delete_local", { id });
 }
 
-/** Delete after the native all-project usage/membership check. */
+/** Delete after the native item-scoped usage/membership check. */
 export async function deleteCreationChecked(
   id: string,
   auditedProjectIds: readonly string[],

@@ -567,13 +567,68 @@ fn delete_folder(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Remove a marked project folder. Members stay in the catalog (Library root).
-/// Call only from the Delete project workflow.
-pub(crate) fn delete_marked_project_folder(
+/// Drop pending folder ops that target this folder id (as `id` or `folder_id`).
+fn scrub_pending_ops_for_folder(conn: &Connection, folder_id: &str) -> Result<(), String> {
+    let pending = list_pending_ops(conn)?;
+    for row in pending {
+        let targets_folder = row
+            .op
+            .get("id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == folder_id)
+            || row
+                .op
+                .get("folder_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == folder_id);
+        if !targets_folder {
+            continue;
+        }
+        conn.execute(
+            "DELETE FROM folder_pending_ops WHERE seq = ?1",
+            params![row.seq],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn meta_clears_project_marker(meta: &JsonValue) -> bool {
+    project_id_from_meta(meta).is_none()
+}
+
+/// Pending local deletes or marker-clearing updates for a folder id.
+fn pending_release_folder_ids(
+    conn: &Connection,
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut out = std::collections::HashSet::new();
+    for row in list_pending_ops(conn)? {
+        let op = row.op.get("op").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(id) = row.op.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if op == "delete" {
+            out.insert(id.to_string());
+            continue;
+        }
+        if op == "update" {
+            if let Some(meta) = row.op.get("meta") {
+                if meta_clears_project_marker(meta) {
+                    out.insert(id.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Convert a marked project folder to a regular folder, keep members, clear cloud marker.
+/// Call from Delete project and orphan heal.
+pub(crate) fn convert_marked_project_folder_to_regular(
     conn: &Connection,
     project_id: &str,
     folder_id: &str,
-) -> Result<(), String> {
+) -> Result<LibraryFolder, String> {
     let folder = get_folder(conn, folder_id)?
         .ok_or_else(|| format!("Project folder {folder_id} was not found"))?;
     if folder.kind != "project" || folder.project_id.as_deref() != Some(project_id) {
@@ -581,13 +636,13 @@ pub(crate) fn delete_marked_project_folder(
             "Folder {folder_id} is not the marked folder for project {project_id}"
         ));
     }
-    conn.execute(
-        "DELETE FROM folder_items WHERE folder_id = ?1",
-        params![folder_id],
-    )
-    .map_err(|e| e.to_string())?;
+    scrub_pending_ops_for_folder(conn, folder_id)?;
+    let now = Utc::now().to_rfc3339();
     let n = conn
-        .execute("DELETE FROM folders WHERE id = ?1", params![folder_id])
+        .execute(
+            "UPDATE folders SET kind = 'regular', project_id = NULL, updated_at = ?1 WHERE id = ?2",
+            params![now, folder_id],
+        )
         .map_err(|e| e.to_string())?;
     if n == 0 {
         return Err("Folder not found".into());
@@ -595,12 +650,61 @@ pub(crate) fn delete_marked_project_folder(
     enqueue_op(
         conn,
         json!({
-            "op": "delete",
+            "op": "update",
             "id": folder_id,
-            "project_id": project_id,
+            "title": folder.title,
+            "description": folder.description,
+            "meta": empty_folder_meta(),
         }),
     )?;
-    Ok(())
+    get_folder(conn, folder_id)?.ok_or_else(|| "Folder disappeared after project release".into())
+}
+
+/// Convert every project folder that has no local usage revision (orphan / foreign
+/// with no document on this device) into a regular folder and queue marker clear.
+pub(crate) fn liberate_orphan_project_folders(
+    conn: &Connection,
+) -> Result<Vec<LibraryFolder>, String> {
+    let folders = list_folders(conn)?;
+    let mut released = Vec::new();
+    for folder in folders {
+        if folder.kind != "project" {
+            continue;
+        }
+        let Some(project_id) = folder.project_id.clone() else {
+            // Broken marker row: demote without a project_id match check.
+            scrub_pending_ops_for_folder(conn, &folder.id)?;
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "UPDATE folders SET kind = 'regular', project_id = NULL, updated_at = ?1 WHERE id = ?2",
+                params![now, folder.id],
+            )
+            .map_err(|e| e.to_string())?;
+            enqueue_op(
+                conn,
+                json!({
+                    "op": "update",
+                    "id": folder.id,
+                    "title": folder.title,
+                    "description": folder.description,
+                    "meta": empty_folder_meta(),
+                }),
+            )?;
+            if let Some(updated) = get_folder(conn, &folder.id)? {
+                released.push(updated);
+            }
+            continue;
+        };
+        if has_local_project_document(conn, &project_id)? {
+            continue;
+        }
+        released.push(convert_marked_project_folder_to_regular(
+            conn,
+            &project_id,
+            &folder.id,
+        )?);
+    }
+    Ok(released)
 }
 
 fn remove_from_folder_internal(
@@ -757,6 +861,7 @@ fn apply_snapshot(
         }
     }
     let preserve_ids = pending_create_folder_ids(conn)?;
+    let release_ids = pending_release_folder_ids(conn)?;
     let remote_ids: std::collections::HashSet<&str> =
         folders.iter().map(|folder| folder.id.as_str()).collect();
     let now = Utc::now().to_rfc3339();
@@ -766,6 +871,10 @@ fn apply_snapshot(
     // pending local creates are never erased by a snapshot.
     for local in list_folders(&transaction)? {
         if remote_ids.contains(local.id.as_str()) || preserve_ids.contains(&local.id) {
+            continue;
+        }
+        // Pending marker release keeps the local regular folder until upload acks.
+        if release_ids.contains(&local.id) {
             continue;
         }
         let locally_owned_project = if local.kind == "project" {
@@ -808,13 +917,29 @@ fn apply_snapshot(
     }
 
     for folder in folders {
-        let remote_project_id = project_id_from_meta(&folder.meta);
+        let pending_release = release_ids.contains(&folder.id);
+        let remote_project_id = if pending_release {
+            // Local delete/release wins until the pending op is acknowledged.
+            None
+        } else {
+            project_id_from_meta(&folder.meta)
+        };
         let remote_kind = if remote_project_id.is_some() {
             "project"
         } else {
             "regular"
         };
         let existing = get_folder(&transaction, &folder.id)?;
+        // Do not resurrect a folder that this client already queued for delete.
+        if pending_release && existing.is_none() {
+            let is_pending_delete = list_pending_ops(&transaction)?.iter().any(|row| {
+                row.op.get("op").and_then(|v| v.as_str()) == Some("delete")
+                    && row.op.get("id").and_then(|v| v.as_str()) == Some(folder.id.as_str())
+            });
+            if is_pending_delete {
+                continue;
+            }
+        }
         let existing_owned_project = match existing.as_ref() {
             Some(local) if local.kind == "project" => match local.project_id.as_deref() {
                 Some(project_id) => has_local_project_document(&transaction, project_id)?,
@@ -881,6 +1006,24 @@ fn apply_snapshot(
                 .execute(
                     "UPDATE folders SET description = ?1 WHERE id = ?2",
                     params![folder.description, folder.id],
+                )
+                .map_err(|e| e.to_string())?;
+        } else if pending_release {
+            // Keep or install as regular; never re-adopt the remote project marker.
+            transaction
+                .execute(
+                    "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'regular', NULL)
+                     ON CONFLICT(id) DO UPDATE SET title = excluded.title,
+                       description = excluded.description, updated_at = excluded.updated_at,
+                       kind = 'regular', project_id = NULL",
+                    params![
+                        folder.id,
+                        normalize_title(&folder.title),
+                        folder.description,
+                        created,
+                        updated,
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
         } else {
@@ -1575,5 +1718,159 @@ mod tests {
             normalize_project_title(&family.repeat(121)),
             family.repeat(120)
         );
+    }
+
+    #[test]
+    fn convert_marked_project_folder_keeps_members_and_clears_marker() {
+        let (conn, root) = temp_conn();
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+             VALUES ('project-folder', 'Text Meme', '', 't', 't', 'project', 'project-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folder_items(folder_id, creation_id, added_at)
+             VALUES ('project-folder', '101', 't'), ('project-folder', '102', 't')",
+            [],
+        )
+        .unwrap();
+        enqueue_op(
+            &conn,
+            json!({ "op": "update", "id": "project-folder", "title": "stale" }),
+        )
+        .unwrap();
+
+        let released =
+            convert_marked_project_folder_to_regular(&conn, "project-1", "project-folder")
+                .expect("convert");
+        assert_eq!(released.kind, "regular");
+        assert!(released.project_id.is_none());
+        assert_eq!(released.member_ids, vec!["101".to_string(), "102".to_string()]);
+        let pending = list_pending_ops(&conn).expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].op["op"], "update");
+        assert_eq!(pending[0].op["id"], "project-folder");
+        assert_eq!(pending[0].op["meta"], json!({}));
+        assert!(pending[0].op.get("title").is_some());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn snapshot_honors_pending_release_instead_of_resurrecting_project() {
+        let (conn, root) = temp_conn();
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+             VALUES ('project-folder', 'Text Meme', '', 't', 't', 'regular', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO folder_items(folder_id, creation_id, added_at)
+             VALUES ('project-folder', '101', 't')",
+            [],
+        )
+        .unwrap();
+        enqueue_op(
+            &conn,
+            json!({
+                "op": "update",
+                "id": "project-folder",
+                "title": "Text Meme",
+                "description": "",
+                "meta": {},
+            }),
+        )
+        .unwrap();
+
+        let listed = apply_snapshot(
+            &conn,
+            2,
+            &[CloudFolderRow {
+                id: "project-folder".into(),
+                title: "Untitled project".into(),
+                description: "".into(),
+                created_at: Some("t".into()),
+                updated_at: Some("t2".into()),
+                creation_ids: vec!["101".into(), "102".into()],
+                member_count: 2,
+                meta: project_folder_meta("project-1"),
+            }],
+        )
+        .expect("snapshot with pending release");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, "regular");
+        assert!(listed[0].project_id.is_none());
+        assert_eq!(listed[0].title, "Untitled project");
+        assert!(list_pending_ops(&conn).unwrap().iter().any(|row| {
+            row.op["op"] == "update" && row.op["meta"] == json!({})
+        }));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn snapshot_does_not_resurrect_pending_deleted_project_folder() {
+        let (conn, root) = temp_conn();
+        enqueue_op(
+            &conn,
+            json!({
+                "op": "delete",
+                "id": "project-folder",
+                "project_id": "project-1",
+            }),
+        )
+        .unwrap();
+
+        let listed = apply_snapshot(
+            &conn,
+            2,
+            &[CloudFolderRow {
+                id: "project-folder".into(),
+                title: "Untitled project".into(),
+                description: "".into(),
+                created_at: Some("t".into()),
+                updated_at: Some("t".into()),
+                creation_ids: vec!["101".into()],
+                member_count: 1,
+                meta: project_folder_meta("project-1"),
+            }],
+        )
+        .expect("snapshot with pending delete");
+        assert!(listed.is_empty());
+        assert!(get_folder(&conn, "project-folder").unwrap().is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn liberate_converts_orphan_project_folder_but_keeps_owned() {
+        let (conn, root) = temp_conn();
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+             VALUES
+               ('orphan-folder', 'Orphan', '', 't', 't', 'project', 'orphan-1'),
+               ('owned-folder', 'Owned', '', 't', 't', 'project', 'owned-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_usage_revisions(project_id, document_revision, state, indexed_at)
+             VALUES ('owned-1', 'doc-1', 'ready', 't')",
+            [],
+        )
+        .unwrap();
+
+        let released = liberate_orphan_project_folders(&conn).expect("liberate");
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].id, "orphan-folder");
+        assert_eq!(released[0].kind, "regular");
+
+        let owned = get_folder(&conn, "owned-folder").unwrap().unwrap();
+        assert_eq!(owned.kind, "project");
+        assert_eq!(owned.project_id.as_deref(), Some("owned-1"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

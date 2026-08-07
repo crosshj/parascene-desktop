@@ -1379,35 +1379,15 @@ pub(crate) fn mark_downloaded(
 
 /// Delete a creation from the local catalog and remove its media/thumb files.
 /// Only removes files under Library/media or Library/thumbs. Does not touch Parascene cloud.
+///
+/// Item-scoped: unrelated orphan/stale project folders do not block deletion.
+/// Callers must unfile project-folder members first (or use
+/// `library_delete_creation_checked`, which audits the owning folder).
 pub(crate) fn delete_creation_local(
     conn: &Connection,
     paths: &ParascenePaths,
     id: &str,
 ) -> Result<(), String> {
-    let audit_unavailable: bool = conn
-        .query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM project_usage_revisions WHERE state != 'ready'
-               UNION ALL
-               SELECT 1 FROM folders f
-               WHERE f.kind = 'project' AND NOT EXISTS (
-                 SELECT 1 FROM project_usage_revisions r WHERE r.project_id = f.project_id
-               )
-               UNION ALL
-               SELECT 1 FROM project_library_bindings b
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM project_usage_revisions r WHERE r.project_id = b.project_id
-               )
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Could not verify project usage index: {e}"))?;
-    if audit_unavailable {
-        return Err(
-            "Library deletion is unavailable until every project usage index is ready".into(),
-        );
-    }
     let uses: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM project_asset_usage WHERE creation_id = ?1",
@@ -1418,18 +1398,19 @@ pub(crate) fn delete_creation_local(
     if uses > 0 {
         return Err("This creation is used by a project and cannot be deleted".into());
     }
-    let project_owner: Option<String> = conn
+    let project_owner: Option<(String, String)> = conn
         .query_row(
-            "SELECT f.project_id FROM folder_items fi JOIN folders f ON f.id = fi.folder_id
+            "SELECT f.project_id, f.title FROM folder_items fi
+             JOIN folders f ON f.id = fi.folder_id
              WHERE fi.creation_id = ?1 AND f.kind = 'project' LIMIT 1",
             params![id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|e| format!("Could not verify project membership: {e}"))?;
-    if let Some(project_id) = project_owner {
+    if let Some((project_id, title)) = project_owner {
         return Err(format!(
-            "This creation belongs to project {project_id}. Remove it from the project before deleting it."
+            "This creation belongs to project folder \"{title}\" ({project_id}). Remove it from the project before deleting it."
         ));
     }
     let creation =
@@ -2179,6 +2160,90 @@ mod tests {
             )
             .expect("membership count");
         assert_eq!(membership_count, 0);
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn delete_creation_local_ignores_unrelated_orphan_project_folder() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(
+            &conn,
+            &[
+                CreationUpsert {
+                    id: "root-1".into(),
+                    title: "Frog".into(),
+                    media_type: "image".into(),
+                    remote_url: Some("https://cdn.example/frog.png".into()),
+                    thumbnail_url: None,
+                    fit_thumbnail_url: None,
+                    video_url: None,
+                    published: true,
+                    published_at: None,
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    download_state: "remote".into(),
+                    prompt: None,
+                    filename: Some("frog.png".into()),
+                    description: None,
+                    color: None,
+                    status: None,
+                    width: Some(10),
+                    height: Some(10),
+                    aspect_ratio: Some("1:1".into()),
+                    nsfw: false,
+                    is_moderated_error: false,
+                    remote_json: "{}".into(),
+                },
+                CreationUpsert {
+                    id: "member-1".into(),
+                    title: "Inside".into(),
+                    media_type: "image".into(),
+                    remote_url: Some("https://cdn.example/in.png".into()),
+                    thumbnail_url: None,
+                    fit_thumbnail_url: None,
+                    video_url: None,
+                    published: true,
+                    published_at: None,
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    download_state: "remote".into(),
+                    prompt: None,
+                    filename: Some("in.png".into()),
+                    description: None,
+                    color: None,
+                    status: None,
+                    width: Some(10),
+                    height: Some(10),
+                    aspect_ratio: Some("1:1".into()),
+                    nsfw: false,
+                    is_moderated_error: false,
+                    remote_json: "{}".into(),
+                },
+            ],
+        )
+        .expect("apply");
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+             VALUES ('orphan', 'Untitled project', '', 't', 't', 'project', 'gone-project')",
+            [],
+        )
+        .expect("orphan folder");
+        conn.execute(
+            "INSERT INTO folder_items(folder_id, creation_id, added_at)
+             VALUES ('orphan', 'member-1', 't')",
+            [],
+        )
+        .expect("member");
+
+        delete_creation_local(&conn, &paths, "root-1").expect("root delete");
+        assert!(get_creation_by_id(&conn, "root-1").expect("get").is_none());
+
+        let member_err = delete_creation_local(&conn, &paths, "member-1").expect_err("member");
+        assert!(
+            member_err.contains("Untitled project"),
+            "unexpected error: {member_err}"
+        );
+        assert!(get_creation_by_id(&conn, "member-1").expect("get").is_some());
 
         let _ = fs::remove_dir_all(&paths.root);
     }

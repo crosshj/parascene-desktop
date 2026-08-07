@@ -94,9 +94,11 @@ For each process: **When**, **Writes**, **Why**, **Risk**.
 ### 4.3c Delete project
 
 - **When:** Chooser **Delete** (after confirm).
-- **Writes:** Native `library_delete_project` first (remove marked folder + usage/membership rows; queue cloud folder delete with `project_id`; **keep** catalog media). Then remove the project document from localStorage (healthy or corrupt).
-- **Why:** Projects can be retired without deleting Library files; never leave a marked folder without a document.
+- **Writes:** Native `library_delete_project` first (convert marked folder to a regular folder with the same id/title/members; queue cloud meta clear; clear usage/membership rows; **keep** catalog media). Then remove the project document from localStorage (healthy or corrupt).
+- **Why:** Projects can be retired without deleting Library files or exploding folder membership; never leave a marked folder without a document.
 - **Risk:** Confirm is mandatory. Do not delete media as part of this action. Empty project list is allowed after the last delete.
+
+Library delete of a creation is **item-scoped**: block only when that creation has usage rows or belongs to a project folder that cannot be audited on this device. Unrelated orphan/stale project folders must not lock the whole catalog.
 
 ### 4.4 Gather blocked
 
