@@ -3,11 +3,17 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type MouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthProvider";
+import {
+  getUserAvatarDisplay,
+  rejectUserAvatarDisplay,
+  subscribeUserAvatarDisplay,
+} from "../sync/avatarSync";
 import { OPEN_SETTINGS_EVENT } from "../settings/events";
 import {
   OPEN_UI_DIAGNOSTICS_EVENT,
@@ -57,6 +63,39 @@ function profilePageUrl(
   const handle = session.user.preferred_username?.trim().replace(/^@/, "");
   if (!handle) return null;
   return `https://www.parascene.com/p/${encodeURIComponent(handle)}`;
+}
+
+function AccountAvatar({
+  name,
+}: {
+  name: string | null;
+}) {
+  const avatar = useSyncExternalStore(
+    subscribeUserAvatarDisplay,
+    getUserAvatarDisplay,
+    getUserAvatarDisplay,
+  );
+  const initial = (name || "?").replace(/^@/, "").slice(0, 1).toUpperCase();
+
+  // Never render an unverified remote URL — placeholder until local file is ready.
+  if (avatar.src) {
+    return (
+      <img
+        className="avatar"
+        src={avatar.src}
+        alt=""
+        width={28}
+        height={28}
+        onError={() => rejectUserAvatarDisplay("Image failed to load")}
+      />
+    );
+  }
+
+  return (
+    <span className="avatar avatar-fallback" aria-hidden>
+      {initial}
+    </span>
+  );
 }
 
 export function AppChrome({ children }: { children: ReactNode }) {
@@ -342,19 +381,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
                 aria-label={name ? `Account menu for ${name}` : "Account menu"}
                 onClick={() => setMenuOpen((open) => !open)}
               >
-                {session.user.picture ? (
-                  <img
-                    className="avatar"
-                    src={session.user.picture}
-                    alt=""
-                    width={28}
-                    height={28}
-                  />
-                ) : (
-                  <span className="avatar avatar-fallback" aria-hidden>
-                    {(name || "?").replace(/^@/, "").slice(0, 1).toUpperCase()}
-                  </span>
-                )}
+                <AccountAvatar name={name} />
                 {name ? <span className="auth-name">{name}</span> : null}
               </button>
 

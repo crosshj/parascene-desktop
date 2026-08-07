@@ -18,6 +18,10 @@ import {
   setMemorySession,
 } from "./session";
 import { type AuthErrorInfo, toAuthErrorInfo } from "./errors";
+import {
+  clearUserAvatarDisplay,
+  ensureUserAvatar,
+} from "../sync/avatarSync";
 
 type AuthContextValue = {
   status: AuthStatus;
@@ -43,6 +47,14 @@ function adoptSession(session: AuthSession | null) {
   return session;
 }
 
+function warmSessionAvatar(session: AuthSession | null) {
+  if (!session?.user?.sub) {
+    clearUserAvatarDisplay();
+    return;
+  }
+  void ensureUserAvatar(session.user);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("reconnecting");
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -60,15 +72,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const restored = await restoreSession();
         if (cancelled) return;
         if (restored) {
-          setSession(adoptSession(restored));
+          const next = adoptSession(restored);
+          setSession(next);
           setStatus("connected");
+          warmSessionAvatar(next);
         } else {
           adoptSession(null);
+          clearUserAvatarDisplay();
           setStatus("signed_out");
         }
       } catch {
         if (!cancelled) {
           adoptSession(null);
+          clearUserAvatarDisplay();
           setStatus("signed_out");
         }
       }
@@ -85,8 +101,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const next = await loginWithParascene();
       setSession(adoptSession(next));
       setStatus("connected");
+      warmSessionAvatar(next);
     } catch (e) {
       adoptSession(null);
+      clearUserAvatarDisplay();
       setStatus("signed_out");
       setError(toAuthErrorInfo(e));
     }
@@ -102,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       setSession(adoptSession(next));
       setStatus("connected");
+      warmSessionAvatar(next);
       setReauthPending(false);
       setReauthPhase(null);
       return true;
@@ -132,6 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await logoutSession();
     setSession(adoptSession(null));
+    clearUserAvatarDisplay();
     setStatus("signed_out");
     setError(null);
     setReauthPending(false);

@@ -20,6 +20,7 @@ import {
   deriveFitThumbnailUrl,
   type RemoteCreateImage,
 } from "../sdk/parascene";
+import { syncSessionUserAvatar } from "./avatarSync";
 
 /** Page size for newest-first catalog sync (`created_at DESC`). Match website-ish pages. */
 export const NEWEST_SYNC_PAGE_SIZE = 50;
@@ -338,6 +339,7 @@ function rethrowCatalogError(e: unknown): never {
 
 async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
   await ensureAccessToken();
+  await syncSessionUserAvatar();
   const sdk = createAuthedSdk();
   const pageSize = 100;
   const all: RemoteCreateImage[] = [];
@@ -410,6 +412,8 @@ export async function syncNewestCreationsManifest(opts?: {
   } catch (e: unknown) {
     rethrowCatalogError(e);
   }
+  // Verify/cache chrome avatar before catalog work — never leave a broken img.
+  await syncSessionUserAvatar();
 
   report("fetch", "Fetching newest…", 0);
   const sdk = createAuthedSdk();

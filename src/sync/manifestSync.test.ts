@@ -31,6 +31,7 @@ vi.mock("../auth/session", () => ({
     loopbackPort: 17423,
   }),
   ensureAccessToken: vi.fn(async () => "access-jwt"),
+  getMemorySession: vi.fn(() => null),
   createAuthedSdk: () => ({
     listMyCreations: (...args: unknown[]) => listMyCreations(...args),
     getCreation: (...args: unknown[]) => getCreation(...args),
@@ -108,6 +109,9 @@ function mockDownloadPending() {
     }
     if (cmd === "library_get_creations") {
       return [];
+    }
+    if (cmd === "auth_ensure_user_avatar") {
+      return { ok: true, localPath: null, reason: "No avatar URL" };
     }
     throw new Error(`unexpected invoke: ${cmd}`);
   });

@@ -1,6 +1,5 @@
 //! Local Whisper CLI transcription for Lab lyric align.
 
-use super::ffmpeg;
 use super::lab_deps::resolve_whisper;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,8 +32,16 @@ pub struct LocalTranscriptResult {
 #[tauri::command]
 pub fn library_transcribe_local(audio_path: String) -> Result<LocalTranscriptResult, String> {
     let whisper = resolve_whisper().ok_or_else(|| {
-        "Whisper CLI not found. Install with: python3 -m pip install --user openai-whisper"
-            .to_string()
+        #[cfg(target_os = "windows")]
+        {
+            "Whisper not found. Install with: python -m pip install --user openai-whisper (see LOCAL_TOOLS.md)"
+                .to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "Whisper CLI not found. Install with: python3 -m pip install --user openai-whisper"
+                .to_string()
+        }
     })?;
     let audio = PathBuf::from(audio_path.trim());
     if !audio.is_file() {
@@ -53,7 +60,8 @@ pub fn library_transcribe_local(audio_path: String) -> Result<LocalTranscriptRes
 
     let _ = fs::remove_file(&json_path);
 
-    let output = ffmpeg::command(&whisper)
+    let output = whisper
+        .command()
         .arg(audio.as_os_str())
         .args([
             "--model",

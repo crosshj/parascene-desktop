@@ -96,6 +96,46 @@ fn cover_creation_id_from_meta(meta: &JsonValue) -> Option<String> {
     }
 }
 
+/// Last pending create/update that includes `meta` for this folder, if any.
+/// `Some(None)` means pending meta clears the cover; `None` means no meta intent.
+fn pending_cover_intent(conn: &Connection, folder_id: &str) -> Result<Option<Option<String>>, String> {
+    let mut intent: Option<Option<String>> = None;
+    for row in list_pending_ops(conn)? {
+        let op_kind = row.op.get("op").and_then(|v| v.as_str());
+        if !matches!(op_kind, Some("create") | Some("update")) {
+            continue;
+        }
+        let targets = row.op.get("id").and_then(|v| v.as_str()) == Some(folder_id);
+        if !targets {
+            continue;
+        }
+        let Some(meta) = row.op.get("meta") else {
+            continue;
+        };
+        intent = Some(cover_creation_id_from_meta(meta));
+    }
+    Ok(intent)
+}
+
+/// Merge remote snapshot cover with local/pending. Never drop a local cover just
+/// because cloud meta still lacks `cover_creation_id` (common until upload acks).
+/// Returns `(cover, should_push_local_cover_to_cloud)`.
+fn resolve_folder_cover(
+    local_cover: Option<&str>,
+    remote_meta: &JsonValue,
+    pending_intent: Option<Option<String>>,
+) -> (Option<String>, bool) {
+    if let Some(pending) = pending_intent {
+        return (pending, false);
+    }
+    let remote = cover_creation_id_from_meta(remote_meta);
+    match (remote, local_cover.map(str::trim).filter(|s| !s.is_empty())) {
+        (Some(remote), _) => (Some(remote), false),
+        (None, Some(local)) => (Some(local.to_string()), true),
+        (None, None) => (None, false),
+    }
+}
+
 pub(crate) fn cloud_meta_for_folder(folder: &LibraryFolder) -> JsonValue {
     let project_id = folder
         .project_id
@@ -1127,24 +1167,6 @@ fn apply_snapshot(
                     remote_project_id.unwrap_or("missing")
                 ));
             }
-            let local_project_id = local.project_id.as_deref().unwrap_or("");
-            // A local project document owns title and repairs a missing cloud marker.
-            if existing_owned_project
-                && (local.title != normalize_project_title(&folder.title)
-                    || remote_project_id != Some(local_project_id))
-            {
-                enqueue_op(
-                    &transaction,
-                    json!({
-                        "op": "update",
-                        "id": local.id,
-                        "title": local.title,
-                        "description": local.description,
-                        "meta": cloud_meta_for_folder(local),
-                        "project_id": local_project_id,
-                    }),
-                )?;
-            }
         } else if let Some(remote_project_id) = remote_project_id {
             let owner_folder: Option<String> = transaction
                 .query_row(
@@ -1172,12 +1194,13 @@ fn apply_snapshot(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| now.clone());
         if existing_owned_project {
-            // The project document owns title; keep synced description + cover.
-            let remote_cover = cover_creation_id_from_meta(&folder.meta);
+            // The project document owns title; keep synced description only here.
+            // Cover is resolved below so a remote meta without cover_creation_id
+            // cannot wipe a cover that still only exists locally.
             transaction
                 .execute(
-                    "UPDATE folders SET description = ?1, cover_creation_id = ?2 WHERE id = ?3",
-                    params![folder.description, remote_cover, folder.id],
+                    "UPDATE folders SET description = ?1 WHERE id = ?2",
+                    params![folder.description, folder.id],
                 )
                 .map_err(|e| e.to_string())?;
         } else if pending_release {
@@ -1227,19 +1250,70 @@ fn apply_snapshot(
                 .map_err(|e| e.to_string())?;
         }
 
-        // Cover art lives in folder meta; apply from the cloud snapshot for all paths.
-        if !existing_owned_project {
-            let remote_cover = cover_creation_id_from_meta(&folder.meta);
-            transaction
-                .execute(
-                    "UPDATE folders SET cover_creation_id = ?1 WHERE id = ?2",
-                    params![remote_cover, folder.id],
-                )
-                .map_err(|e| e.to_string())?;
-        }
+        // Cover: pending meta intent wins; else remote if present; else keep local
+        // and push so cloud catches up (sync used to null covers when meta omitted them).
+        let local_cover = existing
+            .as_ref()
+            .and_then(|row| row.cover_creation_id.clone());
+        let pending_intent = pending_cover_intent(&transaction, &folder.id)?;
+        let (next_cover, push_cover) =
+            resolve_folder_cover(local_cover.as_deref(), &folder.meta, pending_intent);
+        transaction
+            .execute(
+                "UPDATE folders SET cover_creation_id = ?1 WHERE id = ?2",
+                params![next_cover, folder.id],
+            )
+            .map_err(|e| e.to_string())?;
 
         let target = get_folder(&transaction, &folder.id)?
             .ok_or_else(|| format!("Folder {} disappeared during snapshot", folder.id))?;
+
+        // After cover is applied: repair owned title/marker, and heal missing cloud cover.
+        if existing_owned_project {
+            let local_project_id = target.project_id.as_deref().unwrap_or("");
+            if target.title != normalize_project_title(&folder.title)
+                || remote_project_id != Some(local_project_id)
+            {
+                enqueue_op(
+                    &transaction,
+                    json!({
+                        "op": "update",
+                        "id": target.id,
+                        "title": target.title,
+                        "description": target.description,
+                        "meta": cloud_meta_for_folder(&target),
+                        "project_id": local_project_id,
+                    }),
+                )?;
+            } else if push_cover {
+                let mut op = json!({
+                    "op": "update",
+                    "id": target.id,
+                    "title": target.title,
+                    "description": target.description,
+                    "meta": cloud_meta_for_folder(&target),
+                });
+                if !local_project_id.is_empty() {
+                    op["project_id"] = json!(local_project_id);
+                }
+                enqueue_op(&transaction, op)?;
+            }
+        } else if push_cover {
+            let mut op = json!({
+                "op": "update",
+                "id": target.id,
+                "title": target.title,
+                "description": target.description,
+                "meta": cloud_meta_for_folder(&target),
+            });
+            if target.kind == "project" {
+                if let Some(project_id) = target.project_id.as_deref() {
+                    op["project_id"] = json!(project_id);
+                }
+            }
+            enqueue_op(&transaction, op)?;
+        }
+
         let remote_members: std::collections::HashSet<&str> = folder
             .creation_ids
             .iter()
@@ -2193,5 +2267,111 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_snapshot_keeps_local_cover_when_remote_meta_omits_it() {
+        let (conn, root) = temp_conn();
+        insert_creation(&conn, "101");
+        let folder = create_folder(&conn, "KeepCover", &["101".into()]).expect("create");
+        let seqs: Vec<i64> = list_pending_ops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|op| op.seq)
+            .collect();
+        ack_ops(&conn, &seqs).unwrap();
+        set_folder_cover(&conn, &folder.id, Some("101")).expect("set cover");
+        let seqs: Vec<i64> = list_pending_ops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|op| op.seq)
+            .collect();
+        ack_ops(&conn, &seqs).unwrap();
+
+        // Cloud snapshot still has only an empty meta / project-less folder — no cover key.
+        let listed = apply_snapshot(
+            &conn,
+            4,
+            &[CloudFolderRow {
+                id: folder.id.clone(),
+                title: "KeepCover".into(),
+                description: "".into(),
+                created_at: Some("t".into()),
+                updated_at: Some("t".into()),
+                creation_ids: vec!["101".into()],
+                member_count: 1,
+                meta: json!({}),
+            }],
+        )
+        .expect("snapshot");
+        assert_eq!(listed[0].cover_creation_id.as_deref(), Some("101"));
+        let pending = list_pending_ops(&conn).expect("pending");
+        assert!(
+            pending.iter().any(|row| {
+                row.op["op"] == "update"
+                    && cover_creation_id_from_meta(&row.op["meta"]).as_deref() == Some("101")
+            }),
+            "expected heal upload for missing cloud cover, got {pending:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_snapshot_honors_pending_cover_clear() {
+        let (conn, root) = temp_conn();
+        insert_creation(&conn, "101");
+        let folder = create_folder(&conn, "ClearCover", &["101".into()]).expect("create");
+        let seqs: Vec<i64> = list_pending_ops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|op| op.seq)
+            .collect();
+        ack_ops(&conn, &seqs).unwrap();
+        set_folder_cover(&conn, &folder.id, Some("101")).expect("set");
+        let seqs: Vec<i64> = list_pending_ops(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|op| op.seq)
+            .collect();
+        ack_ops(&conn, &seqs).unwrap();
+        set_folder_cover(&conn, &folder.id, None).expect("clear");
+        // Leave the clear pending; remote still has the old cover.
+        let listed = apply_snapshot(
+            &conn,
+            5,
+            &[CloudFolderRow {
+                id: folder.id.clone(),
+                title: "ClearCover".into(),
+                description: "".into(),
+                created_at: Some("t".into()),
+                updated_at: Some("t".into()),
+                creation_ids: vec!["101".into()],
+                member_count: 1,
+                meta: desktop_folder_meta(None, Some("101")),
+            }],
+        )
+        .expect("snapshot");
+        assert!(listed[0].cover_creation_id.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_folder_cover_prefers_remote_then_local() {
+        let remote_with = desktop_folder_meta(None, Some("9"));
+        let remote_without = json!({});
+        assert_eq!(
+            resolve_folder_cover(Some("1"), &remote_with, None),
+            (Some("9".into()), false)
+        );
+        assert_eq!(
+            resolve_folder_cover(Some("1"), &remote_without, None),
+            (Some("1".into()), true)
+        );
+        assert_eq!(
+            resolve_folder_cover(Some("1"), &remote_with, Some(None)),
+            (None, false)
+        );
     }
 }

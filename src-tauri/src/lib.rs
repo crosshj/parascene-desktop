@@ -5,9 +5,11 @@ mod library;
 mod media_stream;
 mod oauth_listener;
 mod replicate;
+mod user_avatar;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
 use clipboard::clipboard_write_text;
+use user_avatar::auth_ensure_user_avatar;
 use http_client::{
     http_delete_bearer, http_get_bearer, http_post_bearer, http_post_bytes_bearer, http_post_json,
 };
@@ -231,6 +233,7 @@ pub fn run() {
             keychain_set,
             keychain_delete,
             auth_ensure_access_token,
+            auth_ensure_user_avatar,
             start_oauth_listener,
             cancel_oauth_listener,
             oauth_take_callback,
