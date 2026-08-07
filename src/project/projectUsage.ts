@@ -109,3 +109,223 @@ export function collectProjectReferencedCreationIds(
     ...new Set(collectProjectAssetUsage(project).map((row) => row.creationId)),
   ];
 }
+
+export type MissingProjectReference = {
+  creationId: string;
+  usageKind: string;
+  usageOwnerLabel: string;
+};
+
+/** Where missing Library IDs are still referenced in the project document. */
+export function describeMissingProjectReferences(
+  project: StoredProject,
+  missingIds: readonly string[],
+): MissingProjectReference[] {
+  const missing = new Set(
+    missingIds.map((id) => id.trim()).filter(Boolean),
+  );
+  if (missing.size === 0) return [];
+  const byId = new Map<string, MissingProjectReference>();
+  for (const row of collectProjectAssetUsage(project)) {
+    if (!missing.has(row.creationId) || byId.has(row.creationId)) continue;
+    byId.set(row.creationId, {
+      creationId: row.creationId,
+      usageKind: row.usageKind,
+      usageOwnerLabel: row.usageOwnerLabel,
+    });
+  }
+  return [...byId.values()];
+}
+
+function usageKindLabel(kind: string): string {
+  switch (kind) {
+    case "timeline_clip":
+      return "timeline clip";
+    case "slideshow_image":
+    case "slideshow_audio":
+      return "slideshow";
+    case "generation_start_frame":
+    case "generated_timeline_clip":
+      return "timeline generation";
+    case "composition_member":
+    case "composition_node":
+      return "composition";
+    case "main_audio":
+      return "main audio";
+    case "lyric_source_audio":
+      return "lyric alignment";
+    case "storyboard_source_audio":
+    case "storyboard_generation":
+    case "storyboard_project_image":
+      return "storyboard / MV Build";
+    case "project_cabinet":
+      return "Images/Videos cabinet";
+    default:
+      return kind;
+  }
+}
+
+/** Human-readable lines for the open-missing-files dialog. */
+export function formatMissingProjectReferenceLines(
+  refs: readonly MissingProjectReference[],
+): string[] {
+  return refs.map(
+    (row) =>
+      `${row.creationId} — ${usageKindLabel(row.usageKind)} “${row.usageOwnerLabel}”`,
+  );
+}
+
+/**
+ * Strip dead Library IDs from timeline/composition/storyboard/cabinet fields.
+ * Does not invent replacements; clears or filters the referencing slots.
+ */
+export function pruneMissingProjectReferences(
+  project: StoredProject,
+  missingIds: readonly string[],
+): StoredProject {
+  const missing = new Set(
+    missingIds.map((id) => id.trim()).filter(Boolean),
+  );
+  if (missing.size === 0) return project;
+
+  const timeline = normalizeStoredTimeline(project.timeline).map((clip) => {
+    let next = clip;
+    if (clip.assetId && missing.has(clip.assetId)) {
+      next = { ...next, assetId: "" };
+    }
+    if (clip.slideshow) {
+      const imageAssetIds = (clip.slideshow.imageAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
+      const audioAssetId =
+        clip.slideshow.audioAssetId && missing.has(clip.slideshow.audioAssetId)
+          ? null
+          : clip.slideshow.audioAssetId;
+      next = {
+        ...next,
+        slideshow: {
+          ...clip.slideshow,
+          imageAssetIds,
+          audioAssetId: audioAssetId ?? undefined,
+        },
+      };
+    }
+    if (
+      clip.addAssetDraft?.startFrameAssetId &&
+      missing.has(clip.addAssetDraft.startFrameAssetId)
+    ) {
+      next = {
+        ...next,
+        addAssetDraft: {
+          ...clip.addAssetDraft,
+          startFrameAssetId: undefined,
+        },
+      };
+    }
+    if (clip.addAssetGeneration) {
+      const gen = clip.addAssetGeneration;
+      const startFrameAssetId =
+        gen.startFrameAssetId && missing.has(gen.startFrameAssetId)
+          ? undefined
+          : gen.startFrameAssetId;
+      const creationId =
+        gen.creationId && missing.has(gen.creationId) ? undefined : gen.creationId;
+      if (!creationId) {
+        next = { ...next, addAssetGeneration: undefined };
+      } else if (
+        startFrameAssetId !== gen.startFrameAssetId ||
+        creationId !== gen.creationId
+      ) {
+        next = {
+          ...next,
+          addAssetGeneration: {
+            ...gen,
+            startFrameAssetId,
+            creationId,
+          },
+        };
+      }
+    }
+    return next;
+  });
+
+  const stillWorkstreams = normalizeStillWorkstreams(project.stillWorkstreams).map(
+    (stream) => ({
+      ...stream,
+      memberIds: stream.memberIds.filter((id) => !missing.has(id)),
+      nodes: stream.nodes.map((node) =>
+        node.creationId && missing.has(node.creationId)
+          ? { ...node, creationId: null }
+          : node,
+      ),
+    }),
+  );
+
+  let storyboardProposal = project.storyboardProposal ?? null;
+  if (storyboardProposal) {
+    let next = storyboardProposal;
+    if (
+      next.sourceAudioCreationId &&
+      missing.has(next.sourceAudioCreationId)
+    ) {
+      next = { ...next, sourceAudioCreationId: "" };
+    }
+    if (next.generationPlan?.steps) {
+      next = {
+        ...next,
+        generationPlan: {
+          ...next.generationPlan,
+          steps: next.generationPlan.steps.map((step) => {
+            let patched = step;
+            if (step.creationId && missing.has(step.creationId)) {
+              patched = { ...patched, creationId: undefined };
+            }
+            if (
+              step.stillSource?.mode === "project_image" &&
+              step.stillSource.creationId &&
+              missing.has(step.stillSource.creationId)
+            ) {
+              patched = {
+                ...patched,
+                stillSource: {
+                  ...step.stillSource,
+                  creationId: "",
+                },
+              };
+            }
+            return patched;
+          }),
+        },
+      };
+    }
+    storyboardProposal = next;
+  }
+
+  return {
+    ...project,
+    timeline,
+    stillWorkstreams,
+    creationIds: project.creationIds.filter((id) => !missing.has(id)),
+    mainAudioCreationId:
+      project.mainAudioCreationId && missing.has(project.mainAudioCreationId)
+        ? null
+        : project.mainAudioCreationId,
+    lyricAlignment:
+      project.lyricAlignment?.sourceAudioCreationId &&
+      missing.has(project.lyricAlignment.sourceAudioCreationId)
+        ? {
+            ...project.lyricAlignment,
+            sourceAudioCreationId: "",
+          }
+        : project.lyricAlignment,
+    storyboardProposal,
+    imagesGroupId:
+      project.imagesGroupId && missing.has(project.imagesGroupId)
+        ? null
+        : project.imagesGroupId,
+    videosGroupId:
+      project.videosGroupId && missing.has(project.videosGroupId)
+        ? null
+        : project.videosGroupId,
+  };
+}

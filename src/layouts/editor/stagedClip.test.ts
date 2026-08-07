@@ -884,4 +884,39 @@ describe("stagedClip", () => {
       continuityMode: "start_frame",
     });
   });
+
+  it("seeds Blue WAN text-to-video drafts with images none", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "a bird over water",
+      generatedAt: "2026-08-07T00:00:00.000Z",
+      creationId: "c4",
+      mode: "none",
+      model: "wan_t2v",
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
+    });
+    expect(draft).toMatchObject({
+      blueModel: "wan",
+      audioMode: "none",
+      continuityMode: "none",
+      provider: "parascene_blue",
+    });
+  });
+
+  it("seeds Blue LTX text-to-video drafts with images none", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "slow pan across a room",
+      generatedAt: "2026-08-07T00:00:00.000Z",
+      creationId: "c5",
+      mode: "none",
+      model: "ltx_t2v",
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
+    });
+    expect(draft).toMatchObject({
+      blueModel: "ltx",
+      audioMode: "none",
+      continuityMode: "none",
+    });
+  });
 });

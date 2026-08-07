@@ -17,6 +17,7 @@ function formatGeneratedAt(iso: string): string {
 }
 
 function modeLabel(generation: AddAssetGeneration): string {
+  if (generation.mode === "none") return "Text → video";
   if (generation.mode === "first_last") return "First + last frame";
   if (generation.mode === "motion_match") return "Motion match";
   return "Start frame";
@@ -155,7 +156,8 @@ export function GeneratedClipBadge({
             </section>
 
             {generation.mode === "first_last" ||
-            generation.mode === "motion_match" ? null : (
+            generation.mode === "motion_match" ||
+            generation.mode === "none" ? null : (
               <section className="editor-generated-clip-popover-section">
                 <h4>Audio</h4>
                 <p>

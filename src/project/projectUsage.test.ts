@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createStoredProject, type StoredProject } from "./projectStore";
-import { collectProjectAssetUsage } from "./projectUsage";
+import {
+  collectProjectAssetUsage,
+  collectProjectReferencedCreationIds,
+  describeMissingProjectReferences,
+  formatMissingProjectReferenceLines,
+  pruneMissingProjectReferences,
+} from "./projectUsage";
 
 describe("collectProjectAssetUsage", () => {
   it("covers timeline, slideshow, composition, audio, storyboard, and cabinets", () => {
@@ -119,5 +125,67 @@ describe("collectProjectAssetUsage", () => {
       ]),
     );
     expect(ids).not.toContain("gone");
+  });
+
+  it("describes and prunes missing references outside the asset browser", () => {
+    const project = createStoredProject("Melting", ["keep"]);
+    project.timeline = [
+      {
+        id: "clip",
+        label: "4.0s",
+        startSec: 0,
+        endSec: 4,
+        assetId: "gone-clip",
+        kind: "video",
+      },
+    ];
+    project.storyboardProposal = {
+      sourceAudioCreationId: "audio",
+      durationSec: 10,
+      aspectRatio: "16:9",
+      brainstorm: { turns: [] },
+      visualGroups: [],
+      scenes: [],
+      generationPlan: {
+        builtAt: "now",
+        proposalFingerprint: "fp",
+        steps: [
+          {
+            id: "step-1",
+            kind: "still",
+            label: "Shot 1",
+            status: "done",
+            creationId: "gone-sb",
+            dependsOn: [],
+          },
+        ],
+      },
+    } as unknown as StoredProject["storyboardProposal"];
+    project.imagesGroupId = "gone-cabinet";
+
+    const refs = describeMissingProjectReferences(project, [
+      "gone-clip",
+      "gone-sb",
+      "gone-cabinet",
+      "not-used",
+    ]);
+    expect(refs.map((row) => row.creationId).sort()).toEqual([
+      "gone-cabinet",
+      "gone-clip",
+      "gone-sb",
+    ]);
+    expect(formatMissingProjectReferenceLines(refs).join("\n")).toContain(
+      "storyboard / MV Build",
+    );
+
+    const pruned = pruneMissingProjectReferences(project, [
+      "gone-clip",
+      "gone-sb",
+      "gone-cabinet",
+    ]);
+    expect(pruned.timeline?.[0]?.assetId).toBe("");
+    expect(pruned.storyboardProposal?.generationPlan?.steps[0]?.creationId).toBeUndefined();
+    expect(pruned.imagesGroupId).toBeNull();
+    expect(collectProjectReferencedCreationIds(pruned)).not.toContain("gone-clip");
   });
 });

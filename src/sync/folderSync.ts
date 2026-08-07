@@ -287,6 +287,15 @@ export function detectFolderConflicts(
       const baseFolder = base.byId.get(op.id);
       const cloudFolder = remote.byId.get(op.id);
       if (!cloudFolder) {
+        // Never in baseline ⇒ never known on cloud (e.g. local create still
+        // pending). A sibling pending create for the same id means upload has
+        // not landed yet — not a remote delete.
+        const pendingCreate = pending.some(
+          (row) => row.op.op === "create" && row.op.id === op.id,
+        );
+        if (!baseFolder || pendingCreate) {
+          continue;
+        }
         push({
           id: `delete_vs_edit:${op.id}`,
           kind: "delete_vs_edit",

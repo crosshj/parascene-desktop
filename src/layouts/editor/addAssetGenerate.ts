@@ -5,6 +5,11 @@ import {
   uploadVocalsSliceClip,
 } from "../../lab/audioTools";
 import { runA2vGeneration } from "../../lab/a2vGeneration";
+import {
+  LTX_T2V_MODEL,
+  runBlueT2vGeneration,
+  WAN_T2V_MODEL,
+} from "../../lab/blueT2vGeneration";
 import { FLF2V_MODEL, runFlf2vGeneration } from "../../lab/flf2vGeneration";
 import { LTX_I2V_MODEL, runLtxI2vGeneration } from "../../lab/ltxI2vGeneration";
 import { createAuthedSdk } from "../../auth/session";
@@ -109,6 +114,9 @@ export const ADD_ASSET_FIRST_LAST_AUDIO_NOTE =
 export const ADD_ASSET_WAN_AUDIO_NOTE =
   "WAN has no audio processing — source audio is locked to None. The song stays on the timeline.";
 
+export const ADD_ASSET_IMAGES_NONE_AUDIO_NOTE =
+  "Text-to-video does not use source audio — source audio is locked to None. The song stays on the timeline.";
+
 export function createRunningAddAssetGenerationSession(
   clipId: string,
   audioMode: AddAssetAudioMode,
@@ -130,6 +138,12 @@ export function initialAddAssetGenerationSteps(
   audioMode: AddAssetAudioMode = "vocals",
   continuityMode: AddAssetContinuityMode = "start_frame",
 ): AddAssetGenerationStep[] {
+  if (continuityMode === "none") {
+    return [
+      { id: "generate", label: "Generate video", status: "pending" },
+      { id: "file", label: "Add to project", status: "pending" },
+    ];
+  }
   if (continuityMode === "motion_match") {
     return [
       { id: "still", label: "Prepare character still", status: "pending" },
@@ -420,10 +434,76 @@ export async function runAddAssetGeneration(
   if (continuityMode === "motion_match") {
     throw new Error("Motion match requires a Replicate model.");
   }
+  if (continuityMode === "none") {
+    return runTextToVideoAddAssetGeneration(opts);
+  }
   if (continuityMode === "first_last") {
     return runFirstLastAddAssetGeneration(opts);
   }
   return runStartFrameAddAssetGeneration(opts);
+}
+
+async function runTextToVideoAddAssetGeneration(
+  opts: RunAddAssetGenerationOpts,
+): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: AddAssetContinuityMode;
+  model: string;
+}> {
+  let steps = initialAddAssetGenerationSteps("none", "none");
+  const pushSteps = (next: AddAssetGenerationStep[]) => {
+    steps = next;
+    opts.onSteps(steps);
+  };
+
+  const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
+  if (!fullPrompt.trim()) {
+    throw new Error("Enter a prompt for text-to-video.");
+  }
+
+  const { durationSec: durationSeconds } = resolveAddAssetGenerationTiming(
+    opts.timeline,
+    opts.placeholder,
+    opts.mainAudioCreationId,
+    opts.lyricAlignment,
+  );
+
+  const model =
+    opts.blueModel === "wan" ? WAN_T2V_MODEL : LTX_T2V_MODEL;
+
+  pushSteps(advanceStep(steps, "generate"));
+  const { creationId } = await runBlueT2vGeneration({
+    prompt: fullPrompt,
+    aspectRatio: opts.aspectRatio,
+    model,
+    durationSeconds,
+    onProgress: opts.onProgress,
+  });
+  pushSteps(completeStep(steps, "generate"));
+
+  pushSteps(advanceStep(steps, "file"));
+  opts.onProgress("Filing video into project…");
+  const filed = await fileCreationIntoProjectGroup({
+    creationId,
+    mediaType: "video",
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+  });
+  pushSteps(completeStep(steps, "file"));
+
+  return {
+    creationId,
+    projectCreationIds: filed.projectCreationIds,
+    videosGroupId: filed.groupId,
+    imagesGroupId: opts.imagesGroupId,
+    mode: "none",
+    model,
+  };
 }
 
 async function runFirstLastAddAssetGeneration(

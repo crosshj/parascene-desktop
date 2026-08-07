@@ -14,10 +14,16 @@ import type { ProjectLookId } from "../project/looks";
 import { ConfirmProvider } from "../ui/ConfirmDialog";
 import {
   createStoredProject,
+  deleteStoredProjectDocument,
   emptyUiProject,
+  findCorruptStoredProject,
+  isIntentionalLegacyOpen,
+  isTrulyLegacyProject,
   loadStoredProjects,
-  loadStoredProjectsStrict,
+  loadStoredProjectStrict,
+  markStoredProjectLegacyOpen,
   mergeCreationIds,
+  partitionStoredProjects,
   renameStoredProject,
   replaceStoredProjectAssets,
   setStoredProjectAspectRatio,
@@ -39,11 +45,20 @@ import {
   patchStoredProjectStoryboardGenerationPlan,
   setStoredProjectLabStoryboardDirection,
   storedProjectToUi,
+  type CorruptStoredProject,
   type StoredProject,
 } from "../project/projectStore";
-import { collectProjectReferencedCreationIds } from "../project/projectUsage";
+import {
+  collectProjectReferencedCreationIds,
+  describeMissingProjectReferences,
+  formatMissingProjectReferenceLines,
+  pruneMissingProjectReferences,
+  type MissingProjectReference,
+} from "../project/projectUsage";
 import {
   addProjectAssets,
+  deleteProjectNative,
+  getProjectFolder,
   reconcileLegacyProjectFolder,
   removeProjectAssetsChecked,
   renameProjectFolder,
@@ -55,8 +70,15 @@ import {
   mirrorStoredProjectsAfterNativeMembership,
   mutateStoredProjects,
   mutateStoredProjectsWithNativeMutation,
+  repairCorruptProjectTimeline,
+  withStrictProjectAudit,
 } from "../project/projectMutationCoordinator";
-import { listFolders, type LibraryFolder } from "../library/folderClient";
+import { collapseCabinetMembersFromProjectFolder } from "../project/cabinetFolderCollapse";
+import {
+  createFolder,
+  listFolders,
+  type LibraryFolder,
+} from "../library/folderClient";
 import { listen } from "@tauri-apps/api/event";
 import {
   collectProjectGroupCoverIdsToRefresh,
@@ -84,6 +106,7 @@ import {
   type PrimaryTab,
 } from "./shellSession";
 import type { FilterId } from "../library/creationFilters";
+import { shouldHealStoredProjectsFromStorage } from "./projectListHeal";
 import {
   syncLibraryFolders,
   type FolderConflict,
@@ -101,7 +124,20 @@ type ShellState = {
   setMode: (mode: LayoutMode) => void;
   /** Null means no project open (Project tab shows the picker). */
   openProjectId: string | null;
-  openProject: (id: string) => Promise<void>;
+  /**
+   * Open a project. Pass `{ asLegacy: true }` only for truly legacy documents
+   * (no folder lifecycle) to skip folder create/reconcile permanently.
+   */
+  openProject: (
+    id: string,
+    focus?: boolean,
+    options?: { asLegacy?: boolean },
+  ) => Promise<boolean>;
+  /**
+   * Delete a project after the caller has confirmed. Releases the project
+   * folder (media kept) then removes the local project document.
+   */
+  deleteProject: (id: string) => Promise<boolean>;
   closeProject: () => void;
   /** Create a project (optionally from library creation IDs) and open it. */
   createProject: (title: string, creationIds?: string[]) => Promise<string | null>;
@@ -208,11 +244,22 @@ type ShellState = {
   /** Quiet status for the app header (e.g. "Showing 40 of 200"). */
   chromeStatus: string | null;
   setChromeStatus: (status: string | null) => void;
+  /**
+   * Active project-folder setup/migration step (open, retry, or gather).
+   * Null when idle.
+   */
+  folderSetupProgress: {
+    projectId: string | null;
+    title: string;
+    step: string;
+  } | null;
   project: Project;
   recentProjects: {
     id: string;
     title: string;
     lifecycle: StoredProject["lifecycle"];
+    folderSetupIssue: StoredProject["folderSetupIssue"];
+    documentCorrupt: boolean;
   }[];
   selectedSceneId: string | null;
   setSelectedSceneId: (id: string | null) => void;
@@ -266,9 +313,43 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const [projectFolderBlock, setProjectFolderBlock] =
     useState<ProjectFolderReconcileResult | null>(null);
   const [blockedProjectTitle, setBlockedProjectTitle] = useState("");
+  const [blockedProjectId, setBlockedProjectId] = useState<string | null>(null);
+  const [folderSetupProgress, setFolderSetupProgress] = useState<{
+    projectId: string | null;
+    title: string;
+    step: string;
+  } | null>(null);
   const [projectOpenWarning, setProjectOpenWarning] = useState<string | null>(
     null,
   );
+  const [projectOpenMissingRefs, setProjectOpenMissingRefs] = useState<
+    MissingProjectReference[]
+  >([]);
+  const [projectDocumentRepair, setProjectDocumentRepair] =
+    useState<CorruptStoredProject | null>(null);
+  const [projectDocumentRepairBusy, setProjectDocumentRepairBusy] =
+    useState(false);
+  const [corruptProjectIds, setCorruptProjectIds] = useState<Set<string>>(
+    () => {
+      try {
+        return new Set(
+          partitionStoredProjects().corrupt.map((row) => row.id),
+        );
+      } catch {
+        return new Set();
+      }
+    },
+  );
+
+  const refreshCorruptProjectIds = useCallback(() => {
+    try {
+      setCorruptProjectIds(
+        new Set(partitionStoredProjects().corrupt.map((row) => row.id)),
+      );
+    } catch {
+      setCorruptProjectIds(new Set());
+    }
+  }, []);
 
   const initialSession = useMemo(() => {
     const ids = new Set(loadStoredProjects().map((p) => p.id));
@@ -304,20 +385,37 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     setChromeStatusState((prev) => (prev === status ? prev : status));
   }, []);
 
-  // Heal empty in-memory state when localStorage still has projects (HMR /
-  // failed-load races). Runs once after mount.
+  const publishStoredProjects = useCallback((projects?: StoredProject[]) => {
+    // Prefer the just-persisted list when provided; otherwise re-read storage
+    // so corrupt siblings remain visible in the chooser.
+    const sorted = sortByUpdatedDesc(projects ?? loadStoredProjects());
+    setStoredProjects(sorted);
+    refreshCorruptProjectIds();
+    return sorted;
+  }, [refreshCorruptProjectIds]);
+
+  // Heal in-memory project list when localStorage still has rows React lost
+  // (HMR / healthy-only publish while a sibling was corrupt). Runs once after mount.
   useEffect(() => {
-    if (storedProjects.length > 0) return;
     const again = sortByUpdatedDesc(loadStoredProjects());
-    if (again.length === 0) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount heal from localStorage
-    setStoredProjects(again);
-    const session = loadShellSession(new Set(again.map((p) => p.id)));
-    if (session.openProjectId) {
-      setMode(session.mode);
-      setSelectedSceneId(session.selectedSceneId);
-      setPrimaryTab(session.primaryTab);
+    if (
+      !shouldHealStoredProjectsFromStorage(
+        storedProjects.map((project) => project.id),
+        again.map((project) => project.id),
+      )
+    ) {
+      return;
     }
+    queueMicrotask(() => {
+      setStoredProjects(again);
+      refreshCorruptProjectIds();
+      const session = loadShellSession(new Set(again.map((p) => p.id)));
+      if (session.openProjectId) {
+        setMode(session.mode);
+        setSelectedSceneId(session.selectedSceneId);
+        setPrimaryTab(session.primaryTab);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount heal only
   }, []);
 
@@ -352,12 +450,6 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     setCreationsFilterId("all");
   }
 
-  const publishStoredProjects = useCallback((projects: StoredProject[]) => {
-    const sorted = sortByUpdatedDesc(projects);
-    setStoredProjects(sorted);
-    return sorted;
-  }, []);
-
   /** Functional update so rapid sequential writes (e.g. activate + scrub) compose. */
   const updateStoredProjects = useCallback(
     (updater: (prev: StoredProject[]) => StoredProject[]) => {
@@ -375,7 +467,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void (async () => {
       try {
-        await initializeProjectUsageIndexes(loadStoredProjectsStrict());
+        const { projects, corrupt } = partitionStoredProjects();
+        await initializeProjectUsageIndexes(projects);
+        setCorruptProjectIds(new Set(corrupt.map((row) => row.id)));
+        if (corrupt.length > 0) {
+          const titles = corrupt
+            .map((row) => row.title.trim() || "Untitled project")
+            .join(", ");
+          setChromeStatusState(
+            `${corrupt.length} project(s) need repair before full Library protection: ${titles}`,
+          );
+        }
       } catch (error) {
         console.error("Failed to initialize project usage protection", error);
         setChromeStatusState("Project usage protection needs repair");
@@ -390,7 +492,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       void mirrorStoredProjectsAfterNativeMembership((projects) =>
         mirrorProjectFolderMembership(projects, event.payload),
       ).then(publishStoredProjects).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
         console.error("Failed to mirror project-folder membership", error);
+        setChromeStatus(`Project folder sync: ${message}`);
       });
     }).then((stop) => {
       if (disposed) stop();
@@ -400,7 +504,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       disposed = true;
       unlisten?.();
     };
-  }, [publishStoredProjects]);
+  }, [publishStoredProjects, setChromeStatus]);
 
   // One-shot cleanup: strip ordinary group members flattened onto projects by
   // an earlier reconcile that expanded every group. Must refresh covers first —
@@ -472,12 +576,14 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               prompt: result.prompt,
               audioMode:
                 result.mode === "first_last" ||
-                result.mode === "motion_match"
+                result.mode === "motion_match" ||
+                result.mode === "none"
                   ? undefined
                   : result.audioMode,
               lyricsText:
                 result.mode === "first_last" ||
                 result.mode === "motion_match" ||
+                result.mode === "none" ||
                 result.audioMode === "none"
                   ? undefined
                   : result.lyricsText.trim() || undefined,
@@ -612,8 +718,10 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         id: p.id,
         title: p.title,
         lifecycle: p.lifecycle,
+        folderSetupIssue: p.folderSetupIssue ?? null,
+        documentCorrupt: corruptProjectIds.has(p.id),
       })),
-    [storedProjects],
+    [storedProjects, corruptProjectIds],
   );
 
   const toggleLeft = useCallback(() => setLeftCollapsed((v) => !v), []);
@@ -621,7 +729,21 @@ export function ShellProvider({ children }: { children: ReactNode }) {
 
   const reconcileProjectForOpen = useCallback(
     async (projectToOpen: StoredProject): Promise<StoredProject | null> => {
-      const { result, projects } =
+      const title = projectToOpen.title.trim() || "Untitled project";
+      const step =
+        projectToOpen.folderSetupIssue === "blocked"
+          ? "Checking project folder layout…"
+          : (projectToOpen.folderIds?.length ?? 0) > 0 ||
+              Boolean(projectToOpen.boundFolderId)
+            ? "Migrating project files into a project folder…"
+            : "Preparing project folder…";
+      setFolderSetupProgress({
+        projectId: projectToOpen.id,
+        title,
+        step,
+      });
+      setChromeStatus(`${title}: ${step}`);
+      const { result } =
         await mutateStoredProjectsWithNativeMutation(
           async (current) => {
             const project = current.find(
@@ -700,14 +822,25 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                         folderIds: [],
                         boundFolderId: null,
                         lifecycle: "ready" as const,
+                        folderSetupIssue: null,
                       }
                     : project,
                 )
-              : current,
+              : current.map((project) =>
+                  project.id === projectToOpen.id
+                    ? { ...project, folderSetupIssue: "blocked" as const }
+                    : project,
+                ),
+          {
+            allowMissingCreationIds: true,
+            allowLegacyOutsideTransition: true,
+          },
         );
       if (result.status === "blocked" || !result.folder) {
         setBlockedProjectTitle(projectToOpen.title);
+        setBlockedProjectId(projectToOpen.id);
         setProjectFolderBlock(result);
+        setFolderSetupProgress(null);
         return null;
       }
       const usedIds = new Set(collectProjectReferencedCreationIds(projectToOpen));
@@ -715,49 +848,180 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         usedIds.has(id),
       );
       if (missingUsedIds.length > 0) {
+        const refs = describeMissingProjectReferences(
+          projectToOpen,
+          missingUsedIds,
+        );
+        const lines = formatMissingProjectReferenceLines(refs);
+        setProjectOpenMissingRefs(refs);
         setProjectOpenWarning(
-          `${projectToOpen.title} contains ${missingUsedIds.length} Library file(s) still referenced by project content but no longer available. The project will open, but affected clips or compositions may be unavailable. Missing IDs: ${missingUsedIds.join(", ")}`,
+          `${projectToOpen.title} still references ${missingUsedIds.length} Library file(s) that no longer exist. They may be on the timeline, in a composition, storyboard/MV Build, generation draft, or Images/Videos cabinet — not always visible as empty tiles.\n\n${lines.join("\n")}`,
         );
       }
-      const sorted = publishStoredProjects(projects);
+      const sorted = publishStoredProjects();
       return sorted.find((project) => project.id === projectToOpen.id) ?? null;
     },
-    [publishStoredProjects, setProjectOpenWarning],
+    [publishStoredProjects, setChromeStatus, setProjectOpenWarning],
   );
 
   const openProject = useCallback(
-    async (id: string, focus = true) => {
+    async (
+      id: string,
+      focus = true,
+      options?: { asLegacy?: boolean },
+    ): Promise<boolean> => {
       setProjectOpenWarning(null);
-      let found: StoredProject | undefined;
+      setProjectOpenMissingRefs([]);
+      setProjectDocumentRepair(null);
+      let found: StoredProject;
       try {
-        found = loadStoredProjectsStrict().find((p) => p.id === id);
+        found = loadStoredProjectStrict(id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const corrupt = findCorruptStoredProject(id);
+        if (corrupt) {
+          setProjectDocumentRepair(corrupt);
+          setChromeStatus(
+            `Cannot open “${corrupt.title}”: ${corrupt.error}`,
+          );
+          setFolderSetupProgress(null);
+          refreshCorruptProjectIds();
+          return false;
+        }
         console.error("Failed to read project", error);
         setChromeStatus(`Cannot open project: ${message}`);
+        setFolderSetupProgress(null);
         window.alert(message);
-        return;
+        return false;
       }
-      if (!found) {
-        const message = "That project is no longer available on this device.";
-        setChromeStatus(message);
-        window.alert(message);
-        return;
+
+      const wantLegacy =
+        options?.asLegacy === true || isIntentionalLegacyOpen(found);
+      if (wantLegacy) {
+        if (!isTrulyLegacyProject(found)) {
+          window.alert(
+            "Only pre–project-folder (legacy) projects can open without a project folder.",
+          );
+          return false;
+        }
+        await mutateStoredProjects(
+          (current) =>
+            current.map((project) =>
+              project.id === found.id
+                ? markStoredProjectLegacyOpen(project)
+                : project,
+            ),
+          { allowLegacyOutsideTransition: true },
+        );
+        publishStoredProjects();
+        setProjectFolderBlock(null);
+        setBlockedProjectId(null);
+        setOpenProjectId(id);
+        if (focus) {
+          setPrimaryTab("project");
+          setMode("director");
+          setSelectedSceneId(`${id}-scene-1`);
+        }
+        setFolderSetupProgress(null);
+        setChromeStatus(null);
+        return true;
       }
+
+      const title = found.title.trim() || "Untitled project";
+      const report = (step: string) => {
+        setFolderSetupProgress({ projectId: id, title, step });
+        setChromeStatus(`${title}: ${step}`);
+      };
+
+      // Ready projects with a marked folder skip the migration modal entirely.
+      if (
+        found.lifecycle === "ready" &&
+        found.folderSetupIssue !== "blocked"
+      ) {
+        try {
+          const folder = await getProjectFolder(found.id);
+          let { projects } = await mutateStoredProjectsWithNativeMutation(
+            async () => folder,
+            (current, projectFolder) =>
+              current.map((project) =>
+                project.id === found.id
+                  ? {
+                      ...replaceStoredProjectAssets(
+                        project,
+                        projectFolder.memberIds,
+                      ),
+                      folderIds: [],
+                      boundFolderId: null,
+                      lifecycle: "ready" as const,
+                      folderSetupIssue: null,
+                    }
+                  : project,
+              ),
+            {
+              allowMissingCreationIds: true,
+              allowLegacyOutsideTransition: true,
+            },
+          );
+          const opened =
+            projects.find((project) => project.id === found.id) ?? found;
+          if (opened.imagesGroupId || opened.videosGroupId) {
+            try {
+              const collapsed = await collapseCabinetMembersFromProjectFolder({
+                projectId: opened.id,
+                imagesGroupId: opened.imagesGroupId ?? null,
+                videosGroupId: opened.videosGroupId ?? null,
+              });
+              if (collapsed.removedIds.length > 0) {
+                const remirrored = await mutateStoredProjectsWithNativeMutation(
+                  async () => collapsed.memberIds,
+                  (current, memberIds) =>
+                    current.map((project) =>
+                      project.id === found.id
+                        ? replaceStoredProjectAssets(project, memberIds)
+                        : project,
+                    ),
+                  {
+                    allowMissingCreationIds: true,
+                    allowLegacyOutsideTransition: true,
+                  },
+                );
+                projects = remirrored.projects;
+              }
+            } catch (error) {
+              console.warn("Cabinet folder collapse on open skipped", error);
+            }
+          }
+          publishStoredProjects(projects);
+          setOpenProjectId(id);
+          if (focus) {
+            setPrimaryTab("project");
+            setMode("director");
+            setSelectedSceneId(`${id}-scene-1`);
+          }
+          setFolderSetupProgress(null);
+          return true;
+        } catch {
+          // Fall through to full folder setup when the marked folder is missing.
+        }
+      }
+
       let ready: StoredProject | null = null;
       if (
         found.lifecycle === "provisioning" ||
         found.lifecycle === "repair-needed"
       ) {
+        report("Retrying project folder setup…");
         try {
-          const { result, projects } =
+          const { result } =
             await mutateStoredProjectsWithNativeMutation(
               async () => {
+                report("Creating project folder…");
                 const provisioned = await provisionProjectFolder(
                   found.id,
                   found.title,
                   found.creationIds,
                 );
+                report("Updating project membership…");
                 return { provisioned, folders: await listFolders() };
               },
               (current, payload) =>
@@ -769,13 +1033,18 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                           folderIds: [],
                           boundFolderId: null,
                           lifecycle: "ready" as const,
+                          folderSetupIssue: null,
                         }
                       : project,
                   ),
                   payload.folders,
                 ),
+              {
+                allowMissingCreationIds: true,
+                allowLegacyOutsideTransition: true,
+              },
             );
-          const next = publishStoredProjects(projects);
+          const next = publishStoredProjects();
           ready = next.find((project) => project.id === found.id) ?? null;
           if (result.provisioned.missingCreationIds.length > 0) {
             window.alert(
@@ -783,27 +1052,164 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             );
           }
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
           console.error("Failed to retry project folder setup", error);
-          window.alert(error instanceof Error ? error.message : String(error));
-          return;
+          setFolderSetupProgress(null);
+          setChromeStatus(`Cannot open “${found.title}”: ${message}`);
+          window.alert(message);
+          return false;
         }
       } else {
         ready = await reconcileProjectForOpen(found).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
           console.error("Failed to prepare project folder", error);
-          window.alert(error instanceof Error ? error.message : String(error));
+          setFolderSetupProgress(null);
+          setChromeStatus(`Cannot open “${found.title}”: ${message}`);
+          window.alert(message);
           return null;
         });
       }
-      if (!ready) return;
+      if (!ready) {
+        setFolderSetupProgress(null);
+        return false;
+      }
+      report("Opening project…");
       setOpenProjectId(id);
       if (focus) {
         setPrimaryTab("project");
         setMode("director");
         setSelectedSceneId(`${id}-scene-1`);
       }
+      setFolderSetupProgress(null);
+      setChromeStatus(null);
+      return true;
     },
-    [publishStoredProjects, reconcileProjectForOpen, setChromeStatus],
+    [publishStoredProjects, reconcileProjectForOpen, refreshCorruptProjectIds, setChromeStatus],
   );
+
+  const repairCorruptProjectAndOpen = useCallback(async () => {
+    if (!projectDocumentRepair || projectDocumentRepairBusy) return;
+    const targetId = projectDocumentRepair.id;
+    setProjectDocumentRepairBusy(true);
+    try {
+      await repairCorruptProjectTimeline(targetId);
+      setProjectDocumentRepair(null);
+      publishStoredProjects();
+      const opened = await openProject(targetId);
+      if (!opened) {
+        setChromeStatus("Repaired timeline clips, but the project still could not open.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Failed to repair corrupt project", error);
+      setChromeStatus(`Could not repair project: ${message}`);
+      window.alert(message);
+    } finally {
+      setProjectDocumentRepairBusy(false);
+    }
+  }, [
+    openProject,
+    projectDocumentRepair,
+    projectDocumentRepairBusy,
+    publishStoredProjects,
+    setChromeStatus,
+  ]);
+
+  const gatherBlockedProjectIntoFolder = useCallback(async () => {
+    if (!projectFolderBlock || !blockedProjectId || folderSetupProgress) return;
+    const foreign = projectFolderBlock.blockers.filter((group) =>
+      Boolean(group.projectId?.trim()),
+    );
+    if (foreign.length > 0) {
+      window.alert(
+        "Some files are owned by another project. Remove them from that project first, then try again.",
+      );
+      return;
+    }
+    const creationIds = [
+      ...new Set(
+        projectFolderBlock.blockers.flatMap((group) => group.creationIds),
+      ),
+    ];
+    if (creationIds.length === 0) {
+      window.alert("There are no Library files available to gather into a folder.");
+      return;
+    }
+    const folderTitle = blockedProjectTitle.trim() || "Untitled project";
+    const report = (step: string) => {
+      setFolderSetupProgress({
+        projectId: blockedProjectId,
+        title: folderTitle,
+        step,
+      });
+      setChromeStatus(`${folderTitle}: ${step}`);
+    };
+    report(`Preparing to move ${creationIds.length} file(s)…`);
+    try {
+      report("Checking Library usage protection…");
+      await withStrictProjectAudit(async () => {
+        report(
+          `Creating “${folderTitle}” and moving ${creationIds.length} file(s)…`,
+        );
+        await createFolder(folderTitle, creationIds);
+      });
+      report("Claiming project folder and reopening…");
+      const opened = await openProject(blockedProjectId);
+      if (opened) {
+        setProjectFolderBlock(null);
+        setBlockedProjectId(null);
+        setChromeStatus(
+          `Moved ${creationIds.length} file(s) into “${folderTitle}” and opened the project.`,
+        );
+      }
+      // openProject clears folderSetupProgress; if still blocked it re-sets the dialog.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Failed to gather project files into a folder", error);
+      setFolderSetupProgress(null);
+      setChromeStatus(`Could not gather project files: ${message}`);
+      window.alert(message);
+    }
+  }, [
+    blockedProjectId,
+    blockedProjectTitle,
+    folderSetupProgress,
+    openProject,
+    projectFolderBlock,
+    setChromeStatus,
+  ]);
+
+  const clearMissingProjectReferences = useCallback(async () => {
+    if (!openProjectId || projectOpenMissingRefs.length === 0) {
+      setProjectOpenWarning(null);
+      setProjectOpenMissingRefs([]);
+      return;
+    }
+    const missingIds = projectOpenMissingRefs.map((row) => row.creationId);
+    try {
+      await updateStoredProjects((projects) =>
+        projects.map((project) =>
+          project.id === openProjectId
+            ? pruneMissingProjectReferences(project, missingIds)
+            : project,
+        ),
+      );
+      setChromeStatus(
+        `Removed ${missingIds.length} missing Library reference(s) from the project.`,
+      );
+      setProjectOpenWarning(null);
+      setProjectOpenMissingRefs([]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setChromeStatus(`Could not clear missing references: ${message}`);
+      window.alert(message);
+    }
+  }, [
+    openProjectId,
+    projectOpenMissingRefs,
+    setChromeStatus,
+    updateStoredProjects,
+  ]);
 
   const startupOpenAttempted = useRef(false);
   useEffect(() => {
@@ -820,6 +1226,46 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     setPrimaryTab("project");
   }, []);
 
+  const deleteProject = useCallback(
+    async (id: string): Promise<boolean> => {
+      const target = id.trim();
+      if (!target) return false;
+      const title =
+        storedProjects.find((project) => project.id === target)?.title.trim() ||
+        findCorruptStoredProject(target)?.title.trim() ||
+        "Untitled project";
+      try {
+        // Native first — never leave a marked folder without a document.
+        await deleteProjectNative(target);
+        deleteStoredProjectDocument(target);
+        if (openProjectId === target) {
+          setOpenProjectId(null);
+          setSelectedSceneId(null);
+          setPrimaryTab("project");
+        }
+        if (blockedProjectId === target) {
+          setProjectFolderBlock(null);
+          setBlockedProjectId(null);
+        }
+        publishStoredProjects();
+        setChromeStatus(`Deleted project “${title}”. Library media was kept.`);
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Failed to delete project", error);
+        setChromeStatus(`Could not delete “${title}”: ${message}`);
+        throw error instanceof Error ? error : new Error(message);
+      }
+    },
+    [
+      blockedProjectId,
+      openProjectId,
+      publishStoredProjects,
+      setChromeStatus,
+      storedProjects,
+    ],
+  );
+
   const createProject = useCallback(
     async (title: string, creationIds: string[] = []) => {
       // Persist the provisioning document first; native creates the project
@@ -828,12 +1274,27 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       // succeeds. Persisting an empty provisioning document also lets native
       // return a structured warning for selections that disappeared meanwhile.
       const created = createStoredProject(title, []);
+      const projectTitle = created.title.trim() || "Untitled project";
+      const report = (step: string) => {
+        setFolderSetupProgress({
+          projectId: created.id,
+          title: projectTitle,
+          step,
+        });
+        setChromeStatus(`${projectTitle}: ${step}`);
+      };
+      report("Saving new project…");
       await updateStoredProjects((prev) => [
         created,
         ...prev.filter((p) => p.id !== created.id),
       ]);
       try {
-        const { result, projects } =
+        report(
+          creationIds.length > 0
+            ? `Creating project folder and filing ${creationIds.length} file(s)…`
+            : "Creating project folder…",
+        );
+        const { result } =
           await mutateStoredProjectsWithNativeMutation(
             async () => {
               const provisioned = await provisionProjectFolder(
@@ -841,6 +1302,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                 created.title,
                 creationIds,
               );
+              report("Updating project membership…");
               return { provisioned, folders: await listFolders() };
             },
             (current, payload) =>
@@ -857,8 +1319,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                 ),
                 payload.folders,
               ),
+            {
+              allowMissingCreationIds: true,
+              allowLegacyOutsideTransition: true,
+            },
           );
-        publishStoredProjects(projects);
+        publishStoredProjects();
         if (result.provisioned.missingCreationIds.length > 0) {
           window.alert(
             `Project created without ${result.provisioned.missingCreationIds.length} file(s) that no longer exist in Library:\n${result.provisioned.missingCreationIds.join(", ")}`,
@@ -872,23 +1338,29 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               : project,
           ),
         );
-        window.alert(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setFolderSetupProgress(null);
+        setChromeStatus(`Cannot create “${created.title}”: ${message}`);
+        window.alert(message);
         return null;
       }
+      report("Opening project…");
       setOpenProjectId(created.id);
       setPrimaryTab("project");
       setMode("director");
       setSelectedSceneId(`${created.id}-scene-1`);
+      setFolderSetupProgress(null);
+      setChromeStatus(null);
       return created.id;
     },
-    [publishStoredProjects, updateStoredProjects],
+    [publishStoredProjects, setChromeStatus, updateStoredProjects],
   );
 
   const addCreationsToProject = useCallback(
     async (projectId: string, creationIds: string[]) => {
       if (creationIds.length === 0) return false;
       const perform = async (allowCrossProjectMove: boolean) => {
-        const { projects } = await mutateStoredProjectsWithNativeMutation(
+        await mutateStoredProjectsWithNativeMutation(
           async () => {
             const result = await addProjectAssets(
               projectId,
@@ -899,8 +1371,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           },
           (current, payload) =>
             mirrorProjectFolderMembership(current, payload.folders),
+          { allowLegacyOutsideTransition: true },
         );
-        publishStoredProjects(projects);
+        publishStoredProjects();
       };
       try {
         await perform(false);
@@ -952,15 +1425,16 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const removeCreationsFromProject = useCallback(
     async (projectId: string, creationIds: string[]) => {
       if (creationIds.length === 0) return;
-      const { projects } = await mutateStoredProjectsWithNativeMutation(
+      await mutateStoredProjectsWithNativeMutation(
         async () => {
           const result = await removeProjectAssetsChecked(projectId, creationIds);
           return { result, folders: await listFolders() };
         },
         (current, payload) =>
           mirrorProjectFolderMembership(current, payload.folders),
+        { allowLegacyOutsideTransition: true },
       );
-      publishStoredProjects(projects);
+      publishStoredProjects();
     },
     [publishStoredProjects],
   );
@@ -975,7 +1449,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
 
   const deleteLibraryCreation = useCallback(
     async (creationId: string) => {
-      const { projects } = await mutateStoredProjectsWithNativeMutation(
+      await mutateStoredProjectsWithNativeMutation(
         (current) =>
           deleteCreationChecked(
             creationId,
@@ -991,7 +1465,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               : project,
           ),
       );
-      publishStoredProjects(projects);
+      publishStoredProjects();
     },
     [publishStoredProjects],
   );
@@ -1001,7 +1475,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       resolutions?: Record<string, "local" | "cloud">;
       priorConflicts?: FolderConflict[];
     }) => {
-      const { result, projects } =
+      const { result } =
         await mutateStoredProjectsWithNativeMutation(
           async () => {
             const folderResult = await syncLibraryFolders(opts);
@@ -1009,9 +1483,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           },
           (current, payload) =>
             mirrorProjectFolderMembership(current, payload.folders),
-          { allowMissingCreationIds: true },
+          {
+            allowMissingCreationIds: true,
+            allowLegacyOutsideTransition: true,
+          },
         );
-      publishStoredProjects(projects);
+      publishStoredProjects();
       return result.folderResult;
     },
     [publishStoredProjects],
@@ -1235,6 +1712,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       openProjectId,
       openProject,
       closeProject,
+      deleteProject,
       createProject,
       renameOpenProject,
       renameProject,
@@ -1268,6 +1746,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setCreationsFilterId,
       chromeStatus,
       setChromeStatus,
+      folderSetupProgress,
       project,
       recentProjects,
       selectedSceneId,
@@ -1288,6 +1767,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       openProjectId,
       openProject,
       closeProject,
+      deleteProject,
       createProject,
       renameOpenProject,
       renameProject,
@@ -1319,6 +1799,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       removeOpenStillWorkstream,
       creationsFilterId,
       chromeStatus,
+      folderSetupProgress,
       project,
       recentProjects,
       selectedSceneId,
@@ -1347,60 +1828,214 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               <h2 id="project-folder-block-title">
                 Project folder needed
               </h2>
-              <p>
-                <strong>{blockedProjectTitle}</strong> could not be assigned a
-                project folder safely.
-              </p>
-              {projectFolderBlock.bindingProblem ? (
-                <p>{projectFolderBlock.bindingProblem}</p>
-              ) : null}
-              {projectFolderBlock.blockers.map((group) => (
-                <div key={group.folderId ?? "root"}>
-                  <p>
-                    <strong>{group.folderTitle}</strong>
-                    {group.projectId
-                      ? ` — owned by project ${group.projectId}`
-                      : ""}
-                  </p>
-                  <p className="muted">{group.creationIds.join(", ")}</p>
-                </div>
-              ))}
-              {projectFolderBlock.missingCreationIds.length > 0 ? (
-                <div>
-                  <p>
-                    <strong>Missing creations</strong>
-                  </p>
-                  <p className="muted">
-                    {projectFolderBlock.missingCreationIds.join(", ")}
-                  </p>
-                </div>
-              ) : null}
-              <p className="muted">
-                In Library, put every available project file in one regular
-                folder, or move all of them to Library root, then reopen the
-                project. A file owned by another project must first be removed
-                safely from that project. Missing IDs must be restored with the
-                same ID; importing a replacement creates a different file.
-              </p>
+              <div className="confirm-dialog-body">
+                <p>
+                  <strong>{blockedProjectTitle}</strong> could not be assigned a
+                  project folder safely.
+                </p>
+                {projectFolderBlock.bindingProblem ? (
+                  <p>{projectFolderBlock.bindingProblem}</p>
+                ) : null}
+                {projectFolderBlock.blockers.map((group) => (
+                  <div key={group.folderId ?? "root"}>
+                    <p>
+                      <strong>{group.folderTitle}</strong>
+                      {group.projectId
+                        ? ` — owned by project ${group.projectId}`
+                        : ""}
+                    </p>
+                    <p className="muted">{group.creationIds.join(", ")}</p>
+                  </div>
+                ))}
+                {projectFolderBlock.missingCreationIds.length > 0 ? (
+                  <div>
+                    <p>
+                      <strong>Missing creations</strong>
+                    </p>
+                    <p className="muted">
+                      {projectFolderBlock.missingCreationIds.join(", ")}
+                    </p>
+                  </div>
+                ) : null}
+                <p className="muted">
+                  Put every available project file in one regular folder (or move
+                  them all to Library root), then reopen. Files owned by another
+                  project must be removed from that project first. Missing IDs must
+                  be restored with the same ID; importing a replacement creates a
+                  different file.
+                </p>
+              </div>
               <div className="confirm-dialog-actions">
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() => setProjectFolderBlock(null)}
+                  disabled={Boolean(folderSetupProgress)}
+                  onClick={() => {
+                    setProjectFolderBlock(null);
+                    setBlockedProjectId(null);
+                  }}
                 >
                   Close
                 </button>
+                {blockedProjectId &&
+                (() => {
+                  try {
+                    return isTrulyLegacyProject(
+                      loadStoredProjectStrict(blockedProjectId),
+                    );
+                  } catch {
+                    return false;
+                  }
+                })() ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={Boolean(folderSetupProgress)}
+                    title="Open without creating or assigning a project folder. Assets stay as listed in the project document."
+                    onClick={() => {
+                      const id = blockedProjectId;
+                      setProjectFolderBlock(null);
+                      setBlockedProjectId(null);
+                      void openProject(id, true, { asLegacy: true });
+                    }}
+                  >
+                    Open as legacy
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  className="btn btn-primary"
+                  className="btn ghost"
+                  disabled={Boolean(folderSetupProgress)}
                   onClick={() => {
                     setProjectFolderBlock(null);
+                    setBlockedProjectId(null);
                     setPrimaryTab("library");
                     setLibrarySurface("creations");
                   }}
                 >
                   Open Library
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={
+                    Boolean(folderSetupProgress) ||
+                    projectFolderBlock.blockers.some((group) =>
+                      Boolean(group.projectId?.trim()),
+                    ) ||
+                    projectFolderBlock.blockers.every(
+                      (group) => group.creationIds.length === 0,
+                    )
+                  }
+                  title={
+                    projectFolderBlock.blockers.some((group) =>
+                      Boolean(group.projectId?.trim()),
+                    )
+                      ? "Some files are owned by another project. Remove them from that project first."
+                      : "Create a folder named after this project, move every listed file into it, then reopen"
+                  }
+                  onClick={() => void gatherBlockedProjectIntoFolder()}
+                >
+                  Move all into a new folder
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {folderSetupProgress ? (
+          <div
+            className="confirm-dialog-backdrop folder-setup-progress-backdrop"
+            role="presentation"
+          >
+            <div
+              className="confirm-dialog is-busy"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="folder-setup-progress-title"
+              aria-busy="true"
+            >
+              <h2 id="folder-setup-progress-title">Setting up project folder</h2>
+              <p>
+                <strong>{folderSetupProgress.title}</strong>
+              </p>
+              <div
+                className="confirm-dialog-activity"
+                role="status"
+                aria-live="polite"
+              >
+                <span className="confirm-dialog-spinner" aria-hidden />
+                <span>{folderSetupProgress.step}</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {projectDocumentRepair ? (
+          <div
+            className="confirm-dialog-backdrop folder-setup-progress-backdrop"
+            role="presentation"
+          >
+            <div
+              className={[
+                "confirm-dialog",
+                projectDocumentRepairBusy ? "is-busy" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="project-document-repair-title"
+              aria-busy={projectDocumentRepairBusy ? true : undefined}
+            >
+              <h2 id="project-document-repair-title">Project needs repair</h2>
+              <div className="confirm-dialog-body">
+                <p>
+                  <strong>
+                    {projectDocumentRepair.title.trim() || "Untitled project"}
+                  </strong>{" "}
+                  cannot open because its saved document is corrupt.
+                </p>
+                <p className="muted">{projectDocumentRepair.error}</p>
+                {/malformed clip/i.test(projectDocumentRepair.error) ? (
+                  <p className="muted">
+                    You can remove malformed timeline clips and continue. Other
+                    projects are unaffected.
+                  </p>
+                ) : (
+                  <p className="muted">
+                    This document needs a manual fix before it can open. Other
+                    projects are unaffected.
+                  </p>
+                )}
+              </div>
+              {projectDocumentRepairBusy ? (
+                <div
+                  className="confirm-dialog-activity"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="confirm-dialog-spinner" aria-hidden />
+                  <span>Removing malformed clips…</span>
+                </div>
+              ) : null}
+              <div className="confirm-dialog-actions">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={projectDocumentRepairBusy}
+                  onClick={() => setProjectDocumentRepair(null)}
+                >
+                  Close
+                </button>
+                {/malformed clip/i.test(projectDocumentRepair.error) ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={projectDocumentRepairBusy}
+                    onClick={() => void repairCorruptProjectAndOpen()}
+                  >
+                    Remove malformed clips and open
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1414,15 +2049,39 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               aria-labelledby="project-open-warning-title"
             >
               <h2 id="project-open-warning-title">Project opened with missing files</h2>
-              <p>{projectOpenWarning}</p>
+              <div className="confirm-dialog-body">
+                <p className="muted" style={{ whiteSpace: "pre-wrap" }}>
+                  {projectOpenWarning}
+                </p>
+              </div>
               <div className="confirm-dialog-actions">
                 <button
                   type="button"
-                  className="btn btn-primary"
-                  onClick={() => setProjectOpenWarning(null)}
+                  className="btn ghost"
+                  onClick={() => {
+                    setProjectOpenWarning(null);
+                    setProjectOpenMissingRefs([]);
+                  }}
                 >
-                  Continue
+                  Keep references
                 </button>
+                {projectOpenMissingRefs.length > 0 ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void clearMissingProjectReferences()}
+                  >
+                    Remove missing references
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => setProjectOpenWarning(null)}
+                  >
+                    Continue
+                  </button>
+                )}
               </div>
             </div>
           </div>

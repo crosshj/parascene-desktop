@@ -349,6 +349,7 @@ export function AssetBrowserPane({
         for (const row of rows) next[row.id] = row;
 
         // Pull cabinet members so Assets can show them outside the cover.
+        // Display flatten only — do not file members into the project folder.
         // Same as Library lightbox: if a member row was pruned/missing, rebuild
         // it from the cover's embedded source_creations so we don't paint stubs.
         const memberIds = new Set<string>();

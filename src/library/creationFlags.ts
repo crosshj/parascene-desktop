@@ -123,6 +123,23 @@ export function omitGroupMemberCreations<T extends { id: string }>(
   return creations.filter((c) => !memberIds.has(c.id));
 }
 
+/**
+ * Inside a Library folder: hide members of any group cover that is also in the
+ * same folder. Covers stay as the tile you open; members should not litter the
+ * folder as loose siblings (project Videos/Images cabinets especially).
+ */
+export function omitFolderMembersHiddenByCovers<
+  T extends {
+    id: string;
+    remoteJson?: string | null;
+    filename?: string | null;
+  },
+>(creations: readonly T[]): T[] {
+  const hide = collectGroupMemberIds(creations);
+  if (hide.size === 0) return [...creations];
+  return creations.filter((row) => !hide.has(row.id));
+}
+
 export function isPublishedCreation(c: Pick<Creation, "published">): boolean {
   return c.published === true;
 }

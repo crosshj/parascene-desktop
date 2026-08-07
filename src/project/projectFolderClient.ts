@@ -80,6 +80,17 @@ export function removeProjectAssetsChecked(
   return invoke("library_remove_project_assets", { projectId, creationIds });
 }
 
+export type DeleteProjectResult = {
+  projectId: string;
+  folderId: string | null;
+  releasedMemberIds: string[];
+};
+
+/** Release the project folder (media kept) and clear native usage indexes. */
+export function deleteProjectNative(projectId: string): Promise<DeleteProjectResult> {
+  return invoke("library_delete_project", { projectId });
+}
+
 export function markProjectUsageStale(
   projectId: string,
   expectedDocumentRevision: string | null,

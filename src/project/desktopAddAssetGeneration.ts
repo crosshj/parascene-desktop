@@ -64,7 +64,9 @@ export function normalizeAddAssetGeneration(
       ? "first_last"
       : row.mode === "motion_match"
         ? "motion_match"
-        : "start_frame";
+        : row.mode === "none"
+          ? "none"
+          : "start_frame";
   const audioMode =
     row.audioMode === "full_mix"
       ? "full_mix"
@@ -72,7 +74,7 @@ export function normalizeAddAssetGeneration(
         ? "vocals"
         : row.audioMode === "none"
           ? "none"
-          : mode === "first_last" || mode === "motion_match"
+          : mode === "first_last" || mode === "motion_match" || mode === "none"
             ? undefined
             : "vocals";
   const lyricsText =

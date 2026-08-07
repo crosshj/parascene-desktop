@@ -1255,17 +1255,8 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
                     &format!("Images: 1 image ({mid}) in group {gid}."),
                 )
                 .await?;
-                // Cover + members — Editor needs members as selectable project assets.
-                let mut ids = vec![gid.clone()];
-                for m in load_group_member_ids(&gid).await {
-                    if !ids.iter().any(|x| x == &m) {
-                        ids.push(m);
-                    }
-                }
-                if !ids.iter().any(|x| x == &mid) {
-                    ids.push(mid.clone());
-                }
-                ctx.project_creation_ids = ids;
+                // Cover only — members stay in group meta; Assets expands for display.
+                ctx.project_creation_ids = vec![gid.clone()];
                 patch_job(
                     app,
                     &ctx.job_id,
@@ -1427,25 +1418,12 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
                     &format!("Videos: 1 video ({mid}) in group {gid}."),
                 )
                 .await?;
-                // Covers + members — Editor needs members as selectable assets.
+                // Covers only — members stay in group meta; Assets expands for display.
                 let mut ids = Vec::new();
                 if let Some(ig) = &ctx.images_group_id {
                     ids.push(ig.clone());
-                    for m in load_group_member_ids(ig).await {
-                        if !ids.iter().any(|x| x == &m) {
-                            ids.push(m);
-                        }
-                    }
                 }
                 ids.push(gid.clone());
-                for m in load_group_member_ids(&gid).await {
-                    if !ids.iter().any(|x| x == &m) {
-                        ids.push(m);
-                    }
-                }
-                if !ids.iter().any(|x| x == &mid) {
-                    ids.push(mid);
-                }
                 ctx.project_creation_ids = ids;
                 patch_job(
                     app,
@@ -1474,19 +1452,9 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
     let mut canonical = Vec::new();
     if let Some(id) = &ctx.images_group_id {
         canonical.push(id.clone());
-        for mid in load_group_member_ids(id).await {
-            if !canonical.iter().any(|x| x == &mid) {
-                canonical.push(mid);
-            }
-        }
     }
     if let Some(id) = &ctx.videos_group_id {
         canonical.push(id.clone());
-        for mid in load_group_member_ids(id).await {
-            if !canonical.iter().any(|x| x == &mid) {
-                canonical.push(mid);
-            }
-        }
     }
     ctx.project_creation_ids = canonical.clone();
     ctx.pending_creation_id = None;

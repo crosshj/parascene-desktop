@@ -2,12 +2,20 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   PROJECTS_STORAGE_KEY,
   createStoredProject,
+  isIntentionalLegacyOpen,
+  isTrulyLegacyProject,
   loadStoredProjects,
   loadStoredProjectsStrict,
+  loadStoredProjectStrict,
+  markStoredProjectLegacyOpen,
+  deleteStoredProjectDocument,
   mergeCreationIds,
+  partitionStoredProjects,
   removeCreationIds,
   renameStoredProject,
+  repairMalformedTimelineClips,
   saveStoredProjects,
+  saveStoredProjectsPreservingCorrupt,
   setStoredProjectAspectRatio,
   setStoredProjectSelectedTimelineClipId,
   setStoredProjectSelectedAssetId,
@@ -59,8 +67,39 @@ describe("projectStore", () => {
     const loaded = loadStoredProjects();
     expect(loaded[0].folderIds).toEqual([]);
     expect(loaded[0].boundFolderId).toBeNull();
+    expect(loaded[0].lifecycle).toBeUndefined();
+    expect(isTrulyLegacyProject(loaded[0])).toBe(true);
+    expect(isIntentionalLegacyOpen(loaded[0])).toBe(false);
     expect(storedProjectToUi(loaded[0]).folderIds).toEqual([]);
     expect(storedProjectToUi(loaded[0]).boundFolderId).toBeNull();
+  });
+
+  it("marks intentional legacy open without inventing a folder lifecycle", () => {
+    const legacy = {
+      ...createStoredProject("Old Trip"),
+      lifecycle: undefined,
+      folderSetupIssue: "blocked" as const,
+    };
+    delete (legacy as { lifecycle?: string }).lifecycle;
+    expect(isTrulyLegacyProject(legacy)).toBe(true);
+    expect(isTrulyLegacyProject(createStoredProject("New"))).toBe(false);
+    expect(isTrulyLegacyProject({ lifecycle: "ready" })).toBe(false);
+
+    const marked = markStoredProjectLegacyOpen(legacy);
+    expect(marked.lifecycle).toBe("legacy");
+    expect(marked.folderSetupIssue).toBeNull();
+    expect(isIntentionalLegacyOpen(marked)).toBe(true);
+
+    saveStoredProjects([marked]);
+    expect(loadStoredProjects()[0].lifecycle).toBe("legacy");
+  });
+
+  it("deletes a project document and allows an empty list", () => {
+    const only = createStoredProject("Gone");
+    saveStoredProjects([only]);
+    deleteStoredProjectDocument(only.id);
+    expect(loadStoredProjects()).toEqual([]);
+    expect(localStorage.getItem(PROJECTS_STORAGE_KEY)).toBe("[]");
   });
 
   it("retains legacy folder evidence for open-time reconciliation", () => {
@@ -104,6 +143,72 @@ describe("projectStore", () => {
     expect(() => loadStoredProjectsStrict()).toThrow(
       /timeline contains a malformed clip/i,
     );
+  });
+
+  it("partitions corrupt siblings so a healthy project can load strictly alone", () => {
+    const healthy = createStoredProject("Healthy", ["asset-1"]);
+    const corrupt = {
+      ...createStoredProject("Broken", ["asset-2"]),
+      timeline: [
+        {
+          id: "broken-clip",
+          label: "Broken",
+          startSec: 5,
+          endSec: 1,
+          assetId: "asset-2",
+        },
+      ],
+    };
+    localStorage.setItem(
+      PROJECTS_STORAGE_KEY,
+      JSON.stringify([healthy, corrupt]),
+    );
+
+    expect(loadStoredProjects()).toHaveLength(2);
+    const partitioned = partitionStoredProjects();
+    expect(partitioned.projects.map((row) => row.id)).toEqual([healthy.id]);
+    expect(partitioned.corrupt).toHaveLength(1);
+    expect(partitioned.corrupt[0].id).toBe(corrupt.id);
+    expect(partitioned.corrupt[0].error).toMatch(/malformed clip/i);
+
+    expect(loadStoredProjectStrict(healthy.id).title).toBe("Healthy");
+    expect(() => loadStoredProjectStrict(corrupt.id)).toThrow(
+      new RegExp(corrupt.id),
+    );
+    expect(() => loadStoredProjectsStrict()).toThrow(/malformed clip/i);
+  });
+
+  it("repairs malformed timeline clips and then passes strict load", () => {
+    const project = createStoredProject("Repairable", ["asset-1"]);
+    const raw = {
+      ...project,
+      timeline: [
+        {
+          id: "good-clip",
+          label: "Good",
+          startSec: 0,
+          endSec: 2,
+          assetId: "asset-1",
+          kind: "image",
+        },
+        {
+          id: "broken-clip",
+          label: "Broken",
+          startSec: 5,
+          endSec: 1,
+          assetId: "asset-1",
+        },
+      ],
+    };
+    localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify([raw]));
+
+    const repaired = repairMalformedTimelineClips(raw);
+    expect(repaired.timeline).toHaveLength(1);
+    expect(repaired.timeline?.[0].id).toBe("good-clip");
+
+    saveStoredProjectsPreservingCorrupt([repaired], [], [project.id]);
+    expect(loadStoredProjectsStrict()).toHaveLength(1);
+    expect(loadStoredProjectsStrict()[0].timeline).toHaveLength(1);
   });
 
   it("strict loading accepts normalizable legacy projects without lost refs", () => {
@@ -319,6 +424,37 @@ describe("projectStore", () => {
     expect(clip?.bakePath).toContain("slideshows");
   });
 
+  it("keeps one-image slideshow clips when loading stored projects", () => {
+    const a = createStoredProject("Demo", ["i1"]);
+    localStorage.setItem(
+      PROJECTS_STORAGE_KEY,
+      JSON.stringify([
+        {
+          ...a,
+          timeline: [
+            {
+              id: "clip-one",
+              label: "2.5s",
+              startSec: 0,
+              endSec: 2.5,
+              assetId: "i1",
+              kind: "slideshow",
+              slideshow: {
+                imageAssetIds: ["i1"],
+                mode: "beat_classic",
+                audioAssetId: "a1",
+              },
+            },
+          ],
+        },
+      ]),
+    );
+    const loaded = loadStoredProjectsStrict()[0];
+    expect(loaded.timeline).toHaveLength(1);
+    expect(loaded.timeline?.[0].kind).toBe("slideshow");
+    expect(loaded.timeline?.[0].slideshow?.imageAssetIds).toEqual(["i1"]);
+  });
+
   it("drops malformed slideshow clips without a valid recipe", () => {
     const a = createStoredProject("Demo", ["i1"]);
     const withClips = setStoredProjectTimeline(a, [
@@ -328,7 +464,7 @@ describe("projectStore", () => {
         startSec: 0,
         endSec: 10,
         kind: "slideshow",
-        slideshow: { imageAssetIds: ["only-one"], mode: "even" },
+        slideshow: { imageAssetIds: [], mode: "even" },
       } as never,
     ]);
     expect(withClips.timeline).toHaveLength(0);

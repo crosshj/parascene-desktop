@@ -2,11 +2,12 @@ use super::catalog::{
     default_paths, delete_creation_local, ready_connection, sync_status_for, SyncStatus,
 };
 use super::folders::{
-    emit_folders_updated, enqueue_op, get_folder, list_folders, move_creations_into_folder,
-    normalize_project_title, project_folder_meta, remove_from_folder, remove_from_project_folder,
-    LibraryFolder,
+    delete_marked_project_folder, emit_folders_updated, enqueue_op, get_folder, list_folders,
+    move_creations_into_folder, normalize_project_title, project_folder_meta, remove_from_folder,
+    remove_from_project_folder, LibraryFolder,
 };
 use super::import_local::{import_paths, ImportLocalResult};
+use super::parascene_api::group_member_ids;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -368,14 +369,8 @@ fn creation_location(
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some(folder_id) = cover_folder.as_deref() {
-            conn.execute(
-                "INSERT OR IGNORE INTO folder_items(folder_id, creation_id, added_at)
-                 VALUES (?1, ?2, ?3)",
-                params![folder_id, creation_id, Utc::now().to_rfc3339()],
-            )
-            .map_err(|e| e.to_string())?;
-        }
+        // Effective location for legacy conflict detection only — do not
+        // INSERT the member into folder_items (cover-only filing).
         return Ok(Some(cover_folder));
     }
     Ok(Some(None))
@@ -874,6 +869,45 @@ fn usage_blockers(
     Ok(out)
 }
 
+/// Member ids of group covers that are currently filed in the project folder.
+/// Used so cabinet members can be unfiled without timeline usage blocking.
+fn cabinet_member_ids_of_folder_covers(
+    conn: &Connection,
+    folder_member_ids: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let mut out = BTreeSet::new();
+    for cover_id in folder_member_ids {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT remote_json FROM creations WHERE id = ?1",
+                params![cover_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let is_group = value
+            .pointer("/meta/group/kind")
+            .or_else(|| value.pointer("/group/kind"))
+            .and_then(|v| v.as_str())
+            == Some("group_creations");
+        if !is_group {
+            continue;
+        }
+        for member_id in group_member_ids(&value) {
+            if member_id != *cover_id {
+                out.insert(member_id);
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn add_project_assets_transaction(
     transaction: &Transaction<'_>,
     project_id: &str,
@@ -1061,7 +1095,40 @@ pub fn library_remove_project_assets(
     let paths = default_paths()?;
     let mut conn = ready_connection(&paths)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
-    let blockers = usage_blockers(&transaction, project_id, &ids)?;
+    let folder = required_project_folder(&transaction, project_id)?;
+    let folder_member_set: BTreeSet<&str> =
+        folder.member_ids.iter().map(|s| s.as_str()).collect();
+    let ids_in_folder: Vec<String> = ids
+        .iter()
+        .filter(|id| folder_member_set.contains(id.as_str()))
+        .cloned()
+        .collect();
+    if ids_in_folder.is_empty() {
+        let revision = transaction
+            .query_row(
+                "SELECT revision FROM project_membership_revisions WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+        transaction.commit().map_err(|e| e.to_string())?;
+        let result = ProjectAssetMutationResult {
+            folder,
+            membership_revision: revision,
+            missing_creation_ids: Vec::new(),
+        };
+        emit_folders_updated(&app, &list_folders(&conn)?);
+        let _ = app.emit("project-assets-updated", &result);
+        return Ok(result);
+    }
+    let cabinet_members =
+        cabinet_member_ids_of_folder_covers(&transaction, &folder.member_ids)?;
+    let blockers = usage_blockers(&transaction, project_id, &ids_in_folder)?
+        .into_iter()
+        .filter(|row| !cabinet_members.contains(&row.creation_id))
+        .collect::<Vec<_>>();
     if !blockers.is_empty() {
         let labels = blockers
             .iter()
@@ -1070,21 +1137,7 @@ pub fn library_remove_project_assets(
             .join(", ");
         return Err(format!("Selected files are still used by {labels}"));
     }
-    let folder = required_project_folder(&transaction, project_id)?;
-    for id in &ids {
-        let owner: Option<String> = transaction
-            .query_row(
-                "SELECT folder_id FROM folder_items WHERE creation_id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if owner.as_deref() != Some(&folder.id) {
-            return Err(format!("Creation {id} is not an asset of this project"));
-        }
-    }
-    remove_from_project_folder(&transaction, project_id, &ids)?;
+    remove_from_project_folder(&transaction, project_id, &ids_in_folder)?;
     let updated = get_folder(&transaction, &folder.id)?
         .ok_or_else(|| "Project folder not found after removal".to_string())?;
     replace_project_asset_cache(&transaction, project_id, &updated.member_ids)?;
@@ -1431,4 +1484,76 @@ pub fn library_delete_project_asset(
     emit_folders_updated(&app, &list_folders(&conn)?);
     let _ = app.emit("library-creation-deleted", creation_id);
     sync_status_for(&paths)
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProjectResult {
+    pub project_id: String,
+    pub folder_id: Option<String>,
+    pub released_member_ids: Vec<String>,
+}
+
+/// Delete a project's marked folder (if any) and native usage/membership rows.
+/// Catalog media is kept; former folder members become unfiled (Library root).
+#[tauri::command]
+pub fn library_delete_project(
+    app: AppHandle,
+    project_id: String,
+) -> Result<DeleteProjectResult, String> {
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err("Project id is required".into());
+    }
+    let paths = default_paths()?;
+    let mut conn = ready_connection(&paths)?;
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let folder = project_folder(&transaction, &project_id)?;
+    let released_member_ids = folder
+        .as_ref()
+        .map(|f| f.member_ids.clone())
+        .unwrap_or_default();
+    let folder_id = folder.as_ref().map(|f| f.id.clone());
+    if let Some(folder) = folder.as_ref() {
+        delete_marked_project_folder(&transaction, &project_id, &folder.id)?;
+    }
+    transaction
+        .execute(
+            "DELETE FROM project_asset_usage WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM project_usage_revisions WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM project_assets WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM project_membership_revisions WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM project_library_bindings WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    emit_folders_updated(&app, &list_folders(&conn)?);
+    let result = DeleteProjectResult {
+        project_id: project_id.clone(),
+        folder_id,
+        released_member_ids,
+    };
+    let _ = app.emit("project-deleted", &result);
+    Ok(result)
 }

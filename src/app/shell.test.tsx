@@ -165,6 +165,24 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     fixtureProjectFolders.set(projectId, folder);
     return { folder, membershipRevision: 1, missingCreationIds: [] };
   }
+  if (cmd === "library_get_project_folder") {
+    const projectId = String(args?.projectId ?? "");
+    const folder = fixtureProjectFolders.get(projectId);
+    if (!folder) throw new Error(`missing fixture project folder: ${projectId}`);
+    return folder;
+  }
+  if (cmd === "library_get_creations" || cmd === "library_get_creation") {
+    return [];
+  }
+  if (cmd === "library_delete_project") {
+    const projectId = String(args?.projectId ?? "");
+    fixtureProjectFolders.delete(projectId);
+    return {
+      projectId,
+      folderId: null,
+      releasedMemberIds: [],
+    };
+  }
   if (cmd === "library_reconcile_legacy_project_folder") {
     const projectId = String(args?.projectId ?? "");
     const folder = fixtureProjectFolders.get(projectId);

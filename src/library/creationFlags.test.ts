@@ -6,6 +6,7 @@ import {
   groupSourceCreationIds,
   isGroupCreation,
   isPublishedCreation,
+  omitFolderMembersHiddenByCovers,
   omitGroupMemberCreations,
 } from "./creationFlags";
 
@@ -113,6 +114,29 @@ describe("creationFlags", () => {
         members,
       ).map((r) => r.id),
     ).toEqual(["g1", "12"]);
+  });
+
+  it("hides folder members when their group cover is in the same folder", () => {
+    const cover = {
+      id: "videos-cover",
+      filename: "group/cover.mp4",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: ["v1", "v2"],
+          },
+        },
+      }),
+    };
+    expect(
+      omitFolderMembersHiddenByCovers([
+        cover,
+        { id: "v1", remoteJson: null },
+        { id: "v2", remoteJson: null },
+        { id: "loose-audio", remoteJson: null },
+      ]).map((r) => r.id),
+    ).toEqual(["videos-cover", "loose-audio"]);
   });
 
   it("reads published flag", () => {

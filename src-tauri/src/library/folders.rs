@@ -567,6 +567,42 @@ fn delete_folder(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove a marked project folder. Members stay in the catalog (Library root).
+/// Call only from the Delete project workflow.
+pub(crate) fn delete_marked_project_folder(
+    conn: &Connection,
+    project_id: &str,
+    folder_id: &str,
+) -> Result<(), String> {
+    let folder = get_folder(conn, folder_id)?
+        .ok_or_else(|| format!("Project folder {folder_id} was not found"))?;
+    if folder.kind != "project" || folder.project_id.as_deref() != Some(project_id) {
+        return Err(format!(
+            "Folder {folder_id} is not the marked folder for project {project_id}"
+        ));
+    }
+    conn.execute(
+        "DELETE FROM folder_items WHERE folder_id = ?1",
+        params![folder_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let n = conn
+        .execute("DELETE FROM folders WHERE id = ?1", params![folder_id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("Folder not found".into());
+    }
+    enqueue_op(
+        conn,
+        json!({
+            "op": "delete",
+            "id": folder_id,
+            "project_id": project_id,
+        }),
+    )?;
+    Ok(())
+}
+
 fn remove_from_folder_internal(
     conn: &Connection,
     creation_ids: &[String],

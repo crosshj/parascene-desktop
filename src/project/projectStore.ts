@@ -131,8 +131,13 @@ export type StoredProject = {
   updatedAt: string;
   /** Opaque project-document revision; distinct from Library/cloud revisions. */
   documentRevision?: string;
-  /** New-project setup lifecycle. Legacy projects omit this until reconciled. */
-  lifecycle?: "provisioning" | "ready" | "repair-needed";
+  /** New-project setup lifecycle. Legacy projects omit this until reconciled or intentionally opened unbound. */
+  lifecycle?: "provisioning" | "ready" | "repair-needed" | "legacy";
+  /**
+   * Sticky chooser badge when open was blocked on folder layout.
+   * Cleared only after a successful project-folder open or intentional legacy open.
+   */
+  folderSetupIssue?: "blocked" | null;
 };
 
 export const PROJECTS_STORAGE_KEY = "parascene.projects.v1";
@@ -173,8 +178,21 @@ export function loadStoredProjects(): StoredProject[] {
   }
 }
 
-/** Strict loader for safety-sensitive operations. Never drops malformed rows. */
-export function loadStoredProjectsStrict(): StoredProject[] {
+export type CorruptStoredProject = {
+  id: string;
+  title: string;
+  error: string;
+  raw: unknown;
+};
+
+export type PartitionedStoredProjects = {
+  projects: StoredProject[];
+  corrupt: CorruptStoredProject[];
+  /** Storage order of every row id (healthy + corrupt) for passthrough saves. */
+  orderedIds: string[];
+};
+
+function readStoredProjectsArray(): unknown[] {
   const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
   if (!raw) return [];
   let parsed: unknown;
@@ -188,20 +206,182 @@ export function loadStoredProjectsStrict(): StoredProject[] {
   if (!Array.isArray(parsed)) {
     throw new Error("Stored projects are not an array");
   }
-  return parsed.map((row, index) => {
-    if (!isStoredProject(row)) {
-      throw new Error(`Stored project ${index + 1} is malformed`);
-    }
-    try {
-      const normalized = normalizeStoredProject(row);
-      assertStrictProjectSafetyShape(row, normalized);
-      return normalized;
-    } catch (error) {
-      throw new Error(
-        `Stored project ${row.id} is corrupt: ${error instanceof Error ? error.message : String(error)}`,
-      );
+  return parsed;
+}
+
+function tryStrictStoredProject(
+  row: unknown,
+  index: number,
+):
+  | { ok: true; project: StoredProject }
+  | { ok: false; corrupt: CorruptStoredProject } {
+  if (!isStoredProject(row)) {
+    return {
+      ok: false,
+      corrupt: {
+        id: `malformed-row-${index + 1}`,
+        title: "Malformed project",
+        error: `Stored project ${index + 1} is malformed`,
+        raw: row,
+      },
+    };
+  }
+  try {
+    const normalized = normalizeStoredProject(row);
+    assertStrictProjectSafetyShape(row, normalized);
+    return { ok: true, project: normalized };
+  } catch (error) {
+    return {
+      ok: false,
+      corrupt: {
+        id: row.id,
+        title: row.title.trim() || "Untitled project",
+        error: error instanceof Error ? error.message : String(error),
+        raw: row,
+      },
+    };
+  }
+}
+
+/**
+ * Strict-check each stored row independently. Corrupt siblings stay isolated
+ * so healthy projects can open and mutate.
+ */
+export function partitionStoredProjects(): PartitionedStoredProjects {
+  const parsed = readStoredProjectsArray();
+  const projects: StoredProject[] = [];
+  const corrupt: CorruptStoredProject[] = [];
+  const orderedIds: string[] = [];
+  parsed.forEach((row, index) => {
+    const result = tryStrictStoredProject(row, index);
+    if (result.ok) {
+      projects.push(result.project);
+      orderedIds.push(result.project.id);
+    } else {
+      corrupt.push(result.corrupt);
+      orderedIds.push(result.corrupt.id);
     }
   });
+  return { projects, corrupt, orderedIds };
+}
+
+/** Strict loader for safety-sensitive operations. Never drops malformed rows. */
+export function loadStoredProjectsStrict(): StoredProject[] {
+  const { projects, corrupt } = partitionStoredProjects();
+  if (corrupt.length > 0) {
+    const first = corrupt[0];
+    throw new Error(`Stored project ${first.id} is corrupt: ${first.error}`);
+  }
+  return projects;
+}
+
+/** Strict-load a single project; sibling corruption does not throw. */
+export function loadStoredProjectStrict(id: string): StoredProject {
+  const { projects, corrupt } = partitionStoredProjects();
+  const found = projects.find((project) => project.id === id);
+  if (found) return found;
+  const bad = corrupt.find((row) => row.id === id);
+  if (bad) {
+    throw new Error(`Stored project ${bad.id} is corrupt: ${bad.error}`);
+  }
+  throw new Error(`Stored project ${id} was not found`);
+}
+
+export function findCorruptStoredProject(
+  id: string,
+): CorruptStoredProject | null {
+  return (
+    partitionStoredProjects().corrupt.find((row) => row.id === id) ?? null
+  );
+}
+
+/**
+ * Drop timeline clips that fail normalization, then re-validate. Used only
+ * after explicit user confirmation — never on ambient load.
+ */
+export function repairMalformedTimelineClips(raw: unknown): StoredProject {
+  if (!isStoredProject(raw)) {
+    throw new Error("Cannot repair: project row is malformed");
+  }
+  const record = raw as unknown as Record<string, unknown>;
+  if (record.timeline !== undefined && !Array.isArray(record.timeline)) {
+    throw new Error("Cannot repair: timeline is not an array");
+  }
+  const repairedRaw: StoredProject = {
+    ...raw,
+    timeline: Array.isArray(record.timeline)
+      ? normalizeStoredTimeline(record.timeline)
+      : raw.timeline,
+  };
+  const normalized = normalizeStoredProject(repairedRaw);
+  assertStrictProjectSafetyShape(repairedRaw, normalized);
+  return {
+    ...normalized,
+    schemaVersion: 2,
+    documentRevision: nextProjectDocumentRevision(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Write healthy projects while leaving corrupt raw rows in place (unless a
+ * healthy project with the same id replaces them — e.g. after repair).
+ */
+export function saveStoredProjectsPreservingCorrupt(
+  projects: StoredProject[],
+  corrupt: readonly CorruptStoredProject[],
+  orderedIds: readonly string[],
+  options?: { allowEmpty?: boolean },
+): void {
+  const healthyById = new Map(projects.map((project) => [project.id, project]));
+  const corruptById = new Map(corrupt.map((row) => [row.id, row]));
+  const seen = new Set<string>();
+  const out: unknown[] = [];
+
+  for (const id of orderedIds) {
+    if (seen.has(id)) continue;
+    const healthy = healthyById.get(id);
+    if (healthy) {
+      out.push(healthy);
+      seen.add(id);
+      continue;
+    }
+    const bad = corruptById.get(id);
+    if (bad) {
+      out.push(bad.raw);
+      seen.add(id);
+    }
+  }
+
+  for (const project of projects) {
+    if (seen.has(project.id)) continue;
+    out.push(project);
+    seen.add(project.id);
+  }
+
+  if (out.length === 0 && options?.allowEmpty !== true) {
+    const existing = localStorage.getItem(PROJECTS_STORAGE_KEY);
+    if (existing && existing !== "[]") {
+      console.error(
+        "[saveStoredProjectsPreservingCorrupt] Refusing to overwrite non-empty projects with []",
+      );
+      return;
+    }
+  }
+  localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(out));
+}
+
+/** Remove one project document (healthy or corrupt). Allows an empty project list. */
+export function deleteStoredProjectDocument(id: string): void {
+  const target = id.trim();
+  if (!target) return;
+  const { projects, corrupt, orderedIds } = partitionStoredProjects();
+  saveStoredProjectsPreservingCorrupt(
+    projects.filter((project) => project.id !== target),
+    corrupt.filter((row) => row.id !== target),
+    orderedIds.filter((orderedId) => orderedId !== target),
+    { allowEmpty: true },
+  );
 }
 
 function strictReferenceIds(value: StoredProject): Set<string> {
@@ -481,7 +661,9 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
         ? "motion_match"
         : row.continuityMode === "start_frame"
           ? "start_frame"
-          : undefined;
+          : row.continuityMode === "none"
+            ? "none"
+            : undefined;
   const blueModel =
     row.blueModel === "wan" || row.blueModel === "ltx"
       ? row.blueModel
@@ -561,7 +743,9 @@ function normalizeStoredSlideshow(value: unknown): SlideshowRecipe | undefined {
     .filter((id): id is string => typeof id === "string")
     .map((id) => id.trim())
     .filter(Boolean);
-  if (imageAssetIds.length < 2) return undefined;
+  if (imageAssetIds.length < 1) return undefined;
+  // New slideshows still require 2+ images in the editor. Persist 1-image
+  // recipes so legacy/corrupt rows open instead of failing the whole project.
   // Legacy projects stored mode:"random" (even timing + shuffle).
   const legacyRandom = s.mode === "random";
   const mode = normalizeSlideshowMode(s.mode);
@@ -670,9 +854,12 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     lifecycle:
       project.lifecycle === "provisioning" ||
       project.lifecycle === "repair-needed" ||
-      project.lifecycle === "ready"
+      project.lifecycle === "ready" ||
+      project.lifecycle === "legacy"
         ? project.lifecycle
         : undefined,
+    folderSetupIssue:
+      project.folderSetupIssue === "blocked" ? "blocked" : null,
     creationIds,
     folderIds,
     boundFolderId,
@@ -945,6 +1132,38 @@ export function createStoredProject(
     updatedAt: new Date().toISOString(),
     documentRevision: nextProjectDocumentRevision(),
     lifecycle: "provisioning",
+  };
+}
+
+/**
+ * Pre–project-folder documents (no lifecycle) or intentionally unbound opens.
+ * New projects always start as `provisioning` and cannot become this without
+ * an explicit user choice on a true legacy document.
+ */
+export function isTrulyLegacyProject(
+  project: Pick<StoredProject, "lifecycle">,
+): boolean {
+  return project.lifecycle == null || project.lifecycle === "legacy";
+}
+
+/** Sticky opt-out: open with flat `creationIds`, no folder reconcile/create. */
+export function isIntentionalLegacyOpen(
+  project: Pick<StoredProject, "lifecycle">,
+): boolean {
+  return project.lifecycle === "legacy";
+}
+
+export function markStoredProjectLegacyOpen(
+  project: StoredProject,
+): StoredProject {
+  if (project.lifecycle === "legacy" && project.folderSetupIssue == null) {
+    return project;
+  }
+  return {
+    ...project,
+    lifecycle: "legacy",
+    folderSetupIssue: null,
+    updatedAt: new Date().toISOString(),
   };
 }
 

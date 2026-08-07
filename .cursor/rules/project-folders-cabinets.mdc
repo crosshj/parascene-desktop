@@ -1,0 +1,24 @@
+---
+description: Project folders & cabinets — load ownership/display requirements before changing membership, Lab filing, or Assets expand
+globs: docs/REQUIREMENTS-project-folders-cabinets.md,docs/PLAN-project-owned-folders.md,src/project/**/*.ts,src/project/**/*.tsx,src/lab/projectGroups.ts,src/lab/**/*Group*,src/layouts/editor/cabinetDisplay.ts,src/layouts/editor/EditorLayout.tsx,src/layouts/editor/AssetBrowserPane.tsx,src/layouts/lab/LabLayout.tsx,src/library/creationFlags.ts,src/library/LibraryView.tsx,src/app/ShellProvider.tsx,src/app/projectListHeal.ts,src-tauri/src/library/project_assets.rs,src-tauri/src/library/folders.rs,src-tauri/src/library/jobs.rs
+alwaysApply: false
+---
+
+# Project folders & cabinets
+
+Before changing project folder membership, Images/Videos cabinets, legacy open/reconcile, Lab ensure/file/repair, `creationIds` remirror, or Assets/Library group display:
+
+1. **Read** [docs/REQUIREMENTS-project-folders-cabinets.md](docs/REQUIREMENTS-project-folders-cabinets.md) (canonical product + process catalog).
+2. Skim [docs/PLAN-project-owned-folders.md](docs/PLAN-project-owned-folders.md) for native folder ownership; where it conflicts with cabinet **display**, the requirements doc wins.
+
+## Non-negotiables
+
+- **Ownership** = native `folder_items` **or** cabinet member of an in-folder Images/Videos cover (`isProjectOwnedCreation`). `creationIds` is a one-way mirror of folder membership only.
+- **Parascene-backed project folder** should primarily show Images + Videos **covers** (+ local-only / explicit exceptions) — not every cabinet member as a loose tile.
+- **Filing** is cover-only (`addProjectAssets([cover])`). Members live in group meta; timeline may reference them without `folder_items`.
+- **Assets** may display-expand cabinet members. Expansion must **not** call `addProjectAssets` for those members.
+- **Legacy open** claims/binds/creates/blocks a folder. It does **not** invent cabinets or silently drop timeline refs. **Open as legacy** is only for pre–folder-era docs (`lifecycle` unset) and skips folder work entirely.
+- Remirror copies folder `memberIds` only — never expand ordinary groups into `creationIds`.
+- Polluted folders are healed by **collapse** (on open + Lab repair).
+
+If a change would flatten cabinet members into the project folder “so Assets works,” stop and follow the requirements doc instead.

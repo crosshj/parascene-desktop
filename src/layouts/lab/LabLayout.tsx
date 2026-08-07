@@ -22,6 +22,7 @@ import {
   fileCreationIntoProjectGroup,
   isCancelledError,
   isDetachedError,
+  repairProjectCabinetFolderMembership,
   resolveLatestImagesGroupStill,
   type EnsureCheckpoint,
 } from "../../lab/projectGroups";
@@ -1268,6 +1269,63 @@ export function LabLayout({ active = true }: { active?: boolean }) {
     ],
   );
 
+  const runRepairCabinetFolder = useCallback(
+    async (onProgress: (note: string) => void): Promise<LastResult> => {
+      const result = await repairProjectCabinetFolderMembership({
+        projectId: project.id,
+        projectTitle: project.title,
+        imagesGroupId: project.imagesGroupId,
+        videosGroupId: project.videosGroupId,
+        onProgress,
+      });
+      if (
+        result.imagesGroupId !== project.imagesGroupId ||
+        result.videosGroupId !== project.videosGroupId
+      ) {
+        setOpenProjectGroupIds({
+          imagesGroupId: result.imagesGroupId,
+          videosGroupId: result.videosGroupId,
+        });
+      }
+      const coverIds = [result.imagesGroupId, result.videosGroupId].filter(
+        (id): id is string => Boolean(id),
+      );
+      if (coverIds.length > 0) {
+        addCreationsToOpenProject(coverIds);
+      }
+      if (result.collapsedIds.length > 0) {
+        removeCreationsFromOpenProject(result.collapsedIds);
+      }
+      const parts: string[] = [];
+      if (result.groupedIds.length > 0) {
+        parts.push(
+          `Filed ${result.groupedIds.length} file(s) into Images/Videos cabinets`,
+        );
+      }
+      if (result.collapsedIds.length > 0) {
+        parts.push(
+          `Collapsed ${result.collapsedIds.length} cabinet member(s) from the folder`,
+        );
+      }
+      return {
+        summary:
+          parts.length > 0
+            ? parts.join("; ")
+            : "Cabinets already match folder videos/images",
+        detail: result.messages.join("\n"),
+      };
+    },
+    [
+      addCreationsToOpenProject,
+      project.id,
+      project.imagesGroupId,
+      project.title,
+      project.videosGroupId,
+      removeCreationsFromOpenProject,
+      setOpenProjectGroupIds,
+    ],
+  );
+
   // Auto-resume Ensure after returning to Lab mid-run.
   useEffect(() => {
     if (!resumeGroupsRef.current) return;
@@ -1435,6 +1493,16 @@ export function LabLayout({ active = true }: { active?: boolean }) {
                 });
                 if (!ok) throw new Error("Cancelled");
                 return runDedupeCabinets(onProgress);
+              }}
+              onRepairCabinets={async (onProgress) => {
+                const ok = await confirm({
+                  title: "Repair cabinets in project folder?",
+                  message:
+                    "File loose Videos/Images from this project folder into the matching cabinet group, then unfile those members so the folder keeps covers (plus local-only). Timeline refs stay valid.",
+                  confirmLabel: "Repair cabinets",
+                });
+                if (!ok) throw new Error("Cancelled");
+                return runRepairCabinetFolder(onProgress);
               }}
             />
           )}
@@ -1805,6 +1873,7 @@ function GroupsModule(
     onCancel: () => void;
     onCleanup: (onProgress: (note: string) => void) => Promise<LastResult>;
     onDedupe: (onProgress: (note: string) => void) => Promise<LastResult>;
+    onRepairCabinets: (onProgress: (note: string) => void) => Promise<LastResult>;
   } & ModuleChrome,
 ) {
   const [kind, setKind] = useState<"image" | "video">("image");
@@ -1902,6 +1971,19 @@ function GroupsModule(
         }
       >
         Dedupe cabinets
+      </button>
+      <button
+        type="button"
+        className="btn"
+        disabled={props.busy || !canCleanup}
+        title="File loose Videos/Images from the project folder into the cabinet groups"
+        onClick={() =>
+          props.onRun(async ({ onProgress }) =>
+            props.onRepairCabinets(onProgress),
+          )
+        }
+      >
+        Repair cabinets in folder
       </button>
       <button
         type="button"

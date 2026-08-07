@@ -62,7 +62,7 @@ pub use plate::{
 pub use project_assets::{
     library_add_existing_project_asset, library_add_project_assets,
     library_check_creation_usage, library_delete_creation_checked,
-    library_delete_project_asset,
+    library_delete_project, library_delete_project_asset,
     library_get_project_bound_folder, library_get_project_folder,
     library_import_project_asset_paths, library_list_project_asset_ids,
     library_mark_project_usage_stale, library_reconcile_legacy_project_folder,

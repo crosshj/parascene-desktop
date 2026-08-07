@@ -139,18 +139,31 @@ export function addAssetDraftFromGeneration(
     draft.audioMode = generation.audioMode;
   }
   if (provider === "parascene_blue") {
-    if (model === "wan_i2v" || generation.mode === "first_last") {
+    if (
+      model === "wan_i2v" ||
+      model === "wan_t2v" ||
+      generation.mode === "first_last"
+    ) {
       draft.blueModel = "wan";
       draft.audioMode = "none";
     } else if (
       model === "ltx_i2v" ||
+      model === "ltx_t2v" ||
       model === "ltx_a2v" ||
-      generation.mode === "start_frame"
+      generation.mode === "start_frame" ||
+      generation.mode === "none"
     ) {
       draft.blueModel = "ltx";
-      if (model === "ltx_i2v" && !draft.audioMode) {
+      if (
+        (model === "ltx_i2v" || model === "ltx_t2v" || generation.mode === "none") &&
+        !draft.audioMode
+      ) {
         draft.audioMode = "none";
       }
+    }
+    if (generation.mode === "none") {
+      draft.continuityMode = "none";
+      draft.audioMode = "none";
     }
   }
   if (provider === "replicate" && model) {

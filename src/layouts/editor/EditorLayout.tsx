@@ -15,9 +15,16 @@ import {
   mergeTimelineClips,
   type MergeProgress,
 } from "../../library/catalogClient";
-import { groupSourceCreationIds } from "../../library/creationFlags";
-import { loadStoredProjectsStrict } from "../../project/projectStore";
+import { loadStoredProjectStrict } from "../../project/projectStore";
 import { collectProjectReferencedCreationIds } from "../../project/projectUsage";
+import {
+  collectCabinetMemberIdsFromCovers,
+  isProjectOwnedCreation,
+} from "../../project/projectOwnership";
+import {
+  aliveAssetIdsForSelection,
+  collectCabinetDisplayMemberIds,
+} from "./cabinetDisplay";
 import {
   ensureSlideshowMedia,
   formatBakeError,
@@ -332,57 +339,77 @@ export function EditorLayout() {
     [project.timeline, selectedClipIds],
   );
 
-  const projectAssetIdsKey = useMemo(
-    () => project.assets.map((asset) => asset.id).join("\0"),
-    [project.assets],
+  // Display-only: cabinet members for Assets flatten / selection. Do not file
+  // them into the project folder (covers stay the owned folder members).
+  const [cabinetDisplayMemberIds, setCabinetDisplayMemberIds] = useState<
+    string[]
+  >([]);
+  const [cabinetOwnedMemberIds, setCabinetOwnedMemberIds] = useState<string[]>(
+    [],
   );
-
   const outsideReferenceIds = (() => {
-    const stored = loadStoredProjectsStrict().find((row) => row.id === project.id);
-    if (!stored) return [];
-    const members = new Set(project.assets.map((asset) => asset.id));
-    return collectProjectReferencedCreationIds(stored).filter(
-      (id) => !members.has(id),
-    );
+    try {
+      const stored = loadStoredProjectStrict(project.id);
+      const folderMembers = project.assets.map((asset) => asset.id);
+      const cabinetMembers = new Set(cabinetOwnedMemberIds);
+      return collectProjectReferencedCreationIds(stored).filter(
+        (id) =>
+          !isProjectOwnedCreation(
+            {
+              creationIds: folderMembers,
+              imagesGroupId: project.imagesGroupId,
+              videosGroupId: project.videosGroupId,
+            },
+            id,
+            cabinetMembers,
+          ),
+      );
+    } catch {
+      return [];
+    }
   })();
-
-  // Cabinet covers alone are on the project; members must be project assets too
-  // so Assets selection / timeline staging aren't cleared as "stale".
   useEffect(() => {
     const cabinetIds = [project.imagesGroupId, project.videosGroupId]
       .map((id) => (id ? String(id).trim() : ""))
       .filter(Boolean);
-    if (cabinetIds.length === 0) return;
 
     let cancelled = false;
     void (async () => {
+      if (cabinetIds.length === 0) {
+        if (!cancelled) {
+          setCabinetDisplayMemberIds([]);
+          setCabinetOwnedMemberIds([]);
+        }
+        return;
+      }
       try {
         const covers = await getCreations(cabinetIds);
         if (cancelled) return;
-        const known = new Set(
-          projectAssetIdsKey ? projectAssetIdsKey.split("\0") : [],
-        );
-        const missing: string[] = [];
-        for (const cover of covers) {
-          for (const mid of groupSourceCreationIds(cover)) {
-            if (!known.has(mid) && !missing.includes(mid)) missing.push(mid);
-          }
+        setCabinetDisplayMemberIds(collectCabinetDisplayMemberIds(covers));
+        setCabinetOwnedMemberIds([
+          ...collectCabinetMemberIdsFromCovers(
+            {
+              creationIds: project.assets.map((asset) => asset.id),
+              imagesGroupId: project.imagesGroupId,
+              videosGroupId: project.videosGroupId,
+            },
+            covers,
+          ),
+        ]);
+      } catch {
+        if (!cancelled) {
+          setCabinetDisplayMemberIds([]);
+          setCabinetOwnedMemberIds([]);
         }
-        if (missing.length > 0) addCreationsToOpenProject(missing);
-      } catch (error) {
-        console.error("Failed to hydrate project cabinet members", error);
       }
     })();
-
     return () => {
       cancelled = true;
     };
   }, [
-    addCreationsToOpenProject,
+    project.assets,
     project.imagesGroupId,
-    project.id,
     project.videosGroupId,
-    projectAssetIdsKey,
   ]);
 
   const pauseTimelinePlayback = () => {
@@ -611,8 +638,8 @@ export function EditorLayout() {
   }
 
   // Drop local asset selections only when assets leave the project.
-  // Expanded cabinet members can be selected (and briefly held) before they
-  // are promoted onto project.assets — those must not look "stale".
+  // Display-expanded cabinet members can be selected without being filed into
+  // the project folder — treat them as alive for selection only.
   // Intentional prev-vs-current diff via a ref during render (see removed-set logic).
   /* eslint-disable react-hooks/refs */
   if (
@@ -621,11 +648,17 @@ export function EditorLayout() {
   ) {
     knownAssetIdsRef.current = {
       projectId: project.id,
-      ids: new Set(project.assets.map((asset) => asset.id)),
+      ids: aliveAssetIdsForSelection(
+        project.assets.map((asset) => asset.id),
+        cabinetDisplayMemberIds,
+      ),
     };
   }
   {
-    const alive = new Set(project.assets.map((asset) => asset.id));
+    const alive = aliveAssetIdsForSelection(
+      project.assets.map((asset) => asset.id),
+      cabinetDisplayMemberIds,
+    );
     const known = knownAssetIdsRef.current.ids;
     const removed: string[] = [];
     for (const id of known) {

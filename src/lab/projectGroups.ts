@@ -50,7 +50,8 @@ import {
 import {
   mutateStoredProjectsWithNativeMutation,
 } from "../project/projectMutationCoordinator";
-import { addProjectAssets } from "../project/projectFolderClient";
+import { addProjectAssets, getProjectFolder } from "../project/projectFolderClient";
+import { collapseCabinetMembersFromProjectFolder } from "../project/cabinetFolderCollapse";
 import { ingestRemoteCreation } from "./ingestCreation";
 import {
   resolveLabAnimatePrompt,
@@ -840,17 +841,166 @@ export async function fileCreationIntoProjectGroup(opts: {
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
   });
-  // The cloud cabinet and its selectable member are both real project assets.
-  // File them into the canonical native project root before any caller writes
-  // a cabinet pointer or timeline reference.
-  await addProjectAssets(opts.projectId, [groupId, opts.creationId]);
+  // Cover is the project-folder filing for the cabinet. Members stay in group
+  // meta and expand in Assets; timeline may reference them without folder_items.
+  await addProjectAssets(opts.projectId, [groupId]);
   return {
     groupId,
     message: existing
       ? `Filed ${opts.creationId} into group ${groupId}.`
       : `Created ${kind === "images" ? "Images" : "Videos"} group ${groupId} from ${opts.creationId}.`,
-    // Cover for Parascene filing + the member so Editor/timeline can select it.
-    projectCreationIds: [groupId, opts.creationId],
+    projectCreationIds: [groupId],
+  };
+}
+
+export type RepairCabinetFolderResult = {
+  messages: string[];
+  groupedIds: string[];
+  collapsedIds: string[];
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+};
+
+/**
+ * Ensure project-folder videos/images that belong with the desktop cabinets are
+ * actually members of those groups. Library folder view then shows the cover
+ * only (members browse inside the group).
+ */
+export async function repairProjectCabinetFolderMembership(opts: {
+  projectId: string;
+  projectTitle: string;
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  onProgress?: (note: string) => void;
+}): Promise<RepairCabinetFolderResult> {
+  const onProgress = opts.onProgress ?? (() => {});
+  const messages: string[] = [];
+  const groupedIds: string[] = [];
+  const sdk = createAuthedSdk();
+
+  let folderMemberIds: string[] = [];
+  try {
+    const folder = await getProjectFolder(opts.projectId);
+    folderMemberIds = folder.memberIds.map(String);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    messages.push(`No project folder yet: ${message}`);
+    return {
+      messages,
+      groupedIds,
+      collapsedIds: [],
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+    };
+  }
+
+  if (folderMemberIds.length === 0) {
+    messages.push("Project folder is empty.");
+    return {
+      messages,
+      groupedIds,
+      collapsedIds: [],
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+    };
+  }
+
+  onProgress(`Loading ${folderMemberIds.length} project-folder file(s)…`);
+  const rows = await getCreations(folderMemberIds);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  const imagesGroupId = await resolveProjectCabinetId({
+    sdk,
+    kind: "images",
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    storedGroupId: opts.imagesGroupId,
+  });
+  const videosGroupId = await resolveProjectCabinetId({
+    sdk,
+    kind: "videos",
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    storedGroupId: opts.videosGroupId,
+  });
+
+  const repairSide = async (
+    kind: ProjectGroupKind,
+    coverId: string | null,
+  ): Promise<string | null> => {
+    if (!coverId) {
+      messages.push(`No ${kind} cabinet cover on this project.`);
+      return null;
+    }
+    const cover = byId.get(coverId) ?? (await getCreations([coverId]))[0];
+    if (!cover) {
+      messages.push(`${kind} cover ${coverId} is missing from the catalog.`);
+      return coverId;
+    }
+    const already = new Set(
+      groupSourceCreationIds(cover).filter((id) => id && id !== coverId),
+    );
+    const media = kind === "images" ? "image" : "video";
+    const candidates = folderMemberIds.filter((id) => {
+      if (id === coverId || id === imagesGroupId || id === videosGroupId) {
+        return false;
+      }
+      if (already.has(id)) return false;
+      const row = byId.get(id);
+      if (!row) return false;
+      const type = String(row.mediaType ?? "").toLowerCase();
+      return type === media;
+    });
+    if (candidates.length === 0) {
+      messages.push(
+        `${kind === "images" ? "Images" : "Videos"} cabinet already includes every matching folder file.`,
+      );
+      return coverId;
+    }
+    onProgress(
+      `Filing ${candidates.length} ${media} file(s) into the ${kind} cabinet…`,
+    );
+    const groupId = await groupMembers({
+      sdk,
+      kind,
+      existingGroupId: coverId,
+      memberIds: candidates,
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+    });
+    groupedIds.push(...candidates);
+    messages.push(
+      `Added ${candidates.length} ${media} file(s) to ${kind} cabinet ${groupId}.`,
+    );
+    // Keep the cover filed; members are collapsed out of folder_items next.
+    await addProjectAssets(opts.projectId, [groupId]);
+    return groupId;
+  };
+
+  const nextImages = await repairSide("images", imagesGroupId);
+  const nextVideos = await repairSide("videos", videosGroupId);
+
+  onProgress("Collapsing cabinet members out of the project folder…");
+  const collapsed = await collapseCabinetMembersFromProjectFolder({
+    projectId: opts.projectId,
+    imagesGroupId: nextImages,
+    videosGroupId: nextVideos,
+    onProgress,
+  });
+  messages.push(...collapsed.messages);
+
+  if (groupedIds.length === 0 && collapsed.removedIds.length === 0) {
+    messages.push(
+      "Nothing new to group or collapse. Open the Videos/Images cover in the project folder to browse members.",
+    );
+  }
+
+  return {
+    messages,
+    groupedIds,
+    collapsedIds: collapsed.removedIds,
+    imagesGroupId: nextImages,
+    videosGroupId: nextVideos,
   };
 }
 

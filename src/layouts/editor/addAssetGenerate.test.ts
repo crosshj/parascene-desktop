@@ -69,6 +69,11 @@ describe("initialAddAssetGenerationSteps", () => {
     const steps = initialAddAssetGenerationSteps("none", "start_frame");
     expect(steps.map((s) => s.id)).toEqual(["still", "generate", "file"]);
   });
+
+  it("skips stills for text-to-video (images none)", () => {
+    const steps = initialAddAssetGenerationSteps("none", "none");
+    expect(steps.map((s) => s.id)).toEqual(["generate", "file"]);
+  });
 });
 
 describe("replaceAddAssetPlaceholderWithVideo", () => {
@@ -213,6 +218,16 @@ describe("ADD_ASSET_WAN_AUDIO_NOTE", () => {
   it("explains WAN locks source audio", async () => {
     const { ADD_ASSET_WAN_AUDIO_NOTE: note } = await import("./addAssetGenerate");
     expect(note).toMatch(/WAN/i);
+    expect(note).toMatch(/None/i);
+  });
+});
+
+describe("ADD_ASSET_IMAGES_NONE_AUDIO_NOTE", () => {
+  it("explains text-to-video locks source audio", async () => {
+    const { ADD_ASSET_IMAGES_NONE_AUDIO_NOTE: note } = await import(
+      "./addAssetGenerate"
+    );
+    expect(note).toMatch(/Text-to-video/i);
     expect(note).toMatch(/None/i);
   });
 });

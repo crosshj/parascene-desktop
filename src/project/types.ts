@@ -137,8 +137,9 @@ export type AddAssetBlueModel = "wan" | "ltx";
 export type AddAssetDraft = {
   prompt?: string;
   audioMode?: "vocals" | "full_mix" | "none";
+  /** Images mode: none = text→video; start_frame / first_last / motion_match as today. */
   continuityMode?: AddAssetGenerationMode;
-  /** Parascene Blue model (wan_i2v / ltx_a2v|ltx_i2v). */
+  /** Parascene Blue model (wan_t2v|wan_i2v / ltx_t2v|ltx_a2v|ltx_i2v). */
   blueModel?: AddAssetBlueModel;
   /** Pre-drop intent: generation provider (e.g. parascene_blue). */
   provider?: string;
@@ -176,18 +177,22 @@ export type AddAssetDraft = {
 
 /** Persisted provenance for add-asset generated timeline clips. */
 export type AddAssetGenerationMode =
+  | "none"
   | "start_frame"
   | "first_last"
   | "motion_match";
 
 export type AddAssetGeneration = {
   prompt: string;
-  /** Present for start_frame generations (`none` when LTX ran without audio). */
+  /** Present for start_frame generations (`none` when LTX/WAN ran without audio). */
   audioMode?: "vocals" | "full_mix" | "none";
   lyricsText?: string;
   generatedAt: string;
   creationId: string;
-  /** Continuity path used for this generation. Defaults to start_frame when omitted. */
+  /**
+   * Continuity / images path. Defaults to start_frame when omitted.
+   * `none` = text→video (no input images).
+   */
   mode?: AddAssetGenerationMode;
   /** Model id (Parascene create id or Replicate owner/name). */
   model?: string;

@@ -61,6 +61,20 @@ describe("desktopAddAssetGeneration", () => {
     expect(addAssetGenerationFromCreation(upsert)).toMatchObject(generation);
   });
 
+  it("round-trips text-to-video mode none", () => {
+    const t2v: AddAssetGeneration = {
+      prompt: "a bird over water",
+      generatedAt: "2026-08-07T00:00:00.000Z",
+      creationId: "gen-t2v",
+      mode: "none",
+      model: "wan_t2v",
+      provider: "parascene_blue",
+      methodId: "blue_timeline_fill",
+    };
+    const upsert = creationUpsertWithAddAssetGeneration(baseCreation(), t2v);
+    expect(addAssetGenerationFromCreation(upsert)).toMatchObject(t2v);
+  });
+
   it("preserves prior desktop stamp when sync upsert lacks one", () => {
     const existing = creationUpsertWithAddAssetGeneration(
       baseCreation(),

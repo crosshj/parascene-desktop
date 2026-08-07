@@ -136,6 +136,53 @@ describe("folderSync helpers", () => {
     expect(conflicts[0]?.kind).toBe("delete_vs_edit");
   });
 
+  it("does not treat a never-uploaded folder update as deleted in the cloud", () => {
+    const folderId = "11111111-1111-4111-8111-111111111111";
+    const cloud: RemoteLibraryFolder[] = [];
+    const ops = [
+      pending(1, {
+        op: "create",
+        id: folderId,
+        title: "Untitled project",
+        description: "",
+      }),
+      pending(2, {
+        op: "update",
+        id: folderId,
+        title: "Renamed project",
+        description: "",
+      }),
+    ];
+    expect(detectFolderConflicts([], cloud, ops)).toEqual([]);
+  });
+
+  it("still detects remote delete when a known folder disappears under a local update", () => {
+    const folderId = "11111111-1111-4111-8111-111111111111";
+    const baseline = [
+      {
+        id: folderId,
+        title: "Known",
+        description: "",
+        createdAt: null,
+        updatedAt: null,
+        creationIds: [],
+        memberCount: 0,
+      },
+    ];
+    const ops = [
+      pending(1, {
+        op: "update",
+        id: folderId,
+        title: "Local rename",
+        description: "",
+      }),
+    ];
+    const conflicts = detectFolderConflicts(baseline, [], ops);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.kind).toBe("delete_vs_edit");
+    expect(conflicts[0]?.cloudLabel).toBe("Deleted in cloud");
+  });
+
   it("allows safe concurrent updates on different folders", () => {
     const baseline = [
       {

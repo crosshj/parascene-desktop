@@ -98,6 +98,7 @@ import {
   type LibraryFolder,
 } from "./folderClient";
 import {
+  omitFolderMembersHiddenByCovers,
   omitGroupMemberCreations,
 } from "./creationFlags";
 import { VirtualCreationsGrid } from "./VirtualCreationsGrid";
@@ -1647,9 +1648,10 @@ function CreationsPanel({
     if (gridBlank || !boardCreations) return [];
     if (folderView) {
       if (!folderMembers) return [];
-      // Inside a folder, show members even if they also belong to a group.
+      // Covers stay; members browse inside the group — don't litter the folder.
+      const nested = omitFolderMembersHiddenByCovers(folderMembers);
       return filterCreationsVisible(
-        folderMembers,
+        nested,
         gridFilters,
         selectedIds,
         deferredKeepIds,
