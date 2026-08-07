@@ -266,6 +266,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const [projectFolderBlock, setProjectFolderBlock] =
     useState<ProjectFolderReconcileResult | null>(null);
   const [blockedProjectTitle, setBlockedProjectTitle] = useState("");
+  const [projectOpenWarning, setProjectOpenWarning] = useState<string | null>(
+    null,
+  );
 
   const initialSession = useMemo(() => {
     const ids = new Set(loadStoredProjects().map((p) => p.id));
@@ -630,9 +633,48 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             const attachedMemberIds = folders
               .filter((folder) => attached.has(folder.id))
               .flatMap((folder) => folder.memberIds);
+            const usedIds = new Set(collectProjectReferencedCreationIds(project));
+            const folderByMember = new Map<string, LibraryFolder>();
+            for (const folder of folders) {
+              for (const creationId of folder.memberIds) {
+                folderByMember.set(creationId, folder);
+              }
+            }
+            const folderCounts = new Map<string, number>();
+            for (const creationId of project.creationIds) {
+              const folder = folderByMember.get(creationId);
+              if (folder) {
+                folderCounts.set(
+                  folder.id,
+                  (folderCounts.get(folder.id) ?? 0) + 1,
+                );
+              }
+            }
+            const rankedFolders = [...folderCounts.entries()].sort(
+              (a, b) => b[1] - a[1],
+            );
+            const dominantFolderId =
+              rankedFolders.length > 0 &&
+              (rankedFolders.length === 1 ||
+                rankedFolders[0][1] > rankedFolders[1][1])
+                ? rankedFolders[0][0]
+                : null;
+            // A legacy project can contain stale pool entries copied from an
+            // unrelated folder. Drop only un-used outliers when there is a
+            // clear candidate folder; timeline/composition references remain
+            // blockers and are never silently discarded.
+            const projectCreationIds = project.creationIds.filter((creationId) => {
+              const folder = folderByMember.get(creationId);
+              return (
+                !dominantFolderId ||
+                !folder ||
+                folder.id === dominantFolderId ||
+                usedIds.has(creationId)
+              );
+            });
             const legacyAssetIds = [
               ...new Set([
-                ...project.creationIds,
+                ...projectCreationIds,
                 ...attachedMemberIds,
                 ...collectProjectReferencedCreationIds(project),
               ]),
@@ -668,16 +710,40 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         setProjectFolderBlock(result);
         return null;
       }
+      const usedIds = new Set(collectProjectReferencedCreationIds(projectToOpen));
+      const missingUsedIds = result.missingCreationIds.filter((id) =>
+        usedIds.has(id),
+      );
+      if (missingUsedIds.length > 0) {
+        setProjectOpenWarning(
+          `${projectToOpen.title} contains ${missingUsedIds.length} Library file(s) still referenced by project content but no longer available. The project will open, but affected clips or compositions may be unavailable. Missing IDs: ${missingUsedIds.join(", ")}`,
+        );
+      }
       const sorted = publishStoredProjects(projects);
       return sorted.find((project) => project.id === projectToOpen.id) ?? null;
     },
-    [publishStoredProjects],
+    [publishStoredProjects, setProjectOpenWarning],
   );
 
   const openProject = useCallback(
     async (id: string) => {
-      const found = loadStoredProjectsStrict().find((p) => p.id === id);
-      if (!found) return;
+      setProjectOpenWarning(null);
+      let found: StoredProject | undefined;
+      try {
+        found = loadStoredProjectsStrict().find((p) => p.id === id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Failed to read project", error);
+        setChromeStatus(`Cannot open project: ${message}`);
+        window.alert(message);
+        return;
+      }
+      if (!found) {
+        const message = "That project is no longer available on this device.";
+        setChromeStatus(message);
+        window.alert(message);
+        return;
+      }
       let ready: StoredProject | null = null;
       if (
         found.lifecycle === "provisioning" ||
@@ -734,7 +800,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setMode("director");
       setSelectedSceneId(`${id}-scene-1`);
     },
-    [publishStoredProjects, reconcileProjectForOpen],
+    [publishStoredProjects, reconcileProjectForOpen, setChromeStatus],
   );
 
   const startupOpenAttempted = useRef(false);
@@ -941,6 +1007,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           },
           (current, payload) =>
             mirrorProjectFolderMembership(current, payload.folders),
+          { allowMissingCreationIds: true },
         );
       publishStoredProjects(projects);
       return result.folderResult;
@@ -1331,6 +1398,28 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                   }}
                 >
                   Open Library
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {projectOpenWarning ? (
+          <div className="confirm-dialog-backdrop" role="presentation">
+            <div
+              className="confirm-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="project-open-warning-title"
+            >
+              <h2 id="project-open-warning-title">Project opened with missing files</h2>
+              <p>{projectOpenWarning}</p>
+              <div className="confirm-dialog-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setProjectOpenWarning(null)}
+                >
+                  Continue
                 </button>
               </div>
             </div>

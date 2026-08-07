@@ -10,7 +10,7 @@ use super::import_local::{import_paths, ImportLocalResult};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
@@ -258,6 +258,7 @@ fn claim_regular_folder(
 
 fn creation_location(
     conn: &Connection,
+    paths: &super::paths::ParascenePaths,
     creation_id: &str,
 ) -> Result<Option<Option<String>>, String> {
     let exists: bool = conn
@@ -270,15 +271,114 @@ fn creation_location(
     if !exists {
         return Ok(None);
     }
-    let folder: Option<String> = conn
+    // A stale membership can hide a creation from the Library root while
+    // pointing at a folder that no longer exists. It is not a real conflict.
+    conn.execute(
+        "DELETE FROM folder_items
+         WHERE creation_id = ?1
+           AND NOT EXISTS (SELECT 1 FROM folders WHERE folders.id = folder_items.folder_id)",
+        params![creation_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let (folder, local_path): (Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT folder_id FROM folder_items WHERE creation_id = ?1 LIMIT 1",
+            "SELECT (
+                 SELECT fi.folder_id
+                 FROM folder_items fi
+                 JOIN folders f ON f.id = fi.folder_id
+                 WHERE fi.creation_id = ?1
+                 LIMIT 1
+             ), local_path FROM creations WHERE id = ?1",
             params![creation_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()
         .map_err(|e| e.to_string())?;
-    Ok(Some(folder))
+    let Some(local_path) = local_path.filter(|path| !path.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(&local_path);
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        paths.root.join(path)
+    };
+    if !candidate.is_file() {
+        return Ok(None);
+    }
+    if folder.is_some() {
+        return Ok(Some(folder));
+    }
+
+    // Group members are intentionally hidden from the Library home grid, but
+    // they inherit their effective location from the group cover. Treating
+    // them as root assets creates false legacy project conflicts.
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, remote_json FROM creations
+             WHERE instr(COALESCE(remote_json, ''), '\"kind\":\"group_creations\"') > 0
+                OR instr(COALESCE(remote_json, ''), '\"kind\": \"group_creations\"') > 0",
+        )
+        .map_err(|e| e.to_string())?;
+    let covers = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for cover in covers {
+        let (cover_id, raw) = cover.map_err(|e| e.to_string())?;
+        let Some(raw) = raw else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else { continue };
+        let group = value
+            .get("meta")
+            .and_then(|meta| meta.get("group"))
+            .or_else(|| value.get("group"));
+        let Some(group) = group else { continue };
+        let value_id = |value: &Value| match value {
+            Value::String(value) => value.trim().to_string(),
+            Value::Number(value) => value.to_string(),
+            _ => String::new(),
+        };
+        let listed = group
+            .get("source_creation_ids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|value| value_id(value) == creation_id);
+        let embedded = group
+            .get("source_creations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|value| {
+                value
+                    .get("id")
+                    .map(value_id)
+                    .is_some_and(|value| value == creation_id)
+            });
+        if !listed && !embedded {
+            continue;
+        }
+        let cover_folder: Option<String> = conn
+            .query_row(
+                "SELECT fi.folder_id FROM folder_items fi
+                 JOIN folders f ON f.id = fi.folder_id
+                 WHERE fi.creation_id = ?1 LIMIT 1",
+                params![cover_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(folder_id) = cover_folder.as_deref() {
+            conn.execute(
+                "INSERT OR IGNORE INTO folder_items(folder_id, creation_id, added_at)
+                 VALUES (?1, ?2, ?3)",
+                params![folder_id, creation_id, Utc::now().to_rfc3339()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        return Ok(Some(cover_folder));
+    }
+    Ok(Some(None))
 }
 
 fn blocker_result(
@@ -369,9 +469,38 @@ pub fn library_reconcile_legacy_project_folder(
     }
     let paths = default_paths()?;
     let mut conn = ready_connection(&paths)?;
+    // Repair orphaned memberships before the reconciliation transaction. If
+    // the project is still blocked by a real multi-folder conflict, this
+    // cleanup must remain committed so the Library can show those creations
+    // at root instead of hiding them behind dead folder IDs.
+    conn.execute(
+        "DELETE FROM folder_items
+         WHERE NOT EXISTS (SELECT 1 FROM folders WHERE folders.id = folder_items.folder_id)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
 
     if let Some(marked) = project_folder(&transaction, project_id)? {
+        let mut referenced: BTreeSet<String> = legacy_asset_ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        referenced.extend(marked.member_ids.iter().cloned());
+        let mut missing = Vec::new();
+        let mut root_ids = Vec::new();
+        for id in referenced {
+            match creation_location(&transaction, &paths, &id)? {
+                None => missing.push(id),
+                Some(None) => root_ids.push(id),
+                Some(Some(folder_id)) if folder_id != marked.id => {
+                    // Leave assets in another folder untouched; the canonical
+                    // project folder remains authoritative for its own members.
+                }
+                Some(Some(_)) => {}
+            }
+        }
         let canonical_title = normalize_project_title(&title);
         let folder = if marked.title != canonical_title {
             let now = Utc::now().to_rfc3339();
@@ -397,7 +526,33 @@ pub fn library_reconcile_legacy_project_folder(
         } else {
             marked
         };
-        let result = finish_reconcile(&transaction, project_id, folder, "marked")?;
+        if !root_ids.is_empty() {
+            move_creations_into_folder(
+                &transaction,
+                &folder.id,
+                &root_ids,
+                &Utc::now().to_rfc3339(),
+            )?;
+            queue_cloud_move(&transaction, Some(&folder.id), &root_ids, Some(project_id))?;
+        }
+        for id in &missing {
+            transaction
+                .execute(
+                    "DELETE FROM folder_items WHERE folder_id = ?1 AND creation_id = ?2",
+                    params![folder.id, id],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM project_assets WHERE project_id = ?1 AND creation_id = ?2",
+                    params![project_id, id],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let folder = get_folder(&transaction, &folder.id)?
+            .ok_or_else(|| "Marked project folder disappeared after cleanup".to_string())?;
+        let mut result = finish_reconcile(&transaction, project_id, folder, "marked")?;
+        result.missing_creation_ids = missing;
         transaction.commit().map_err(|e| e.to_string())?;
         emit_folders_updated(&app, &list_folders(&conn)?);
         return Ok(result);
@@ -472,13 +627,54 @@ pub fn library_reconcile_legacy_project_folder(
     let mut missing = Vec::new();
     let mut locations: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
     for id in legacy_ids {
-        match creation_location(&transaction, &id)? {
+        match creation_location(&transaction, &paths, &id)? {
             None => missing.push(id),
             Some(location) => locations.entry(location).or_default().push(id),
         }
     }
-    if !missing.is_empty() || locations.len() != 1 {
-        return blocker_result(&transaction, &locations, missing, binding_problem);
+    // Missing catalog rows are stale project references, not evidence that the
+    // surviving assets are split across folders. They must not block legacy
+    // project-folder assignment.
+    if locations.is_empty() {
+        let folder = create_marked_project_folder(&transaction, project_id, &title)?;
+        let mut result = finish_reconcile(&transaction, project_id, folder, "empty")?;
+        result.missing_creation_ids = missing;
+        transaction.commit().map_err(|e| e.to_string())?;
+        emit_folders_updated(&app, &list_folders(&conn)?);
+        return Ok(result);
+    }
+    // A common legacy shape is one candidate folder plus a few project assets
+    // left at Library root. Consolidate those surviving root assets into the
+    // sole candidate instead of making the user repair the layout manually.
+    if locations.len() == 2 && locations.contains_key(&None) {
+        let candidate_id = locations
+            .keys()
+            .find_map(|id| id.clone())
+            .expect("mixed legacy layout has a candidate folder");
+        let root_ids = locations.remove(&None).unwrap_or_default();
+        let candidate = get_folder(&transaction, &candidate_id)?
+            .ok_or_else(|| "Candidate folder disappeared".to_string())?;
+        if candidate.kind == "project" && candidate.project_id.as_deref() != Some(project_id) {
+            return blocker_result(&transaction, &locations, Vec::new(), binding_problem);
+        }
+        let claimed = claim_regular_folder(&transaction, &candidate_id, project_id, &title)?;
+        move_creations_into_folder(
+            &transaction,
+            &claimed.id,
+            &root_ids,
+            &Utc::now().to_rfc3339(),
+        )?;
+        queue_cloud_move(&transaction, Some(&claimed.id), &root_ids, Some(project_id))?;
+        let folder = get_folder(&transaction, &claimed.id)?
+            .ok_or_else(|| "Candidate folder disappeared after filing root assets".to_string())?;
+        let mut result = finish_reconcile(&transaction, project_id, folder, "single-folder")?;
+        result.missing_creation_ids = missing;
+        transaction.commit().map_err(|e| e.to_string())?;
+        emit_folders_updated(&app, &list_folders(&conn)?);
+        return Ok(result);
+    }
+    if locations.len() != 1 {
+        return blocker_result(&transaction, &locations, Vec::new(), binding_problem);
     }
 
     let (location, ids) = locations.iter().next().expect("one location");
@@ -498,7 +694,7 @@ pub fn library_reconcile_legacy_project_folder(
             let candidate = get_folder(&transaction, folder_id)?
                 .ok_or_else(|| "Candidate folder disappeared".to_string())?;
             if candidate.kind == "project" && candidate.project_id.as_deref() != Some(project_id) {
-                return blocker_result(&transaction, &locations, missing, binding_problem);
+                return blocker_result(&transaction, &locations, Vec::new(), binding_problem);
             }
             (
                 claim_regular_folder(&transaction, folder_id, project_id, &title)?,
@@ -506,7 +702,8 @@ pub fn library_reconcile_legacy_project_folder(
             )
         }
     };
-    let result = finish_reconcile(&transaction, project_id, folder, resolution)?;
+    let mut result = finish_reconcile(&transaction, project_id, folder, resolution)?;
+    result.missing_creation_ids = missing;
     transaction.commit().map_err(|e| e.to_string())?;
     emit_folders_updated(&app, &list_folders(&conn)?);
     Ok(result)

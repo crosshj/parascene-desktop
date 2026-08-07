@@ -1,7 +1,26 @@
+import { useState } from "react";
 import { useShell } from "../app/ShellProvider";
 
 export function ProjectWelcome() {
   const { recentProjects, openProject, createProject } = useShell();
+  const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
+  const [slowOpeningProjectId, setSlowOpeningProjectId] = useState<string | null>(
+    null,
+  );
+
+  const handleOpenProject = async (id: string) => {
+    setOpeningProjectId(id);
+    const slowTimer = window.setTimeout(() => {
+      setSlowOpeningProjectId(id);
+    }, 2000);
+    try {
+      await openProject(id);
+    } finally {
+      window.clearTimeout(slowTimer);
+      setOpeningProjectId(null);
+      setSlowOpeningProjectId(null);
+    }
+  };
 
   return (
     <div className="project-welcome" aria-label="Project picker">
@@ -32,8 +51,12 @@ export function ProjectWelcome() {
                 <li key={p.id}>
                   <button
                     type="button"
-                    className="recent-project-btn"
-                    onClick={() => openProject(p.id)}
+                    className={`recent-project-btn${
+                      slowOpeningProjectId === p.id ? " is-opening-slow" : ""
+                    }`}
+                    aria-busy={openingProjectId === p.id}
+                    disabled={openingProjectId !== null}
+                    onClick={() => void handleOpenProject(p.id)}
                   >
                     {p.title}
                     {p.lifecycle === "provisioning" ||

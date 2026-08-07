@@ -2764,6 +2764,26 @@ input[type="checkbox"].control,
   border-color: var(--muted);
 }
 
+.recent-project-btn.is-opening-slow {
+  background: linear-gradient(
+    110deg,
+    var(--surface) 25%,
+    color-mix(in srgb, var(--focus, #6ea8fe) 18%, var(--surface)) 50%,
+    var(--surface) 75%
+  );
+  background-size: 220% 100%;
+  animation: recent-project-shimmer 1.2s linear infinite;
+}
+
+@keyframes recent-project-shimmer {
+  from {
+    background-position: 220% 0;
+  }
+  to {
+    background-position: -20% 0;
+  }
+}
+
 .auth-strip {
   display: flex;
   align-items: center;

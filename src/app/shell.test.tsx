@@ -370,6 +370,9 @@ describe("auth shell", () => {
     await user.click(screen.getByRole("button", { name: "Close project" }));
     expect(screen.getByLabelText("Project picker")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Director" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Untitled project" }));
+    expect(await screen.findByLabelText("Video preview")).toBeInTheDocument();
   }, 20_000);
 
   it("restores open project and tabs after remount", async () => {

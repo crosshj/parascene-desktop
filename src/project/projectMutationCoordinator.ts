@@ -69,6 +69,7 @@ async function persistStoredProjects(
     allowLegacyOutsideTransition?: boolean;
     leaveStaleOnSaveFailure?: boolean;
     allowExistingStaleBarrier?: boolean;
+    allowMissingCreationIds?: boolean;
   },
 ): Promise<StoredProject[]> {
     const proposed = updater(previous);
@@ -122,7 +123,7 @@ async function persistStoredProjects(
     // Global Library deletion uses this same queue. Verifying new ownership
     // and references here means a generation/import result cannot be deleted
     // between its catalog check and the project-document commit.
-    if (newlyRequiredCreationIds.size > 0) {
+    if (newlyRequiredCreationIds.size > 0 && options?.allowMissingCreationIds !== true) {
       const required = [...newlyRequiredCreationIds];
       const existing = new Set(await existingCreationIds(required));
       const missing = required.filter((creationId) => !existing.has(creationId));
@@ -189,6 +190,7 @@ export function mutateStoredProjects(
 export function mutateStoredProjectsWithNativeMutation<T>(
   nativeMutation: (projects: readonly StoredProject[]) => Promise<T>,
   updater: (projects: StoredProject[], result: T) => StoredProject[],
+  options?: { allowMissingCreationIds?: boolean },
 ): Promise<{ result: T; projects: StoredProject[] }> {
   return enqueue(async () => {
     const previous = loadStoredProjectsStrict();
@@ -200,6 +202,7 @@ export function mutateStoredProjectsWithNativeMutation<T>(
       {
         leaveStaleOnSaveFailure: true,
         allowExistingStaleBarrier: true,
+        allowMissingCreationIds: options?.allowMissingCreationIds,
       },
     );
     await repairUsageIndexes(projects);
@@ -218,6 +221,7 @@ export function mirrorStoredProjectsAfterNativeMembership(
       {
         leaveStaleOnSaveFailure: true,
         allowExistingStaleBarrier: true,
+        allowMissingCreationIds: true,
       },
     );
     await repairUsageIndexes(projects);

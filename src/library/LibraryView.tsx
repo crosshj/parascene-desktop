@@ -1213,11 +1213,9 @@ function CreationsPanel({
   const {
     setChromeStatus,
     openProjectId,
-    openProject,
     recentProjects,
     project,
     createProject,
-    renameProject,
     addCreationsToProject,
     removeCreationsFromProject,
     deleteLibraryCreation,
@@ -2052,18 +2050,7 @@ function CreationsPanel({
   const onSaveFolderEdit = useCallback(
     async (title: string, description: string) => {
       if (!editFolder) return;
-      if (editFolder.kind === "project") {
-        if (!editFolder.projectId) return;
-        try {
-          await renameProject(editFolder.projectId, title);
-          setEditFolder(null);
-          await refreshFolders();
-        } catch (error) {
-          console.error(error);
-          window.alert(error instanceof Error ? error.message : String(error));
-        }
-        return;
-      }
+      if (editFolder.kind === "project") return;
       try {
         await renameFolder(editFolder.id, title, description);
         setEditFolder(null);
@@ -2072,7 +2059,7 @@ function CreationsPanel({
         console.error(error);
       }
     },
-    [editFolder, refreshFolders, renameProject],
+    [editFolder, refreshFolders],
   );
 
   useEffect(() => {
@@ -2258,42 +2245,6 @@ function CreationsPanel({
                 ) : (
                   <>
                     <span className="folder-project-badge">Project</span>
-                    {folderView.projectId &&
-                    localProjectIds.has(folderView.projectId) ? (
-                      <button
-                        type="button"
-                        className="library-folder-edit"
-                        aria-label="Rename project"
-                        onClick={() => setEditFolder(folderView)}
-                      >
-                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
-                          <path
-                            fill="currentColor"
-                            d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
-                          />
-                        </svg>
-                      </button>
-                    ) : null}
-                    {folderView.projectId &&
-                    recentProjects.some(
-                      (recent) => recent.id === folderView.projectId,
-                    ) ? (
-                      <button
-                        type="button"
-                        className="linkish"
-                        onClick={() => {
-                          if (folderView.projectId) {
-                            void openProject(folderView.projectId);
-                          }
-                        }}
-                      >
-                        Open project
-                      </button>
-                    ) : (
-                      <span className="muted">
-                        Project unavailable on this device
-                      </span>
-                    )}
                   </>
                 )}
               </div>
@@ -2408,10 +2359,10 @@ function CreationsPanel({
                 }}
               />
             ) : null}
-            {editFolder ? (
+            {editFolder?.kind === "regular" ? (
               <FolderEditModal
                 folder={editFolder}
-                entityKind={editFolder.kind === "project" ? "project" : "folder"}
+                entityKind="folder"
                 onCancel={() => setEditFolder(null)}
                 onSave={(title, description) => {
                   void onSaveFolderEdit(title, description);
