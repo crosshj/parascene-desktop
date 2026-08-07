@@ -43,7 +43,11 @@ function normalizePendingOperation(
     };
   }
   if (raw.op === "create" || raw.op === "update") {
-    const { kind: _kind, project_id: _legacyProjectId, ...rest } = raw;
+    const rest = Object.fromEntries(
+      Object.entries(raw).filter(
+        ([key]) => key !== "kind" && key !== "project_id",
+      ),
+    );
     return {
       ...(rest as unknown as LibraryFolderOperation),
       ...(projectId

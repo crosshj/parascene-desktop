@@ -726,7 +726,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   );
 
   const openProject = useCallback(
-    async (id: string) => {
+    async (id: string, focus = true) => {
       setProjectOpenWarning(null);
       let found: StoredProject | undefined;
       try {
@@ -796,9 +796,11 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       }
       if (!ready) return;
       setOpenProjectId(id);
-      setPrimaryTab("project");
-      setMode("director");
-      setSelectedSceneId(`${id}-scene-1`);
+      if (focus) {
+        setPrimaryTab("project");
+        setMode("director");
+        setSelectedSceneId(`${id}-scene-1`);
+      }
     },
     [publishStoredProjects, reconcileProjectForOpen, setChromeStatus],
   );
@@ -809,7 +811,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     startupOpenAttempted.current = true;
     if (!initialSession.openProjectId) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- restoring the persisted session is the purpose of this mount effect
-    void openProject(initialSession.openProjectId);
+    void openProject(initialSession.openProjectId, false);
   }, [initialSession.openProjectId, openProject]);
 
   const closeProject = useCallback(() => {
