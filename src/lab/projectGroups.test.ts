@@ -282,6 +282,44 @@ describe("findCabinetCandidatesInCatalog / bucketDesktopCabinets", () => {
     expect(pickCabinetKeeper(found, null)).toBe("img-a");
   });
 
+  it("does not recover party-name-only covers when a project id is known", () => {
+    const partyOnly = fakeCreation({
+      id: "img-party",
+      title: "Parascene Desktop · Untitled project · Images",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: [5],
+          },
+        },
+      }),
+    });
+    const stampedOther = fakeCreation({
+      id: "img-other",
+      title: "Parascene Desktop · Untitled project · Images",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: [6],
+          },
+          desktop: {
+            role: "project_images",
+            client: "parascene-desktop",
+            projectId: "proj-old",
+          },
+        },
+      }),
+    });
+    const found = findCabinetCandidatesInCatalog([partyOnly, stampedOther], {
+      role: "project_images",
+      projectId: "proj-new",
+      projectTitle: "Untitled project",
+    });
+    expect(found).toEqual([]);
+  });
+
   it("buckets duplicates by project + role for dedupe", () => {
     const buckets = bucketDesktopCabinets([
       imagesA,
@@ -299,7 +337,7 @@ describe("findCabinetCandidatesInCatalog / bucketDesktopCabinets", () => {
     expect(videosBucket?.coverIds).toEqual(["vid-a"]);
   });
 
-  it("merges party-name-only covers into stamped projectId buckets", () => {
+  it("keeps party-name-only covers out of stamped projectId buckets", () => {
     const partyOnly = fakeCreation({
       id: "img-party",
       title: "Parascene Desktop · Replicate · Images",
@@ -313,9 +351,16 @@ describe("findCabinetCandidatesInCatalog / bucketDesktopCabinets", () => {
       }),
     });
     const buckets = bucketDesktopCabinets([imagesA, partyOnly]);
-    const imagesBucket = buckets.find(
+    const stampedBucket = buckets.find(
       (b) => b.role === "project_images" && b.projectId === "proj-1",
     );
-    expect(imagesBucket?.coverIds.sort()).toEqual(["img-a", "img-party"]);
+    const titleBucket = buckets.find(
+      (b) =>
+        b.role === "project_images" &&
+        b.projectKey === "title:Replicate" &&
+        !b.projectId,
+    );
+    expect(stampedBucket?.coverIds).toEqual(["img-a"]);
+    expect(titleBucket?.coverIds).toEqual(["img-party"]);
   });
 });

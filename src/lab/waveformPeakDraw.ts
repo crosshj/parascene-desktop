@@ -291,6 +291,16 @@ export function prepareOverlaidWaveformPeaks(
   return { mix: mixScaled, overlay: overlayScaled };
 }
 
+/** Fixed thin column geometry — never stretch bars to fill width. */
+export const WAVEFORM_BAR_WIDTH_PX = 1;
+export const WAVEFORM_BAR_GAP_PX = 1;
+
+/** How many equal-width bars fit in `cssW` (1px bar + 1px gap). */
+export function waveformBarCountForWidth(cssW: number): number {
+  const pitch = WAVEFORM_BAR_WIDTH_PX + WAVEFORM_BAR_GAP_PX;
+  return Math.max(1, Math.floor((Math.max(0, cssW) + WAVEFORM_BAR_GAP_PX) / pitch));
+}
+
 function drawPeakLayer(
   ctx: CanvasRenderingContext2D,
   cssW: number,
@@ -302,13 +312,17 @@ function drawPeakLayer(
 ): void {
   if (cssW <= 0 || peaks.length === 0) return;
   const mid = cssH / 2;
-  const gap = 1;
-  const barW = Math.max(0.5, (cssW - gap * (peaks.length - 1)) / peaks.length);
-  const playedBars = Math.floor(progress * peaks.length);
+  const barW = WAVEFORM_BAR_WIDTH_PX;
+  const gap = WAVEFORM_BAR_GAP_PX;
+  const pitch = barW + gap;
+  const barCount = waveformBarCountForWidth(cssW);
+  const sampled = resamplePeaks(peaks, barCount);
+  const playedBars = Math.floor(progress * barCount);
 
-  peaks.forEach((p, i) => {
+  for (let i = 0; i < barCount; i++) {
+    const p = sampled[i] ?? 0;
     const h = Math.max(2, p * (cssH * 0.9));
-    const x = i * (barW + gap);
+    const x = i * pitch;
     const y = mid - h / 2;
     ctx.fillStyle = uniformColor
       ? style.unplayed
@@ -316,7 +330,7 @@ function drawPeakLayer(
         ? style.played
         : style.unplayed;
     ctx.fillRect(x, y, barW, h);
-  });
+  }
 }
 
 export type WaveformStripSeg = {

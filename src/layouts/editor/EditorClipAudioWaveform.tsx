@@ -9,8 +9,11 @@ import {
   type ClipWaveformStrip,
 } from "../../lab/waveformPeakDraw";
 
-/** Fixed bucket count for one playthrough stamp. */
-const WAVEFORM_BARS = 128;
+/**
+ * Peak samples for one playthrough stamp. Draw-time uses fixed 1px columns;
+ * keep this high enough that wide / zoomed stamps stay detailed.
+ */
+const WAVEFORM_BARS = 512;
 
 export function EditorClipAudioWaveform({
   mixPath,
@@ -70,7 +73,7 @@ export function EditorClipAudioWaveform({
     stripRef.current = createClipWaveformStrip();
     void (async () => {
       try {
-        const mix = await audioWaveformPeaks(mixPath, 256);
+        const mix = await audioWaveformPeaks(mixPath, 512);
         if (cancelled) return;
         setMixData(mix);
         if (!overlayPath) {
@@ -78,7 +81,7 @@ export function EditorClipAudioWaveform({
           return;
         }
         try {
-          const overlay = await audioWaveformPeaks(overlayPath, 256);
+          const overlay = await audioWaveformPeaks(overlayPath, 512);
           if (!cancelled) setOverlayData(overlay);
         } catch {
           if (!cancelled) setOverlayData(null);

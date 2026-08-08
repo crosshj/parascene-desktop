@@ -15,7 +15,7 @@ use super::parascene_api::{
     group_creations, group_member_ids, media_url, CreateOpts,
 };
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -538,14 +538,38 @@ fn recover_cabinet_from_catalog(
         if role != want_role {
             continue;
         }
-        let matches = match (stamped_project_id.as_deref(), want_id, party_title.as_deref(), want_title)
+        // When the caller has a project id, match stamped meta only — never
+        // party-name title (default titles like "Untitled project" collide).
+        let matches = match (want_id, stamped_project_id.as_deref(), party_title.as_deref(), want_title)
         {
-            (Some(sid), Some(wid), _, _) => sid == wid,
-            (_, _, Some(pt), Some(wt)) => pt == wt,
+            (Some(wid), Some(sid), _, _) => sid == wid,
+            (Some(_), None, _, _) => false,
+            (None, _, Some(pt), Some(wt)) => pt == wt,
             _ => false,
         };
         if !matches {
             continue;
+        }
+        // Folder membership wins over a possibly-overwritten meta stamp: never
+        // recover a cover that already lives in another project's folder.
+        if let Some(wid) = want_id {
+            let foreign: Option<String> = conn
+                .query_row(
+                    "SELECT f.project_id FROM folder_items fi
+                     JOIN folders f ON f.id = fi.folder_id
+                     WHERE fi.creation_id = ?1 AND f.kind = 'project'
+                       AND f.project_id IS NOT NULL AND f.project_id != ''
+                       AND f.project_id != ?2
+                     LIMIT 1",
+                    params![row.id, wid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten();
+            if foreign.is_some() {
+                continue;
+            }
         }
         let members = load_local_group_member_ids(&row.id)
             .into_iter()

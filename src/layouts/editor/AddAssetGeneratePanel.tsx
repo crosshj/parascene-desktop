@@ -791,7 +791,10 @@ export function AddAssetGeneratePanel({
   }, [imageAssets, isReplicate]);
 
   // Persist form choices on the placeholder so they survive clip switches.
+  // Skip while error/running — job lifecycle fields (lastError, generationJob)
+  // are owned by the generation store; rewriting them here races "Try again".
   useEffect(() => {
+    if (phase !== "form") return;
     const next: AddAssetDraft = {
       prompt,
       audioMode: resolvedAudioMode,
@@ -812,6 +815,7 @@ export function AddAssetGeneratePanel({
     if (draftsEqual(next, clip.addAssetDraft)) return;
     onDraftChange?.(next);
   }, [
+    phase,
     prompt,
     resolvedAudioMode,
     resolvedContinuityMode,
@@ -1307,7 +1311,7 @@ export function AddAssetGeneratePanel({
           </svg>
         </button>
         <div>
-          <h2>{isReplicate ? "Replicate" : "Parascene Blue"}</h2>
+          <h2>{isReplicate ? "Replicate" : "Parascene"}</h2>
           <p>Timeline video fill</p>
         </div>
       </header>
@@ -1373,7 +1377,7 @@ export function AddAssetGeneratePanel({
             <div
               className="add-asset-generate-audio-toggle"
               role="group"
-              aria-label="Parascene Blue model"
+              aria-label="Parascene model"
             >
               <button
                 type="button"

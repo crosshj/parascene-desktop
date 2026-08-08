@@ -4,9 +4,20 @@ import {
   peaksForPlaybackTimeline,
   prepareClipWaveformLayers,
   sourceSecAtLocalTimeline,
+  waveformBarCountForWidth,
   waveformPlaybackTiles,
   waveformStripGrowSegs,
 } from "./waveformPeakDraw";
+
+describe("waveformBarCountForWidth", () => {
+  it("uses fixed 1px bars with 1px gaps", () => {
+    expect(waveformBarCountForWidth(0)).toBe(1);
+    expect(waveformBarCountForWidth(1)).toBe(1);
+    expect(waveformBarCountForWidth(2)).toBe(1);
+    expect(waveformBarCountForWidth(3)).toBe(2);
+    expect(waveformBarCountForWidth(100)).toBe(50);
+  });
+});
 
 describe("peaksForClipWindow", () => {
   it("samples the requested source-time range", () => {

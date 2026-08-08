@@ -2,6 +2,7 @@ import type { BakeInfo } from "../../library/slideshowMedia";
 import {
   ADD_ASSET_PROVIDERS,
   SELECTION_INTENT_MODES,
+  addAssetIntentAllowsLibraryGeneration,
   addAssetIntentAllowsTimelinePlacement,
   addAssetMethodsForProvider,
   findAddAssetMethod,
@@ -18,6 +19,7 @@ import {
   CompositePlatePanel,
   type CompositePlatePanelProps,
 } from "./CompositePlatePanel";
+import { ReplicateTextToImageFormLayout } from "./ReplicateTextToImageForm";
 
 export type SelectionImageItem = {
   id: string;
@@ -87,6 +89,8 @@ export function SelectionIntentPanel({
     showGenerate &&
     canGenerate &&
     addAssetIntentAllowsTimelinePlacement(generateIntent);
+  const canLibraryGenerate =
+    showGenerate && addAssetIntentAllowsLibraryGeneration(generateIntent);
   const firstPicked = items.find((item) => item.id === pickedIds[0]);
   const generateDraft = canPlaceGenerate
     ? addAssetDragDraftFromIntent(generateIntent, {
@@ -120,232 +124,254 @@ export function SelectionIntentPanel({
       ? `Selection · ${totalCount} images`
       : `Selection · ${pickedCount} of ${totalCount} images`;
 
-  return (
-    <div
-      className="add-asset-generate-pane preview-intent-pane"
-      aria-label="Choose what to do with selection"
-    >
-      <div className="add-asset-generate-body">
-        <header className="preview-intent-header">
-          <h2 className="preview-intent-title">{title}</h2>
-          <p className="muted preview-intent-lede">
-            Pick which images to use, then choose a mode before placing on the
-            timeline or generating.
-          </p>
-        </header>
+  const body = (
+    <>
+      <header className="preview-intent-header">
+        <h2 className="preview-intent-title">{title}</h2>
+        <p className="muted preview-intent-lede">
+          Pick which images to use, then choose a mode before placing on the
+          timeline or generating.
+        </p>
+      </header>
 
-        <section className="add-asset-generate-section">
-          <div className="add-asset-start-frame-assets-header">
-            <h3 style={{ margin: 0 }}>Images</h3>
-            <div className="selection-intent-pick-actions">
-              <button
-                type="button"
-                className="btn ghost"
-                disabled={pickedCount === totalCount}
-                onClick={() => onPickedIdsChange(allIds)}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                disabled={pickedCount === 0}
-                onClick={() => onPickedIdsChange([])}
-              >
-                None
-              </button>
-            </div>
+      <section className="add-asset-generate-section">
+        <div className="add-asset-start-frame-assets-header">
+          <h3 style={{ margin: 0 }}>Images</h3>
+          <div className="selection-intent-pick-actions">
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={pickedCount === totalCount}
+              onClick={() => onPickedIdsChange(allIds)}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={pickedCount === 0}
+              onClick={() => onPickedIdsChange([])}
+            >
+              None
+            </button>
           </div>
-          <p className="muted add-asset-generate-note">
-            Click images to include or exclude them from the next action.
-          </p>
-          <div
-            className="add-asset-start-frame-assets-grid selection-intent-images-grid"
-            role="listbox"
-            aria-label="Images in selection"
-            aria-multiselectable="true"
-          >
-            {items.map((item) => {
-              const selectedItem = pickedSet.has(item.id);
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="option"
-                  aria-selected={selectedItem}
-                  className={
-                    selectedItem
-                      ? "add-asset-start-frame-asset is-selected"
-                      : "add-asset-start-frame-asset"
-                  }
-                  title={item.title}
-                  onClick={() => toggleItem(item.id)}
-                >
-                  {item.thumbUrl ? (
-                    <img src={item.thumbUrl} alt="" draggable={false} />
-                  ) : (
-                    <span className="muted">Image</span>
-                  )}
-                </button>
-              );
-            })}
+        </div>
+        <p className="muted add-asset-generate-note">
+          Click images to include or exclude them from the next action.
+        </p>
+        <div
+          className="add-asset-start-frame-assets-grid selection-intent-images-grid"
+          role="listbox"
+          aria-label="Images in selection"
+          aria-multiselectable="true"
+        >
+          {items.map((item) => {
+            const selectedItem = pickedSet.has(item.id);
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="option"
+                aria-selected={selectedItem}
+                className={
+                  selectedItem
+                    ? "add-asset-start-frame-asset is-selected"
+                    : "add-asset-start-frame-asset"
+                }
+                title={item.title}
+                onClick={() => toggleItem(item.id)}
+              >
+                {item.thumbUrl ? (
+                  <img src={item.thumbUrl} alt="" draggable={false} />
+                ) : (
+                  <span className="muted">Image</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="add-asset-generate-section">
+        <h3>Mode</h3>
+        <div className="preview-intent-choice-grid" role="list">
+          {SELECTION_INTENT_MODES.map((m) => {
+            const disabled =
+              (m.id === "slideshow" && !canSlideshow) ||
+              (m.id === "generate_from_selection" && !canGenerate) ||
+              (m.id === "composite" && !canComposite);
+            return (
+              <button
+                key={m.id}
+                type="button"
+                role="listitem"
+                className={`preview-intent-choice${
+                  modeId === m.id ? " is-selected" : ""
+                }`}
+                aria-pressed={modeId === m.id}
+                disabled={disabled}
+                onClick={() => onModeChange(m.id)}
+              >
+                <span className="preview-intent-choice-label">
+                  {m.label}
+                  {!m.wired ? (
+                    <span className="preview-intent-badge">Soon</span>
+                  ) : null}
+                </span>
+                <span className="muted preview-intent-choice-desc">
+                  {m.id === "slideshow" && !canSlideshow
+                    ? "Pick at least two images for a slideshow."
+                    : m.id === "generate_from_selection" && !canGenerate
+                      ? "Pick at least one image to generate from."
+                      : m.id === "composite" && !canComposite
+                        ? "Pick at least two images for a plate."
+                        : m.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {selected && !selected.wired ? (
+        <section className="add-asset-generate-section">
+          <div className="add-asset-generate-callout">
+            <p className="muted" style={{ margin: 0 }}>
+              Coming soon — pick Slideshow to place images on the timeline, or
+              Generate from selection to use them with Parascene or Replicate.
+            </p>
           </div>
         </section>
+      ) : null}
 
-        <section className="add-asset-generate-section">
-          <h3>Mode</h3>
-          <div className="preview-intent-choice-grid" role="list">
-            {SELECTION_INTENT_MODES.map((m) => {
-              const disabled =
-                (m.id === "slideshow" && !canSlideshow) ||
-                (m.id === "generate_from_selection" && !canGenerate) ||
-                (m.id === "composite" && !canComposite);
-              return (
+      {showComposite && composite ? (
+        <CompositePlatePanel {...composite} />
+      ) : null}
+
+      {showGenerate ? (
+        <>
+          <section className="add-asset-generate-section">
+            <h3>Provider</h3>
+            <div className="preview-intent-choice-grid" role="list">
+              {ADD_ASSET_PROVIDERS.map((p) => (
                 <button
-                  key={m.id}
+                  key={p.id}
                   type="button"
                   role="listitem"
                   className={`preview-intent-choice${
-                    modeId === m.id ? " is-selected" : ""
+                    provider === p.id ? " is-selected" : ""
                   }`}
-                  aria-pressed={modeId === m.id}
-                  disabled={disabled}
-                  onClick={() => onModeChange(m.id)}
+                  aria-pressed={provider === p.id}
+                  onClick={() => selectProvider(p.id)}
                 >
-                  <span className="preview-intent-choice-label">
-                    {m.label}
-                    {!m.wired ? (
-                      <span className="preview-intent-badge">Soon</span>
-                    ) : null}
-                  </span>
+                  <span className="preview-intent-choice-label">{p.label}</span>
                   <span className="muted preview-intent-choice-desc">
-                    {m.id === "slideshow" && !canSlideshow
-                      ? "Pick at least two images for a slideshow."
-                      : m.id === "generate_from_selection" && !canGenerate
-                        ? "Pick at least one image to generate from."
-                        : m.id === "composite" && !canComposite
-                          ? "Pick at least two images for a plate."
-                          : m.description}
+                    {p.description}
                   </span>
                 </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {selected && !selected.wired ? (
-          <section className="add-asset-generate-section">
-            <div className="add-asset-generate-callout">
-              <p className="muted" style={{ margin: 0 }}>
-                Coming soon — pick Slideshow to place images on the timeline, or
-                Generate from selection to use them with Parascene Blue,
-                Replicate, or Parascene.
-              </p>
+              ))}
             </div>
           </section>
-        ) : null}
 
-        {showComposite && composite ? (
-          <CompositePlatePanel {...composite} />
-        ) : null}
-
-        {showGenerate ? (
-          <>
+          {provider ? (
             <section className="add-asset-generate-section">
-              <h3>Provider</h3>
+              <h3>Method</h3>
               <div className="preview-intent-choice-grid" role="list">
-                {ADD_ASSET_PROVIDERS.map((p) => (
+                {methods.map((m) => (
                   <button
-                    key={p.id}
+                    key={m.id}
                     type="button"
                     role="listitem"
                     className={`preview-intent-choice${
-                      provider === p.id ? " is-selected" : ""
+                      methodId === m.id ? " is-selected" : ""
                     }`}
-                    aria-pressed={provider === p.id}
-                    onClick={() => selectProvider(p.id)}
+                    aria-pressed={methodId === m.id}
+                    onClick={() => selectMethod(m.id)}
                   >
-                    <span className="preview-intent-choice-label">{p.label}</span>
+                    <span className="preview-intent-choice-label">
+                      {m.label}
+                      {!m.wired ? (
+                        <span className="preview-intent-badge">Soon</span>
+                      ) : null}
+                    </span>
                     <span className="muted preview-intent-choice-desc">
-                      {p.description}
+                      {m.description}
                     </span>
                   </button>
                 ))}
               </div>
             </section>
+          ) : null}
 
-            {provider ? (
-              <section className="add-asset-generate-section">
-                <h3>Method</h3>
-                <div className="preview-intent-choice-grid" role="list">
-                  {methods.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      role="listitem"
-                      className={`preview-intent-choice${
-                        methodId === m.id ? " is-selected" : ""
-                      }`}
-                      aria-pressed={methodId === m.id}
-                      onClick={() => selectMethod(m.id)}
-                    >
-                      <span className="preview-intent-choice-label">
-                        {m.label}
-                        {!m.wired ? (
-                          <span className="preview-intent-badge">Soon</span>
-                        ) : null}
-                      </span>
-                      <span className="muted preview-intent-choice-desc">
-                        {m.description}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
+          {selectedMethod && !selectedMethod.wired && !canLibraryGenerate ? (
+            <section className="add-asset-generate-section">
+              <div className="add-asset-generate-callout">
+                <p className="muted" style={{ margin: 0 }}>
+                  Coming soon — pick Timeline video fill under Parascene or
+                  Replicate to place a blank clip. The first picked image seeds
+                  the start frame.
+                </p>
+              </div>
+            </section>
+          ) : null}
 
-            {selectedMethod && !selectedMethod.wired ? (
-              <section className="add-asset-generate-section">
-                <div className="add-asset-generate-callout">
-                  <p className="muted" style={{ margin: 0 }}>
-                    Coming soon — pick Timeline video fill under Parascene Blue
-                    or Replicate to place a blank clip. The first picked image
-                    seeds the start frame.
-                  </p>
-                </div>
-              </section>
-            ) : null}
+          {canPlaceGenerate ? (
+            <section className="add-asset-generate-section">
+              <div className="add-asset-generate-callout">
+                <p className="muted" style={{ margin: 0 }}>
+                  Place or drag the clip onto the timeline. The first picked
+                  image is used as the start frame; generation options open
+                  once it is on the timeline.
+                </p>
+              </div>
+            </section>
+          ) : null}
+        </>
+      ) : null}
 
-            {canPlaceGenerate ? (
-              <section className="add-asset-generate-section">
-                <div className="add-asset-generate-callout">
-                  <p className="muted" style={{ margin: 0 }}>
-                    Place or drag the clip onto the timeline. The first picked
-                    image is used as the start frame; generation options open
-                    once it is on the timeline.
-                  </p>
-                </div>
-              </section>
-            ) : null}
-          </>
-        ) : null}
+      {showSlideshowConfig && draft ? (
+        <section className="add-asset-generate-section">
+          <h3>Slideshow</h3>
+          <p className="muted add-asset-generate-note">
+            Configure the slideshow, then place or drag it onto the timeline.
+            Hit Render after it is placed.
+          </p>
+          <StagingFields
+            draft={draft}
+            sourceDurationSec={sourceDurationSec}
+            onDraftChange={onDraftChange}
+            bakeInfo={bakeInfo}
+          />
+        </section>
+      ) : null}
+    </>
+  );
 
-        {showSlideshowConfig && draft ? (
-          <section className="add-asset-generate-section">
-            <h3>Slideshow</h3>
-            <p className="muted add-asset-generate-note">
-              Configure the slideshow, then place or drag it onto the timeline.
-              Hit Render after it is placed.
-            </p>
-            <StagingFields
-              draft={draft}
-              sourceDurationSec={sourceDurationSec}
-              onDraftChange={onDraftChange}
-              bakeInfo={bakeInfo}
-            />
-          </section>
-        ) : null}
-      </div>
+  if (canLibraryGenerate) {
+    return (
+      <ReplicateTextToImageFormLayout idPrefix="selection-t2i">
+        {({ fields, footer }) => (
+          <div
+            className="add-asset-generate-pane preview-intent-pane"
+            aria-label="Choose what to do with selection"
+          >
+            <div className="add-asset-generate-body">
+              {body}
+              {fields}
+            </div>
+            {footer}
+          </div>
+        )}
+      </ReplicateTextToImageFormLayout>
+    );
+  }
+
+  return (
+    <div
+      className="add-asset-generate-pane preview-intent-pane"
+      aria-label="Choose what to do with selection"
+    >
+      <div className="add-asset-generate-body">{body}</div>
 
       {canPlaceSlideshow && draft ? (
         <div className="add-asset-generate-footer preview-intent-footer">

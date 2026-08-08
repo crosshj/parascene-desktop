@@ -25,12 +25,13 @@ function modeLabel(generation: AddAssetGeneration): string {
 
 function providerLabel(generation: AddAssetGeneration): string | null {
   const provider = generation.provider?.trim();
-  if (provider === "parascene_blue") return "Parascene Blue";
+  if (provider === "parascene_blue" || provider === "parascene") {
+    return "Parascene";
+  }
   if (provider === "replicate") return "Replicate";
-  if (provider === "parascene") return "Parascene";
   const model = generation.model?.trim();
   if (model?.includes("/")) return "Replicate";
-  if (model) return "Parascene Blue";
+  if (model) return "Parascene";
   return null;
 }
 

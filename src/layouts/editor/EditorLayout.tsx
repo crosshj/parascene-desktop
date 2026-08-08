@@ -21,6 +21,7 @@ import {
   collectCabinetMemberIdsFromCovers,
   isProjectOwnedCreation,
 } from "../../project/projectOwnership";
+import { recoverMissingCabinetIdsFromCreations } from "../../project/desktopProjectGroups";
 import {
   aliveAssetIdsForSelection,
   collectCabinetDisplayMemberIds,
@@ -270,6 +271,18 @@ export function EditorLayout() {
   /** Internal clipboard for Cmd/Ctrl+C / Cmd/Ctrl+V of timeline clips. */
   const clipClipboardRef = useRef<TimelineClip[]>([]);
   const mergeRunningRef = useRef(false);
+  /**
+   * Eager timeline mirror — updated synchronously in onTimelineClipsChange so
+   * Place/Drag selection is not cleared before the async project store lands.
+   */
+  const timelineRef = useRef(project.timeline);
+  /**
+   * Clip ids from the latest eager timeline commit. Used during render so a
+   * just-placed selection stays alive before `project.timeline` catches up.
+   */
+  const [pendingAliveClipIds, setPendingAliveClipIds] = useState<
+    string[] | null
+  >(null);
   /** Asset ids last observed on the open project — used to detect removals only. */
   const knownAssetIdsRef = useRef<{
     projectId: string;
@@ -354,6 +367,46 @@ export function EditorLayout() {
   const [cabinetOwnedMemberIds, setCabinetOwnedMemberIds] = useState<string[]>(
     [],
   );
+
+  // Assets expands cabinets only via store pointers. If those were cleared but
+  // stamped covers remain in project assets, restore images/videos group ids.
+  const assetIdsKey = project.assets.map((asset) => asset.id).join("\0");
+  useEffect(() => {
+    if (project.imagesGroupId && project.videosGroupId) return;
+    const ids = assetIdsKey ? assetIdsKey.split("\0") : [];
+    if (ids.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await getCreations(ids);
+        if (cancelled) return;
+        const recovered = recoverMissingCabinetIdsFromCreations({
+          projectId: project.id,
+          imagesGroupId: project.imagesGroupId,
+          videosGroupId: project.videosGroupId,
+          creations: rows,
+        });
+        if (
+          recovered.imagesGroupId === undefined &&
+          recovered.videosGroupId === undefined
+        ) {
+          return;
+        }
+        setOpenProjectGroupIds(recovered);
+      } catch {
+        /* keep null pointers; user can re-file */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    assetIdsKey,
+    project.id,
+    project.imagesGroupId,
+    project.videosGroupId,
+    setOpenProjectGroupIds,
+  ]);
   const outsideReferenceIds = (() => {
     try {
       const stored = loadStoredProjectStrict(project.id);
@@ -621,13 +674,30 @@ export function EditorLayout() {
     }
   }
 
+  // Drop pending eager ids once the project store matches that commit.
+  if (pendingAliveClipIds) {
+    const storeIds = new Set(project.timeline.map((clip) => clip.id));
+    if (
+      pendingAliveClipIds.length === storeIds.size &&
+      pendingAliveClipIds.every((id) => storeIds.has(id))
+    ) {
+      setPendingAliveClipIds(null);
+    }
+  }
+
   // Drop local selection if clips were removed from the timeline.
+  // Include pendingAliveClipIds so Place/Drag selection is not cleared before
+  // the async project store catches up.
   if (selectedClipIds.length > 0) {
-    const alive = new Set(project.timeline.map((c) => c.id));
-    const nextIds = selectedClipIds.filter((id) => alive.has(id));
+    const aliveIds = new Set<string>();
+    for (const clip of project.timeline) aliveIds.add(clip.id);
+    if (pendingAliveClipIds) {
+      for (const id of pendingAliveClipIds) aliveIds.add(id);
+    }
+    const nextIds = selectedClipIds.filter((id) => aliveIds.has(id));
     const clipSelectionStale =
       nextIds.length !== selectedClipIds.length ||
-      (selectedClipId !== null && !alive.has(selectedClipId));
+      (selectedClipId !== null && !aliveIds.has(selectedClipId));
     if (clipSelectionStale) {
       if (nextIds.length === 0) {
         setSelectedClipId(null);
@@ -639,7 +709,9 @@ export function EditorLayout() {
           selectedClipId && nextIds.includes(selectedClipId)
             ? selectedClipId
             : nextIds[0];
-        const primary = project.timeline.find((c) => c.id === primaryId);
+        const primary =
+          displayTimeline.find((c) => c.id === primaryId) ??
+          project.timeline.find((c) => c.id === primaryId);
         setSelectedClipId(primaryId);
         if (primary) {
           const draft = timelineClipToStagedDraft(primary);
@@ -984,7 +1056,6 @@ export function EditorLayout() {
     Map<string, BakeInfo>
   >(() => new Map());
   const bakeInflightRef = useRef<Set<string>>(new Set());
-  const timelineRef = useRef(project.timeline);
   const aspectRatioRef = useRef(project.aspectRatio);
   const selectedClipIdsRef = useRef(selectedClipIds);
 
@@ -1392,6 +1463,7 @@ export function EditorLayout() {
         .filter((c) => !synced.some((n) => n.id === c.id))
         .map((c) => c.id);
       timelineRef.current = synced;
+      setPendingAliveClipIds(synced.map((clip) => clip.id));
       if (!options?.live) {
         recordUiOpTrace({
           type: "timeline_commit",
@@ -2195,12 +2267,32 @@ export function EditorLayout() {
             return next;
           });
         }}
-        onClearAddAssetGenerationError={() =>
+        onClearAddAssetGenerationError={() => {
+          const clip = generateTargetClip;
+          if (clip?.addAssetDraft) {
+            const rest = { ...clip.addAssetDraft };
+            delete rest.lastError;
+            delete rest.replicatePredictionId;
+            delete rest.generationJob;
+            setOpenProjectTimeline((prev) => {
+              const next = prev.map((c) =>
+                c.id === clip.id
+                  ? {
+                      ...c,
+                      addAssetDraft:
+                        Object.keys(rest).length > 0 ? rest : undefined,
+                    }
+                  : c,
+              );
+              timelineRef.current = next;
+              return next;
+            });
+          }
           clearAddAssetGenerationError({
             projectId: project.id,
-            clipId: generateTargetClip?.id ?? "",
-          })
-        }
+            clipId: clip?.id ?? "",
+          });
+        }}
         onRetryAddAssetDownload={retryAddAssetDownload}
         imageAssets={project.assets.filter((asset) => asset.kind === "image")}
         selectedAssetIds={

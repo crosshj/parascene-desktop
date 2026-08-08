@@ -241,6 +241,41 @@ describe("addAssetGenerationStore", () => {
     expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-1");
   });
 
+  it("clears a timed-out clip while another generation is running", async () => {
+    const clearFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure: vi.fn(),
+      clearFailure,
+      applyInFlight: vi.fn(),
+    });
+    runMock.mockImplementation(() => new Promise(() => {}));
+    startAddAssetGenerationJob({
+      projectId: "proj-1",
+      request: { ...makeRequest(), clip: { ...makeRequest().clip, id: "ph-running" } },
+      runOpts: {
+        timeline: [],
+        mainAudioCreationId: null,
+        aspectRatio: "16:9",
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        imagesGroupId: null,
+        videosGroupId: null,
+      },
+    });
+    expect(getAddAssetGenerationSession()?.clipId).toBe("ph-running");
+    expect(getAddAssetGenerationSession()?.phase).toBe("running");
+
+    clearAddAssetGenerationError({
+      projectId: "proj-1",
+      clipId: "ph-timed-out",
+    });
+
+    expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-timed-out");
+    expect(getAddAssetGenerationSession()?.clipId).toBe("ph-running");
+    expect(getAddAssetGenerationSession()?.phase).toBe("running");
+  });
+
   it("persists remote job ids via onRemoteJob for restart resume", async () => {
     const applyInFlight = vi.fn();
     bindAddAssetGenerationApplier({

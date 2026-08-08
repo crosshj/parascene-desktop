@@ -2,15 +2,15 @@
 
 export type IntentPlacement = "timeline" | "none";
 
-export type AddAssetProviderId = "parascene_blue" | "replicate" | "parascene";
+/** Stable id `parascene_blue` (legacy); UI label is "Parascene". */
+export type AddAssetProviderId = "parascene_blue" | "replicate";
 
 export type AddAssetMethodId =
   | "blue_timeline_fill"
   | "blue_text_to_video"
   | "replicate_timeline_fill"
   | "replicate_text_to_image"
-  | "replicate_image_to_image"
-  | "parascene_placeholder";
+  | "replicate_image_to_image";
 
 export type SelectionIntentModeId =
   | "slideshow"
@@ -49,18 +49,13 @@ export type SelectionIntentModeDef = {
 export const ADD_ASSET_PROVIDERS: readonly AddAssetProviderDef[] = [
   {
     id: "parascene_blue",
-    label: "Parascene Blue",
+    label: "Parascene",
     description: "Audio- and frame-driven video generation on the timeline.",
   },
   {
     id: "replicate",
     label: "Replicate",
     description: "Image and video models hosted on Replicate.",
-  },
-  {
-    id: "parascene",
-    label: "Parascene",
-    description: "Parascene generation paths (coming soon).",
   },
 ] as const;
 
@@ -97,21 +92,13 @@ export const ADD_ASSET_METHODS: readonly AddAssetMethodDef[] = [
     label: "Text → image",
     description: "Generate a still from a text prompt.",
     placement: "none",
-    wired: false,
+    wired: true,
   },
   {
     id: "replicate_image_to_image",
     provider: "replicate",
     label: "Image → image",
     description: "Mutate or restyle an existing still.",
-    placement: "none",
-    wired: false,
-  },
-  {
-    id: "parascene_placeholder",
-    provider: "parascene",
-    label: "Parascene generate",
-    description: "Parascene creation methods will appear here.",
     placement: "none",
     wired: false,
   },
@@ -129,8 +116,7 @@ export const SELECTION_INTENT_MODES: readonly SelectionIntentModeDef[] = [
   {
     id: "generate_from_selection",
     label: "Generate from selection",
-    description:
-      "Use the picked images with Parascene Blue, Replicate, or Parascene.",
+    description: "Use the picked images with Parascene or Replicate.",
     placement: "none",
     wired: true,
   },
@@ -170,6 +156,18 @@ export function addAssetIntentAllowsTimelinePlacement(
   return Boolean(method?.wired && method.placement === "timeline");
 }
 
+/** Wired library-only methods (e.g. Replicate text → image) — no Place/Drag. */
+export function addAssetIntentAllowsLibraryGeneration(
+  intent: AddAssetIntent | null | undefined,
+): boolean {
+  const method = findAddAssetMethod(intent?.methodId);
+  return Boolean(
+    method?.wired &&
+      method.placement === "none" &&
+      method.id === "replicate_text_to_image",
+  );
+}
+
 export function selectionModeAllowsTimelinePlacement(
   modeId: SelectionIntentModeId | null | undefined,
 ): boolean {
@@ -178,11 +176,7 @@ export function selectionModeAllowsTimelinePlacement(
 }
 
 export function isAddAssetProviderId(value: unknown): value is AddAssetProviderId {
-  return (
-    value === "parascene_blue" ||
-    value === "replicate" ||
-    value === "parascene"
-  );
+  return value === "parascene_blue" || value === "replicate";
 }
 
 export function isAddAssetMethodId(value: unknown): value is AddAssetMethodId {

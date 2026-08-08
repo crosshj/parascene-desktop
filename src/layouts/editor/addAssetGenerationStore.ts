@@ -132,13 +132,23 @@ export function clearAddAssetGenerationError(opts?: {
   projectId: string;
   clipId: string;
 }): void {
-  if (session?.phase === "error") {
+  const projectId = opts?.projectId?.trim() || "";
+  const clipId = opts?.clipId?.trim() || "";
+
+  // Always clear the clip the user dismissed. Do not require the in-memory
+  // session to still be in error — another placeholder may be generating.
+  if (projectId && clipId) {
+    applier?.clearFailure(projectId, clipId);
+  } else if (session?.phase === "error") {
     applier?.clearFailure(session.projectId, session.clipId);
-    setSession(null);
-    return;
   }
-  if (opts?.projectId && opts.clipId) {
-    applier?.clearFailure(opts.projectId, opts.clipId);
+
+  // Drop the error session only when it belongs to the dismissed clip (or the
+  // caller did not name a clip). Never clear a running job for another clip.
+  if (session?.phase === "error") {
+    if (!clipId || session.clipId === clipId) {
+      setSession(null);
+    }
   }
 }
 

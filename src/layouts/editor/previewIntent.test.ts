@@ -3,6 +3,7 @@ import {
   ADD_ASSET_METHODS,
   ADD_ASSET_PROVIDERS,
   SELECTION_INTENT_MODES,
+  addAssetIntentAllowsLibraryGeneration,
   addAssetIntentAllowsTimelinePlacement,
   addAssetMethodsForProvider,
   findAddAssetMethod,
@@ -12,7 +13,12 @@ import { addAssetDragDraftFromIntent } from "./stagedClip";
 
 describe("previewIntent catalog", () => {
   it("lists providers and methods", () => {
-    expect(ADD_ASSET_PROVIDERS.length).toBeGreaterThanOrEqual(3);
+    expect(ADD_ASSET_PROVIDERS.length).toBe(2);
+    expect(ADD_ASSET_PROVIDERS.map((p) => p.id)).toEqual([
+      "parascene_blue",
+      "replicate",
+    ]);
+    expect(ADD_ASSET_PROVIDERS[0]?.label).toBe("Parascene");
     expect(ADD_ASSET_METHODS.some((m) => m.wired && m.placement === "timeline")).toBe(
       true,
     );
@@ -40,6 +46,30 @@ describe("previewIntent catalog", () => {
     ).toBe(false);
     expect(selectionModeAllowsTimelinePlacement("slideshow")).toBe(true);
     expect(selectionModeAllowsTimelinePlacement("composite")).toBe(false);
+  });
+
+  it("wires Replicate text → image for library generation only", () => {
+    const method = findAddAssetMethod("replicate_text_to_image");
+    expect(method?.wired).toBe(true);
+    expect(method?.placement).toBe("none");
+    expect(
+      addAssetIntentAllowsLibraryGeneration({
+        provider: "replicate",
+        methodId: "replicate_text_to_image",
+      }),
+    ).toBe(true);
+    expect(
+      addAssetIntentAllowsLibraryGeneration({
+        provider: "replicate",
+        methodId: "replicate_timeline_fill",
+      }),
+    ).toBe(false);
+    expect(
+      addAssetIntentAllowsLibraryGeneration({
+        provider: "replicate",
+        methodId: "replicate_image_to_image",
+      }),
+    ).toBe(false);
   });
 
   it("filters methods by provider", () => {

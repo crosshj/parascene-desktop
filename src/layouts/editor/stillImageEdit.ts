@@ -130,7 +130,7 @@ export function modelProducesImageOutput(
   return /\bimage\b|image_(?:in|out)|photo|picture|inpaint|upscal/.test(metadata);
 }
 
-function pickPromptField(
+export function pickPromptField(
   inputs: readonly ReplicateInputField[],
 ): ReplicateInputField | null {
   return (

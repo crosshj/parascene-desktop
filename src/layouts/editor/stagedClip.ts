@@ -122,9 +122,7 @@ export function addAssetDraftFromGeneration(
     generation.methodId?.trim() ||
     (provider === "replicate"
       ? "replicate_timeline_fill"
-      : provider === "parascene"
-        ? "parascene_placeholder"
-        : "blue_timeline_fill");
+      : "blue_timeline_fill");
   const draft: AddAssetDraft = {
     prompt: generation.prompt,
     continuityMode: generation.mode ?? "start_frame",

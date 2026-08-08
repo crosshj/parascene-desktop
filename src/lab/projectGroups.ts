@@ -51,6 +51,7 @@ import {
   mutateStoredProjectsWithNativeMutation,
 } from "../project/projectMutationCoordinator";
 import { addProjectAssets, getProjectFolder } from "../project/projectFolderClient";
+import { listFolders } from "../library/folderClient";
 import { collapseCabinetMembersFromProjectFolder } from "../project/cabinetFolderCollapse";
 import { ingestRemoteCreation } from "./ingestCreation";
 import {
@@ -751,6 +752,34 @@ export function findCabinetCandidatesInCatalog(
 }
 
 /**
+ * Covers filed in another project's folder must not be reused — stamped
+ * `meta.desktop.projectId` can be overwritten by a bad append, so folder
+ * membership is the ownership authority for recovery.
+ */
+async function cabinetIdsOwnedByOtherProjects(
+  projectId: string,
+): Promise<Set<string>> {
+  const want = projectId.trim();
+  const foreign = new Set<string>();
+  if (!want) return foreign;
+  try {
+    const folders = await listFolders();
+    for (const folder of folders) {
+      if (folder.kind !== "project") continue;
+      const owner = folder.projectId?.trim() || "";
+      if (!owner || owner === want) continue;
+      for (const id of folder.memberIds) {
+        const cid = String(id).trim();
+        if (cid) foreign.add(cid);
+      }
+    }
+  } catch {
+    /* listing failed — skip folder filter rather than block ensure/file */
+  }
+  return foreign;
+}
+
+/**
  * Resolve the single Images/Videos cabinet for a project.
  * Prefers a live stored id; otherwise recovers from the local catalog.
  * Returns null only when no cabinet exists yet (safe to create the first one).
@@ -768,16 +797,23 @@ export async function resolveProjectCabinetId(opts: {
   const label = opts.kind === "images" ? "Images" : "Videos";
   const role = roleForProjectGroupKind(opts.kind);
   const stored = opts.storedGroupId?.trim() || "";
+  const foreignOwned = await cabinetIdsOwnedByOtherProjects(opts.projectId);
 
   if (stored) {
-    try {
-      const row = await opts.sdk.getCreation(stored);
-      opts.onProgress?.(`${label}: verified ${stored} still on Parascene.`);
-      return String(row.id);
-    } catch {
+    if (foreignOwned.has(stored)) {
       opts.onProgress?.(
-        `${label}: stored group ${stored} missing — recovering from catalog…`,
+        `${label}: stored group ${stored} belongs to another project folder — will create a new cabinet.`,
       );
+    } else {
+      try {
+        const row = await opts.sdk.getCreation(stored);
+        opts.onProgress?.(`${label}: verified ${stored} still on Parascene.`);
+        return String(row.id);
+      } catch {
+        opts.onProgress?.(
+          `${label}: stored group ${stored} missing — recovering from catalog…`,
+        );
+      }
     }
   }
 
@@ -793,7 +829,7 @@ export async function resolveProjectCabinetId(opts: {
     role,
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
-  });
+  }).filter((c) => !foreignOwned.has(c.id));
   const recovered = pickCabinetKeeper(candidates, stored || null);
   if (recovered) {
     opts.onProgress?.(
@@ -1026,24 +1062,12 @@ export function bucketDesktopCabinets(
     identified.push({ id: creation.id, identity });
   }
 
-  // Prefer a stamped projectId for a given party title when any cover has it.
-  const titleToProjectId = new Map<string, string>();
-  for (const { identity } of identified) {
-    const title = identity.projectTitle?.trim();
-    const pid = identity.projectId?.trim();
-    if (title && pid && !titleToProjectId.has(title)) {
-      titleToProjectId.set(title, pid);
-    }
-  }
-
+  // Bucket by stamped projectId when present. Party-only covers stay in a
+  // title: key — do not promote them onto a stamped id just because titles
+  // match (default "Untitled project" cabinets from different projects collide).
   const map = new Map<string, DedupeCabinetBucket>();
   for (const { id, identity } of identified) {
-    const projectId =
-      identity.projectId?.trim() ||
-      (identity.projectTitle
-        ? titleToProjectId.get(identity.projectTitle.trim())
-        : undefined) ||
-      null;
+    const projectId = identity.projectId?.trim() || null;
     const projectTitle = identity.projectTitle?.trim() || null;
     const projectKey = desktopCabinetProjectKey({
       projectId,

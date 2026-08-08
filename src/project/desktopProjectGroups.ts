@@ -8,6 +8,8 @@
  * not expand every desktop-stamped group in the Assets pane.
  *
  * Party names are human-facing on Parascene; meta is the machine signal.
+ * Filing / ensure recovery matches stamped `meta.desktop.projectId` only when
+ * the caller has a project id — never party-name title alone (titles collide).
  */
 
 import { isGroupCreation } from "../library/creationFlags";
@@ -124,7 +126,15 @@ export function desktopCabinetProjectKey(opts: {
   return null;
 }
 
-/** True when this cover belongs to the given project + role. */
+/**
+ * True when this cover belongs to the given project + role.
+ *
+ * When the caller has a project id (normal Editor/Lab filing), match **only**
+ * stamped `meta.desktop.projectId`. Party-name title must not claim another
+ * project's cabinet — default titles like "Untitled project" collide.
+ *
+ * Title matching is reserved for orphan recovery when no project id is known.
+ */
 export function matchesDesktopCabinetProject(
   identity: {
     role: DesktopProjectGroupRole;
@@ -140,11 +150,11 @@ export function matchesDesktopCabinetProject(
   if (identity.role !== opts.role) return false;
   const wantId = opts.projectId?.trim() || "";
   const wantTitle = opts.projectTitle?.trim() || "";
-  // Prefer stamped projectId when both sides have it.
-  if (identity.projectId && wantId) {
-    return identity.projectId === wantId;
+  if (wantId) {
+    const stamped = identity.projectId?.trim() || "";
+    return Boolean(stamped && stamped === wantId);
   }
-  // Party-name title match when meta projectId is missing.
+  // Orphan / no-id tools only: party-name title match.
   if (wantTitle && identity.projectTitle) {
     return identity.projectTitle === wantTitle;
   }
@@ -162,6 +172,62 @@ export function isProjectCabinetId(
     sid === String(cabinets.imagesGroupId ?? "").trim() ||
     sid === String(cabinets.videosGroupId ?? "").trim()
   );
+}
+
+/**
+ * When store pointers were cleared but stamped cabinet covers remain among
+ * project assets, recover `imagesGroupId` / `videosGroupId` so Editor Assets
+ * can expand them. Match stamped `projectId` only — never party title.
+ */
+export function recoverMissingCabinetIdsFromCreations(opts: {
+  projectId: string;
+  imagesGroupId?: string | null;
+  videosGroupId?: string | null;
+  creations: readonly Pick<
+    Creation,
+    "id" | "remoteJson" | "filename" | "title" | "createdAt"
+  >[];
+}): { imagesGroupId?: string; videosGroupId?: string } {
+  const want = opts.projectId.trim();
+  const needImages = !opts.imagesGroupId?.trim();
+  const needVideos = !opts.videosGroupId?.trim();
+  if (!want || (!needImages && !needVideos)) return {};
+
+  type Cand = { id: string; createdAt: string };
+  const images: Cand[] = [];
+  const videos: Cand[] = [];
+  for (const creation of opts.creations) {
+    const identity = identifyDesktopCabinet(creation);
+    if (!identity) continue;
+    if (!matchesDesktopCabinetProject(identity, {
+      role: identity.role,
+      projectId: want,
+    })) {
+      continue;
+    }
+    const id = String(creation.id).trim();
+    if (!id) continue;
+    const row = { id, createdAt: creation.createdAt || "" };
+    if (identity.role === "project_images") images.push(row);
+    else if (identity.role === "project_videos") videos.push(row);
+  }
+
+  const pickNewest = (cands: Cand[]): string | undefined => {
+    if (cands.length === 0) return undefined;
+    return [...cands].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+      ?.id;
+  };
+
+  const out: { imagesGroupId?: string; videosGroupId?: string } = {};
+  if (needImages) {
+    const id = pickNewest(images);
+    if (id) out.imagesGroupId = id;
+  }
+  if (needVideos) {
+    const id = pickNewest(videos);
+    if (id) out.videosGroupId = id;
+  }
+  return out;
 }
 
 function desktopMetaFromUnknown(value: unknown): DesktopProjectGroupMeta | null {
