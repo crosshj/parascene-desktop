@@ -4,6 +4,7 @@ import {
   creationDetailUrl,
   hasLocalMedia,
   isParasceneUnavailable,
+  isPlayableLocalPath,
   withPreviewCacheBust,
 } from "./previewUrl";
 import type { Creation } from "./types";
@@ -93,6 +94,35 @@ describe("creationDetailUrl", () => {
       }),
     );
     expect(image).toMatch(/^asset:\/\//);
+  });
+
+  it("rejects cover PNGs stored as audio local_path", () => {
+    expect(
+      isPlayableLocalPath(
+        "/Movies/Parascene/Library/media/20794_cover.png",
+        "audio",
+      ),
+    ).toBe(false);
+    expect(
+      creationDetailUrl(
+        base({
+          mediaType: "audio",
+          localPath: "/Movies/Parascene/Library/media/20794_cover.png",
+          downloadState: "local",
+          updatedAt: "t1",
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      creationDetailUrl(
+        base({
+          mediaType: "audio",
+          localPath: "/Movies/Parascene/Library/media/song.mp3",
+          downloadState: "local",
+          updatedAt: "t1",
+        }),
+      ),
+    ).toMatch(/^media:\/\//);
   });
 });
 

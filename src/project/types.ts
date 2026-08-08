@@ -106,7 +106,7 @@ export type TimelineClip = {
   isAddAssetPlaceholder?: boolean;
   /**
    * When true, trimming In in source preview shifts timeline startSec to stay
-   * synced. Audio clips are always locked; image clips are never locked.
+   * synced. Audio and image clips are never locked.
    */
   timelineLocked?: boolean;
   /**

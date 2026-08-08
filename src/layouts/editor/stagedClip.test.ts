@@ -804,6 +804,44 @@ describe("stagedClip", () => {
     expect(clipTimelineMoveEnabled({ timelineLocked: true })).toBe(false);
     expect(clipTimelineMoveEnabled({ timelineLocked: undefined })).toBe(true);
     expect(clipTimelineMoveEnabled({})).toBe(true);
+    expect(
+      clipTimelineMoveEnabled({
+        kind: "audio",
+        lane: "audio",
+        timelineLocked: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps audio clips unlocked so they can move on the timeline", () => {
+    const draft = defaultStagedClipDraft({
+      assetId: "a1",
+      label: "Song",
+      kind: "audio",
+      sourceDurationSec: 30,
+    });
+    draft.inSec = 0;
+    draft.outSec = 20;
+    draft.timelineLocked = true;
+    const next = applyDraftToTimelineClip(
+      {
+        id: "c1",
+        label: "30.0s",
+        startSec: 0,
+        endSec: 30,
+        assetId: "a1",
+        kind: "audio",
+        lane: "audio",
+        inSec: 0,
+        outSec: 30,
+        timelineLocked: true,
+      },
+      draft,
+    );
+    expect(next.timelineLocked).toBeUndefined();
+    expect(clipTimelineMoveEnabled(next)).toBe(true);
+    expect(next.endSec).toBe(20);
+    expect(next.outSec).toBe(20);
   });
 
   it("seeds a duplicate-generate draft from generation provenance", () => {

@@ -1,7 +1,7 @@
 use super::catalog::{
-    clear_local_thumb_paths, default_paths, delete_creation_local, get_creation_by_id,
-    get_creations_by_ids, invalidate_disk_size_cache, list_all_creations, list_creations,
-    list_creations_page, mark_downloaded, ready_connection, set_download_state,
+    clear_local_media_path, clear_local_thumb_paths, default_paths, delete_creation_local,
+    get_creation_by_id, get_creations_by_ids, invalidate_disk_size_cache, list_all_creations,
+    list_creations, list_creations_page, mark_downloaded, ready_connection, set_download_state,
     set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
 use super::thumb_fill::fill_and_record_local_thumb;
@@ -512,6 +512,26 @@ pub(crate) fn needs_download(c: &Creation) -> bool {
     if c.remote_url.as_deref().unwrap_or("").is_empty() {
         return false;
     }
+    // Cover-only "local" audio is not playable media — but re-fetching the same
+    // image URL cannot produce audio. Skip until a real audio remote exists.
+    if c.media_type.eq_ignore_ascii_case("audio") {
+        let local_is_image = c
+            .local_path
+            .as_deref()
+            .map(|p| is_image_media_path(Path::new(p)))
+            .unwrap_or(false);
+        let remote_is_image = c
+            .remote_url
+            .as_deref()
+            .map(|u| {
+                let path = u.split('?').next().unwrap_or(u);
+                is_image_media_path(Path::new(path))
+            })
+            .unwrap_or(false);
+        if local_is_image || remote_is_image {
+            return false;
+        }
+    }
     match c.download_state.as_str() {
         "local" => c
             .local_path
@@ -646,6 +666,61 @@ fn local_file_ok(path: Option<&str>) -> bool {
     path.filter(|p| !p.is_empty())
         .map(|p| Path::new(p).is_file())
         .unwrap_or(false)
+}
+
+fn path_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+}
+
+fn is_image_media_path(path: &Path) -> bool {
+    matches!(
+        path_extension(path).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "heic" | "avif")
+    )
+}
+
+fn is_audio_media_path(path: &Path) -> bool {
+    matches!(
+        path_extension(path).as_deref(),
+        Some("mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "oga" | "opus" | "aiff" | "aif")
+    )
+}
+
+/// Persist a downloaded media file. Audio creations that only fetched cover art
+/// must not be marked `local` with a PNG `local_path` (lightbox would spin).
+fn record_downloaded_media(
+    conn: &rusqlite::Connection,
+    creation: &Creation,
+    media_path: &Path,
+    thumb_hint: Option<&str>,
+) -> Result<(), String> {
+    let path_str = media_path.display().to_string();
+    let mt = creation.media_type.to_ascii_lowercase();
+    if mt == "audio" && is_image_media_path(media_path) {
+        let thumb = thumb_hint
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or(path_str.as_str());
+        set_local_thumb_path(conn, &creation.id, thumb)?;
+        clear_local_media_path(conn, &creation.id)?;
+        eprintln!(
+            "[library] audio {} remote is cover art only — kept thumb, left media remote",
+            creation.id
+        );
+        return Ok(());
+    }
+    if mt == "audio" && !is_audio_media_path(media_path) && path_extension(media_path).is_some() {
+        // Unknown non-audio payload for an audio row — don't claim local media.
+        clear_local_media_path(conn, &creation.id)?;
+        return Err(format!(
+            "Downloaded file for audio {} is not an audio format ({})",
+            creation.id,
+            path_extension(media_path).unwrap_or_default()
+        ));
+    }
+    mark_downloaded(conn, &creation.id, &path_str, thumb_hint)
 }
 
 fn cloud_missing_fit(c: &Creation) -> bool {
@@ -1090,10 +1165,10 @@ async fn download_batch(
                 });
                 {
                     let conn = ready_connection(paths)?;
-                    mark_downloaded(
+                    record_downloaded_media(
                         &conn,
-                        &creation.id,
-                        &media_path.display().to_string(),
+                        &creation,
+                        &media_path,
                         thumb.as_deref(),
                     )?;
                 }
@@ -1197,12 +1272,7 @@ async fn download_media_only(
             };
             {
                 let conn = ready_connection(paths)?;
-                mark_downloaded(
-                    &conn,
-                    &creation.id,
-                    &media_path.display().to_string(),
-                    thumb.as_deref(),
-                )?;
+                record_downloaded_media(&conn, &creation, &media_path, thumb.as_deref())?;
             }
             try_fill_native_thumb_after_media(paths, &creation.id);
             emit_creation_updated(app, &creation.id);
@@ -1328,10 +1398,10 @@ async fn download_media_batch(
                 };
                 {
                     let conn = ready_connection(paths)?;
-                    mark_downloaded(
+                    record_downloaded_media(
                         &conn,
-                        &creation.id,
-                        &media_path.display().to_string(),
+                        &creation,
+                        &media_path,
                         thumb.as_deref(),
                     )?;
                 }

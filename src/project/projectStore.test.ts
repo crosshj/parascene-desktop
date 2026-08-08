@@ -362,6 +362,21 @@ describe("projectStore", () => {
     });
   });
 
+  it("strips timelineLocked from audio clips so music stays movable", () => {
+    const clip = normalizeTimelineClip({
+      id: "song-1",
+      label: "30.0s",
+      startSec: 0,
+      endSec: 30,
+      assetId: "a1",
+      kind: "audio",
+      lane: "audio",
+      timelineLocked: true,
+    });
+    expect(clip?.kind).toBe("audio");
+    expect(clip?.timelineLocked).toBeUndefined();
+  });
+
   it("round-trips addAssetDraft on placeholder clips", () => {
     const clip = normalizeTimelineClip({
       id: "ph-1",

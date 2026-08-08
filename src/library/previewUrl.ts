@@ -1,6 +1,68 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Creation } from "./types";
 
+const IMAGE_EXTS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "bmp",
+  "tif",
+  "tiff",
+  "heic",
+  "avif",
+]);
+const AUDIO_EXTS = new Set([
+  "mp3",
+  "wav",
+  "m4a",
+  "aac",
+  "flac",
+  "ogg",
+  "oga",
+  "opus",
+  "aiff",
+  "aif",
+]);
+const VIDEO_EXTS = new Set([
+  "mp4",
+  "mov",
+  "webm",
+  "m4v",
+  "mkv",
+  "avi",
+]);
+
+function pathExtension(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path;
+  const dot = base.lastIndexOf(".");
+  if (dot < 0) return "";
+  return base.slice(dot + 1).toLowerCase();
+}
+
+/**
+ * True when `localPath` looks like real playable media for this creation kind.
+ * Cloud audio imports often store the cover PNG as `local_path` and mark
+ * download_state=local — feeding that into `<audio>` spins forever.
+ */
+export function isPlayableLocalPath(
+  path: string | null | undefined,
+  mediaType: string | null | undefined,
+): boolean {
+  const trimmed = path?.trim();
+  if (!trimmed) return false;
+  const ext = pathExtension(trimmed);
+  if (!ext) return true;
+  const kind = String(mediaType ?? "")
+    .trim()
+    .toLowerCase();
+  if (kind === "audio") return AUDIO_EXTS.has(ext);
+  if (kind === "video") return VIDEO_EXTS.has(ext);
+  if (kind === "image") return IMAGE_EXTS.has(ext) || !AUDIO_EXTS.has(ext);
+  return true;
+}
+
 /**
  * Local file URL for WebView.
  * Video/audio must use the custom `media` scheme (HTTP Range) — WebKit on
@@ -95,8 +157,11 @@ export function creationPreviewUrl(c: Creation): string | null {
 
 /** Lightbox / Editor / timeline media — local disk only (never remote). */
 export function creationDetailUrl(c: Creation): string | null {
-  if (c.localPath) {
-    const playback = c.mediaType === "video" || c.mediaType === "audio";
+  if (c.localPath && isPlayableLocalPath(c.localPath, c.mediaType)) {
+    const kind = String(c.mediaType ?? "")
+      .trim()
+      .toLowerCase();
+    const playback = kind === "video" || kind === "audio";
     const src = fileSrc(c.localPath, { playback });
     if (src) return withPreviewCacheBust(src, c.updatedAt);
   }

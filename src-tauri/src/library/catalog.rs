@@ -1380,6 +1380,59 @@ pub(crate) fn mark_downloaded(
     Ok(())
 }
 
+/// Clear a bogus full-media path (e.g. cover PNG stored as audio local_path).
+pub(crate) fn clear_local_media_path(conn: &Connection, id: &str) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        r#"
+        UPDATE creations
+        SET local_path = NULL,
+            download_state = CASE
+              WHEN remote_url IS NOT NULL AND remote_url != '' THEN 'remote'
+              ELSE download_state
+            END,
+            updated_at = ?1
+        WHERE id = ?2
+        "#,
+        params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Cloud audio imports often saved the cover image as `local_path` and marked
+/// download_state=local. That makes the lightbox feed a PNG into `<audio>`.
+pub(crate) fn heal_audio_cover_local_paths(conn: &Connection) -> Result<u32, String> {
+    let now = Utc::now().to_rfc3339();
+    let changed = conn
+        .execute(
+            r#"
+            UPDATE creations
+            SET local_thumb_path = COALESCE(local_thumb_path, local_path),
+                local_path = NULL,
+                download_state = CASE
+                  WHEN remote_url IS NOT NULL AND remote_url != '' THEN 'remote'
+                  ELSE download_state
+                END,
+                updated_at = ?1
+            WHERE lower(media_type) = 'audio'
+              AND local_path IS NOT NULL
+              AND local_path != ''
+              AND (
+                   lower(local_path) LIKE '%.png'
+                OR lower(local_path) LIKE '%.jpg'
+                OR lower(local_path) LIKE '%.jpeg'
+                OR lower(local_path) LIKE '%.webp'
+                OR lower(local_path) LIKE '%.gif'
+                OR lower(local_path) LIKE '%.bmp'
+              )
+            "#,
+            params![now],
+        )
+        .map_err(|e| e.to_string())? as u32;
+    Ok(changed)
+}
+
 /// Delete a creation from the local catalog and remove its media/thumb files.
 /// Only removes files under Library/media or Library/thumbs. Does not touch Parascene cloud.
 ///
@@ -1476,6 +1529,10 @@ pub(crate) fn ready_connection(paths: &ParascenePaths) -> Result<Connection, Str
         conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
             .map_err(|e| e.to_string())?;
         super::folders::ensure_folder_sync_ready(&conn)?;
+        let healed = heal_audio_cover_local_paths(&conn).unwrap_or(0);
+        if healed > 0 {
+            eprintln!("[library] healed {healed} audio rows that stored cover art as local media");
+        }
     }
     Ok(conn)
 }
@@ -2041,6 +2098,39 @@ mod tests {
         seed_if_empty(&conn).expect("seed again");
         let second = list_creations(&conn).expect("list again");
         assert_eq!(second.len(), 4);
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn heal_audio_cover_local_paths_clears_png_media() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            r#"
+            INSERT INTO creations (
+              id, title, media_type, remote_url, local_path, local_thumb_path,
+              published, created_at, download_state, updated_at
+            ) VALUES (?1, ?2, 'audio', ?3, ?4, NULL, 0, ?5, 'local', ?5)
+            "#,
+            params![
+                "audio-cover",
+                "Cover Only",
+                "https://cdn.example/cover.png",
+                "/tmp/cover.png",
+                now,
+            ],
+        )
+        .expect("insert");
+        let healed = heal_audio_cover_local_paths(&conn).expect("heal");
+        assert_eq!(healed, 1);
+        let row = get_creation_by_id(&conn, "audio-cover")
+            .expect("get")
+            .expect("exists");
+        assert!(row.local_path.is_none());
+        assert_eq!(row.local_thumb_path.as_deref(), Some("/tmp/cover.png"));
+        assert_eq!(row.download_state, "remote");
 
         let _ = fs::remove_dir_all(&paths.root);
     }

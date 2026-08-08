@@ -298,8 +298,8 @@ function draftToClip(
       ? draft.addAssetDraft
       : undefined,
     timelineLocked:
-      lane === "audio"
-        ? true
+      lane === "audio" || draft.kind === "image" || draft.kind === "audio"
+        ? undefined
         : draft.timelineLocked === true
           ? true
           : undefined,
@@ -1146,6 +1146,7 @@ export function TimelinePane({
       if (
         clip.kind !== "image" &&
         clip.kind !== "video" &&
+        clip.kind !== "audio" &&
         !isPlaceholder
       ) {
         return;
@@ -1165,17 +1166,20 @@ export function TimelinePane({
           ? playthrough
           : 0.1;
       const maxDuration = isPlaceholder ? ADD_ASSET_MAX_DURATION_SEC : Infinity;
+      const clipLane: "video" | "audio" =
+        clip.lane === "audio" || clip.kind === "audio" ? "audio" : "video";
 
       let endSec = Math.max(clip.startSec + minDuration, pointToStartSec(clientX));
       endSec = Math.min(clip.startSec + maxDuration, endSec);
       if (finalize) {
         const pointerEndSec = endSec;
         const exclude = new Set([clip.id]);
-        const laneClips = clipsRef.current.filter(
-          (c) =>
-            (c.lane ?? "video") === "video" &&
-            c.lane !== "audio" &&
-            c.kind !== "audio",
+        const laneClips = clipsRef.current.filter((c) =>
+          clipLane === "audio"
+            ? c.lane === "audio" || c.kind === "audio"
+            : (c.lane ?? "video") === "video" &&
+              c.lane !== "audio" &&
+              c.kind !== "audio",
         );
         endSec = snapStartSec(
           endSec,
@@ -1206,7 +1210,7 @@ export function TimelinePane({
           if (isAddAssetPlaceholderClip(c)) {
             return withAddAssetDuration(c, duration);
           }
-          if (c.kind === "image") {
+          if (c.kind === "image" || c.kind === "audio") {
             return {
               ...c,
               endSec,
@@ -1263,7 +1267,12 @@ export function TimelinePane({
       if (getActiveStagedClipDrag()) return;
       if (isClipGenerating(clip.id)) return;
       const isPlaceholder = isAddAssetPlaceholderClip(clip);
-      if (clip.kind !== "image" && clip.kind !== "video" && !isPlaceholder) {
+      if (
+        clip.kind !== "image" &&
+        clip.kind !== "video" &&
+        clip.kind !== "audio" &&
+        !isPlaceholder
+      ) {
         return;
       }
       event.preventDefault();
@@ -2131,6 +2140,7 @@ export function TimelinePane({
                     title={clip.assetId ?? clip.label}
                     pxPerSec={pxPerSec}
                     moving={movingClipIds.includes(clip.id)}
+                    resizing={resizingClipIds.includes(clip.id)}
                     selected={selectedClipIds.includes(clip.id)}
                     audio
                     reversed={Boolean(clip.reverse)}
@@ -2143,10 +2153,12 @@ export function TimelinePane({
                     clipOutSec={clipOutSec(clip)}
                     bakeStatus={bakeInfoByClipId?.get(clip.id)?.status}
                     bakeError={bakeInfoByClipId?.get(clip.id)?.error}
+                    resizeEnabled={!generating}
                     moveEnabled={
                       !generating && clipTimelineMoveEnabled(clip)
                     }
                     onPointerDown={(event) => beginClipPress(clip, event)}
+                    onResizePointerDown={(event) => armClipResize(clip, event)}
                   />
                   );
                 })

@@ -85,6 +85,11 @@ fn mime_for(path: &Path) -> &'static str {
         Some("mp3") => "audio/mpeg",
         Some("m4a") => "audio/mp4",
         Some("wav") => "audio/wav",
+        Some("aac") => "audio/aac",
+        Some("flac") => "audio/flac",
+        Some("ogg") | Some("oga") => "audio/ogg",
+        Some("opus") => "audio/opus",
+        Some("aiff") | Some("aif") => "audio/aiff",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
@@ -289,4 +294,33 @@ mod tests {
             .unwrap()
             .starts_with("bytes 0-1/"));
     }
+
+    #[test]
+    fn convert_file_src_encoded_path_resolves() {
+        let path = fixture_mp3();
+        let len = std::fs::metadata(&path).unwrap().len();
+        // Tauri convertFileSrc uses encodeURIComponent on the full path:
+        // media://localhost/%2FUsers%2F...%2Ffile.mp3
+        let encoded = path
+            .to_string_lossy()
+            .bytes()
+            .flat_map(|b| {
+                match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~'
+                    | b'*' | b'\'' | b'(' | b')' => vec![b],
+                    _ => format!("%{b:02X}").into_bytes(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let encoded = String::from_utf8(encoded).unwrap();
+        let request = Request::builder()
+            .uri(format!("https://media.localhost/{encoded}"))
+            .body(Vec::new())
+            .unwrap();
+        let response = media_response(request).expect("media_response");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body().len() as u64, len);
+    }
+
 }

@@ -209,7 +209,11 @@ export function isAddAssetPlaceholderClip(clip: {
 /** Timeline-locked clips stay anchored; In/Out edits shift placement instead. */
 export function clipTimelineMoveEnabled(clip: {
   timelineLocked?: boolean;
+  kind?: string;
+  lane?: string;
 }): boolean {
+  // Master audio is always movable/resizable on the timeline.
+  if (clip.kind === "audio" || clip.lane === "audio") return true;
   return clip.timelineLocked !== true;
 }
 /** Used only until source media duration is known; then Out becomes the real length. */
@@ -664,15 +668,13 @@ export function applyDraftToTimelineClip(
         ? true
         : clip.isAddAssetPlaceholder,
     timelineLocked:
-      draft.kind === "image"
+      draft.kind === "image" || draft.kind === "audio"
         ? undefined
-        : draft.kind === "audio"
+        : draft.timelineLocked === true
           ? true
-          : draft.timelineLocked === true
-            ? true
-            : draft.timelineLocked === false
-              ? undefined
-              : clip.timelineLocked,
+          : draft.timelineLocked === false
+            ? undefined
+            : clip.timelineLocked,
     speed:
       draft.kind === "video" && Math.abs(speed - 1) >= 0.001 ? speed : undefined,
     extendPingPong:

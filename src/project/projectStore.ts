@@ -611,7 +611,12 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
     bakePath,
     isAddAssetPlaceholder:
       c.isAddAssetPlaceholder === true ? true : undefined,
-    timelineLocked: c.timelineLocked === true ? true : undefined,
+    timelineLocked:
+      resolvedKind === "audio" || resolvedKind === "image"
+        ? undefined
+        : c.timelineLocked === true
+          ? true
+          : undefined,
     speed: (() => {
       const s = Number(c.speed);
       if (!Number.isFinite(s) || Math.abs(s - 1) < 0.001) return undefined;

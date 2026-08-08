@@ -97,13 +97,18 @@ export function CreationLightbox({
   const aspectCss = creationAspectCss(displayedCreation);
   const unavailable = isParasceneUnavailable(displayedCreation);
   const canOpenOnWeb = canFetchLocal(creation);
-  const waiting =
-    !detail && canFetchLocal(displayedCreation) && !unavailable;
   const mediaType = String(displayedCreation.mediaType ?? "")
     .trim()
     .toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
+  // Cover-only cloud audio (PNG stored as local_path) has no playable detail.
+  // Don't keep "Saving locally…" spinning — there is nothing fetchable to play.
+  const waiting =
+    !detail &&
+    canFetchLocal(displayedCreation) &&
+    !unavailable &&
+    !(isAudio && Boolean(displayedCreation.localPath?.trim()));
   const webUrl = creationPageUrl(getEnvConfig().baseUrl, creation.id);
   const [busyKind, setBusyKind] = useState<"fill" | "delete" | "cover" | null>(
     null,
@@ -229,8 +234,13 @@ export function CreationLightbox({
   }, [creation.id, groupIds]);
 
   // Utmost priority: jump the download queue the moment the lightbox opens.
+  // Skip cover-only cloud audio — remote_url is the PNG, not a playable track.
   useEffect(() => {
     if (detail || unavailable || !canFetchLocal(displayedCreation)) return;
+    const kind = String(displayedCreation.mediaType ?? "")
+      .trim()
+      .toLowerCase();
+    if (kind === "audio" && displayedCreation.localPath?.trim()) return;
     void ensureLocal([displayedCreation.id], {
       fullMedia: true,
       urgent: true,
@@ -388,7 +398,40 @@ export function CreationLightbox({
               .join(" ")}
             style={isAudio && !thumb ? undefined : { aspectRatio: aspectCss }}
           >
-            {detail ? (
+            {isAudio ? (
+              <div className="creation-lightbox-audio">
+                {thumb ? (
+                  <img
+                    className="creation-lightbox-media creation-lightbox-audio-cover"
+                    src={thumb}
+                    alt=""
+                  />
+                ) : (
+                  <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
+                )}
+                {detail ? (
+                  <audio
+                    key={displayedCreation.id}
+                    className="creation-lightbox-audio-el"
+                    src={detail}
+                    controls
+                    autoPlay
+                    preload="auto"
+                    onError={(event) => {
+                      // Surface decode/protocol failures instead of a forever spinner.
+                      event.currentTarget.removeAttribute("src");
+                      event.currentTarget.load();
+                    }}
+                  />
+                ) : (
+                  <p className="creation-lightbox-wait muted">
+                    {waiting
+                      ? "Saving locally…"
+                      : "No local audio file to play."}
+                  </p>
+                )}
+              </div>
+            ) : detail ? (
               isVideo ? (
                 <video
                   key={displayedCreation.id}
@@ -400,26 +443,6 @@ export function CreationLightbox({
                   playsInline
                   muted
                 />
-              ) : isAudio ? (
-                <div className="creation-lightbox-audio">
-                  {thumb ? (
-                    <img
-                      className="creation-lightbox-media creation-lightbox-audio-cover"
-                      src={thumb}
-                      alt=""
-                    />
-                  ) : (
-                    <AudioWaveform className="creation-audio-wave creation-audio-wave-lg" />
-                  )}
-                  <audio
-                    key={displayedCreation.id}
-                    className="creation-lightbox-audio-el"
-                    src={detail}
-                    controls
-                    autoPlay
-                    preload="auto"
-                  />
-                </div>
               ) : (
                 <img
                   key={displayedCreation.id}
