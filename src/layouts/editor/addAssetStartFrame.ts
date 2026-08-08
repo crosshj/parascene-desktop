@@ -213,7 +213,9 @@ export function resolveMainAudioClip(
   const audioClips = timeline.filter(
     (clip) =>
       (clip.lane === "audio" || clip.kind === "audio") &&
-      Boolean(clip.assetId?.trim()),
+      Boolean(clip.assetId?.trim()) &&
+      // Video Include Audio companions are not the Master song bed.
+      !clip.linkedVideoClipId?.trim(),
   );
   const mainId = mainAudioCreationId?.trim();
   if (mainId) {

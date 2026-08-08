@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { audioWaveformPeaks, type WaveformPeaks } from "../../lab/audioTools";
 import {
+  createClipWaveformStrip,
   drawClipAudioWaveform,
   prepareClipWaveformLayers,
+  presentClipWaveformStrip,
+  syncClipWaveformStrip,
+  type ClipWaveformStrip,
 } from "../../lab/waveformPeakDraw";
 
-const BAR_W = 2;
-const BAR_GAP = 2;
-
-function barCountForWidth(widthPx: number): number {
-  return Math.max(12, Math.floor((widthPx - 8) / (BAR_W + BAR_GAP)));
-}
+/** Fixed bucket count for one playthrough stamp. */
+const WAVEFORM_BARS = 128;
 
 export function EditorClipAudioWaveform({
   mixPath,
@@ -20,6 +20,11 @@ export function EditorClipAudioWaveform({
   outSec,
   reversed = false,
   selected = false,
+  timelineDurSec,
+  speed = 1,
+  extendPingPong = false,
+  sourceSpanSec,
+  mapExtendedPlayback = false,
 }: {
   mixPath: string;
   overlayPath?: string | null;
@@ -28,6 +33,12 @@ export function EditorClipAudioWaveform({
   outSec: number;
   reversed?: boolean;
   selected?: boolean;
+  timelineDurSec?: number;
+  speed?: number;
+  extendPingPong?: boolean;
+  sourceSpanSec?: number;
+  /** Video-linked companions: crop / loop / ping-pong strip. */
+  mapExtendedPlayback?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const mixRef = useRef<WaveformPeaks | null>(null);
@@ -35,6 +46,7 @@ export function EditorClipAudioWaveform({
   const layersRef = useRef<{ mix: number[]; overlay: number[] | null } | null>(
     null,
   );
+  const stripRef = useRef<ClipWaveformStrip>(createClipWaveformStrip());
 
   const [mixData, setMixData] = useState<WaveformPeaks | null>(null);
   const [overlayData, setOverlayData] = useState<WaveformPeaks | null>(null);
@@ -54,6 +66,8 @@ export function EditorClipAudioWaveform({
     setMixData(null);
     setOverlayData(null);
     setError(null);
+    // New media → drop incremental strip.
+    stripRef.current = createClipWaveformStrip();
     void (async () => {
       try {
         const mix = await audioWaveformPeaks(mixPath, 256);
@@ -80,6 +94,17 @@ export function EditorClipAudioWaveform({
     };
   }, [mixPath, overlayPath]);
 
+  const resolvedTimelineDur =
+    timelineDurSec ?? Math.max(0.1, outSec - inSec);
+  const trimSpan = Math.max(0.1, outSec - inSec);
+  const resolvedSourceSpan =
+    Number.isFinite(sourceSpanSec) && Number(sourceSpanSec) > 0
+      ? Math.max(0.1, Number(sourceSpanSec))
+      : trimSpan;
+  const safeSpeed =
+    Number.isFinite(speed) && speed > 0 ? Math.min(8, Math.max(0.25, speed)) : 1;
+  const playthroughSec = resolvedSourceSpan / safeSpeed;
+
   const rebuildLayers = useCallback(() => {
     const mix = mixRef.current;
     if (!mix) {
@@ -91,10 +116,12 @@ export function EditorClipAudioWaveform({
       overlayRef.current,
       inSec,
       outSec,
-      barCountForWidth(widthPx),
+      WAVEFORM_BARS,
       reversed,
     );
-  }, [inSec, outSec, reversed, widthPx]);
+    // Trim / reverse change invalidates the stamp strip.
+    stripRef.current = createClipWaveformStrip();
+  }, [inSec, outSec, reversed]);
 
   useEffect(() => {
     rebuildLayers();
@@ -104,23 +131,49 @@ export function EditorClipAudioWaveform({
     const canvas = canvasRef.current;
     const layers = layersRef.current;
     if (!canvas || !layers?.mix.length) return;
+    const cssH = canvas.clientHeight || 40;
+    const cssW = Math.max(1, widthPx);
+
+    if (mapExtendedPlayback) {
+      const pxPerSec = cssW / Math.max(0.1, resolvedTimelineDur);
+      syncClipWaveformStrip(stripRef.current, {
+        mixPeaks: layers.mix,
+        overlayPeaks: layers.overlay,
+        cssH,
+        dpr: window.devicePixelRatio || 1,
+        selected,
+        timelineDurSec: resolvedTimelineDur,
+        playthroughSec,
+        pxPerSec,
+        extendPingPong,
+      });
+      presentClipWaveformStrip(stripRef.current, canvas, cssW, cssH);
+      return;
+    }
+
     drawClipAudioWaveform(canvas, layers.mix, layers.overlay, { selected });
-  }, [selected]);
+  }, [
+    selected,
+    mapExtendedPlayback,
+    resolvedTimelineDur,
+    playthroughSec,
+    extendPingPong,
+    widthPx,
+  ]);
 
   useEffect(() => {
     redraw();
-  }, [mixData, overlayData, redraw, widthPx, inSec, outSec, reversed, selected]);
+  }, [mixData, overlayData, redraw]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !mixData) return;
     const ro = new ResizeObserver(() => {
-      rebuildLayers();
       redraw();
     });
     ro.observe(canvas);
     return () => ro.disconnect();
-  }, [mixData, rebuildLayers, redraw]);
+  }, [mixData, redraw]);
 
   if (error) {
     return (

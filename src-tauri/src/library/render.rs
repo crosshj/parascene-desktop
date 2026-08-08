@@ -47,8 +47,14 @@ pub struct RenderTimelineClipInput {
     pub kind: Option<String>,
     pub in_sec: Option<f64>,
     pub out_sec: Option<f64>,
+    /// Kept for wire compatibility; video audio is materialized as linked
+    /// Master Audio companions before render.
     #[serde(default)]
+    #[allow(dead_code)]
     pub include_audio: bool,
+    /// Set on Master Audio companions linked to a video Include Audio clip.
+    #[serde(default)]
+    pub linked_video_clip_id: Option<String>,
     #[serde(default)]
     pub reverse: bool,
     /// Match editor staging: fit (contain), fill (cover), stretch.
@@ -324,10 +330,14 @@ fn clip_source_trim_span(clip: &RenderTimelineClipInput) -> f64 {
 }
 
 fn clip_extend_source_span(clip: &RenderTimelineClipInput) -> f64 {
+    let trim = clip_source_trim_span(clip);
+    // Frozen span must never exceed the live trim — stale values (e.g. frozen at
+    // outSec before an in-point raise) would space loop/pong tiles farther apart
+    // than the atrim media they emit, leaving silence holes in the mix.
     if let Some(span) = clip.extend_source_span_sec.filter(|v| v.is_finite() && *v > 0.0) {
-        return span.max(0.1);
+        return span.min(trim).max(0.1);
     }
-    clip_source_trim_span(clip)
+    trim
 }
 
 fn clip_speed(clip: &RenderTimelineClipInput) -> f64 {
@@ -1091,70 +1101,225 @@ fn atempo_filter_chain(speed: f64) -> Option<String> {
     }
 }
 
+fn clip_is_linked_video_audio(clip: &RenderTimelineClipInput) -> bool {
+    clip.linked_video_clip_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some()
+        && clip_lane(clip.lane.as_deref()) == "audio"
+}
+
+fn clip_uses_extended_audio(clip: &RenderTimelineClipInput) -> bool {
+    let extended =
+        clip_timeline_duration(clip) > clip_playthrough_unit(clip) + 1e-3;
+    if !extended {
+        return false;
+    }
+    // Video Include Audio companions (and legacy video-lane audio) tile loop/pong.
+    // Reverse is OK: media path is the reversed bake; tiles still map on that file.
+    clip_is_video_extended(clip) || clip_is_linked_video_audio(clip)
+}
+
+/// One atrim(/areverse) tile planned from a clip — path resolved separately.
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedAudioTile {
+    in_sec: f64,
+    out_sec: f64,
+    /// Offset from clip.start_sec where this tile begins on the timeline.
+    local_start: f64,
+    reverse_trim: bool,
+    speed: f64,
+}
+
+/// Plan loop / ping-pong / trim tiles without touching the filesystem.
+///
+/// Each tile's media window is derived from the tile duration (not by sampling
+/// `clip_source_sec` at endpoints — that mis-handles loop boundaries and
+/// produced wrong media + timeline gaps on partial last tiles).
+fn plan_clip_audio_tiles(clip: &RenderTimelineClipInput) -> Vec<PlannedAudioTile> {
+    let speed = clip_speed(clip);
+    let in_sec = clip_in_sec(clip.in_sec);
+    let out_sec = clip_trim_out_sec(clip);
+    let source_span = clip_extend_source_span(clip);
+
+    if clip_uses_extended_audio(clip) {
+        let points = extend_split_points(clip);
+        let mut tiles = Vec::new();
+        for window in points.windows(2) {
+            let local_start = window[0];
+            let local_end = window[1];
+            let tile_dur = local_end - local_start;
+            if tile_dur < 1e-6 {
+                continue;
+            }
+            let media_len = (tile_dur * speed).min(source_span);
+            if media_len < 1e-6 {
+                continue;
+            }
+            // Ping-pong reverse tiles: odd segments past the first playthrough.
+            let reverse_trim = audio_segment_reverse_trim(clip, local_start, local_end);
+            let (seg_in, seg_out) = if reverse_trim {
+                ((out_sec - media_len).max(in_sec), out_sec)
+            } else {
+                (in_sec, (in_sec + media_len).min(out_sec))
+            };
+            if seg_out - seg_in < 1e-6 {
+                continue;
+            }
+            tiles.push(PlannedAudioTile {
+                in_sec: seg_in,
+                out_sec: seg_out,
+                local_start,
+                reverse_trim,
+                speed,
+            });
+        }
+        return tiles;
+    }
+
+    let timeline_dur = clip_timeline_duration(clip);
+    let media_dur = (timeline_dur * speed).min(out_sec - in_sec).max(0.001);
+    vec![PlannedAudioTile {
+        in_sec,
+        out_sec: in_sec + media_dur,
+        local_start: 0.0,
+        reverse_trim: false,
+        speed,
+    }]
+}
+
+fn audio_segment_timeline_range(seg: &AudioSegment) -> (f64, f64) {
+    let start = seg.delay_ms as f64 / 1000.0;
+    let dur = ((seg.out_sec - seg.in_sec) / seg.speed.max(0.001)).max(0.0);
+    (start, start + dur)
+}
+
+fn merge_timeline_ranges(mut ranges: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    if ranges.is_empty() {
+        return ranges;
+    }
+    ranges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out = vec![ranges[0]];
+    for (a, b) in ranges.into_iter().skip(1) {
+        let last = out.last_mut().expect("out non-empty");
+        if a <= last.1 + 1e-3 {
+            last.1 = last.1.max(b);
+        } else {
+            out.push((a, b));
+        }
+    }
+    out
+}
+
+/// Remove bed coverage that overlaps priority (linked video audio) spans.
+fn punch_bed_around_priority(
+    bed: Vec<AudioSegment>,
+    priority: &[AudioSegment],
+) -> Vec<AudioSegment> {
+    if priority.is_empty() || bed.is_empty() {
+        return bed;
+    }
+    let priority_ranges = merge_timeline_ranges(
+        priority
+            .iter()
+            .map(audio_segment_timeline_range)
+            .filter(|(a, b)| b - a > 1e-4)
+            .collect(),
+    );
+
+    let mut out = Vec::new();
+    for seg in bed {
+        let (mut cursor, end) = audio_segment_timeline_range(&seg);
+        if end - cursor <= 1e-4 {
+            continue;
+        }
+        let speed = seg.speed.max(0.001);
+        for &(p0, p1) in &priority_ranges {
+            if p1 <= cursor + 1e-4 || p0 >= end - 1e-4 {
+                continue;
+            }
+            let gap_end = p0.clamp(cursor, end);
+            if gap_end - cursor > 1e-4 {
+                let media_start = seg.in_sec + (cursor - (seg.delay_ms as f64 / 1000.0)) * speed;
+                let media_end = seg.in_sec + (gap_end - (seg.delay_ms as f64 / 1000.0)) * speed;
+                out.push(AudioSegment {
+                    path: seg.path.clone(),
+                    in_sec: media_start.min(media_end),
+                    out_sec: media_start.max(media_end),
+                    delay_ms: (cursor * 1000.0).round() as u64,
+                    reverse_trim: seg.reverse_trim,
+                    speed: seg.speed,
+                });
+            }
+            cursor = p1.clamp(cursor, end);
+        }
+        if end - cursor > 1e-4 {
+            let media_start = seg.in_sec + (cursor - (seg.delay_ms as f64 / 1000.0)) * speed;
+            let media_end = seg.in_sec + (end - (seg.delay_ms as f64 / 1000.0)) * speed;
+            out.push(AudioSegment {
+                path: seg.path.clone(),
+                in_sec: media_start.min(media_end),
+                out_sec: media_start.max(media_end),
+                delay_ms: (cursor * 1000.0).round() as u64,
+                reverse_trim: seg.reverse_trim,
+                speed: seg.speed,
+            });
+        }
+    }
+    out
+}
+
+fn expand_clip_audio_segments(
+    clip: &RenderTimelineClipInput,
+    paths: &ParascenePaths,
+) -> Result<Vec<AudioSegment>, String> {
+    let asset_id = clip
+        .asset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Audio clip is missing an asset id".to_string())?;
+    let path = resolve_media_path(paths, asset_id, clip.reverse)?;
+    let delay_base = clip.start_sec.max(0.0);
+    Ok(plan_clip_audio_tiles(clip)
+        .into_iter()
+        .map(|tile| AudioSegment {
+            path: path.clone(),
+            in_sec: tile.in_sec,
+            out_sec: tile.out_sec,
+            delay_ms: ((delay_base + tile.local_start) * 1000.0).round() as u64,
+            reverse_trim: tile.reverse_trim,
+            speed: tile.speed,
+        })
+        .collect())
+}
+
 fn collect_audio_segments(
     clips: &[RenderTimelineClipInput],
     paths: &ParascenePaths,
 ) -> Result<Vec<AudioSegment>, String> {
-    let mut out: Vec<AudioSegment> = Vec::new();
+    // Video Include Audio is materialized as linked Master Audio companions
+    // (see syncLinkedVideoAudio / timelineClipsToRenderInput). Collect only the
+    // audio lane; linked companions take precedence over bed audio.
+    let mut priority: Vec<AudioSegment> = Vec::new();
+    let mut bed: Vec<AudioSegment> = Vec::new();
+
     for clip in clips {
-        let on_audio_lane = clip_lane(clip.lane.as_deref()) == "audio";
-        let include_from_video = clip_lane(clip.lane.as_deref()) == "video" && clip.include_audio;
-        if !on_audio_lane && !include_from_video {
+        if clip_lane(clip.lane.as_deref()) != "audio" {
             continue;
         }
-        let asset_id = clip
-            .asset_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| "Audio clip is missing an asset id".to_string())?;
-        let path = resolve_media_path(paths, asset_id, clip.reverse)?;
-        let delay_base = clip.start_sec.max(0.0);
-
-        if include_from_video && clip_is_video_extended(clip) && !clip.reverse {
-            for window in extend_split_points(clip).windows(2) {
-                let local_start = window[0];
-                let local_end = window[1];
-                if local_end - local_start < 1e-6 {
-                    continue;
-                }
-                let src_start = clip_source_sec_at_local(clip, local_start);
-                let src_end = clip_source_sec_at_local(clip, local_end);
-                let reverse_trim = audio_segment_reverse_trim(clip, local_start, local_end);
-                let (in_sec, out_sec) = if reverse_trim {
-                    (src_end.min(src_start), src_start.max(src_end))
-                } else {
-                    (src_start.min(src_end), src_start.max(src_end))
-                };
-                if out_sec - in_sec < 1e-6 {
-                    continue;
-                }
-                out.push(AudioSegment {
-                    path: path.clone(),
-                    in_sec,
-                    out_sec,
-                    delay_ms: ((delay_base + local_start) * 1000.0).round() as u64,
-                    reverse_trim,
-                    speed: clip_speed(clip),
-                });
-            }
-            continue;
+        let segments = expand_clip_audio_segments(clip, paths)?;
+        if clip_is_linked_video_audio(clip) {
+            priority.extend(segments);
+        } else {
+            bed.extend(segments);
         }
-
-        let timeline_dur = clip_timeline_duration(clip);
-        let speed = clip_speed(clip);
-        let in_sec = clip_in_sec(clip.in_sec);
-        let out_sec = clip_trim_out_sec(clip);
-        let media_dur = (timeline_dur * speed).min(out_sec - in_sec).max(0.001);
-        out.push(AudioSegment {
-            path,
-            in_sec,
-            out_sec: in_sec + media_dur,
-            delay_ms: (delay_base * 1000.0).round() as u64,
-            reverse_trim: false,
-            speed,
-        });
     }
+
+    let bed = punch_bed_around_priority(bed, &priority);
+    let mut out = priority;
+    out.extend(bed);
     Ok(out)
 }
 
@@ -2200,11 +2365,25 @@ fn default_export_name(project_title: &str, render: &TimelineRender) -> String {
     format!("{project}.{stamp}.{extension}")
 }
 
-fn pick_export_destination(default_name: &str) -> Result<Option<PathBuf>, String> {
+fn default_export_audio_name(project_title: &str, render: &TimelineRender) -> String {
+    let project = sanitize_project_name(project_title);
+    let stamp = chrono::DateTime::parse_from_rfc3339(&render.created_at)
+        .ok()
+        .map(|dt| dt.format("%y%m%d_%H%M").to_string())
+        .unwrap_or_else(|| "000000_0000".into());
+    format!("{project}.{stamp}.mp3")
+}
+
+fn pick_export_destination(
+    title: &str,
+    default_name: &str,
+    filter_name: &str,
+    extension: &str,
+) -> Result<Option<PathBuf>, String> {
     let Some(mut path) = rfd::FileDialog::new()
-        .set_title("Save render")
+        .set_title(title)
         .set_file_name(default_name)
-        .add_filter("MP4 video", &["mp4"])
+        .add_filter(filter_name, &[extension])
         .save_file()
     else {
         return Ok(None);
@@ -2212,12 +2391,36 @@ fn pick_export_destination(default_name: &str) -> Result<Option<PathBuf>, String
     if path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("mp4"))
+        .map(|ext| ext.eq_ignore_ascii_case(extension))
         != Some(true)
     {
-        path.set_extension("mp4");
+        path.set_extension(extension);
     }
     Ok(Some(path))
+}
+
+fn ready_render_for_export(
+    paths: &ParascenePaths,
+    project_id: &str,
+    render_id: &str,
+) -> Result<TimelineRender, String> {
+    let _guard = manifest_lock()
+        .lock()
+        .map_err(|_| "Render manifest lock was poisoned".to_string())?;
+    let manifest = read_manifest(paths, project_id)?;
+    let render = manifest
+        .renders
+        .iter()
+        .find(|render| render.id == render_id)
+        .cloned()
+        .ok_or_else(|| "Render not found".to_string())?;
+    if render.status != "ready" {
+        return Err("Render is not ready to save".into());
+    }
+    if !Path::new(&render.path).is_file() {
+        return Err("Render file is missing from disk".into());
+    }
+    Ok(render)
 }
 
 #[tauri::command]
@@ -2228,27 +2431,16 @@ pub async fn publisher_export_render(
 ) -> Result<ExportRenderResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = default_paths()?;
-        let render = {
-            let _guard = manifest_lock()
-                .lock()
-                .map_err(|_| "Render manifest lock was poisoned".to_string())?;
-            let manifest = read_manifest(&paths, &project_id)?;
-            manifest
-                .renders
-                .iter()
-                .find(|render| render.id == render_id)
-                .cloned()
-                .ok_or_else(|| "Render not found".to_string())?
-        };
-        if render.status != "ready" {
-            return Err("Render is not ready to save".into());
-        }
-        if !Path::new(&render.path).is_file() {
-            return Err("Render file is missing from disk".into());
-        }
+        let render = ready_render_for_export(&paths, &project_id, &render_id)?;
 
         let default_name = default_export_name(&project_title, &render);
-        let Some(dest) = pick_export_destination(&default_name)? else {
+        let Some(dest) = pick_export_destination(
+            "Save video",
+            &default_name,
+            "MP4 video",
+            "mp4",
+        )?
+        else {
             return Ok(ExportRenderResult {
                 cancelled: true,
                 path: None,
@@ -2268,6 +2460,92 @@ pub async fn publisher_export_render(
     })
     .await
     .map_err(|e| format!("Export task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn publisher_export_render_audio(
+    project_id: String,
+    render_id: String,
+    project_title: String,
+) -> Result<ExportRenderResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = default_paths()?;
+        let render = ready_render_for_export(&paths, &project_id, &render_id)?;
+
+        let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+            "FFmpeg is required to export MP3. Install with: brew install ffmpeg".to_string()
+        })?;
+
+        let default_name = default_export_audio_name(&project_title, &render);
+        let Some(dest) =
+            pick_export_destination("Save MP3", &default_name, "MP3 audio", "mp3")?
+        else {
+            return Ok(ExportRenderResult {
+                cancelled: true,
+                path: None,
+            });
+        };
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Could not create destination folder: {e}"))?;
+        }
+
+        let src = render.path.clone();
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| "Invalid destination path".to_string())?
+            .to_string();
+        let tmp = dest.with_extension("tmp.mp3");
+        let tmp_str = tmp
+            .to_str()
+            .ok_or_else(|| "Invalid temp path".to_string())?
+            .to_string();
+        let _ = fs::remove_file(&tmp);
+
+        let result = run_ffmpeg(
+            &ffmpeg,
+            &[
+                "-y".into(),
+                "-i".into(),
+                src,
+                "-vn".into(),
+                "-c:a".into(),
+                "libmp3lame".into(),
+                "-b:a".into(),
+                "192k".into(),
+                tmp_str.clone(),
+            ],
+        );
+        if let Err(err) = result {
+            let _ = fs::remove_file(&tmp);
+            let lower = err.to_ascii_lowercase();
+            if lower.contains("does not contain any stream")
+                || lower.contains("output file #0 does not contain any stream")
+                || lower.contains("stream map")
+            {
+                return Err(
+                    "This render has no audio track to export as MP3.".into(),
+                );
+            }
+            return Err(format!("Could not export MP3: {err}"));
+        }
+
+        let len = tmp.metadata().map(|m| m.len()).unwrap_or(0);
+        if len == 0 {
+            let _ = fs::remove_file(&tmp);
+            return Err("This render has no audio track to export as MP3.".into());
+        }
+        let _ = fs::remove_file(&dest);
+        fs::rename(&tmp, &dest).map_err(|e| format!("Could not finalize MP3: {e}"))?;
+
+        Ok(ExportRenderResult {
+            cancelled: false,
+            path: Some(dest_str),
+        })
+    })
+    .await
+    .map_err(|e| format!("Export audio task failed: {e}"))?
 }
 
 #[cfg(test)]
@@ -2370,5 +2648,216 @@ mod tests {
             .map(|r| ((r.end - r.start) * RENDER_FPS).round() as i64)
             .sum();
         assert_eq!(frames, (10.0 * RENDER_FPS) as i64);
+    }
+
+    fn linked_audio(partial: serde_json::Value) -> RenderTimelineClipInput {
+        let mut base = serde_json::json!({
+            "assetId": "asset-v",
+            "startSec": 0.0,
+            "endSec": 5.0,
+            "lane": "audio",
+            "kind": "audio",
+            "inSec": 0.0,
+            "outSec": 2.0,
+            "linkedVideoClipId": "v1",
+            "reverse": false,
+        });
+        if let (Some(dst), Some(src)) = (base.as_object_mut(), partial.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        serde_json::from_value(base).expect("linked audio clip")
+    }
+
+    fn assert_tiles_cover_clip_without_gaps(
+        clip: &RenderTimelineClipInput,
+        tiles: &[PlannedAudioTile],
+    ) {
+        assert!(!tiles.is_empty(), "expected tiles");
+        let mut cursor = clip.start_sec;
+        for tile in tiles {
+            let start = clip.start_sec + tile.local_start;
+            let dur = (tile.out_sec - tile.in_sec) / tile.speed.max(0.001);
+            let end = start + dur;
+            assert!(
+                (start - cursor).abs() < 1e-3,
+                "gap/overlap before tile local={} (cursor={cursor}, start={start})",
+                tile.local_start
+            );
+            assert!(
+                (dur - ((end - start))).abs() < 1e-9,
+                "duration mismatch"
+            );
+            // Media length must match timeline tile at speed.
+            let expected_media = dur * tile.speed;
+            assert!(
+                ((tile.out_sec - tile.in_sec) - expected_media).abs() < 1e-6,
+                "media span {} != expected {expected_media}",
+                tile.out_sec - tile.in_sec
+            );
+            cursor = end;
+        }
+        assert!(
+            (cursor - clip.end_sec).abs() < 1e-3,
+            "tiles end at {cursor}, clip ends at {}",
+            clip.end_sec
+        );
+    }
+
+    #[test]
+    fn linked_loop_partial_last_tile_starts_at_trim_in() {
+        // 2.5× playthrough: last tile must be the FIRST 0.5s of the trim, not
+        // the second half (the old endpoint-sampling bug).
+        let clip = linked_audio(serde_json::json!({
+            "startSec": 1.0,
+            "endSec": 6.0, // 5s timeline, source span 2s → playthrough 2s
+            "inSec": 0.0,
+            "outSec": 2.0,
+        }));
+        let tiles = plan_clip_audio_tiles(&clip);
+        assert_eq!(tiles.len(), 3);
+        assert!((tiles[0].out_sec - tiles[0].in_sec - 2.0).abs() < 1e-6);
+        assert!((tiles[1].out_sec - tiles[1].in_sec - 2.0).abs() < 1e-6);
+        assert!((tiles[2].in_sec - 0.0).abs() < 1e-6);
+        assert!((tiles[2].out_sec - 1.0).abs() < 1e-6);
+        assert!(!tiles.iter().any(|t| t.reverse_trim));
+        assert_tiles_cover_clip_without_gaps(&clip, &tiles);
+    }
+
+    #[test]
+    fn stale_extend_span_past_trim_does_not_leave_silence_holes() {
+        // Real project repro (EXAMPLE @ ~17s): in-point was raised after extend
+        // froze extendSourceSpanSec at outSec (8.881). Trim is only 6.552s, so
+        // tiles spaced by the stale span leave ~inSec of silence between them.
+        let clip = linked_audio(serde_json::json!({
+            "startSec": 9.0,
+            "endSec": 27.1,
+            "inSec": 2.328,
+            "outSec": 8.881,
+            "extendPingPong": true,
+            "extendSourceSpanSec": 8.881,
+        }));
+        let tiles = plan_clip_audio_tiles(&clip);
+        assert_tiles_cover_clip_without_gaps(&clip, &tiles);
+        // Playthrough must follow the live trim, not the stale frozen span.
+        let playthrough = clip_playthrough_unit(&clip);
+        assert!(
+            (playthrough - (8.881 - 2.328)).abs() < 1e-3,
+            "playthrough={playthrough}, expected trim span"
+        );
+    }
+
+    #[test]
+    fn linked_ping_pong_marks_odd_tiles_reversed() {
+        let clip = linked_audio(serde_json::json!({
+            "startSec": 0.0,
+            "endSec": 5.0, // 2 + 2 + 1
+            "inSec": 0.0,
+            "outSec": 2.0,
+            "extendPingPong": true,
+        }));
+        let tiles = plan_clip_audio_tiles(&clip);
+        assert_eq!(tiles.len(), 3);
+        assert_eq!(
+            tiles.iter().map(|t| t.reverse_trim).collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        // Pong tile trims the end of the source then areverse.
+        assert!((tiles[1].in_sec - 0.0).abs() < 1e-6);
+        assert!((tiles[1].out_sec - 2.0).abs() < 1e-6);
+        // Partial forward tile after pong is the start of the trim.
+        assert!((tiles[2].in_sec - 0.0).abs() < 1e-6);
+        assert!((tiles[2].out_sec - 1.0).abs() < 1e-6);
+        assert_tiles_cover_clip_without_gaps(&clip, &tiles);
+    }
+
+    #[test]
+    fn linked_reverse_still_extends_without_silent_tail() {
+        let clip = linked_audio(serde_json::json!({
+            "startSec": 0.0,
+            "endSec": 5.0,
+            "inSec": 0.0,
+            "outSec": 2.0,
+            "reverse": true,
+            "extendPingPong": true,
+        }));
+        assert!(clip_uses_extended_audio(&clip));
+        let tiles = plan_clip_audio_tiles(&clip);
+        assert_eq!(tiles.len(), 3);
+        assert_tiles_cover_clip_without_gaps(&clip, &tiles);
+    }
+
+    #[test]
+    fn linked_speed_scales_media_vs_timeline() {
+        let clip = linked_audio(serde_json::json!({
+            "startSec": 0.0,
+            "endSec": 3.0, // playthrough = 2/2 = 1s; timeline 3s → 3 tiles
+            "inSec": 0.0,
+            "outSec": 2.0,
+            "speed": 2.0,
+        }));
+        let tiles = plan_clip_audio_tiles(&clip);
+        assert_eq!(tiles.len(), 3);
+        for tile in &tiles {
+            assert!((tile.speed - 2.0).abs() < 1e-9);
+        }
+        assert!((tiles[2].out_sec - tiles[2].in_sec - 2.0).abs() < 1e-6);
+        assert_tiles_cover_clip_without_gaps(&clip, &tiles);
+    }
+
+    #[test]
+    fn many_chops_loop_and_pong_never_leave_timeline_holes() {
+        let cases = [
+            serde_json::json!({
+                "endSec": 7.3, "outSec": 1.7, "extendPingPong": false, "speed": 1.0
+            }),
+            serde_json::json!({
+                "endSec": 9.1, "outSec": 2.4, "extendPingPong": true, "speed": 1.0
+            }),
+            serde_json::json!({
+                "endSec": 6.0, "outSec": 3.0, "extendPingPong": true, "speed": 1.5,
+                "reverse": true
+            }),
+            serde_json::json!({
+                "startSec": 3.25, "endSec": 11.8, "inSec": 0.4, "outSec": 2.1,
+                "extendPingPong": false, "speed": 0.75
+            }),
+            serde_json::json!({
+                "startSec": 1.0, "endSec": 8.0, "inSec": 0.0, "outSec": 1.0,
+                "extendPingPong": true, "extendSourceSpanSec": 1.0, "speed": 1.0
+            }),
+        ];
+        for partial in cases {
+            let clip = linked_audio(partial.clone());
+            let tiles = plan_clip_audio_tiles(&clip);
+            assert_tiles_cover_clip_without_gaps(&clip, &tiles);
+        }
+    }
+
+    #[test]
+    fn punch_bed_removes_priority_span_without_dropping_flanks() {
+        let bed = vec![AudioSegment {
+            path: PathBuf::from("/tmp/bed.wav"),
+            in_sec: 0.0,
+            out_sec: 10.0,
+            delay_ms: 0,
+            reverse_trim: false,
+            speed: 1.0,
+        }];
+        let priority = vec![AudioSegment {
+            path: PathBuf::from("/tmp/pri.wav"),
+            in_sec: 0.0,
+            out_sec: 2.0,
+            delay_ms: 3000, // covers timeline 3..5
+            reverse_trim: false,
+            speed: 1.0,
+        }];
+        let punched = punch_bed_around_priority(bed, &priority);
+        assert_eq!(punched.len(), 2);
+        assert_eq!(punched[0].delay_ms, 0);
+        assert!((punched[0].out_sec - punched[0].in_sec - 3.0).abs() < 1e-6);
+        assert_eq!(punched[1].delay_ms, 5000);
+        assert!((punched[1].out_sec - punched[1].in_sec - 5.0).abs() < 1e-6);
     }
 }

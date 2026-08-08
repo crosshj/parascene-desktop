@@ -62,13 +62,18 @@ export function clipSourceTrimSpanSec(clip: TimelineClip): number | null {
 
 /** Source trim span used for extend UI and playback looping (media domain). */
 export function clipExtendSourceSpanSec(clip: TimelineClip): number | null {
+  const liveTrim = clipSourceTrimSpanSec(clip);
   if (
     Number.isFinite(clip.extendSourceSpanSec) &&
     Number(clip.extendSourceSpanSec) > 0
   ) {
-    return Math.max(0.1, Number(clip.extendSourceSpanSec));
+    // Never let a frozen span outrun the live in/out trim — that spaces
+    // loop/pong tiles past the media they contain (silence holes + lying waveform).
+    const frozen = Math.max(0.1, Number(clip.extendSourceSpanSec));
+    if (liveTrim == null) return frozen;
+    return Math.min(frozen, liveTrim);
   }
-  return clipSourceTrimSpanSec(clip);
+  return liveTrim;
 }
 
 /** Clamp video playback rate (default 1). */
@@ -84,16 +89,20 @@ export function clipPlaythroughUnitSec(clip: TimelineClip): number {
   return Math.max(0.1, sourceSpan / clipSpeed(clip));
 }
 
+/**
+ * Video clips and Include Audio companions share loop/pong source mapping.
+ * Plain Master Audio beds do not extend.
+ */
+export function clipUsesVideoStyleSourceMapping(clip: TimelineClip): boolean {
+  if (clip.kind === "image" || clip.kind === "slideshow") return false;
+  if (clip.linkedVideoClipId?.trim()) return true;
+  if (clip.kind === "audio" || clip.lane === "audio") return false;
+  return clip.kind === "video" || (clip.lane ?? "video") === "video";
+}
+
 /** True when timeline placement is longer than one playthrough at speed. */
 export function clipIsTimelineExtended(clip: TimelineClip): boolean {
-  if (
-    clip.kind === "image" ||
-    clip.kind === "slideshow" ||
-    clip.kind === "audio" ||
-    clip.lane === "audio"
-  ) {
-    return false;
-  }
+  if (!clipUsesVideoStyleSourceMapping(clip)) return false;
   const trimSpan = clipExtendSourceSpanSec(clip);
   if (trimSpan == null) return false;
   return clipTimelineDurationSec(clip) > clipPlaythroughUnitSec(clip) + 0.001;
@@ -159,7 +168,7 @@ export function clipSourceSec(clip: TimelineClip, timelineSec: number): number {
   const mediaLocal = local * speed;
 
   if (
-    clip.kind !== "video" ||
+    !clipUsesVideoStyleSourceMapping(clip) ||
     mediaLocal <= sourceSpan + 1e-6 ||
     timelineDur <= playthrough + 1e-6
   ) {
@@ -233,9 +242,16 @@ export function resolveTimelineFrame(
     );
   });
 
+  // Video Include Audio companions sit above bed audio and win the monitor mix.
+  const rankedAudio = [...audioHits].sort((a, b) => {
+    const aLinked = a.linkedVideoClipId?.trim() ? 1 : 0;
+    const bLinked = b.linkedVideoClipId?.trim() ? 1 : 0;
+    return bLinked - aLinked;
+  });
+
   return {
     visual: visualClip ? toLayer(visualClip, time) : null,
-    audio: audioHits.map((c) => toLayer(c, time)),
+    audio: rankedAudio.map((c) => toLayer(c, time)),
   };
 }
 

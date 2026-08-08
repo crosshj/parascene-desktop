@@ -9,7 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCreation } from "../../library/catalogClient";
+import { getCreation, getCreations } from "../../library/catalogClient";
 import {
   clipThumbnailKey,
   ensureClipThumbnail,
@@ -38,6 +38,11 @@ import {
   timelineClipLayoutTier,
 } from "./timelineClipDisplay";
 import { findOverlappingAudioClip } from "./audioOverlap";
+import {
+  expandLinkedMoveIds,
+  isLinkedVideoAudioClip,
+  syncLinkedVideoAudio,
+} from "./linkedVideoAudio";
 import {
   clearEditorBodyDragClasses,
   releasePointerCaptureSafe,
@@ -72,6 +77,7 @@ import {
   clipInSec,
   clipOutSec,
   clipExtendDivitFraction,
+  clipExtendSourceSpanSec,
   clipIsTimelineExtended,
   clipVideoMinTimelineDurationSec,
   finalizeVideoResizeEndSec,
@@ -385,6 +391,10 @@ function MiniClip({
   audioVocalsPath,
   clipInSec = 0,
   clipOutSec,
+  audioSpeed = 1,
+  audioExtendPingPong = false,
+  audioSourceSpanSec,
+  audioMapExtendedPlayback = false,
   extendDivitFrac = null,
   extendLoopLineFracs = [],
   extendPongSegments = [],
@@ -415,6 +425,11 @@ function MiniClip({
   audioVocalsPath?: string | null;
   clipInSec?: number;
   clipOutSec?: number;
+  audioSpeed?: number;
+  audioExtendPingPong?: boolean;
+  audioSourceSpanSec?: number;
+  /** Linked video audio: sample waveform by playback (crop/loop/pong). */
+  audioMapExtendedPlayback?: boolean;
   /** Source-trim end as a fraction of timeline duration (0..1) when extended. */
   extendDivitFrac?: number | null;
   extendLoopLineFracs?: number[];
@@ -594,6 +609,11 @@ function MiniClip({
             outSec={resolvedClipOutSec}
             reversed={reversed}
             selected={selected}
+            timelineDurSec={safeDuration}
+            speed={audioSpeed}
+            extendPingPong={audioExtendPingPong}
+            sourceSpanSec={audioSourceSpanSec}
+            mapExtendedPlayback={audioMapExtendedPlayback}
           />
         ) : (
           <ClipAudioWaveform
@@ -761,20 +781,19 @@ export function TimelinePane({
   );
 
   const addAssetGenerationByClipIdRef = useRef(addAssetGenerationByClipId);
-  const isClipGenerating = useCallback((clipId: string) => {
-    return (
-      addAssetGenerationByClipIdRef.current?.get(clipId)?.status ===
-      "generating"
-    );
-  }, []);
+  const isClipGenerating = useCallback(
+    (clipId: string) =>
+      addAssetGenerationByClipId?.get(clipId)?.status === "generating",
+    [addAssetGenerationByClipId],
+  );
 
   const canClipMove = useCallback(
     (clipId: string) => {
       if (isClipGenerating(clipId)) return false;
-      const clip = clipsRef.current.find((c) => c.id === clipId);
+      const clip = clips.find((c) => c.id === clipId);
       return clip ? clipTimelineMoveEnabled(clip) : false;
     },
-    [isClipGenerating],
+    [clips, isClipGenerating],
   );
 
   useEffect(() => {
@@ -1035,6 +1054,38 @@ export function TimelinePane({
   const mainAudioPaths = useLabMainAudioPaths(
     mainAudioCreationId?.trim() || mainAudioClip?.assetId?.trim() || "",
   );
+  const audioAssetIdsKey = useMemo(() => {
+    const ids = new Set<string>();
+    for (const clip of audioClips) {
+      const id = clip.assetId?.trim();
+      if (id) ids.add(id);
+    }
+    return [...ids].sort().join("\0");
+  }, [audioClips]);
+  const [audioLocalPathByAssetId, setAudioLocalPathByAssetId] = useState<
+    Record<string, string>
+  >({});
+  useEffect(() => {
+    let cancelled = false;
+    const ids = audioAssetIdsKey ? audioAssetIdsKey.split("\0") : [];
+    if (ids.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAudioLocalPathByAssetId({});
+      return;
+    }
+    void getCreations(ids).then((rows) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const row of rows) {
+        const path = row.localPath?.trim();
+        if (path) next[row.id] = path;
+      }
+      setAudioLocalPathByAssetId(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioAssetIdsKey]);
   const lyricBlocks = useMemo(
     () => timelineLyricBlocks(clips, lyricAlignment, mainAudioCreationId),
     [clips, lyricAlignment, mainAudioCreationId],
@@ -1205,7 +1256,7 @@ export function TimelinePane({
       endSec = clip.startSec + duration;
 
       setClips((prev) => {
-        const next = prev.map((c) => {
+        const mapped = prev.map((c) => {
           if (c.id !== clip.id) return c;
           if (isAddAssetPlaceholderClip(c)) {
             return withAddAssetDuration(c, duration);
@@ -1226,7 +1277,10 @@ export function TimelinePane({
             endSec,
             label: formatClipDuration(duration),
             extendSourceSpanSec: nowExtended
-              ? c.extendSourceSpanSec ?? sourceTrimSpan
+              ? Math.min(
+                  c.extendSourceSpanSec ?? sourceTrimSpan,
+                  sourceTrimSpan,
+                )
               : undefined,
             extendPingPong: resolveExtendPingPong(
               duration,
@@ -1240,6 +1294,8 @@ export function TimelinePane({
             ...mergeExtendBakeFields(c, nextClip),
           };
         });
+        // Keep Include Audio companions matched to the resized video.
+        const next = syncLinkedVideoAudio(mapped);
         clipsRef.current = next;
         return next;
       });
@@ -1266,6 +1322,8 @@ export function TimelinePane({
       if (event.button !== 0) return;
       if (getActiveStagedClipDrag()) return;
       if (isClipGenerating(clip.id)) return;
+      // Linked video-audio companions resize only via their video clip.
+      if (isLinkedVideoAudioClip(clip)) return;
       const isPlaceholder = isAddAssetPlaceholderClip(clip);
       if (
         clip.kind !== "image" &&
@@ -1289,11 +1347,20 @@ export function TimelinePane({
   const armClipMove = useCallback(
     (clip: TimelineClip, clientX: number, pointerId: number) => {
       const selected = selectedClipIdsRef.current;
-      const movingIds =
+      const seedIds =
         selected.includes(clip.id) && selected.length > 0
           ? [...selected]
           : [clip.id];
-      const unlocked = movingIds.filter((id) => canClipMove(id));
+      const movingIds = expandLinkedMoveIds(clipsRef.current, seedIds);
+      // Linked companions move only when their video can move (Sync lock).
+      const unlocked = movingIds.filter((id) => {
+        const c = clipsRef.current.find((row) => row.id === id);
+        if (!c) return false;
+        if (isLinkedVideoAudioClip(c) && c.linkedVideoClipId) {
+          return canClipMove(c.linkedVideoClipId);
+        }
+        return canClipMove(id);
+      });
       if (unlocked.length === 0 || !unlocked.includes(clip.id)) return;
       // Dragging an unselected clip adopts it as the sole selection.
       if (!selected.includes(clip.id)) {
@@ -2119,15 +2186,27 @@ export function TimelinePane({
                   Master Audio
                 </div>
               ) : (
-                audioClips.map((clip) => {
+                // Bed audio first; linked video-audio companions paint above.
+                [...audioClips]
+                  .sort((a, b) => {
+                    const aLinked = isLinkedVideoAudioClip(a) ? 1 : 0;
+                    const bLinked = isLinkedVideoAudioClip(b) ? 1 : 0;
+                    return aLinked - bLinked;
+                  })
+                  .map((clip) => {
                   const isMainAudio = mainAudioClip?.id === clip.id;
+                  const linked = isLinkedVideoAudioClip(clip);
                   const generating =
                     addAssetGenerationByClipId?.get(clip.id)?.status ===
                     "generating";
+                  const parentMovable =
+                    !linked ||
+                    !clip.linkedVideoClipId ||
+                    canClipMove(clip.linkedVideoClipId);
                   return (
                   <MiniClip
                     key={clip.id}
-                    className="editor-timeline-clip"
+                    className={`editor-timeline-clip${linked ? " is-linked-video-audio" : ""}`}
                     startSec={clip.startSec}
                     durationSec={clip.endSec - clip.startSec}
                     thumbUrl={clipDisplayThumbUrl(
@@ -2137,7 +2216,11 @@ export function TimelinePane({
                       aspectRatio,
                     )}
                     label={clip.label}
-                    title={clip.assetId ?? clip.label}
+                    title={
+                      linked
+                        ? `Video audio · ${clip.assetId ?? clip.label}`
+                        : (clip.assetId ?? clip.label)
+                    }
                     pxPerSec={pxPerSec}
                     moving={movingClipIds.includes(clip.id)}
                     resizing={resizingClipIds.includes(clip.id)}
@@ -2145,17 +2228,52 @@ export function TimelinePane({
                     audio
                     reversed={Boolean(clip.reverse)}
                     waveSeed={clip.id}
-                    audioMixPath={isMainAudio ? mainAudioPaths.mixPath : null}
+                    audioMixPath={
+                      isMainAudio
+                        ? mainAudioPaths.mixPath
+                        : clip.assetId
+                          ? (audioLocalPathByAssetId[clip.assetId] ?? null)
+                          : null
+                    }
                     audioVocalsPath={
                       isMainAudio ? mainAudioPaths.vocalsPath : null
                     }
                     clipInSec={clipInSec(clip)}
                     clipOutSec={clipOutSec(clip)}
+                    audioSpeed={
+                      Number.isFinite(clip.speed) && Number(clip.speed) > 0
+                        ? Number(clip.speed)
+                        : 1
+                    }
+                    audioExtendPingPong={clip.extendPingPong === true}
+                    audioSourceSpanSec={
+                      clipExtendSourceSpanSec(clip) ?? undefined
+                    }
+                    audioMapExtendedPlayback={linked}
+                    extendDivitFrac={
+                      linked && clipIsTimelineExtended(clip)
+                        ? clipExtendDivitFraction(clip)
+                        : null
+                    }
+                    extendLoopLineFracs={
+                      linked && clipIsTimelineExtended(clip)
+                        ? clipExtendLoopLineFractions(clip)
+                        : []
+                    }
+                    extendPongSegments={
+                      linked &&
+                      clipIsTimelineExtended(clip) &&
+                      clip.extendPingPong === true
+                        ? clipExtendPongSegmentFractions(clip)
+                        : []
+                    }
                     bakeStatus={bakeInfoByClipId?.get(clip.id)?.status}
                     bakeError={bakeInfoByClipId?.get(clip.id)?.error}
-                    resizeEnabled={!generating}
+                    resizeEnabled={!generating && !linked}
                     moveEnabled={
-                      !generating && clipTimelineMoveEnabled(clip)
+                      !generating &&
+                      parentMovable &&
+                      (linked || clipTimelineMoveEnabled(clip))
                     }
                     onPointerDown={(event) => beginClipPress(clip, event)}
                     onResizePointerDown={(event) => armClipResize(clip, event)}

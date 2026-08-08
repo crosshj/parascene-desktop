@@ -586,6 +586,10 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
         : typeof c.includeAudio === "boolean"
           ? c.includeAudio
           : undefined,
+    linkedVideoClipId:
+      typeof c.linkedVideoClipId === "string" && c.linkedVideoClipId.trim()
+        ? c.linkedVideoClipId.trim()
+        : undefined,
     reverse: typeof c.reverse === "boolean" ? c.reverse : undefined,
     transform:
       c.transform === "kenBurns"

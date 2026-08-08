@@ -431,6 +431,33 @@ describe("auth shell", () => {
     );
   }, 20_000);
 
+  it("does not flash the project chooser when restoring into the editor", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+
+    await logIn(user);
+    await screen.findByLabelText("Creations");
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.click(await screen.findByRole("button", { name: "Editor" }));
+    expect(screen.getByLabelText("Assets")).toBeInTheDocument();
+
+    unmount();
+    render(<App />);
+
+    // After auth, land directly on the editor — never the New project chooser.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Assets")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("button", { name: "New project" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Editor" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  }, 20_000);
+
   it("switches Library and Sync surfaces", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   useCallback,
   useEffect,
@@ -14,6 +15,7 @@ import { enabledLookLabels } from "../../project/looks";
 import {
   deleteTimelineRender,
   exportTimelineRender,
+  exportTimelineRenderAudio,
   listTimelineRenders,
   collectRenderAssetIds,
   renderTimeline,
@@ -95,6 +97,9 @@ export function HookLayout() {
   );
   const [viewerMode, setViewerMode] = useState<"player" | "details">("player");
   const [exportingRenderId, setExportingRenderId] = useState<string | null>(null);
+  const [exportingKind, setExportingKind] = useState<"video" | "audio" | null>(
+    null,
+  );
   const [rebuildingCache, setRebuildingCache] = useState(false);
   const [cacheStatus, setCacheStatus] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -473,27 +478,48 @@ export function HookLayout() {
     }
   };
 
-  const saveRenderToDisk = async (render: TimelineRender) => {
+  const saveRenderToDisk = async (
+    render: TimelineRender,
+    kind: "video" | "audio" = "video",
+  ) => {
     if (exportingRenderId) return;
     setExportingRenderId(render.id);
+    setExportingKind(kind);
     try {
-      const result = await exportTimelineRender(
-        project.id,
-        render.id,
-        project.title,
-      );
+      const result =
+        kind === "audio"
+          ? await exportTimelineRenderAudio(
+              project.id,
+              render.id,
+              project.title,
+            )
+          : await exportTimelineRender(project.id, render.id, project.title);
       if (result.cancelled) return;
+      if (result.path) {
+        try {
+          await revealItemInDir(result.path);
+          return;
+        } catch (revealError) {
+          console.error("Could not reveal saved file", revealError);
+        }
+      }
       await confirm({
         title: "Saved",
         message: result.path
-          ? `Render saved to:\n${result.path}`
-          : "Render saved.",
+          ? `${kind === "audio" ? "MP3" : "Render"} saved to:\n${result.path}`
+          : kind === "audio"
+            ? "MP3 saved."
+            : "Render saved.",
         confirmLabel: "OK",
         hideCancel: true,
       });
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Could not save render.";
+        error instanceof Error
+          ? error.message
+          : kind === "audio"
+            ? "Could not save MP3."
+            : "Could not save render.";
       await confirm({
         title: "Save failed",
         message,
@@ -503,6 +529,7 @@ export function HookLayout() {
       console.error(message);
     } finally {
       setExportingRenderId(null);
+      setExportingKind(null);
     }
   };
 
@@ -848,9 +875,24 @@ export function HookLayout() {
                       type="button"
                       className="btn ghost hook-render-save"
                       disabled={!ready || Boolean(exportingRenderId)}
-                      onClick={() => void saveRenderToDisk(render)}
+                      onClick={() => void saveRenderToDisk(render, "video")}
                     >
-                      {exportingRenderId === render.id ? "Saving…" : "Save"}
+                      {exportingRenderId === render.id &&
+                      exportingKind === "video"
+                        ? "Saving…"
+                        : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn ghost hook-render-save"
+                      disabled={!ready || Boolean(exportingRenderId)}
+                      title="Extract and save the render audio as MP3"
+                      onClick={() => void saveRenderToDisk(render, "audio")}
+                    >
+                      {exportingRenderId === render.id &&
+                      exportingKind === "audio"
+                        ? "Saving…"
+                        : "Save MP3"}
                     </button>
                     <button
                       type="button"

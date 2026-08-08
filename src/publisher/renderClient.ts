@@ -9,6 +9,7 @@ import {
 } from "../project/types";
 import { downloadIds, getCreations } from "../library/catalogClient";
 import { ensureAccessToken } from "../auth/session";
+import { syncLinkedVideoAudio } from "../layouts/editor/linkedVideoAudio";
 import { recordUiOpTrace } from "../layouts/editor/uiOpTrace";
 
 export type RenderSlideshowRecipe = {
@@ -33,6 +34,8 @@ export type RenderTimelineClipInput = {
   inSec?: number;
   outSec?: number;
   includeAudio?: boolean;
+  /** Set on Master Audio companions linked to a video Include Audio clip. */
+  linkedVideoClipId?: string;
   reverse?: boolean;
   framing?: "fit" | "fill" | "stretch";
   slideshow?: RenderSlideshowRecipe;
@@ -89,7 +92,8 @@ export type RenderFinished = {
 export function timelineClipsToRenderInput(
   clips: readonly TimelineClip[],
 ): RenderTimelineClipInput[] {
-  return clips.map((clip) => ({
+  // Materialize Include Audio companions so render matches the editor lane.
+  return syncLinkedVideoAudio(clips).map((clip) => ({
     assetId: clip.assetId,
     startSec: clip.startSec,
     endSec: clip.endSec,
@@ -98,6 +102,7 @@ export function timelineClipsToRenderInput(
     inSec: clip.inSec,
     outSec: clip.outSec,
     includeAudio: clip.includeAudio,
+    linkedVideoClipId: clip.linkedVideoClipId,
     reverse: clip.reverse,
     framing: clip.framing,
     slideshow: clip.slideshow
@@ -247,6 +252,18 @@ export async function exportTimelineRender(
   projectTitle: string,
 ): Promise<ExportRenderResult> {
   return invoke<ExportRenderResult>("publisher_export_render", {
+    projectId,
+    renderId,
+    projectTitle,
+  });
+}
+
+export async function exportTimelineRenderAudio(
+  projectId: string,
+  renderId: string,
+  projectTitle: string,
+): Promise<ExportRenderResult> {
+  return invoke<ExportRenderResult>("publisher_export_render_audio", {
     projectId,
     renderId,
     projectTitle,

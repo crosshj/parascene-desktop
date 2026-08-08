@@ -65,6 +65,10 @@ import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import { resolveEditorMainAudioCreationId } from "./addAssetStartFrame";
 import { replicatePredictionsList } from "../../replicate/replicateClient";
 import {
+  removeClipsWithLinkedAudio,
+  syncLinkedVideoAudio,
+} from "./linkedVideoAudio";
+import {
   addAssetClipDurationSec,
   ADD_ASSET_TIMELINE_DURATION_SEC,
   applyDraftToTimelineClip,
@@ -302,7 +306,10 @@ export function EditorLayout() {
     ? "timeline"
     : "source";
   const [liveTimeline, setLiveTimeline] = useState<TimelineClip[] | null>(null);
-  const displayTimeline = liveTimeline ?? project.timeline;
+  const displayTimeline = useMemo(
+    () => syncLinkedVideoAudio(liveTimeline ?? project.timeline),
+    [liveTimeline, project.timeline],
+  );
   const sequenceDurationSec = timelineSequenceDuration(displayTimeline);
   const editorMainAudioCreationId = useMemo(
     () =>
@@ -513,7 +520,7 @@ export function EditorLayout() {
         if (!ok) return;
         pauseTimelinePlayback();
         setOpenProjectTimeline(
-          project.timeline.filter((clip) => !ids.has(clip.id)),
+          removeClipsWithLinkedAudio(project.timeline, ids),
         );
         clearClipSelection();
       })();
@@ -570,7 +577,9 @@ export function EditorLayout() {
           endSec: startSec + duration,
         };
       });
-      setOpenProjectTimeline([...project.timeline, ...pasted]);
+      setOpenProjectTimeline(
+        syncLinkedVideoAudio([...project.timeline, ...pasted]),
+      );
       pauseTimelinePlayback();
       const primary = pasted[0];
       if (primary) {
@@ -605,6 +614,11 @@ export function EditorLayout() {
     setSelectedClipIds(next.selectedClipIds);
     setClipStagingSeed(next.clipStagingSeed);
     setPendingStagedDraft(next.pendingStagedDraft);
+    // Persist Include Audio companions for projects that only had the flag.
+    const healed = syncLinkedVideoAudio(project.timeline);
+    if (healed.length !== project.timeline.length) {
+      setOpenProjectTimeline(healed);
+    }
   }
 
   // Drop local selection if clips were removed from the timeline.
@@ -1295,8 +1309,10 @@ export function EditorLayout() {
     ) {
       return;
     }
-    const next = timelineRef.current.map((clip) =>
-      clip.id === clipId ? applyDraftToTimelineClip(clip, draft) : clip,
+    const next = syncLinkedVideoAudio(
+      timelineRef.current.map((clip) =>
+        clip.id === clipId ? applyDraftToTimelineClip(clip, draft) : clip,
+      ),
     );
     const updated = next.find((clip) => clip.id === clipId);
     if (options?.live) {
@@ -1366,31 +1382,32 @@ export function EditorLayout() {
       // Keep ref in sync during the same event turn so child effects (e.g.
       // AddAssetGeneratePanel mount persist) do not rewrite a stale timeline
       // and wipe a just-placed placeholder.
+      const synced = syncLinkedVideoAudio(next);
       const prev = timelineRef.current;
       const prevIds = new Set(prev.map((c) => c.id));
-      const added = next
+      const added = synced
         .filter((c) => !prevIds.has(c.id))
         .map((c) => c.id);
       const removed = prev
-        .filter((c) => !next.some((n) => n.id === c.id))
+        .filter((c) => !synced.some((n) => n.id === c.id))
         .map((c) => c.id);
-      timelineRef.current = next;
+      timelineRef.current = synced;
       if (!options?.live) {
         recordUiOpTrace({
           type: "timeline_commit",
-          count: next.length,
+          count: synced.length,
           clipId: added[0],
-          reason: `${prev.length}->${next.length} added=${added.slice(0, 3).join(",") || "none"} removed=${removed.slice(0, 3).join(",") || "none"}`,
+          reason: `${prev.length}->${synced.length} added=${added.slice(0, 3).join(",") || "none"} removed=${removed.slice(0, 3).join(",") || "none"}`,
         });
       }
       if (options?.live) {
-        setLiveTimeline(next);
-        syncClipStagingFromTimeline(next);
+        setLiveTimeline(synced);
+        syncClipStagingFromTimeline(synced);
         return;
       }
       setLiveTimeline(null);
-      setOpenProjectTimeline(next);
-      syncClipStagingFromTimeline(next);
+      setOpenProjectTimeline(synced);
+      syncClipStagingFromTimeline(synced);
     },
     [setLiveTimeline, setOpenProjectTimeline, syncClipStagingFromTimeline],
   );

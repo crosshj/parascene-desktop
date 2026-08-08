@@ -50,8 +50,8 @@ use library::{
     library_transcribe_local,
     library_read_local_thumb_base64, library_rebuild_reversed, library_remove_from_folder,
     library_rename_folder, library_set_folder_cover, library_sync_status, jobs_cancel, jobs_enqueue, jobs_get, jobs_list,
-    publisher_delete_render, publisher_export_render, publisher_get_render,
-    publisher_list_renders, publisher_render_timeline,
+    publisher_delete_render, publisher_export_render, publisher_export_render_audio,
+    publisher_get_render, publisher_list_renders, publisher_render_timeline,
 };
 use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
 use replicate::{
@@ -335,6 +335,7 @@ pub fn run() {
             publisher_render_timeline,
             publisher_delete_render,
             publisher_export_render,
+            publisher_export_render_audio,
             clipboard_write_text,
             replicate_token_status,
             replicate_token_set,

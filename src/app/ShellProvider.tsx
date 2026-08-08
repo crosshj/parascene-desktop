@@ -366,7 +366,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     initialSession.librarySurface,
   );
   const [openProjectId, setOpenProjectId] = useState<string | null>(
-    null,
+    // Seed from session so Project tab doesn't flash the chooser before
+    // async folder reconcile finishes (mode/tabs already restore sync).
+    initialSession.openProjectId,
   );
   const [mode, setMode] = useState<LayoutMode>(initialSession.mode);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(
@@ -383,6 +385,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const [creationsFilterId, setCreationsFilterId] = useState<FilterId>(
     initialSession.creationsFilterId,
   );
+  /** Startup openProject() has been kicked off (or skipped). */
+  const startupOpenAttempted = useRef(false);
   const [chromeStatus, setChromeStatusState] = useState<string | null>(null);
   const setChromeStatus = useCallback((status: string | null) => {
     setChromeStatusState((prev) => (prev === status ? prev : status));
@@ -414,6 +418,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       refreshCorruptProjectIds();
       const session = loadShellSession(new Set(again.map((p) => p.id)));
       if (session.openProjectId) {
+        setOpenProjectId(session.openProjectId);
         setMode(session.mode);
         setSelectedSceneId(session.selectedSceneId);
         setPrimaryTab(session.primaryTab);
@@ -1214,13 +1219,19 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     updateStoredProjects,
   ]);
 
-  const startupOpenAttempted = useRef(false);
+  // Reconcile the sync-restored project folder after first paint (layout already
+  // shows editor/lab/etc. from openProjectId — no chooser flash).
   useEffect(() => {
     if (startupOpenAttempted.current) return;
     startupOpenAttempted.current = true;
-    if (!initialSession.openProjectId) return;
+    const restoreId = initialSession.openProjectId;
+    if (!restoreId) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- restoring the persisted session is the purpose of this mount effect
-    void openProject(initialSession.openProjectId, false);
+    void openProject(restoreId, false).then((ok) => {
+      if (!ok) {
+        setOpenProjectId((current) => (current === restoreId ? null : current));
+      }
+    });
   }, [initialSession.openProjectId, openProject]);
 
   const closeProject = useCallback(() => {

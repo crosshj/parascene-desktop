@@ -689,7 +689,7 @@ export function applyDraftToTimelineClip(
         : undefined,
     extendSourceSpanSec:
       draft.kind === "video" && timelineDur > playthrough + 0.001
-        ? (clip.extendSourceSpanSec ?? sourceSpan)
+        ? Math.min(clip.extendSourceSpanSec ?? sourceSpan, sourceSpan)
         : draft.kind === "video"
           ? undefined
           : clip.extendSourceSpanSec,

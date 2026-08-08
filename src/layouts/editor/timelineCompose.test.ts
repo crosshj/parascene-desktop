@@ -5,6 +5,8 @@ import {
   clipSourceSpanSec,
   clipIsTimelineExtended,
   clipExtendDivitFraction,
+  clipExtendSourceSpanSec,
+  clipPlaythroughUnitSec,
   finalizeVideoResizeEndSec,
   peekNextVisualClip,
   resolveTimelineFrame,
@@ -109,6 +111,32 @@ describe("clipSourceSec", () => {
     expect(clipSourceSec(c, 12.5)).toBeCloseTo(3.5);
   });
 
+  it("loops Include Audio companions like their parent video", () => {
+    const companion = clip({
+      id: "a-link",
+      startSec: 0,
+      endSec: 8,
+      inSec: 0,
+      outSec: 5,
+      kind: "audio",
+      lane: "audio",
+      linkedVideoClipId: "v",
+    });
+    expect(clipIsTimelineExtended(companion)).toBe(true);
+    expect(clipSourceSec(companion, 6)).toBe(1);
+    const bed = clip({
+      id: "a-bed",
+      startSec: 0,
+      endSec: 8,
+      inSec: 0,
+      outSec: 5,
+      kind: "audio",
+      lane: "audio",
+    });
+    expect(clipIsTimelineExtended(bed)).toBe(false);
+    expect(clipSourceSec(bed, 6)).toBe(5);
+  });
+
   it("detects timeline extend and divit position", () => {
     const c = clip({
       id: "v",
@@ -141,6 +169,25 @@ describe("clipSourceSec", () => {
     });
     expect(clipIsTimelineExtended(frozen)).toBe(true);
     expect(clipExtendDivitFraction(frozen)).toBeCloseTo(0.9);
+  });
+
+  it("clamps a stale frozen extend span down to the live trim", () => {
+    // in raised after span was frozen at outSec — playthrough must follow trim.
+    const c = clip({
+      id: "v",
+      startSec: 9,
+      endSec: 27.1,
+      inSec: 2.328,
+      outSec: 8.881,
+      kind: "video",
+      extendPingPong: true,
+      extendSourceSpanSec: 8.881,
+    });
+    const trim = 8.881 - 2.328;
+    expect(clipExtendSourceSpanSec(c)).toBeCloseTo(trim, 3);
+    expect(clipPlaythroughUnitSec(c)).toBeCloseTo(trim, 3);
+    // Second tile starts a pong (reverse) from out — no silent jump past the trim.
+    expect(clipSourceSec(c, 9 + trim + 0.01)).toBeCloseTo(8.881 - 0.01, 2);
   });
 });
 
@@ -221,6 +268,32 @@ describe("resolveTimelineFrame", () => {
     const frame = resolveTimelineFrame(withVideo, 3);
     expect(frame.visual?.clip.kind).toBe("video");
     expect(frame.visual?.sourceSec).toBe(4);
+  });
+
+  it("ranks linked video-audio above bed audio for the monitor mix", () => {
+    const frame = resolveTimelineFrame(
+      [
+        clip({
+          id: "bed",
+          startSec: 0,
+          endSec: 20,
+          lane: "audio",
+          kind: "audio",
+          assetId: "song",
+        }),
+        clip({
+          id: "linked",
+          startSec: 2,
+          endSec: 8,
+          lane: "audio",
+          kind: "audio",
+          assetId: "take",
+          linkedVideoClipId: "vid",
+        }),
+      ],
+      4,
+    );
+    expect(frame.audio.map((l) => l.clip.id)).toEqual(["linked", "bed"]);
   });
 });
 

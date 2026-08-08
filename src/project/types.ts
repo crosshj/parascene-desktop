@@ -88,6 +88,11 @@ export type TimelineClip = {
   inSec?: number;
   outSec?: number;
   includeAudio?: boolean;
+  /**
+   * On Master Audio companions created for a video with Include Audio: id of
+   * the owning video clip. Kept in sync for move/resize/render precedence.
+   */
+  linkedVideoClipId?: string;
   /** Play a behind-the-scenes FFmpeg-reversed copy of the source asset. */
   reverse?: boolean;
   transform?: "hold" | "kenBurns";

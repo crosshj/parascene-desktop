@@ -3386,6 +3386,7 @@ input[type="checkbox"].control,
   align-self: center;
   font-size: 0.78rem;
   padding: 0.35rem 0.55rem;
+  white-space: nowrap;
 }
 
 .hook-render-details.is-active {
@@ -7242,6 +7243,13 @@ body.is-timeline-clip-moving * {
   gap: 8px;
   padding: 2px 6px;
   border-radius: 3px;
+}
+
+/* Video Include Audio companions sit above bed audio on the Master lane. */
+.editor-timeline-clip.is-audio.is-linked-video-audio {
+  z-index: 3;
+  background: rgba(40, 72, 110, 0.96);
+  border: 1.5px solid #7dd3fc;
 }
 
 .editor-timeline-clip-thumb-frame {

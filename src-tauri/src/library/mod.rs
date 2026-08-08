@@ -74,8 +74,8 @@ pub use project_assets::{
     library_replace_project_usage, library_set_project_bound_folder,
 };
 pub use render::{
-    publisher_delete_render, publisher_export_render, publisher_get_render, publisher_list_renders,
-    publisher_render_timeline,
+    publisher_delete_render, publisher_export_render, publisher_export_render_audio,
+    publisher_get_render, publisher_list_renders, publisher_render_timeline,
 };
 pub use reverse::{library_ensure_reversed, library_rebuild_reversed};
 pub use slideshow::library_ensure_slideshow;
