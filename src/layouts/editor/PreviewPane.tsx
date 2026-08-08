@@ -2513,6 +2513,7 @@ export function PreviewPane({
                     methodId: next.methodId,
                     lastError: undefined,
                     replicatePredictionId: undefined,
+                    generationJob: undefined,
                   });
                   setProviderChoiceClipId(null);
                 }}

@@ -168,6 +168,22 @@ function draftFromClip(
   };
 }
 
+function generationJobsEqual(
+  a: AddAssetDraft["generationJob"],
+  b: AddAssetDraft["generationJob"],
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.status === b.status &&
+    a.provider === b.provider &&
+    a.startedAt === b.startedAt &&
+    (a.replicatePredictionId ?? "") === (b.replicatePredictionId ?? "") &&
+    (a.pendingCreationId ?? "") === (b.pendingCreationId ?? "") &&
+    (a.model ?? "") === (b.model ?? "")
+  );
+}
+
 function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
   return (
     (a.prompt ?? "") === (b?.prompt ?? "") &&
@@ -180,6 +196,7 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
     Boolean(a.useNearestDuration) === Boolean(b?.useNearestDuration) &&
     (a.lastError ?? "") === (b?.lastError ?? "") &&
     (a.replicatePredictionId ?? "") === (b?.replicatePredictionId ?? "") &&
+    generationJobsEqual(a.generationJob, b?.generationJob) &&
     replicateTweaksEqual(a.replicateTweaks, b?.replicateTweaks) &&
     (a.startFrameAssetId ?? "") === (b?.startFrameAssetId ?? "") &&
     normalizeFraming(a.startFrameFraming) ===
@@ -786,6 +803,7 @@ export function AddAssetGeneratePanel({
       useNearestDuration: useNearestDuration || undefined,
       lastError: clip.addAssetDraft?.lastError,
       replicatePredictionId: clip.addAssetDraft?.replicatePredictionId,
+      generationJob: clip.addAssetDraft?.generationJob,
       replicateTweaks: isReplicate ? normalizedTweaks : undefined,
       startFrameAssetId: startFrameAssetId ?? undefined,
       startFrameFraming:

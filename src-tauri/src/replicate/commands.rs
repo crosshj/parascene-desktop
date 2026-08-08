@@ -175,6 +175,15 @@ pub async fn replicate_prediction_download(
     predict::download_prediction_outputs(app, prediction_id).await
 }
 
+/// Poll an existing prediction until terminal, then download outputs (app-restart resume).
+#[tauri::command]
+pub async fn replicate_prediction_wait(
+    app: AppHandle,
+    prediction_id: String,
+) -> Result<RunResult, String> {
+    predict::wait_prediction_outputs(app, prediction_id).await
+}
+
 #[tauri::command]
 pub async fn replicate_predictions_list(
     status: Option<String>,

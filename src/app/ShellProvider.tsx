@@ -91,6 +91,7 @@ import {
 } from "../sync/manifestSync";
 import {
   bindAddAssetGenerationApplier,
+  reconcileAddAssetGenerations,
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
@@ -642,6 +643,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               const err = result.errorMessage.trim();
               if (err) draft.lastError = err;
               else delete draft.lastError;
+              delete draft.generationJob;
               if (result.replicatePredictionId !== undefined) {
                 if (result.replicatePredictionId?.trim()) {
                   draft.replicatePredictionId =
@@ -674,7 +676,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               if (
                 clip.id !== clipId ||
                 (!clip.addAssetDraft?.lastError &&
-                  !clip.addAssetDraft?.replicatePredictionId)
+                  !clip.addAssetDraft?.replicatePredictionId &&
+                  !clip.addAssetDraft?.generationJob)
               ) {
                 return clip;
               }
@@ -682,6 +685,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               const rest = { ...clip.addAssetDraft };
               delete rest.lastError;
               delete rest.replicatePredictionId;
+              delete rest.generationJob;
               return {
                 ...clip,
                 addAssetDraft: Object.keys(rest).length > 0 ? rest : undefined,
@@ -695,9 +699,73 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           console.error("Failed to clear generation error", error);
         });
       },
+      applyInFlight: (result) => {
+        void updateStoredProjects((prev) =>
+          prev.map((project) => {
+            if (project.id !== result.projectId) return project;
+            const timeline = storedProjectToUi(project).timeline;
+            const nextTimeline = timeline.map((clip) => {
+              if (clip.id !== result.clipId) return clip;
+              const draft = { ...clip.addAssetDraft, generationJob: result.job };
+              delete draft.lastError;
+              const pred = result.job.replicatePredictionId?.trim();
+              if (pred) draft.replicatePredictionId = pred;
+              else delete draft.replicatePredictionId;
+              const keys = Object.keys(draft).filter(
+                (k) => draft[k as keyof typeof draft] !== undefined,
+              );
+              return {
+                ...clip,
+                addAssetDraft: keys.length > 0 ? draft : undefined,
+              };
+            });
+            return setStoredProjectTimeline(project, nextTimeline);
+          }),
+        ).catch((error) => {
+          console.error("Failed to save in-flight generation", error);
+        });
+      },
     });
     return () => bindAddAssetGenerationApplier(null);
   }, [updateStoredProjects]);
+
+  // Resume add-asset generation after restart (remote wait still in progress).
+  // Depend on openProjectId + a cheap fingerprint of resumable jobs so applyInFlight
+  // updates during a live run do not re-enter reconcile.
+  const addAssetResumeKey = useMemo(() => {
+    if (!openProjectId) return "";
+    const found = storedProjects.find((p) => p.id === openProjectId);
+    if (!found) return "";
+    const ui = storedProjectToUi(found);
+    return ui.timeline
+      .filter((c) => c.isAddAssetPlaceholder && c.addAssetDraft?.generationJob)
+      .map((c) => {
+        const j = c.addAssetDraft!.generationJob!;
+        return [
+          c.id,
+          j.status,
+          j.replicatePredictionId ?? "",
+          j.pendingCreationId ?? "",
+        ].join(":");
+      })
+      .join("|");
+  }, [openProjectId, storedProjects]);
+
+  useEffect(() => {
+    if (!openProjectId || !addAssetResumeKey) return;
+    const found = storedProjects.find((p) => p.id === openProjectId);
+    if (!found) return;
+    const ui = storedProjectToUi(found);
+    reconcileAddAssetGenerations({
+      projectId: found.id,
+      projectTitle: found.title,
+      timeline: ui.timeline,
+      imagesGroupId: found.imagesGroupId ?? null,
+      videosGroupId: found.videosGroupId ?? null,
+    });
+    // storedProjects read inside; key covers resumable identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fingerprint drives resume
+  }, [openProjectId, addAssetResumeKey]);
 
   const patchOpenProject = useCallback(
     (patch: (project: StoredProject) => StoredProject) => {

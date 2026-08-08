@@ -138,6 +138,24 @@ export type TimelineClip = {
 /** Parascene Blue model for timeline fill (WAN = no audio; LTX = optional audio). */
 export type AddAssetBlueModel = "wan" | "ltx";
 
+/**
+ * In-flight add-asset generation on a placeholder.
+ * Survives app restart so we can reattach to a remote Replicate prediction
+ * or Parascene creation and finish download/import.
+ */
+export type AddAssetGenerationJob = {
+  status: "starting" | "waiting" | "downloading" | "importing";
+  provider: "replicate" | "parascene_blue";
+  /** ISO timestamp when Generate was pressed. */
+  startedAt: string;
+  /** Replicate prediction id once created remotely. */
+  replicatePredictionId?: string;
+  /** Parascene creation id once create() returns. */
+  pendingCreationId?: string;
+  /** Model id for resume/provenance (`owner/name` or `ltx_a2v`, …). */
+  model?: string;
+};
+
 /** Draft form state for an unfilled add-asset placeholder. */
 export type AddAssetDraft = {
   prompt?: string;
@@ -159,8 +177,11 @@ export type AddAssetDraft = {
   /**
    * Replicate prediction id when generation succeeded remotely but local
    * download/import failed — enables retry-download without re-running.
+   * Also mirrored while {@link generationJob} is waiting on Replicate.
    */
   replicatePredictionId?: string;
+  /** Active remote generation — cleared on success or hard failure. */
+  generationJob?: AddAssetGenerationJob;
   /** Optional Replicate model params (resolution, audio, seed, …). */
   replicateTweaks?: {
     resolution?: string;

@@ -77,6 +77,17 @@ describe("addAssetGenerationStore", () => {
       }),
     );
 
+    const applySuccess = vi.fn();
+    const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
+    const applyInFlight = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess,
+      applyFailure,
+      clearFailure,
+      applyInFlight,
+    });
+
     const started = startAddAssetGenerationJob({
       projectId: "proj-1",
       request: makeRequest(),
@@ -95,6 +106,16 @@ describe("addAssetGenerationStore", () => {
     expect(getAddAssetGenerationSession()?.clipId).toBe("ph-1");
     expect(getAddAssetGenerationSession()?.projectId).toBe("proj-1");
     expect(getAddAssetGenerationSession()?.phase).toBe("running");
+    expect(applyInFlight).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-1",
+        clipId: "ph-1",
+        job: expect.objectContaining({
+          status: "starting",
+          provider: "parascene_blue",
+        }),
+      }),
+    );
 
     // Second start is ignored while inflight.
     expect(
@@ -112,15 +133,6 @@ describe("addAssetGenerationStore", () => {
         },
       }),
     ).toBe(false);
-
-    const applySuccess = vi.fn();
-    const applyFailure = vi.fn();
-    const clearFailure = vi.fn();
-    bindAddAssetGenerationApplier({
-      applySuccess,
-      applyFailure,
-      clearFailure,
-    });
 
     resolveJob({
       creationId: "vid-1",
@@ -192,10 +204,12 @@ describe("addAssetGenerationStore", () => {
     const applySuccess = vi.fn();
     const applyFailure = vi.fn();
     const clearFailure = vi.fn();
+    const applyInFlight = vi.fn();
     bindAddAssetGenerationApplier({
       applySuccess,
       applyFailure,
       clearFailure,
+      applyInFlight,
     });
     runMock.mockRejectedValue(new Error("boom"));
     startAddAssetGenerationJob({
@@ -215,6 +229,7 @@ describe("addAssetGenerationStore", () => {
     await Promise.resolve();
     expect(getAddAssetGenerationSession()?.phase).toBe("error");
     expect(getAddAssetGenerationSession()?.errorMessage).toBe("boom");
+    expect(applyInFlight).toHaveBeenCalled();
     expect(applyFailure).toHaveBeenCalledWith({
       projectId: "proj-1",
       clipId: "ph-1",
@@ -224,5 +239,63 @@ describe("addAssetGenerationStore", () => {
     clearAddAssetGenerationError();
     expect(getAddAssetGenerationSession()).toBeNull();
     expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-1");
+  });
+
+  it("persists remote job ids via onRemoteJob for restart resume", async () => {
+    const applyInFlight = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure: vi.fn(),
+      clearFailure: vi.fn(),
+      applyInFlight,
+    });
+    runMock.mockImplementation(async (opts) => {
+      opts.onRemoteJob?.({
+        provider: "replicate",
+        replicatePredictionId: "pred-xyz",
+        model: "owner/model",
+      });
+      return {
+        creationId: "vid-1",
+        projectCreationIds: ["vid-1"],
+        videosGroupId: null,
+        imagesGroupId: null,
+        mode: "start_frame" as const,
+        model: "owner/model",
+      };
+    });
+    startAddAssetGenerationJob({
+      projectId: "proj-1",
+      request: {
+        ...makeRequest(),
+        continuityMode: "start_frame",
+        replicate: {
+          owner: "owner",
+          name: "model",
+          inputs: [],
+        },
+      },
+      runOpts: {
+        timeline: [],
+        mainAudioCreationId: null,
+        aspectRatio: "16:9",
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        imagesGroupId: null,
+        videosGroupId: null,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(isAddAssetGenerationInflight()).toBe(false);
+    });
+    expect(applyInFlight).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job: expect.objectContaining({
+          status: "waiting",
+          provider: "replicate",
+          replicatePredictionId: "pred-xyz",
+        }),
+      }),
+    );
   });
 });

@@ -312,6 +312,13 @@ export async function replicatePredictionDownload(
   return invoke("replicate_prediction_download", { predictionId });
 }
 
+/** Poll an existing prediction until terminal, then download outputs. */
+export async function replicatePredictionWait(
+  predictionId: string,
+): Promise<ReplicateRunResult> {
+  return invoke("replicate_prediction_wait", { predictionId });
+}
+
 export async function listenReplicateModelsProgress(
   handler: (ev: ReplicateProgressEvent) => void,
 ): Promise<UnlistenFn> {

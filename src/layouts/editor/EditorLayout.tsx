@@ -1910,9 +1910,16 @@ export function EditorLayout() {
   const addAssetGenerationByClipId = useMemo(() => {
     const map = new Map<string, BakeInfo>();
     for (const clip of project.timeline) {
+      if (!isAddAssetPlaceholderClip(clip)) continue;
       const err = clip.addAssetDraft?.lastError?.trim();
-      if (!err || !isAddAssetPlaceholderClip(clip)) continue;
-      map.set(clip.id, { status: "failed", error: err });
+      if (err) {
+        map.set(clip.id, { status: "failed", error: err });
+        continue;
+      }
+      // Persisted in-flight job (e.g. after restart, before session reattaches).
+      if (clip.addAssetDraft?.generationJob) {
+        map.set(clip.id, { status: "generating", error: null });
+      }
     }
     if (addAssetGenerationSession) {
       const status =

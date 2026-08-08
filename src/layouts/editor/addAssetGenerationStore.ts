@@ -1,4 +1,8 @@
 import { useSyncExternalStore } from "react";
+import type {
+  AddAssetGenerationJob,
+  TimelineClip,
+} from "../../project/types";
 import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import {
   createRunningAddAssetGenerationSession,
@@ -8,6 +12,14 @@ import {
   type AddAssetGenerationSession,
   type RunAddAssetGenerationOpts,
 } from "./addAssetGenerate";
+import {
+  draftAudioMode,
+  draftContinuityMode,
+  findResumableAddAssetPlaceholders,
+  initialResumeSessionSteps,
+  resumeParasceneAddAssetGeneration,
+  resumeReplicateWaitForPlaceholder,
+} from "./addAssetGenerationResume";
 import {
   initialReplicateDownloadRetrySteps,
   initialReplicateGenerationSteps,
@@ -21,6 +33,8 @@ import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
  * Module-level add-asset generation session.
  * Survives EditorLayout unmount (e.g. switching to Library) so in-flight
  * jobs keep updating and can still write the finished clip into the project.
+ * Remote job ids are also persisted on the placeholder draft so an app
+ * restart can resume wait/download.
  */
 
 export type AddAssetGenerationStoreSession = AddAssetGenerationSession & {
@@ -52,18 +66,28 @@ export type AddAssetGenerationFailure = {
   replicatePredictionId?: string | null;
 };
 
+export type AddAssetGenerationInFlight = {
+  projectId: string;
+  clipId: string;
+  job: AddAssetGenerationJob;
+};
+
 export type AddAssetGenerationApplier = {
   applySuccess: (result: AddAssetGenerationSuccess) => void | Promise<void>;
   /** Persist failure on the placeholder so the timeline ! survives navigation. */
   applyFailure: (result: AddAssetGenerationFailure) => void;
   /** Clear persisted failure when the user dismisses / retries. */
   clearFailure: (projectId: string, clipId: string) => void;
+  /** Persist in-flight remote job markers for app-restart resume. */
+  applyInFlight: (result: AddAssetGenerationInFlight) => void;
 };
 
 let session: AddAssetGenerationStoreSession | null = null;
 let inflight = false;
 let applier: AddAssetGenerationApplier | null = null;
 const listeners = new Set<() => void>();
+/** Clip ids currently being resumed (avoid double-start). */
+const resumeAttempted = new Set<string>();
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -133,6 +157,14 @@ export function clearAddAssetGenerationIfClipMissing(
   }
 }
 
+function persistInFlight(
+  projectId: string,
+  clipId: string,
+  job: AddAssetGenerationJob,
+): void {
+  applier?.applyInFlight({ projectId, clipId, job });
+}
+
 function applyJobFailure(
   projectId: string,
   clipId: string,
@@ -178,7 +210,16 @@ export type StartAddAssetGenerationJobOpts = {
   request: StartAddAssetGenerationRequest;
   runOpts: Omit<
     RunAddAssetGenerationOpts,
-    "onSteps" | "onProgress" | "prompt" | "lyricsText" | "audioMode" | "continuityMode" | "startFrame" | "endFrame" | "placeholder"
+    | "onSteps"
+    | "onProgress"
+    | "onRemoteJob"
+    | "prompt"
+    | "lyricsText"
+    | "audioMode"
+    | "continuityMode"
+    | "startFrame"
+    | "endFrame"
+    | "placeholder"
   >;
 };
 
@@ -191,6 +232,7 @@ export function startAddAssetGenerationJob(
   const clipId = request.clip.id;
   const continuityMode = request.continuityMode ?? "start_frame";
   inflight = true;
+  resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
     request.audioMode,
@@ -206,8 +248,23 @@ export function startAddAssetGenerationJob(
     ...baseSession,
     projectId,
   });
-  // Clear any prior persisted failure on this placeholder.
-  applier?.clearFailure(projectId, clipId);
+
+  const provider: AddAssetGenerationJob["provider"] = request.replicate
+    ? "replicate"
+    : "parascene_blue";
+  const startedAt = new Date().toISOString();
+  const modelHint = request.replicate
+    ? `${request.replicate.owner}/${request.replicate.name}`
+    : request.blueModel === "wan"
+      ? "wan"
+      : "ltx";
+  // applyInFlight clears lastError / stale prediction ids — avoid racing clearFailure.
+  persistInFlight(projectId, clipId, {
+    status: "starting",
+    provider,
+    startedAt,
+    model: modelHint,
+  });
 
   void runAddAssetGeneration({
     ...runOpts,
@@ -225,6 +282,16 @@ export function startAddAssetGenerationJob(
     },
     onProgress: (progressNote) => {
       patchSession(clipId, { progressNote });
+    },
+    onRemoteJob: (remote) => {
+      persistInFlight(projectId, clipId, {
+        status: "waiting",
+        provider: remote.provider,
+        startedAt,
+        replicatePredictionId: remote.replicatePredictionId,
+        pendingCreationId: remote.pendingCreationId,
+        model: remote.model ?? modelHint,
+      });
     },
   })
     .then(async (result) => {
@@ -259,6 +326,7 @@ export function startAddAssetGenerationJob(
     })
     .finally(() => {
       inflight = false;
+      resumeAttempted.delete(clipId);
     });
 
   return true;
@@ -295,6 +363,7 @@ export function retryAddAssetDownloadJob(
     modelId,
   } = opts;
   inflight = true;
+  resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
     audioMode,
@@ -307,12 +376,13 @@ export function retryAddAssetDownloadJob(
     ...baseSession,
     projectId,
   });
-  // Keep prediction id on the draft; clear only the error text while retrying.
-  applier?.applyFailure({
-    projectId,
-    clipId,
-    errorMessage: "",
+  // Clears lastError and stamps prediction id for resume.
+  persistInFlight(projectId, clipId, {
+    status: "downloading",
+    provider: "replicate",
+    startedAt: new Date().toISOString(),
     replicatePredictionId: predictionId,
+    model: modelId,
   });
 
   void resumeReplicateAddAssetDownload({
@@ -359,6 +429,154 @@ export function retryAddAssetDownloadJob(
     })
     .finally(() => {
       inflight = false;
+      resumeAttempted.delete(clipId);
+    });
+
+  return true;
+}
+
+export type ReconcileAddAssetGenerationsOpts = {
+  projectId: string;
+  projectTitle: string;
+  timeline: readonly TimelineClip[];
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+};
+
+/**
+ * After project load / app restart: reattach to remote jobs persisted on
+ * placeholders. One global job at a time (same as live generation).
+ */
+export function reconcileAddAssetGenerations(
+  opts: ReconcileAddAssetGenerationsOpts,
+): boolean {
+  if (inflight || !applier) return false;
+  const candidates = findResumableAddAssetPlaceholders(opts.timeline).filter(
+    (c) => !resumeAttempted.has(c.clip.id),
+  );
+  if (candidates.length === 0) return false;
+
+  // Prefer a job that already has a remote id.
+  const withRemote =
+    candidates.find(
+      (c) =>
+        Boolean(c.job.replicatePredictionId?.trim()) ||
+        Boolean(c.job.pendingCreationId?.trim()),
+    ) ?? candidates[0];
+  if (!withRemote) return false;
+
+  const { clip, job } = withRemote;
+  const clipId = clip.id;
+  const draft = clip.addAssetDraft;
+  const audioMode = draftAudioMode(draft);
+  const continuityMode = draftContinuityMode(draft);
+  const durationSec = addAssetClipDurationSec(clip);
+  const prompt = draft?.prompt?.trim() || "";
+  const lyricsText = "";
+  const predictionId =
+    job.replicatePredictionId?.trim() ||
+    draft?.replicatePredictionId?.trim() ||
+    "";
+  const pendingCreationId = job.pendingCreationId?.trim() || "";
+
+  if (job.status === "starting" && !predictionId && !pendingCreationId) {
+    resumeAttempted.add(clipId);
+    applyJobFailure(
+      opts.projectId,
+      clipId,
+      audioMode,
+      durationSec,
+      continuityMode,
+      new Error(
+        "Generation was interrupted before a remote job was created. Please try again.",
+      ),
+    );
+    resumeAttempted.delete(clipId);
+    // Try next candidate if any.
+    return reconcileAddAssetGenerations(opts);
+  }
+
+  inflight = true;
+  resumeAttempted.add(clipId);
+  const baseSession = initialResumeSessionSteps(
+    job.provider,
+    continuityMode,
+    audioMode,
+    durationSec,
+  );
+  setSession({
+    ...baseSession,
+    clipId,
+    projectId: opts.projectId,
+  });
+
+  const run =
+    job.provider === "replicate" && predictionId
+      ? resumeReplicateWaitForPlaceholder({
+          predictionId,
+          projectId: opts.projectId,
+          imagesGroupId: opts.imagesGroupId,
+          continuityMode,
+          modelId:
+            job.model?.trim() ||
+            draft?.replicateModel?.trim() ||
+            "replicate",
+          onSteps: (steps) => patchSession(clipId, { steps }),
+          onProgress: (progressNote) =>
+            patchSession(clipId, { progressNote }),
+        })
+      : pendingCreationId
+        ? resumeParasceneAddAssetGeneration({
+            pendingCreationId,
+            projectId: opts.projectId,
+            projectTitle: opts.projectTitle,
+            imagesGroupId: opts.imagesGroupId,
+            videosGroupId: opts.videosGroupId,
+            continuityMode,
+            model: job.model?.trim() || "parascene_blue",
+            onSteps: (steps) => patchSession(clipId, { steps }),
+            onProgress: (progressNote) =>
+              patchSession(clipId, { progressNote }),
+          })
+        : Promise.reject(
+            new Error("No remote job id available to resume generation."),
+          );
+
+  void run
+    .then(async (result) => {
+      const success: AddAssetGenerationSuccess = {
+        projectId: opts.projectId,
+        clipId,
+        creationId: result.creationId,
+        projectCreationIds: result.projectCreationIds,
+        videosGroupId: result.videosGroupId,
+        imagesGroupId: result.imagesGroupId,
+        prompt,
+        lyricsText,
+        audioMode,
+        mode: result.mode,
+        model: result.model,
+      };
+      await applier?.applySuccess(success);
+      if (session?.clipId === clipId) {
+        setSession(null);
+      }
+    })
+    .catch((error) => {
+      applyJobFailure(
+        opts.projectId,
+        clipId,
+        audioMode,
+        durationSec,
+        continuityMode,
+        error,
+      );
+    })
+    .finally(() => {
+      inflight = false;
+      resumeAttempted.delete(clipId);
+      // Kick another pending placeholder if present.
+      reconcileAddAssetGenerations(opts);
     });
 
   return true;
@@ -382,4 +600,5 @@ export function __resetAddAssetGenerationStoreForTests(): void {
   inflight = false;
   applier = null;
   listeners.clear();
+  resumeAttempted.clear();
 }

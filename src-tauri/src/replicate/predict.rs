@@ -476,6 +476,198 @@ pub async fn download_prediction_outputs(
     Ok(result)
 }
 
+fn owner_name_from_prediction(
+    prediction: &Value,
+    fallback: Option<(&str, &str)>,
+) -> Result<(String, String), String> {
+    if let Some((o, n)) = fallback {
+        let ot = o.trim();
+        let nt = n.trim();
+        if !ot.is_empty() && !nt.is_empty() {
+            return Ok((ot.to_string(), nt.to_string()));
+        }
+    }
+    let model = prediction
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if let Some((owner, name)) = model.split_once('/') {
+        let ot = owner.trim();
+        let nt = name.trim();
+        if !ot.is_empty() && !nt.is_empty() {
+            return Ok((ot.to_string(), nt.to_string()));
+        }
+    }
+    Err("Could not determine model owner/name for prediction.".into())
+}
+
+/// Poll an existing prediction until terminal, then download outputs.
+/// Used to resume add-asset generation after an app restart.
+pub async fn wait_prediction_outputs(
+    app: AppHandle,
+    prediction_id: String,
+) -> Result<RunResult, String> {
+    let my_gen = begin_run_generation();
+    let token = token::require_token()?;
+    let local = history::get_prediction(&prediction_id)?.map(|d| d.record);
+    let api_url = format!("https://api.replicate.com/v1/predictions/{prediction_id}");
+    let mut prediction = client::get_json(&token, &api_url).await?;
+    let (owner, name) = owner_name_from_prediction(
+        &prediction,
+        local
+            .as_ref()
+            .map(|r| (r.owner.as_str(), r.name.as_str())),
+    )?;
+    let version = prediction
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| local.as_ref().and_then(|r| r.version.clone()))
+        .unwrap_or_default();
+    let input = prediction
+        .get("input")
+        .cloned()
+        .or_else(|| local.as_ref().map(|r| r.input.clone()))
+        .unwrap_or(Value::Null);
+
+    let mut polls = 0u32;
+    loop {
+        if cancel_requested(my_gen) {
+            let cancel_url =
+                format!("https://api.replicate.com/v1/predictions/{prediction_id}/cancel");
+            let _ = client::post_json(&token, &cancel_url, &json!({})).await;
+            persist(
+                &owner,
+                &name,
+                &version,
+                &input,
+                &prediction,
+                Some("canceled"),
+                &[],
+                &[],
+                Some("Run cancelled."),
+            );
+            emit_run(
+                &app,
+                RunProgressEvent {
+                    prediction_id: Some(prediction_id.clone()),
+                    owner: owner.clone(),
+                    name: name.clone(),
+                    status: "canceled".into(),
+                    message: Some("Run cancelled.".into()),
+                    error: None,
+                    local_paths: Vec::new(),
+                    done: true,
+                },
+            );
+            return Err("Run cancelled.".into());
+        }
+
+        let status = prediction
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        persist(
+            &owner,
+            &name,
+            &version,
+            &input,
+            &prediction,
+            None,
+            &[],
+            &[],
+            None,
+        );
+
+        if is_terminal(&status) {
+            break;
+        }
+
+        polls += 1;
+        if polls > 600 {
+            persist(
+                &owner,
+                &name,
+                &version,
+                &input,
+                &prediction,
+                Some("failed"),
+                &[],
+                &[],
+                Some("Prediction timed out after polling."),
+            );
+            return Err("Prediction timed out after polling.".into());
+        }
+
+        emit_run(
+            &app,
+            RunProgressEvent {
+                prediction_id: Some(prediction_id.clone()),
+                owner: owner.clone(),
+                name: name.clone(),
+                status: status.clone(),
+                message: Some(format!("Resuming wait ({status})…")),
+                error: None,
+                local_paths: Vec::new(),
+                done: false,
+            },
+        );
+
+        sleep(Duration::from_millis(poll_sleep_ms())).await;
+        prediction = client::get_json(&token, &api_url).await?;
+    }
+
+    let status = prediction
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    if status != "succeeded" {
+        let msg = prediction
+            .get("error")
+            .and_then(|v| {
+                if v.is_null() {
+                    None
+                } else if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else {
+                    Some(v.to_string())
+                }
+            })
+            .unwrap_or_else(|| format!("Prediction {status}"));
+        persist(
+            &owner,
+            &name,
+            &version,
+            &input,
+            &prediction,
+            Some(&status),
+            &[],
+            &[],
+            Some(&msg),
+        );
+        emit_run(
+            &app,
+            RunProgressEvent {
+                prediction_id: Some(prediction_id),
+                owner,
+                name,
+                status,
+                message: None,
+                error: Some(msg.clone()),
+                local_paths: Vec::new(),
+                done: true,
+            },
+        );
+        return Err(msg);
+    }
+
+    download_prediction_outputs(app, prediction_id).await
+}
+
 pub async fn run_prediction(
     app: AppHandle,
     owner: String,

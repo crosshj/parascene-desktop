@@ -391,6 +391,13 @@ export type RunAddAssetGenerationOpts = {
   };
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
+  /** Persist remote job ids for app-restart resume. */
+  onRemoteJob?: (job: {
+    provider: "replicate" | "parascene_blue";
+    replicatePredictionId?: string;
+    pendingCreationId?: string;
+    model?: string;
+  }) => void;
 };
 
 export async function runAddAssetGeneration(
@@ -428,6 +435,13 @@ export async function runAddAssetGeneration(
       tweaks: opts.replicate.tweaks,
       onSteps: opts.onSteps,
       onProgress: opts.onProgress,
+      onPredictionId: (predictionId) => {
+        opts.onRemoteJob?.({
+          provider: "replicate",
+          replicatePredictionId: predictionId,
+          model: `${opts.replicate!.owner}/${opts.replicate!.name}`,
+        });
+      },
     });
   }
   const continuityMode = opts.continuityMode ?? "start_frame";
@@ -481,6 +495,14 @@ async function runTextToVideoAddAssetGeneration(
     model,
     durationSeconds,
     onProgress: opts.onProgress,
+    onPendingCreation: (id) => {
+      if (!id) return;
+      opts.onRemoteJob?.({
+        provider: "parascene_blue",
+        pendingCreationId: id,
+        model,
+      });
+    },
   });
   pushSteps(completeStep(steps, "generate"));
 
@@ -582,6 +604,14 @@ async function runFirstLastAddAssetGeneration(
     lastImageUrl: lastStill.imageUrl,
     durationSeconds,
     onProgress: opts.onProgress,
+    onPendingCreation: (id) => {
+      if (!id) return;
+      opts.onRemoteJob?.({
+        provider: "parascene_blue",
+        pendingCreationId: id,
+        model: FLF2V_MODEL,
+      });
+    },
   });
   pushSteps(completeStep(steps, "generate"));
 
@@ -737,6 +767,14 @@ async function runStartFrameAddAssetGeneration(
   pushSteps(advanceStep(steps, "generate"));
   let creationId: string;
   let model: string;
+  const onPendingCreation = (id: string | null, nextModel: string) => {
+    if (!id) return;
+    opts.onRemoteJob?.({
+      provider: "parascene_blue",
+      pendingCreationId: id,
+      model: nextModel,
+    });
+  };
   if (audioMode === "none" || !audioClipId) {
     if (useWan) {
       const result = await runFlf2vGeneration({
@@ -745,6 +783,7 @@ async function runStartFrameAddAssetGeneration(
         firstImageUrl: imageUrl,
         durationSeconds,
         onProgress: opts.onProgress,
+        onPendingCreation: (id) => onPendingCreation(id, FLF2V_MODEL),
       });
       creationId = result.creationId;
       model = FLF2V_MODEL;
@@ -755,6 +794,7 @@ async function runStartFrameAddAssetGeneration(
         imageUrl,
         durationSeconds,
         onProgress: opts.onProgress,
+        onPendingCreation: (id) => onPendingCreation(id, LTX_I2V_MODEL),
       });
       creationId = result.creationId;
       model = LTX_I2V_MODEL;
@@ -770,6 +810,7 @@ async function runStartFrameAddAssetGeneration(
       audioClipId,
       durationSeconds,
       onProgress: opts.onProgress,
+      onPendingCreation: (id) => onPendingCreation(id, "ltx_a2v"),
     });
     creationId = result.creationId;
     model = "ltx_a2v";

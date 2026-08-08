@@ -2,6 +2,7 @@ import {
   clampSensitivity,
   normalizeSlideshowMode,
   type AddAssetDraft,
+  type AddAssetGenerationJob,
   type AlignedLyricLine,
   type LyricAlignment,
   type LyricTranscript,
@@ -699,6 +700,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     row.replicatePredictionId.trim()
       ? row.replicatePredictionId.trim()
       : undefined;
+  const generationJob = parseAddAssetGenerationJob(row.generationJob);
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
   const startFrameAssetId =
     typeof row.startFrameAssetId === "string" && row.startFrameAssetId.trim()
@@ -721,6 +723,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     useNearestDuration === undefined &&
     lastError === undefined &&
     replicatePredictionId === undefined &&
+    generationJob === undefined &&
     replicateTweaks === undefined &&
     startFrameAssetId === undefined &&
     startFrameFraming === undefined
@@ -738,9 +741,54 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     useNearestDuration,
     lastError,
     replicatePredictionId,
+    generationJob,
     replicateTweaks,
     startFrameAssetId,
     startFrameFraming,
+  };
+}
+
+function parseAddAssetGenerationJob(
+  value: unknown,
+): AddAssetGenerationJob | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const status =
+    row.status === "starting" ||
+    row.status === "waiting" ||
+    row.status === "downloading" ||
+    row.status === "importing"
+      ? row.status
+      : null;
+  const provider =
+    row.provider === "replicate" || row.provider === "parascene_blue"
+      ? row.provider
+      : null;
+  const startedAt =
+    typeof row.startedAt === "string" && row.startedAt.trim()
+      ? row.startedAt.trim()
+      : null;
+  if (!status || !provider || !startedAt) return undefined;
+  const replicatePredictionId =
+    typeof row.replicatePredictionId === "string" &&
+    row.replicatePredictionId.trim()
+      ? row.replicatePredictionId.trim()
+      : undefined;
+  const pendingCreationId =
+    typeof row.pendingCreationId === "string" && row.pendingCreationId.trim()
+      ? row.pendingCreationId.trim()
+      : undefined;
+  const model =
+    typeof row.model === "string" && row.model.trim()
+      ? row.model.trim()
+      : undefined;
+  return {
+    status,
+    provider,
+    startedAt,
+    replicatePredictionId,
+    pendingCreationId,
+    model,
   };
 }
 

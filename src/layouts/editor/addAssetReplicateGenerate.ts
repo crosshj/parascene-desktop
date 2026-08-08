@@ -6,6 +6,7 @@ import {
   listenReplicateRunProgress,
   replicateModelRun,
   replicatePredictionDownload,
+  replicatePredictionWait,
   type ReplicateInputField,
 } from "../../replicate/replicateClient";
 import { getCreations } from "../../library/catalogClient";
@@ -191,6 +192,8 @@ export type RunReplicateAddAssetGenerationOpts = {
   tweaks?: ReplicateVideoTweaks;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
+  /** Fired when the remote prediction id is known (persist for app-restart resume). */
+  onPredictionId?: (predictionId: string) => void;
 };
 
 async function importReplicateOutput(opts: {
@@ -365,8 +368,16 @@ export async function runReplicateAddAssetGeneration(
   pushSteps(advanceStep(steps, "generate"));
   opts.onProgress(`Running ${modelId}…`);
   let predictionId: string | null = null;
+  let reportedPredictionId = false;
+  const reportPredictionId = (id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed || reportedPredictionId) return;
+    reportedPredictionId = true;
+    predictionId = trimmed;
+    opts.onPredictionId?.(trimmed);
+  };
   const unlisten = await listenReplicateRunProgress((ev) => {
-    if (ev.predictionId?.trim()) predictionId = ev.predictionId.trim();
+    if (ev.predictionId?.trim()) reportPredictionId(ev.predictionId);
     const msg = ev.message?.trim();
     if (msg) {
       if (
@@ -409,6 +420,7 @@ export async function runReplicateAddAssetGeneration(
   } finally {
     unlisten();
   }
+  if (result.predictionId?.trim()) reportPredictionId(result.predictionId);
   if (result.error || result.status === "failed" || result.status === "canceled") {
     const message =
       result.error?.trim() || `Replicate run ${result.status || "failed"}`;
@@ -470,9 +482,11 @@ export type ResumeReplicateDownloadOpts = {
   onProgress: (note: string) => void;
 };
 
-/** Retry download + import for a prediction that already succeeded on Replicate. */
-export async function resumeReplicateAddAssetDownload(
+async function finishReplicateDownloadImport(
   opts: ResumeReplicateDownloadOpts,
+  result: Awaited<ReturnType<typeof replicatePredictionDownload>>,
+  steps: AddAssetGenerationStep[],
+  progressNote: string,
 ): Promise<{
   creationId: string;
   projectCreationIds: string[];
@@ -481,30 +495,13 @@ export async function resumeReplicateAddAssetDownload(
   mode: ReplicateVideoContinuity;
   model: string;
 }> {
-  let steps = initialReplicateDownloadRetrySteps();
   const pushSteps = (next: AddAssetGenerationStep[]) => {
     steps = next;
     opts.onSteps(steps);
   };
-
-  pushSteps(advanceStep(steps, "generate"));
-  opts.onProgress("Retrying download from Replicate…");
-  const unlisten = await listenReplicateRunProgress((ev) => {
-    if (ev.message) opts.onProgress(ev.message);
-    else if (ev.status) opts.onProgress(ev.status);
-  });
-  let result;
-  try {
-    result = await replicatePredictionDownload(opts.predictionId);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ReplicatePendingDownloadError(message, opts.predictionId);
-  } finally {
-    unlisten();
-  }
   if (result.error || result.status === "failed" || result.status === "canceled") {
     throw new ReplicatePendingDownloadError(
-      result.error?.trim() || `Download ${result.status || "failed"}`,
+      result.error?.trim() || `${progressNote} ${result.status || "failed"}`,
       opts.predictionId,
     );
   }
@@ -532,4 +529,71 @@ export async function resumeReplicateAddAssetDownload(
     const message = error instanceof Error ? error.message : String(error);
     throw new ReplicatePendingDownloadError(message, opts.predictionId);
   }
+}
+
+/** Retry download + import for a prediction that already succeeded on Replicate. */
+export async function resumeReplicateAddAssetDownload(
+  opts: ResumeReplicateDownloadOpts,
+): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: ReplicateVideoContinuity;
+  model: string;
+}> {
+  let steps = initialReplicateDownloadRetrySteps();
+  opts.onSteps(steps);
+  steps = advanceStep(steps, "generate");
+  opts.onSteps(steps);
+  opts.onProgress("Retrying download from Replicate…");
+  const unlisten = await listenReplicateRunProgress((ev) => {
+    if (ev.message) opts.onProgress(ev.message);
+    else if (ev.status) opts.onProgress(ev.status);
+  });
+  let result;
+  try {
+    result = await replicatePredictionDownload(opts.predictionId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ReplicatePendingDownloadError(message, opts.predictionId);
+  } finally {
+    unlisten();
+  }
+  return finishReplicateDownloadImport(opts, result, steps, "Download");
+}
+
+/**
+ * After app restart: poll a still-running (or succeeded) prediction, download,
+ * and import into the placeholder's project.
+ */
+export async function resumeReplicateAddAssetWait(
+  opts: ResumeReplicateDownloadOpts,
+): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: ReplicateVideoContinuity;
+  model: string;
+}> {
+  let steps = initialReplicateGenerationSteps(opts.continuityMode);
+  opts.onSteps(steps);
+  steps = advanceStep(steps, "generate");
+  opts.onSteps(steps);
+  opts.onProgress(`Resuming Replicate wait (${opts.predictionId})…`);
+  const unlisten = await listenReplicateRunProgress((ev) => {
+    if (ev.message) opts.onProgress(ev.message);
+    else if (ev.status) opts.onProgress(ev.status);
+  });
+  let result;
+  try {
+    result = await replicatePredictionWait(opts.predictionId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ReplicatePendingDownloadError(message, opts.predictionId);
+  } finally {
+    unlisten();
+  }
+  return finishReplicateDownloadImport(opts, result, steps, "Wait");
 }
