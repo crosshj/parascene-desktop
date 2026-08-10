@@ -1,0 +1,1029 @@
+{
+    "status": "operational",
+    "methods": {
+        "text2image": {
+            "id": "text2image",
+            "default": true,
+            "async": true,
+            "name": "Text To Image",
+            "description": "Generate an image from text.",
+            "intent": "image_generate",
+            "credits": 0.1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "flux: flux1-dev",
+                            "value": "diffusion_models/flux/flux1-dev.safetensors"
+                        },
+                        {
+                            "label": "flux: flux1-dev-fp8",
+                            "value": "checkpoints/FLUX1/flux1-dev-fp8.safetensors"
+                        },
+                        {
+                            "label": "flux: flux1-dev-kontext_fp8_scaled",
+                            "value": "diffusion_models/flux/flux1-dev-kontext_fp8_scaled.safetensors"
+                        },
+                        {
+                            "label": "flux: flux1-krea-dev_fp8_scaled",
+                            "value": "diffusion_models/flux/flux1-krea-dev_fp8_scaled.safetensors"
+                        },
+                        {
+                            "label": "flux: flux1-schnell",
+                            "value": "diffusion_models/flux/flux1-schnell.safetensors"
+                        },
+                        {
+                            "label": "flux: flux1-schnell-fp8",
+                            "value": "checkpoints/FLUX1/flux1-schnell-fp8.safetensors"
+                        },
+                        {
+                            "label": "flux: getphatFLUXReality_v10FP8",
+                            "value": "diffusion_models/flux/getphatFLUXReality_v10FP8.safetensors"
+                        },
+                        {
+                            "label": "flux: getphatFLUXReality_v5HardcoreFP8",
+                            "value": "diffusion_models/flux/getphatFLUXReality_v5HardcoreFP8.safetensors"
+                        },
+                        {
+                            "label": "flux: real-dream-flux-1-fp8",
+                            "value": "diffusion_models/flux/real-dream-flux-1-fp8.safetensors"
+                        },
+                        {
+                            "label": "flux: STOIQOAfroditeFLUXXL_F1DAlpha",
+                            "value": "diffusion_models/flux/STOIQOAfroditeFLUXXL_F1DAlpha.safetensors"
+                        },
+                        {
+                            "label": "flux: STOIQONewrealityFLUXSD35_f1DAlphaTwo",
+                            "value": "diffusion_models/flux/STOIQONewrealityFLUXSD35_f1DAlphaTwo.safetensors"
+                        },
+                        {
+                            "label": "pony: cyberrealisticPony_v130",
+                            "value": "checkpoints/pony/cyberrealisticPony_v130.safetensors"
+                        },
+                        {
+                            "label": "qwen: qwen_image_edit_fp8_e4m3fn",
+                            "value": "diffusion_models/qwen/qwen_image_edit_fp8_e4m3fn.safetensors"
+                        },
+                        {
+                            "label": "qwen: Qwen-Rapid-AIO-NSFW-v9",
+                            "value": "checkpoints/qwen/Qwen-Rapid-AIO-NSFW-v9.safetensors"
+                        },
+                        {
+                            "label": "sd15: cyberrealistic_v20",
+                            "value": "checkpoints/1.5/cyberrealistic_v20.safetensors"
+                        },
+                        {
+                            "label": "sd15: deliberate_v11",
+                            "value": "checkpoints/1.5/deliberate_v11.safetensors"
+                        },
+                        {
+                            "label": "sd15: dreamShaper_8_pruned",
+                            "value": "checkpoints/1.5/dreamShaper_8_pruned.safetensors"
+                        },
+                        {
+                            "label": "sd15: liberty_main",
+                            "value": "checkpoints/1.5/liberty_main.safetensors"
+                        },
+                        {
+                            "label": "sd15: lofi_V2pre",
+                            "value": "checkpoints/1.5/lofi_V2pre.safetensors"
+                        },
+                        {
+                            "label": "sd15: qgo10b_qgo10b",
+                            "value": "checkpoints/1.5/qgo10b_qgo10b.safetensors"
+                        },
+                        {
+                            "label": "sd15: realisticVisionV60B1_v60B1VAE",
+                            "value": "checkpoints/1.5/realisticVisionV60B1_v60B1VAE.safetensors"
+                        },
+                        {
+                            "label": "sd15: revAnimated_v122",
+                            "value": "checkpoints/1.5/revAnimated_v122.safetensors"
+                        },
+                        {
+                            "label": "sd15: rpg_v5",
+                            "value": "checkpoints/1.5/rpg_v5.safetensors"
+                        },
+                        {
+                            "label": "sd15: toonAme_version20",
+                            "value": "checkpoints/1.5/toonAme_version20.safetensors"
+                        },
+                        {
+                            "label": "sdxl: dreamshaperXL_turboDpmppSDE",
+                            "value": "checkpoints/xl/dreamshaperXL_turboDpmppSDE.safetensors"
+                        },
+                        {
+                            "label": "sdxl: illustriousXL20_v20",
+                            "value": "checkpoints/xl/illustriousXL20_v20.safetensors"
+                        },
+                        {
+                            "label": "sdxl: juggernautXL_v7Rundiffusion",
+                            "value": "checkpoints/xl/juggernautXL_v7Rundiffusion.safetensors"
+                        },
+                        {
+                            "label": "sdxl: juggernautXL_v9Rdphoto2Lightning",
+                            "value": "checkpoints/xl/juggernautXL_v9Rdphoto2Lightning.safetensors"
+                        },
+                        {
+                            "label": "sdxl: protovisionXLHighFidelity3D_releaseV660Bakedvae",
+                            "value": "checkpoints/xl/protovisionXLHighFidelity3D_releaseV660Bakedvae.safetensors"
+                        },
+                        {
+                            "label": "sdxl: realcartoonXL_v6",
+                            "value": "checkpoints/xl/realcartoonXL_v6.safetensors"
+                        },
+                        {
+                            "label": "sdxl: realDream_sdxlLightning1",
+                            "value": "checkpoints/xl/realDream_sdxlLightning1.safetensors"
+                        },
+                        {
+                            "label": "sdxl: sd_xl_base_1.0",
+                            "value": "checkpoints/xl/sd_xl_base_1.0.safetensors"
+                        },
+                        {
+                            "label": "sdxl: sd_xl_turbo_1.0_fp16",
+                            "value": "checkpoints/xl/sd_xl_turbo_1.0_fp16.safetensors"
+                        },
+                        {
+                            "label": "sdxl: zavychromaxl_v40",
+                            "value": "checkpoints/xl/zavychromaxl_v40.safetensors"
+                        },
+                        {
+                            "label": "z-image: z_image_turbo_bf16",
+                            "value": "diffusion_models/z-image/z_image_turbo_bf16.safetensors"
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 1,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        },
+        "image2image": {
+            "id": "image2image",
+            "default": false,
+            "async": true,
+            "name": "Image To Image",
+            "description": "Generate an image from an input image and text.",
+            "intent": "image_mutate",
+            "credits": 0.1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "Flux \u2014 Kontext edit",
+                            "value": "flux_kontext_i2i",
+                            "hint": "Flux Kontext reference-latent edit (fixed weights in workflow)."
+                        },
+                        {
+                            "label": "Qwen \u2014 Image Edit 4-step",
+                            "value": "qwen_edit_i2i",
+                            "hint": "Qwen Image Edit + Lightning LoRA (fixed workflow)."
+                        },
+                        {
+                            "label": "Qwen \u2014 Rapid AIO edit",
+                            "value": "qwen_rapid_i2i",
+                            "hint": "Qwen Rapid AIO edit-plus stack (fixed checkpoint)."
+                        },
+                        {
+                            "label": "OmniGen2 \u2014 image edit",
+                            "value": "omnigen2_edit_i2i",
+                            "hint": "OmniGen2 reference-latent edit (fixed workflow)."
+                        },
+                        {
+                            "label": "Wan \u2014 Bernini-R image edit",
+                            "value": "bernini_r_i2i",
+                            "hint": "Bernini-R image editing (high/low noise fp8 pair)."
+                        },
+                        {
+                            "label": "sdxl: dreamshaperXL_turboDpmppSDE",
+                            "value": "checkpoints/xl/dreamshaperXL_turboDpmppSDE.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: illustriousXL20_v20",
+                            "value": "checkpoints/xl/illustriousXL20_v20.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: juggernautXL_v7Rundiffusion",
+                            "value": "checkpoints/xl/juggernautXL_v7Rundiffusion.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: juggernautXL_v9Rdphoto2Lightning",
+                            "value": "checkpoints/xl/juggernautXL_v9Rdphoto2Lightning.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: protovisionXLHighFidelity3D_releaseV660Bakedvae",
+                            "value": "checkpoints/xl/protovisionXLHighFidelity3D_releaseV660Bakedvae.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: realcartoonXL_v6",
+                            "value": "checkpoints/xl/realcartoonXL_v6.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: realDream_sdxlLightning1",
+                            "value": "checkpoints/xl/realDream_sdxlLightning1.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: sd_xl_base_1.0",
+                            "value": "checkpoints/xl/sd_xl_base_1.0.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: sd_xl_turbo_1.0_fp16",
+                            "value": "checkpoints/xl/sd_xl_turbo_1.0_fp16.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        },
+                        {
+                            "label": "sdxl: zavychromaxl_v40",
+                            "value": "checkpoints/xl/zavychromaxl_v40.safetensors",
+                            "hint": "Supports single image input. Low censorship."
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true
+                },
+                "input_images": {
+                    "label": "Input Images",
+                    "type": "image_url_array",
+                    "required": false
+                },
+                "denoise": {
+                    "label": "Denoise",
+                    "type": "number",
+                    "required": false,
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.01,
+                    "description": "Strength of denoising. If not provided, SDXL models default to 0.65."
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "min": 0,
+                    "step": 1,
+                    "hidden": true,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        },
+        "text2video": {
+            "id": "text2video",
+            "default": false,
+            "async": true,
+            "name": "Text To Video",
+            "description": "Generate a video from a text prompt.",
+            "intent": "video_generate",
+            "credits": 1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "Wan \u2014 text-to-video (rapid AIO)",
+                            "value": "wan_t2v",
+                            "hint": "Wan 2.2 t2v rapid-AIO checkpoint (WAN\\wan2.2-t2v-rapid-aio-v10.safetensors)."
+                        },
+                        {
+                            "label": "LTX \u2014 text-to-video",
+                            "value": "ltx_t2v",
+                            "hint": "LTX 2.3 t2v checkpoint (ltx-2.3-22b-dev-fp8.safetensors)."
+                        },
+                        {
+                            "label": "MiniMax H3 \u2014 text-to-video (FL2VA)",
+                            "value": "minimax_t2v",
+                            "hint": "MiniMax H3 FL2VA with native stereo audio."
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "duration_seconds": {
+                    "label": "Duration (seconds)",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 1,
+                    "max": 15,
+                    "step": 0.5,
+                    "description": "Output video length in seconds (default ~5\u20139 depending on model)."
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 1,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        },
+        "image2video": {
+            "id": "image2video",
+            "default": false,
+            "async": true,
+            "name": "Image To Video",
+            "description": "Generate a video from a start image and prompt (local Comfy workflows).",
+            "intent": "video_generate",
+            "credits": 1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "Wan \u2014 image-to-video",
+                            "value": "wan_i2v",
+                            "hint": "Wan 2.2 i2v stack on Comfy (weights under diffusion_models/wan/i2v)."
+                        },
+                        {
+                            "label": "LTX \u2014 image-to-video",
+                            "value": "ltx_i2v",
+                            "hint": "LTX 2.3 i2v checkpoint (weights under checkpoints/ltx/i2v)."
+                        },
+                        {
+                            "label": "MiniMax H3 \u2014 image-to-video (FL2VA)",
+                            "value": "minimax_i2v",
+                            "hint": "MiniMax H3 FL2VA; second image enables flf2va with native audio."
+                        },
+                        {
+                            "label": "LTX \u2014 style transition (flf + LoRA)",
+                            "value": "ltx_style_transition",
+                            "hint": "First/last frame style morph with ltx2.3-transition LoRA."
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true
+                },
+                "prompt_magic": {
+                    "label": "Prompt Magic",
+                    "type": "boolean",
+                    "required": false,
+                    "default": true,
+                    "description": "LTX only: expand the prompt with Gemma (official LTX2 I2V instructions, without the watch/caf\u00e9 few-shot). Set false to send your prompt unchanged."
+                },
+                "input_images": {
+                    "label": "Input Images",
+                    "type": "image_url_array",
+                    "required": true,
+                    "description": "Start frame (required). Optional second image is the end frame (first/last-frame interpolate). Each entry may be an https URL, data URI (\u2264256KB), or /api/files/\u2026 upload ref."
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "duration_seconds": {
+                    "label": "Duration (seconds)",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 1,
+                    "max": 15,
+                    "step": 0.5,
+                    "description": "Output video length in seconds (default ~5\u20139 depending on model)."
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 1,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        },
+        "audio2video": {
+            "id": "audio2video",
+            "default": false,
+            "async": true,
+            "name": "Audio To Video",
+            "description": "Generate a video from audio and prompt; optional start image.",
+            "intent": "video_generate",
+            "credits": 1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "LTX \u2014 audio-to-video (ia2v)",
+                            "value": "ltx_a2v",
+                            "hint": "LTX 2.3 ia2v checkpoint with user-supplied audio (ltx-2.3-22b-dev-fp8.safetensors)."
+                        },
+                        {
+                            "label": "LTX \u2014 ID-LoRA talkvid",
+                            "value": "ltx_id_lora",
+                            "hint": "Identity lock + user audio (requires start image)."
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true
+                },
+                "prompt_magic": {
+                    "label": "Prompt Magic",
+                    "type": "boolean",
+                    "required": false,
+                    "default": true,
+                    "description": "When a start image is provided: expand the prompt with Gemma using LTX IA2V lip-sync guidance (stable camera, mouth motion matching the audio, no invented dialogue/music). Ignored for audio-only. Set false to send your prompt unchanged."
+                },
+                "input_audio_urls": {
+                    "label": "Input Audio",
+                    "type": "audio_url_array",
+                    "required": true,
+                    "description": "https URL, small data URI (\u2264256KB), or /api/files/\u2026 upload ref."
+                },
+                "input_images": {
+                    "label": "Input Images",
+                    "type": "image_url_array",
+                    "required": false,
+                    "description": "Optional start image (required for ltx_id_lora). URL, data URI, or upload ref."
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "duration_seconds": {
+                    "label": "Duration (seconds)",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 1,
+                    "max": 15,
+                    "step": 0.5,
+                    "description": "Output video length in seconds (default 9). Audio is trimmed to match."
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 1,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        },
+        "video2video": {
+            "id": "video2video",
+            "default": false,
+            "async": true,
+            "name": "Video To Video",
+            "description": "Video control / edit / character transfer (LTX IC-LoRA, Wan Animate 2, Bernini-R, SCAIL2). Wan Fun VACE is parked \u2014 see video-capability-notes.md.",
+            "intent": "video_generate",
+            "credits": 1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "LTX \u2014 IC-LoRA video control",
+                            "value": "ltx_ic_lora",
+                            "hint": "Structure/control from video + start image (IC-LoRA)."
+                        },
+                        {
+                            "label": "Wan \u2014 Animate 2",
+                            "value": "wan_animate",
+                            "hint": "Wan-Animate-2: reference character + driving video @ 16 fps (81-frame block chain)."
+                        },
+                        {
+                            "label": "Wan \u2014 Bernini-R video edit",
+                            "value": "bernini_r_v2v",
+                            "hint": "Bernini-R video editing from control video + prompt (no ref image)."
+                        },
+                        {
+                            "label": "Wan \u2014 SCAIL2 (int8)",
+                            "value": "wan_scail",
+                            "hint": "SCAIL2 character replacement: reference image + driving video (int8)."
+                        },
+                        {
+                            "label": "Wan \u2014 SCAIL2 (fp16)",
+                            "value": "wan_scail_fp16",
+                            "hint": "SCAIL2 character replacement (fp16 weights)."
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true
+                },
+                "input_video_urls": {
+                    "label": "Input Video",
+                    "type": "video_url_array",
+                    "required": true,
+                    "description": "Source video (motion / footage). https URL or /api/files/\u2026 upload ref (no data URI)."
+                },
+                "input_images": {
+                    "label": "Input Images",
+                    "type": "image_url_array",
+                    "required": false,
+                    "description": "Required for ltx_ic_lora, wan_animate, and wan_scail*: character/reference image. Not used by bernini_r_v2v."
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "duration_seconds": {
+                    "label": "Duration (seconds)",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 1,
+                    "max": 30,
+                    "step": 0.5,
+                    "description": "Clip length in seconds from the source window (default ~5). Clamped to 1\u201330."
+                },
+                "start_offset_seconds": {
+                    "label": "Start offset (seconds)",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 0.1,
+                    "default": 0,
+                    "description": "Where to begin in the source video before taking duration_seconds."
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 1,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        },
+        "reference2video": {
+            "id": "reference2video",
+            "default": false,
+            "async": true,
+            "name": "Reference To Video",
+            "description": "Generate video from multimodal references (images, videos, and/or audio).",
+            "intent": "video_generate",
+            "credits": 1,
+            "fields": {
+                "model": {
+                    "label": "Model",
+                    "type": "select",
+                    "required": true,
+                    "options": [
+                        {
+                            "label": "MiniMax H3 \u2014 reference-to-video (Ref2VA)",
+                            "value": "minimax_r2v",
+                            "hint": "Omni-ref: \u22649 images, \u22643 videos, \u22643 audios; native stereo AV out."
+                        },
+                        {
+                            "label": "LTX \u2014 IC-LoRA ingredients",
+                            "value": "ltx_ingredients",
+                            "hint": "Character/prop sheet image \u2192 video (IC-LoRA ingredients)."
+                        }
+                    ]
+                },
+                "prompt": {
+                    "label": "Prompt",
+                    "type": "text",
+                    "required": true,
+                    "description": "Reference tags by connection order, e.g. <Picture 1>, <Video 1>, <Audio 1>."
+                },
+                "input_images": {
+                    "label": "Reference Images",
+                    "type": "image_url_array",
+                    "required": false,
+                    "description": "Up to 9 for MiniMax (URL, data URI \u2264256KB, or upload). At least one image or video required."
+                },
+                "input_video_urls": {
+                    "label": "Reference Videos",
+                    "type": "video_url_array",
+                    "required": false,
+                    "description": "Up to 3 for MiniMax. https URL or /api/files/\u2026 (no data URI)."
+                },
+                "input_audio_urls": {
+                    "label": "Reference Audio",
+                    "type": "audio_url_array",
+                    "required": false,
+                    "description": "Up to 3 for MiniMax; requires image or video. URL, data URI, or upload."
+                },
+                "aspect_ratio": {
+                    "label": "Aspect Ratio",
+                    "type": "select",
+                    "hidden": true,
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        {
+                            "label": "1:1",
+                            "value": "1:1"
+                        },
+                        {
+                            "label": "4:5",
+                            "value": "4:5"
+                        },
+                        {
+                            "label": "9:16",
+                            "value": "9:16"
+                        },
+                        {
+                            "label": "16:9",
+                            "value": "16:9"
+                        }
+                    ]
+                },
+                "duration_seconds": {
+                    "label": "Duration (seconds)",
+                    "type": "number",
+                    "required": false,
+                    "min": 1,
+                    "max": 15,
+                    "step": 0.5,
+                    "description": "Output length in seconds (MiniMax typically 4\u201315)."
+                },
+                "seed": {
+                    "label": "Seed",
+                    "type": "number",
+                    "required": false,
+                    "hidden": true,
+                    "min": 0,
+                    "step": 1,
+                    "description": "Optional deterministic seed. If not provided, a random seed is used."
+                }
+            }
+        }
+    },
+    "last_check_at": "2026-08-09T23:07:25.550Z",
+    "capability_matrix": [
+        {
+            "method": "text2video",
+            "model": "wan_t2v",
+            "family": "wan-t2v",
+            "capabilities": [
+                "t2v"
+            ],
+            "nativeAudio": false,
+            "flf": false
+        },
+        {
+            "method": "text2video",
+            "model": "ltx_t2v",
+            "family": "ltx-t2v",
+            "capabilities": [
+                "t2v"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "text2video",
+            "model": "minimax_t2v",
+            "family": "minimax-t2v",
+            "capabilities": [
+                "t2v"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "image2video",
+            "model": "wan_i2v",
+            "family": "wan-i2v",
+            "capabilities": [
+                "i2v",
+                "flf"
+            ],
+            "nativeAudio": false,
+            "flf": true
+        },
+        {
+            "method": "image2video",
+            "model": "ltx_i2v",
+            "family": "ltx-i2v",
+            "capabilities": [
+                "i2v",
+                "flf"
+            ],
+            "nativeAudio": true,
+            "flf": true
+        },
+        {
+            "method": "image2video",
+            "model": "ltx_style_transition",
+            "family": "ltx-style-transition",
+            "capabilities": [
+                "flf",
+                "style_transition"
+            ],
+            "nativeAudio": true,
+            "flf": true
+        },
+        {
+            "method": "image2video",
+            "model": "minimax_i2v",
+            "family": "minimax-i2v",
+            "capabilities": [
+                "i2v",
+                "flf"
+            ],
+            "nativeAudio": true,
+            "flf": true
+        },
+        {
+            "method": "audio2video",
+            "model": "ltx_a2v",
+            "family": "ltx-a2v",
+            "capabilities": [
+                "a2v",
+                "userAudio"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "audio2video",
+            "model": "ltx_id_lora",
+            "family": "ltx-id",
+            "capabilities": [
+                "a2v",
+                "userAudio",
+                "identity"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "video2video",
+            "model": "ltx_ic_lora",
+            "family": "ltx-ic",
+            "capabilities": [
+                "v2v",
+                "control",
+                "refVideo"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "video2video",
+            "model": "wan_animate",
+            "family": "wan-animate",
+            "capabilities": [
+                "v2v",
+                "motion",
+                "refVideo"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "video2video",
+            "model": "bernini_r_v2v",
+            "family": "bernini-r",
+            "capabilities": [
+                "v2v",
+                "refVideo"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "video2video",
+            "model": "wan_scail",
+            "family": "wan-scail",
+            "capabilities": [
+                "v2v",
+                "motion",
+                "refVideo"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "video2video",
+            "model": "wan_scail_fp16",
+            "family": "wan-scail",
+            "capabilities": [
+                "v2v",
+                "motion",
+                "refVideo"
+            ],
+            "nativeAudio": true,
+            "flf": false
+        },
+        {
+            "method": "reference2video",
+            "model": "minimax_r2v",
+            "family": "minimax-r2v",
+            "capabilities": [
+                "r2v",
+                "multiRefImages",
+                "refVideo",
+                "refAudio"
+            ],
+            "nativeAudio": true,
+            "flf": false,
+            "maxRefImages": 9,
+            "maxRefVideos": 3,
+            "maxRefAudios": 3
+        },
+        {
+            "method": "reference2video",
+            "model": "ltx_ingredients",
+            "family": "ltx-ingredients",
+            "capabilities": [
+                "r2v",
+                "multiRefImages"
+            ],
+            "nativeAudio": true,
+            "flf": false,
+            "maxRefImages": 1,
+            "maxRefVideos": 0,
+            "maxRefAudios": 0
+        }
+    ],
+    "retention": {
+        "input_ttl_seconds": 86400,
+        "output_ttl_seconds": 3600,
+        "note": "Uploaded inputs expire in ~24h; API outputs expire ~1h after completion. Copy outputs you need."
+    }
+}
