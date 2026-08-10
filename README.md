@@ -123,7 +123,7 @@ No timeline editing, FFmpeg, rendering, generation, or real Hook publishing.
 ## Plans / roadmap
 
 - [docs/PLAN-from-chatgpt.md](docs/PLAN-from-chatgpt.md) — where the product plan stands (shell done → Library next)
-- [docs/PLAN-architecture-principles.md](docs/PLAN-architecture-principles.md) — local-first; ease web/DB load; gens without Creation rows (maybe)
+- [docs/GUIDE-architecture-principles.md](docs/GUIDE-architecture-principles.md) — local-first; ease web/DB load; gens without Creation rows (maybe)
 - [docs/PLAN-library-sync.md](docs/PLAN-library-sync.md) — local Library + sync design
 - [docs/PLAN-macos-desktop-shell.md](docs/PLAN-macos-desktop-shell.md) — shell leftovers
 - [docs/PLAN-desktop-updater.md](docs/PLAN-desktop-updater.md) — in-app updates (Tauri updater)

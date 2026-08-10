@@ -1,6 +1,6 @@
 # Plan — Song to music video
 
-Project-scoped path: Lab smoke → Director storyboard → Editor AI Fill → render. Related: [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [PLAN-architecture-principles.md](./PLAN-architecture-principles.md).
+Project-scoped path: Lab smoke → Director storyboard → Editor AI Fill → render. Related: [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md).
 
 ## Settled
 

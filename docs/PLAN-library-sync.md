@@ -4,7 +4,7 @@ Derived from the ~3:33 design in [ChatGPT share](https://chatgpt.com/share/6a569
 
 **UI caveat:** Library information architecture from the chat is the guide; visual chrome should stay consistent with the shipped shell and be customized rather than copied from the mockups when they diverge ([mockups/README.md](./mockups/README.md)).
 
-**Architecture:** Local Library/SQLite is also how desktop **eases load on Parascene web/DB** — not everything belongs in the cloud. See [PLAN-architecture-principles.md](./PLAN-architecture-principles.md).
+**Architecture:** Local Library/SQLite is also how desktop **eases load on Parascene web/DB** — not everything belongs in the cloud. See [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md).
 
 ## Product model
 

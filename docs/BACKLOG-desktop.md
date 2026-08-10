@@ -94,6 +94,7 @@ Composition and iterative still editing: [PLAN-image-compose-edit.md](./PLAN-ima
   Do not replace the working interface. Keep conventional UI where it is already superior: timeline, preview, asset library, candidate grid, crop/frame control, inspector.
   Chat orchestrates these surfaces instead of replacing them.
   Timeline remains for assembly and finishing; shot setup and generation stay off it.
+  UX reference: [OpenReel Video](https://github.com/Augani/openreel-video) (open CapCut-style browser NLE) — see also [mockups/README.md](./mockups/README.md).
 
 - [ ] 15. Instrument chat usage to discover future UI
   Track: commonly invoked commands, repeated corrections, repeatedly altered settings, frequent failures, undos, workflows that require many chat turns.

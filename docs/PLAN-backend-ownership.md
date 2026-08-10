@@ -1,7 +1,7 @@
 # Plan — Backend ownership (Rust vs frontend)
 
 **Status:** Direction settled; migration incremental  
-**Related:** [PLAN-architecture-principles.md](./PLAN-architecture-principles.md), [PLAN-library-sync.md](./PLAN-library-sync.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [PLAN-song-to-video.md](./PLAN-song-to-video.md)
+**Related:** [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [PLAN-library-sync.md](./PLAN-library-sync.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [PLAN-song-to-video.md](./PLAN-song-to-video.md)
 
 ## Goal
 
@@ -131,7 +131,7 @@ UI prefs (sidebar width, editor pane sizes, shell tab) may stay in `localStorage
 3. **FE becomes thinner, not cleverer.** Delete orchestration; keep `*Client.ts` façades.
 4. **Mapper once.** New remote→catalog paths call Rust ingest; stop growing `mapRemoteCreation` for production sync.
 5. **Resume = job UUID.** Leaving a screen must not abort backend work; remount re-attaches.
-6. **Align with local-first goals** in PLAN-architecture-principles: fewer chatty Parascene round-trips from the WebView; incremental sync from Rust.
+6. **Align with local-first goals** in GUIDE-architecture-principles: fewer chatty Parascene round-trips from the WebView; incremental sync from Rust.
 
 ### Suggested sequence
 

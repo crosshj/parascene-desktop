@@ -1,4 +1,4 @@
-# Plan — Architecture principles (desktop vs cloud)
+# Guide — Architecture principles (desktop vs cloud)
 
 **Also see:** [PLAN-backend-ownership.md](./PLAN-backend-ownership.md) — Rust vs React boundary, what still lives in the FE that should move behind the jobs/workers model.
 
@@ -17,20 +17,22 @@ Implications:
 
 **Settled direction:** We do **not** assume every asset, intermediate, or edit must live in Parascene cloud storage/DB. Durable local Library / Projects / Exports / Cache ([PLAN-library-sync.md](./PLAN-library-sync.md)) is first-class. Cloud remains the source for Parascene-owned creations the user chooses to sync, account identity, and product features that require the platform.
 
-## Generations without Parascene “creations” (open)
+## Generations without Parascene “creations”
 
-**Clarified meaning of “provider”:** Get generations **straight from the generation server that Parascene already uses**, and **do not** persist that output as a **Creation** row (or equivalent) in the Parascene database.
+**Clarified meaning of “provider”:** Get generations **straight from the generation server that Parascene already uses** (Parascene Blue), and **do not** persist that output as a **Creation** row (or equivalent) in the Parascene database.
 
-This is **not** “desktop talks to Runway/Fal/etc. on its own.” It is “run the same generation backend, skip (or defer) writing a Parascene creation for this job,” so web/DB load stays lower and ephemeral/local-only gens are allowed.
+This is **not** only “desktop talks to third-party APIs.” Replicate direct already lands local-only. **Parascene Blue direct** is the first-party counterpart: user Blue credentials → Blue HTTP (incl. `/api/files`) → local library import.
 
-**Unsettled:** Whether / when desktop can request this path. Do **not** implement without an explicit product + API decision. Tradeoffs later:
+**Settled for Blue-direct proof:** Blue-direct jobs must not create Parascene Creations. The existing **Parascene** product path (credits / `server_id: 6` / Creation ingest) remains for web migrants and stays Creation-backed.
 
-- Auth, billing, rate limits, safety/moderation without a Creation record
-- Whether/when the user can “promote” a local gen into a real Parascene creation
+**Still open:**
+
+- Whether/when the user can “promote” a local Blue-direct gen into a real Parascene creation
 - How Library sync treats files that never had a Parascene creation ID
 - What the web app shows (or does not show) for those jobs
+- Long-term Blue auth model (token vs session vs OAuth)
 
-Until decided: default to normal Parascene creation-backed flows when generating via Parascene; keep “gen without DB creation” as an optional path in [PLAN-parascene-generation.md](./PLAN-parascene-generation.md).
+Until Blue-direct is shipped: default product-lane gens stay Creation-backed.
 
 ## Summary
 
@@ -38,4 +40,5 @@ Until decided: default to normal Parascene creation-backed flows when generating
 | --- | --- |
 | Desktop reduces web/DB load via local catalog, files, and offline-capable work | **Yes — design goal** |
 | Not everything must be stored in Parascene cloud / DB | **Yes** |
-| Some gens via Parascene’s generation server **without** storing a Creation in Parascene DB | **Maybe — undecided** |
+| Parascene Blue direct gens without a Creation row (local import) | **Yes — proof plan** |
+| Promote local gens → Parascene Creations | **Open** |

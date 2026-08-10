@@ -42,9 +42,9 @@ Clarify with Parascene product/API what “relay” means in practice (session o
 
 ## Cloud vs local vs generation-without-creation
 
-Generation results and intermediates should not automatically imply “store everything in Parascene.” Desktop aims to take load off the web app/DB ([PLAN-architecture-principles.md](./PLAN-architecture-principles.md)).
+Generation results and intermediates should not automatically imply “store everything in Parascene.” Desktop aims to take load off the web app/DB ([GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md)).
 
-**Open (“provider” clarified):** whether some jobs may hit **Parascene’s generation server** and return media **without** inserting a **Creation** (or equivalent) in the Parascene database — for local-only / ephemeral desktop work. This is not desktop→third-party model APIs by itself. Undecided — do not build until product + API choose a path.
+**Parascene** product path stays Creation-backed (credits-first). **Parascene Blue direct** proves first-party gen → local import without Creation rows. Replicate direct already follows the local-import pattern. Promoting local gens into Creations remains open.
 
 ## Desktop stance until ready
 

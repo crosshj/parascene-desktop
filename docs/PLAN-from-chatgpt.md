@@ -20,7 +20,7 @@ Shell scaffold (done)
 
 Related plans:
 
-- [PLAN-architecture-principles.md](./PLAN-architecture-principles.md) — local-first; ease web/DB load; optional gens without Parascene Creation rows (undecided)
+- [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md) — local-first; ease web/DB load
 - [PLAN-library-sync.md](./PLAN-library-sync.md) — next product phase
 - [PLAN-parascene-generation.md](./PLAN-parascene-generation.md) — API/product deps for AI video creation
 - [PLAN-macos-desktop-shell.md](./PLAN-macos-desktop-shell.md) — shell remaining / polish

@@ -21,3 +21,7 @@ Examples of likely drift already:
 | [editor.png](./editor.png) | Editor — assets / sequences, preview, timeline, assistant |
 | [hook.png](./hook.png) | Hook — vertical preview, 9s range, suggestions, publish |
 | [library-wireframe.png](./library-wireframe.png) | Library hierarchy + ASCII wireframe (next phase) |
+
+## Related open-source references
+
+- **[OpenReel Video](https://github.com/Augani/openreel-video)** — open-source CapCut-style browser editor (timeline, preview, inspector; WebGPU / Web Audio; local-only, no cloud uploads). Useful when borrowing timeline/preview UX patterns or studying a modern browser NLE architecture. Inspiration only — not a dependency; Desktop keeps Parascene Library/project ownership and generation workflows.
