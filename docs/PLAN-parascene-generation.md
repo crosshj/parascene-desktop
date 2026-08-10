@@ -44,7 +44,7 @@ Clarify with Parascene product/API what “relay” means in practice (session o
 
 Generation results and intermediates should not automatically imply “store everything in Parascene.” Desktop aims to take load off the web app/DB ([GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md)).
 
-**Parascene** product path stays Creation-backed (credits-first). **Parascene Blue direct** proves first-party gen → local import without Creation rows. Replicate direct already follows the local-import pattern. Promoting local gens into Creations remains open.
+**Parascene** product path stays Creation-backed (credits-first). **Parascene Blue direct** Lab lane ships first-party gen → local import without Creation rows. Replicate direct already follows the local-import pattern (Lab + Editor). Promoting local gens into Creations remains open.
 
 ## Desktop stance until ready
 

@@ -131,6 +131,8 @@ export type ReplicateRunResult = {
   outputPreview?: string | null;
   runDir: string;
   error?: string | null;
+  /** Seconds — Replicate metrics or Blue wall-clock. */
+  predictTime?: number | null;
 };
 
 export async function replicateTokenStatus(): Promise<ReplicateTokenStatus> {
@@ -317,6 +319,13 @@ export async function replicatePredictionWait(
   predictionId: string,
 ): Promise<ReplicateRunResult> {
   return invoke("replicate_prediction_wait", { predictionId });
+}
+
+/** Delete local Lab history + cached outputs for a prediction. */
+export async function replicatePredictionDelete(
+  predictionId: string,
+): Promise<void> {
+  return invoke("replicate_prediction_delete", { predictionId });
 }
 
 export async function listenReplicateModelsProgress(

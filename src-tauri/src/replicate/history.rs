@@ -20,6 +20,29 @@ fn meta_path(prediction_id: &str) -> Result<PathBuf, String> {
     Ok(run_dir(prediction_id)?.join("prediction.json"))
 }
 
+fn sanitize_run_id(id: &str) -> Result<String, String> {
+    let t = id.trim();
+    if t.is_empty() {
+        return Err("Prediction id is empty.".into());
+    }
+    if t.contains('/') || t.contains('\\') || t.contains("..") {
+        return Err("Invalid prediction id.".into());
+    }
+    Ok(t.to_string())
+}
+
+/// Delete local Lab history for a prediction (run folder + outputs on disk).
+pub fn delete_prediction(prediction_id: &str) -> Result<(), String> {
+    let id = sanitize_run_id(prediction_id)?;
+    let dir = run_dir(&id)?;
+    if !dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&dir)
+        .map_err(|e| format!("Could not delete prediction {}: {e}", dir.display()))?;
+    Ok(())
+}
+
 /// Strings longer than this (or data-URIs) are stubbed before sending detail to the FE.
 const HEAVY_INPUT_CHARS: usize = 2_048;
 

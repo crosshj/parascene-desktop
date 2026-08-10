@@ -3,6 +3,8 @@
 export const OPEN_SETTINGS_EVENT = "parascene:open-settings";
 export const OPENAI_KEY_CHANGED_EVENT = "parascene:openai-key-changed";
 export const REPLICATE_TOKEN_CHANGED_EVENT = "parascene:replicate-token-changed";
+export const BLUE_CREDENTIALS_CHANGED_EVENT =
+  "parascene:blue-credentials-changed";
 
 export function requestOpenSettings(): void {
   window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT));
@@ -14,4 +16,8 @@ export function notifyOpenAiKeyChanged(): void {
 
 export function notifyReplicateTokenChanged(): void {
   window.dispatchEvent(new CustomEvent(REPLICATE_TOKEN_CHANGED_EVENT));
+}
+
+export function notifyBlueCredentialsChanged(): void {
+  window.dispatchEvent(new CustomEvent(BLUE_CREDENTIALS_CHANGED_EVENT));
 }

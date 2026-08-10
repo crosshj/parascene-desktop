@@ -36,8 +36,8 @@ export function labModuleGate(
   id: LabModuleId,
   ctx: LabGateContext,
 ): LabGate | null {
-  // Replicate models / predictions are never hard-gated: local catalog and run
-  // history work without a token; panels surface Settings when needed.
+  // Replicate / Blue methods & Predictions are never hard-gated: panels surface
+  // Settings when credentials are missing (same product pattern).
   // Krea moodboards use a checked-in catalog — always open.
 
   const needsGroups =

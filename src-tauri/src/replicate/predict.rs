@@ -123,6 +123,8 @@ pub struct RunResult {
     pub output_preview: Option<String>,
     pub run_dir: String,
     pub error: Option<String>,
+    /// Prefer Replicate metrics.predict_time when present.
+    pub predict_time: Option<f64>,
 }
 
 fn emit_run(app: &AppHandle, ev: RunProgressEvent) {
@@ -459,6 +461,7 @@ pub async fn download_prediction_outputs(
         output_preview: preview,
         run_dir: record.run_dir,
         error: None,
+        predict_time: record.predict_time.or(record.total_time),
     };
     emit_run(
         &app,
@@ -1238,6 +1241,7 @@ pub async fn run_prediction(
         output_preview: preview,
         run_dir: record.run_dir,
         error: None,
+        predict_time: record.predict_time.or(record.total_time),
     };
 
     emit_run(

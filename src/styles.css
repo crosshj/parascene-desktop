@@ -8044,6 +8044,11 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   display: block;
 }
 
+/* Blue method empty thumbs set backgroundColor inline (hashed pastel). */
+.lab-replicate-thumb.is-empty.is-blue-method {
+  background: #c8b8dc;
+}
+
 .lab-replicate-row-body {
   display: flex;
   flex-direction: column;
@@ -8468,6 +8473,23 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   align-items: start;
 }
 
+.lab-replicate-run-time {
+  display: block;
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+}
+
+.lab-replicate-batch-slot .lab-replicate-run-time {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.45rem;
+  z-index: 1;
+  margin: 0;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: rgba(14, 16, 22, 0.72);
+}
+
 .lab-replicate-batch-slot {
   min-height: 8rem;
   border-radius: 6px;
@@ -8725,12 +8747,19 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   word-break: break-all;
 }
 
-.lab-replicate-predictions .lab-replicate-pred-filters {
+.lab-replicate-pred-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 0.65rem 1rem;
   align-items: flex-end;
   padding: 0 0.15rem 0.55rem;
+}
+
+.lab-replicate-pred-bulk {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-left: auto;
 }
 
 .lab-replicate-pred-filter {
@@ -8766,6 +8795,22 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   padding: 0.45rem 0.55rem;
   border-bottom: 1px solid #2a2f3a;
   white-space: nowrap;
+}
+
+.lab-replicate-pred-table th.lab-replicate-pred-check,
+.lab-replicate-pred-table td.lab-replicate-pred-check {
+  width: 2rem;
+  padding-left: 0.45rem;
+  padding-right: 0.15rem;
+  vertical-align: middle;
+}
+
+.lab-replicate-pred-table td.lab-replicate-pred-check {
+  cursor: default;
+}
+
+.lab-replicate-pred-table tbody tr.is-checked:not(.is-active) {
+  background: rgba(96, 165, 250, 0.06);
 }
 
 .lab-replicate-pred-table td {
@@ -8815,6 +8860,12 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
 .lab-replicate-pred-id {
   font-size: 0.72rem;
   word-break: break-all;
+}
+
+.lab-replicate-pred-source {
+  color: #9aa3b2;
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .lab-replicate-pred-model {

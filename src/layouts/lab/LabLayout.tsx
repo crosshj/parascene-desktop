@@ -98,7 +98,8 @@ import {
 import { labModuleGate } from "./labGates";
 import { LAB_MODULES, type LabModuleId } from "./labTypes";
 import { ReplicateModelsPanel } from "./ReplicateModelsPanel";
-import { ReplicatePredictionsPanel } from "./ReplicatePredictionsPanel";
+import { BlueMethodsPanel } from "./BlueMethodsPanel";
+import { PredictionsPanel } from "./PredictionsPanel";
 import { KreaMoodboardsPanel } from "./KreaMoodboardsPanel";
 
 function remoteMediaUrl(c: Creation): string | null {
@@ -1415,7 +1416,8 @@ export function LabLayout({ active = true }: { active?: boolean }) {
 
       <section className="lab-main">
         {(moduleId !== "replicateModels" &&
-          moduleId !== "replicatePredictions" &&
+          moduleId !== "blueMethods" &&
+          moduleId !== "predictions" &&
           moduleId !== "kreaMoodboards") ||
         activeGate ? (
           <header className="lab-main-header">
@@ -1440,8 +1442,16 @@ export function LabLayout({ active = true }: { active?: boolean }) {
               videoAssets={videoAssets}
             />
           )}
-          {moduleId === "replicatePredictions" && !activeGate && (
-            <ReplicatePredictionsPanel />
+          {moduleId === "blueMethods" && !activeGate && (
+            <BlueMethodsPanel
+              onOpenSettings={requestOpenSettings}
+              imageAssets={imageAssets}
+              audioAssets={audioAssets}
+              videoAssets={videoAssets}
+            />
+          )}
+          {moduleId === "predictions" && !activeGate && (
+            <PredictionsPanel onOpenSettings={requestOpenSettings} />
           )}
           {moduleId === "kreaMoodboards" && !activeGate && (
             <KreaMoodboardsPanel />

@@ -55,6 +55,25 @@ import { AspectRatioChooser } from "../../ui/AspectRatioChooser";
 import { copyTextToClipboard } from "../../ui/clipboard";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import { ReplicateModelsVirtualList } from "./ReplicateModelsVirtualList";
+import { formatLabDuration } from "./labDuration";
+import {
+  loadLabFormValues,
+  loadLabSelection,
+  saveLabFormValues,
+  saveLabSelection,
+} from "./labRunFormPersist";
+import {
+  buildRunInput,
+  fileFieldKind,
+  formatDefaultLabel,
+  formatRunError,
+  hasSliderRange,
+  isAnyFileField,
+  isFileArrayField,
+  isFileField,
+  runnableFields,
+  type FileFieldKind,
+} from "./labSchemaForm";
 
 type Props = {
   onOpenSettings?: () => void;
@@ -68,8 +87,6 @@ type Props = {
 type RunFilePick =
   | { kind: "creation"; creationId: string }
   | { kind: "path"; path: string };
-
-type FileFieldKind = "image" | "audio" | "video" | "any";
 
 type SortId =
   | "runs_desc"
@@ -260,25 +277,6 @@ function pickLabel(
     : "Saved Library file";
 }
 
-function fieldBlob(field: ReplicateInputField): string {
-  return `${field.name} ${field.title ?? ""} ${field.description ?? ""}`.toLowerCase();
-}
-
-function fileFieldKind(field: ReplicateInputField): FileFieldKind {
-  const blob = fieldBlob(field);
-  if (blob.includes("audio")) return "audio";
-  if (blob.includes("video")) return "video";
-  if (
-    blob.includes("image") ||
-    blob.includes("mask") ||
-    blob.includes("photo") ||
-    blob.includes("picture")
-  ) {
-    return "image";
-  }
-  return "any";
-}
-
 function fileFieldLabel(kind: FileFieldKind): string {
   switch (kind) {
     case "image":
@@ -296,19 +294,6 @@ function pathBasename(path: string): string {
   const norm = path.replace(/\\/g, "/");
   const i = norm.lastIndexOf("/");
   return i >= 0 ? norm.slice(i + 1) : path;
-}
-
-function formatRunError(message: string): string {
-  const jsonStart = message.indexOf("{");
-  if (jsonStart === -1) return message;
-  try {
-    const parsed = JSON.parse(message.slice(jsonStart)) as unknown;
-    const prefix = message.slice(0, jsonStart).trim();
-    const body = JSON.stringify(parsed, null, 2);
-    return prefix ? `${prefix}\n${body}` : body;
-  } catch {
-    return message;
-  }
 }
 
 function clampDetailWidth(width: number, splitWidth?: number): number {
@@ -339,65 +324,6 @@ function formatWhen(ms?: number | null): string {
   } catch {
     return "—";
   }
-}
-
-/** All schema fields including file-like URI inputs (image / audio / video). */
-function runnableFields(inputs: ReplicateInputField[]): ReplicateInputField[] {
-  return inputs;
-}
-
-function isFileField(field: ReplicateInputField): boolean {
-  if (field.fileLike) return true;
-  // Stale catalog / schemas that omit format:uri but still want a media URL.
-  if (field.typeName !== "string") return false;
-  if (field.enumValues?.length) return false;
-  return looksLikeMediaUrlField(field);
-}
-
-function looksLikeMediaUrlField(field: ReplicateInputField): boolean {
-  const n = field.name.toLowerCase();
-  const blob = fieldBlob(field);
-  const urlish =
-    n.endsWith("_url") ||
-    n.endsWith("_uri") ||
-    n.endsWith("_file") ||
-    n === "url" ||
-    n === "uri" ||
-    n === "audio" ||
-    n === "video" ||
-    n === "image" ||
-    blob.includes("publicly accessible") ||
-    blob.includes("http") ||
-    (field.title ?? "").toLowerCase().includes("url");
-  const media =
-    blob.includes("audio") ||
-    blob.includes("video") ||
-    blob.includes("image") ||
-    blob.includes("song") ||
-    blob.includes("music") ||
-    blob.includes("mp3") ||
-    blob.includes("wav") ||
-    blob.includes("mask") ||
-    blob.includes("photo") ||
-    blob.includes("picture");
-  return urlish && media;
-}
-
-function isFileArrayField(field: ReplicateInputField): boolean {
-  if (field.arrayItemFileLike) return true;
-  // Stale catalog detail may lack arrayItemFileLike until Update model.
-  if (field.typeName !== "array") return false;
-  const blob = fieldBlob(field);
-  return (
-    blob.includes("image") ||
-    blob.includes("audio") ||
-    blob.includes("video") ||
-    blob.includes("file")
-  );
-}
-
-function isAnyFileField(field: ReplicateInputField): boolean {
-  return isFileField(field) || isFileArrayField(field);
 }
 
 async function resolvePickToPath(
@@ -460,30 +386,17 @@ function defaultFormValue(field: ReplicateInputField): string {
   const d = field.defaultValue;
   if (d === null || d === undefined) {
     if (field.typeName === "boolean") return "false";
+    if (field.required && field.enumValues?.length) {
+      return field.enumValues[0] ?? "";
+    }
     return "";
   }
   if (typeof d === "boolean") return d ? "true" : "false";
+  if (typeof d === "number" && Number.isFinite(d)) return String(d);
   return String(d);
 }
 
-function formatDefaultLabel(field: ReplicateInputField): string | null {
-  if (field.defaultValue === null || field.defaultValue === undefined) return null;
-  if (typeof field.defaultValue === "boolean") {
-    return field.defaultValue ? "true" : "false";
-  }
-  return String(field.defaultValue);
-}
-
 /** Slider when OpenAPI provides a finite, usable min/max (skip huge ranges like seed). */
-function hasSliderRange(field: ReplicateInputField): boolean {
-  const min = field.minimum;
-  const max = field.maximum;
-  if (min == null || max == null || !(max > min)) return false;
-  const span = max - min;
-  if (field.typeName === "integer") return span <= 10_000;
-  return span <= 10_000;
-}
-
 function sliderStep(field: ReplicateInputField): number {
   if (field.typeName === "integer") return 1;
   const min = field.minimum ?? 0;
@@ -509,59 +422,6 @@ function clampNumericString(
   if (field.maximum != null) v = Math.min(field.maximum, v);
   if (field.typeName === "integer") return String(Math.round(v));
   return String(v);
-}
-
-function isIntegerEnumField(field: ReplicateInputField): boolean {
-  const enums = field.enumValues;
-  if (!enums?.length) return false;
-  return enums.every((v) => /^-?\d+$/.test(v.trim()));
-}
-
-function isNumberEnumField(field: ReplicateInputField): boolean {
-  const enums = field.enumValues;
-  if (!enums?.length) return false;
-  return enums.every((v) => Number.isFinite(Number(v)));
-}
-
-function buildRunInput(
-  fields: ReplicateInputField[],
-  values: Record<string, string>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const field of fields) {
-    const aspectOpts = aspectChooserOptionsForField(field);
-    const raw =
-      aspectOpts.length > 0
-        ? pickAspectChooserValue(aspectOpts, values[field.name])
-        : (values[field.name] ?? "");
-    const trimmed = raw.trim();
-    if (!trimmed && !field.required) continue;
-    const typeName =
-      field.typeName === "integer" || isIntegerEnumField(field)
-        ? "integer"
-        : field.typeName === "number" || isNumberEnumField(field)
-          ? "number"
-          : field.typeName;
-    switch (typeName) {
-      case "integer": {
-        const n = Number.parseInt(trimmed, 10);
-        if (Number.isFinite(n)) out[field.name] = n;
-        break;
-      }
-      case "number": {
-        const n = Number(trimmed);
-        if (Number.isFinite(n)) out[field.name] = n;
-        break;
-      }
-      case "boolean":
-        out[field.name] = trimmed === "true" || trimmed === "1";
-        break;
-      default:
-        if (trimmed) out[field.name] = trimmed;
-        break;
-    }
-  }
-  return out;
 }
 
 function replicateModelPageUrl(detail: {
@@ -599,7 +459,16 @@ export function ReplicateModelsPanel({
   const [selected, setSelected] = useState<{
     owner: string;
     name: string;
-  } | null>(null);
+  } | null>(() => {
+    const raw = loadLabSelection("replicate");
+    if (!raw) return null;
+    const slash = raw.indexOf("/");
+    if (slash <= 0 || slash >= raw.length - 1) return null;
+    const owner = raw.slice(0, slash);
+    const name = raw.slice(slash + 1);
+    if (!owner || !name) return null;
+    return { owner, name };
+  });
   const [detail, setDetail] = useState<ReplicateModelDetail | null>(null);
   const [progress, setProgress] = useState<ReplicateProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -949,10 +818,16 @@ export function ReplicateModelsPanel({
       return;
     }
     const fields = runnableFields(d.inputs);
+    const modelKey = `${d.owner}/${d.name}`;
+    const saved = loadLabFormValues("replicate", modelKey);
     const next: Record<string, string> = {};
     for (const field of fields) {
       if (isAnyFileField(field)) continue;
-      next[field.name] = defaultFormValue(field);
+      const prev = saved[field.name];
+      next[field.name] =
+        prev !== undefined && prev.trim() !== ""
+          ? prev
+          : defaultFormValue(field);
     }
     setRunValues(next);
     setRunFilePicks(loadRunFilePicksForModel(d.owner, d.name, fields));
@@ -1019,16 +894,27 @@ export function ReplicateModelsPanel({
     [detail],
   );
 
-  const selectModel = useCallback((owner: string, name: string) => {
-    setRunSlots([]);
-    setRunError(null);
-    setRunProgress(null);
-    setDetail(null);
-    setRunValues({});
-    setRunFilePicks({});
-    setRunFileListPicks({});
-    setSelected({ owner, name });
-  }, []);
+  const selectModel = useCallback(
+    (owner: string, name: string) => {
+      if (selected && detail) {
+        saveLabFormValues(
+          "replicate",
+          `${selected.owner}/${selected.name}`,
+          runValues,
+        );
+      }
+      setRunSlots([]);
+      setRunError(null);
+      setRunProgress(null);
+      setDetail(null);
+      setRunValues({});
+      setRunFilePicks({});
+      setRunFileListPicks({});
+      setSelected({ owner, name });
+      saveLabSelection("replicate", `${owner}/${name}`);
+    },
+    [selected, detail, runValues],
+  );
 
   const closeDetail = useCallback(() => {
     setSelected(null);
@@ -1036,7 +922,21 @@ export function ReplicateModelsPanel({
     setRunSlots([]);
     setRunError(null);
     setRunProgress(null);
+    saveLabSelection("replicate", null);
   }, []);
+
+  // Persist non-file form values for the open model.
+  useEffect(() => {
+    if (!selected || !detail) return;
+    if (detail.owner !== selected.owner || detail.name !== selected.name) {
+      return;
+    }
+    const modelKey = `${selected.owner}/${selected.name}`;
+    const timer = window.setTimeout(() => {
+      saveLabFormValues("replicate", modelKey, runValues);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [runValues, selected, detail]);
 
   const openOutputLightbox = useCallback(async (path: string) => {
     setActivatingPath(path);
@@ -2444,6 +2344,10 @@ export function ReplicateModelsPanel({
                                 .join(" ");
                               if (slot.status === "ready" && slot.result) {
                                 const paths = slot.result.localPaths;
+                                const timeLabel =
+                                  slot.result.predictTime != null
+                                    ? formatLabDuration(slot.result.predictTime)
+                                    : null;
                                 if (paths.length > 0) {
                                   return (
                                     <div
@@ -2451,6 +2355,11 @@ export function ReplicateModelsPanel({
                                       className={`${slotClass} is-ready`}
                                       style={slotStyle}
                                     >
+                                      {timeLabel ? (
+                                        <span className="muted lab-replicate-run-time">
+                                          Time {timeLabel}
+                                        </span>
+                                      ) : null}
                                       {paths.map((path) => (
                                         <ReplicateLocalOutput
                                           key={path}
@@ -2472,6 +2381,11 @@ export function ReplicateModelsPanel({
                                       className={`${slotClass} is-ready`}
                                       style={slotStyle}
                                     >
+                                      {timeLabel ? (
+                                        <span className="muted lab-replicate-run-time">
+                                          Time {timeLabel}
+                                        </span>
+                                      ) : null}
                                       <pre className="lab-replicate-pred-json">
                                         {slot.result.outputPreview}
                                       </pre>

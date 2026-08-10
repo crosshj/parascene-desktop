@@ -4,7 +4,7 @@ Prove **Parascene Blue** as a first-class desktop generation lane: talk to `http
 
 **Capabilities snapshot:** [parascene-blue-api-capabilities.json](./parascene-blue-api-capabilities.json).
 
-This doc replaces the earlier placeholder. Implementation follows in later PRs; this pass is the plan only.
+**Status:** Lab proof lane is **shipped** (Settings creds → Blue HTTP → Lab methods + unified Predictions → local import). Editor timeline-fill / product path still uses Creations (`server_id: 6`). Phase B+ below remain open.
 
 ## Why (short)
 
@@ -30,8 +30,8 @@ flowchart LR
 | Lane | UI label | Today | Target |
 | --- | --- | --- | --- |
 | Product | **Parascene** | OAuth → `sdk.create` `server_id: 6` → Creation → ingest | Stay credits-first; label must say Parascene, not Blue |
-| Blue direct | **Parascene Blue** | Not wired (`.env` probe only) | Settings creds → Blue HTTP → local import |
-| Replicate | **Replicate** | Settings token + local import | Peer pattern for Blue-direct gating |
+| Blue direct | **Parascene Blue** | Settings creds → Lab methods + Predictions → local import | Phase B: Editor / timeline-fill clone; then C–F growth |
+| Replicate | **Replicate** | Settings token + Lab / Editor local import | Peer pattern for Blue-direct gating |
 
 Stable code ids (e.g. `parascene_blue` on the product path) may stay legacy until renamed; **user-facing copy** must not call the Creation path “Blue.”
 
@@ -41,8 +41,8 @@ Stable code ids (e.g. `parascene_blue` on the product path) may stay legacy unti
 - **Capabilities:** `GET /api` — status, methods, field schemas, capability matrix, retention TTLs
 - **Methods (snapshot):** `text2image`, `image2image`, `text2video`, `image2video`, `audio2video`, `video2video`, `reference2video` — async, model/option fields
 - **Inputs:** https URL, small data URI (images/audio; not video), or **`/api/files/…` upload refs** (Blue-native hosting; short TTL)
-- **Auth observed (probe):** Bearer token; Cloudflare Access client id/secret headers; optional session cookies (`ps_session`, `cf_clearance`, `CF_Authorization`) that expire
-- **Dev-only today:** repo-root `.env` keys (`PARASCENE_BLUE_*`) — **not** read by app code yet
+- **Auth:** Bearer token; Cloudflare Access client id/secret headers (Settings keychain JSON). Optional process-env fallback when Settings is empty.
+- **Optional `.env`:** `PARASCENE_BLUE_TOKEN`, `PARASCENE_BLUE_CF_ACCESS_CLIENT_ID`, `PARASCENE_BLUE_CF_ACCESS_CLIENT_SECRET` (and example in `.env.example`) — useful for agents and probes; app prefers Settings-stored user creds
 
 Refresh the capabilities JSON when the server contract changes.
 
@@ -59,70 +59,59 @@ A user can:
 
 ### 1. Naming / catalog
 
-- Keep the product-path provider labeled **Parascene** (credits / Creations).
-- Introduce a distinct **Parascene Blue** provider (or equivalent catalog entry) for direct-only methods.
-- Badges / generate panel headers follow the same rule.
-- Do not silently route “Blue” UI to `server_id: 6`.
+- [x] Keep the product-path provider labeled **Parascene** (credits / Creations).
+- [x] Introduce a distinct **Parascene Blue** Lab lane for direct-only methods (not `server_id: 6`).
+- [x] Do not silently route “Blue” UI to `server_id: 6`.
+- [ ] Broader catalog / badge rename of legacy code ids if still needed outside Lab.
 
 ### 2. Credentials (mirror Replicate)
 
 Pattern reference: Replicate block in [`src/settings/SettingsModal.tsx`](../src/settings/SettingsModal.tsx) + keychain commands (`replicate_token_status` / `set` / `clear`).
 
-**Ship in Settings:**
+**Shipped in Settings:**
 
-- Base URL (default `https://blue.parascene.com`)
-- API token (Bearer)
-- CF Access client id + secret
-- Cookie field only if still required for early builds (document as optional / rotate when JWTs expire)
-
-**Behavior:**
-
-- Secure storage (prefer system keychain, same class as Replicate)
-- Status / preview / replace / clear
-- **Gate** all Parascene Blue–direct surfaces until configured (CTA to Settings) — same product idea as Replicate token gating
-- Do not fall back to the Parascene product path when Blue creds are missing
-
-`.env` remains useful for agents and capability probes; app runtime should prefer Settings-stored user creds.
+- [x] API token (Bearer)
+- [x] CF Access client id + secret
+- [x] Base URL hardcoded to `https://blue.parascene.com` (not a Settings field)
+- [x] Secure storage (system keychain) + status / preview / replace / clear
+- [x] Gate Lab Parascene Blue surfaces until configured (CTA to Settings)
+- [x] Optional `PARASCENE_BLUE_*` env fallback when Settings is empty
+- [x] Do not fall back to the Parascene product path when Blue creds are missing
 
 ### 3. Thin client
 
-Minimum Blue HTTP surface for the proof:
+Minimum Blue HTTP surface for the Lab proof:
 
-| Step | Purpose |
-| --- | --- |
-| `GET /api` | Capabilities / health (optional warm check after save creds) |
-| Upload to `/api/files` | Start-frame or other inputs without Parascene hosting |
-| Submit async method | One generate endpoint per Blue’s contract |
-| Poll / status | Job completion |
-| Download output | Fetch result URL(s) |
-| Local import | File into project library — **Replicate-style**, not `ingestRemoteCreation` |
+| Step | Purpose | Status |
+| --- | --- | --- |
+| `GET /api` | Capabilities / health | [x] Lab methods catalog |
+| Upload to `/api/files` | Inputs without Parascene hosting | [x] |
+| Submit async method | Generate per Blue contract | [x] |
+| Poll / status | Job completion | [x] |
+| Download output | Fetch result URL(s) | [x] |
+| Local import | Library import — Replicate-style | [x] Lab Save to Library |
 
-**Ownership preference:** Rust-owned durable I/O and long-running wait ([PLAN-backend-ownership.md](./PLAN-backend-ownership.md)); React owns intent UI and status display.
+**Ownership:** Rust-owned Blue I/O and wait ([PLAN-backend-ownership.md](./PLAN-backend-ownership.md)); React owns Lab intent UI and status display.
 
-**Provenance:** stamp local-only Blue-direct jobs clearly (provider = Parascene Blue direct), distinct from Creation-backed Parascene jobs and Replicate.
+**Provenance:** Blue Lab jobs use local run folders under Cache/blue (distinct from Creation-backed Parascene jobs and Replicate).
 
 ### 4. First proof surface
 
-Prove the **pipe**, not the full method catalog.
-
-**Preferred first method:** `image2video` with a start frame uploaded via Blue `/api/files` (or `text2video` if simpler for auth-only smoke). Use a model already familiar from the product path (e.g. `wan_i2v` / `ltx_i2v` or `wan_t2v` / `ltx_t2v`).
-
-**Explicitly out of first proof:** productizing `video2video` / `reference2video` UI, MiniMax-full catalog, identity LoRA packages — those are **next** once the pipe is real.
-
-Wire the proof into one existing desktop surface (e.g. Lab smoke or a gated Add Asset method) so it is reachable, not only a CLI.
+- [x] Wire proof into Lab: **Parascene Blue methods** + unified **Predictions** (Replicate + Blue history)
+- [x] Capabilities-driven run form, local file / Library picks, delete (incl. batch)
+- [ ] Manual proof against live Blue; refresh capabilities snapshot if contract drifted
+- [ ] Productizing `video2video` / `reference2video` UI — **next** (phases C–F)
 
 ### 5. Client growth required (proof)
 
-| Area | Growth for proof | Later |
-| --- | --- | --- |
-| Provider catalog | Split Parascene vs Parascene Blue labels/lanes | Rename legacy ids if needed |
-| Settings | Blue creds UI + storage + status events | Cookie rotation helpers |
-| Blue HTTP client | Upload + create + poll + download | Full method field mapping from `GET /api` |
-| Jobs / status | One job kind for Blue-direct | Parallelism, cancel, resume |
-| Library | Local import path without Creation id | Optional promote-to-Creation |
-| Generate UI | One gated method wired | Timeline fill parity, then new intents |
-
-Desktop must grow here; web/parascene repo work is **not** required for the proof.
+| Area | Growth for proof | Status | Later |
+| --- | --- | --- | --- |
+| Provider catalog | Split Parascene vs Parascene Blue labels/lanes | [x] Lab | Rename legacy ids if needed |
+| Settings | Blue creds UI + storage + status events | [x] | Cookie rotation helpers |
+| Blue HTTP client | Upload + create + poll + download | [x] | Broader Editor mapping |
+| Jobs / status | Lab local history + wait | [x] Lab | Editor job kinds, cancel, resume |
+| Library | Local import without Creation id | [x] Lab | Optional promote-to-Creation |
+| Generate UI | Lab methods gated + form | [x] Lab | Timeline fill parity, then new intents |
 
 ## Parity clone vs product growth
 
@@ -183,8 +172,8 @@ DIRECT: local still/audio → Blue /api/files → Blue job → download → loca
 | Timeline placeholder + resume UX | Submit / poll client (no Creation) |
 | Badge field shape | Provider label **Parascene Blue**; Blue job id instead of Creation id |
 
-- **A.** Creds + thin client + one cloned method → pipe proved (see Proof phases above).
-- **B.** Clone the full timeline-fill matrix (and Lab a2v/i2v) onto Blue-direct → insider parity without Creations.
+- **A.** [x] Creds + thin client + Lab methods/Predictions → pipe proved in Lab.
+- **B.** [ ] Clone the full timeline-fill matrix (and Lab a2v/i2v) onto Blue-direct → insider parity without Creations.
 
 ### Gap that parity does not close
 
@@ -247,13 +236,15 @@ Sequencing:
 - Shipping v2v / r2v / reference-package UI before phases A–B
 - Replacing the Parascene credits product path (it stays for web migrants)
 
-## Implementation checklist (when coding starts)
+## Implementation checklist
 
-1. [ ] Settings: Blue creds set / status / clear + gate event (mirror Replicate)
-2. [ ] Rust (preferred) thin Blue client: auth headers, files upload, job submit/poll, download
-3. [ ] Catalog: Parascene vs Parascene Blue labeling; one Blue-direct method `wired: true` behind creds gate
-4. [ ] Local import + provenance for Blue-direct output
+1. [x] Settings: Blue creds set / status / clear + gate event (mirror Replicate; hardcoded base URL)
+2. [x] Rust thin Blue client: auth headers, files upload, job submit/poll, download
+3. [x] Lab: Parascene Blue methods + unified Predictions (capabilities form + local history; creds gate; delete / batch delete)
+4. [x] Local import + provenance for Blue-direct Lab output
 5. [ ] Manual proof against live Blue; refresh capabilities snapshot if contract drifted
 6. [ ] Phase B: clone full timeline-fill / Lab a2v matrix onto Blue-direct
 7. [ ] Phases C–F: media ref picker, then v2v / r2v / enrichments (see above)
-8. [ ] Doc status: mark proof complete; move open growth items to backlog as needed
+8. [ ] Doc status: mark Editor proof complete when Phase B lands; move open growth items to backlog as needed
+
+**Lab notes:** Base URL is hardcoded to `https://blue.parascene.com`. Credentials live in Settings (keychain JSON: `token`, `cfAccessClientId`, `cfAccessClientSecret`) with optional `PARASCENE_BLUE_*` env fallback. Do not use Settings for base URL. Lab **Predictions** merges Replicate + Blue local history after the method modules.

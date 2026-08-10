@@ -27,11 +27,10 @@ Composition and iterative still editing: [PLAN-image-compose-edit.md](./PLAN-ima
   Stills used as shot inputs (references, first/last frames, plates) must store cleanly alongside clips without polluting the timeline or Parascene.
   Done when: extracted frames, generated stills, clips, audio, and final renders coexist with clear purpose and lifecycle.
 
-- [ ] 3. Connect desktop generation directly to Replicate
-  Finish the direct Replicate integration already partially present.
-  Desktop should: upload/expose local inputs, invoke models, track status, download outputs, associate with project objects, delete remote temps when appropriate.
-  Put behind a provider interface so local models and other APIs can share the same commands later.
+- [x] 3. Connect desktop generation directly to Replicate
+  Lab models + Predictions and Editor Replicate paths upload/expose local inputs, invoke models, track status, download outputs, and import locally without Parascene staging.
   Done when: no intermediate image or frame must be uploaded to Parascene merely to generate something.
+  Follow-ups (not blocking): shared provider interface for local models; remote temp cleanup policy.
 
 - [ ] 4. Introduce a persistent ShotSpec
   Make the shot—not the resulting file—the central production object.

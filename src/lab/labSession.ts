@@ -1,6 +1,6 @@
 /** Persist Lab UI / run state per project so you can leave and resume. */
 
-import type { LabModuleId } from "../layouts/lab/labTypes";
+import { LAB_MODULES, type LabModuleId } from "../layouts/lab/labTypes";
 
 const KEY_PREFIX = "parascene.labSession.v2.";
 /** Older shape used a single shared progressLog / last across modules. */
@@ -92,25 +92,8 @@ export type LabSessionSnapshot = {
   } | null;
 };
 
-const ALL_MODULE_IDS: LabModuleId[] = [
-  "replicateModels",
-  "replicatePredictions",
-  "kreaMoodboards",
-  "groups",
-  "create",
-  "seeds",
-  "isolate",
-  "a2v",
-  "extend",
-  "frame",
-  "mutate",
-  "openai",
-  "align",
-  "mvConcept",
-  "mvBudget",
-  "mvScenes",
-  "mvBuild",
-];
+/** Keep in sync with LAB_MODULES — unknown ids normalize to "groups". */
+const ALL_MODULE_IDS: LabModuleId[] = LAB_MODULES.map((m) => m.id);
 
 export function emptyLabSession(moduleId: LabModuleId = "groups"): LabSessionSnapshot {
   return {
@@ -130,6 +113,9 @@ function isModuleId(value: unknown): value is LabModuleId {
 
 function normalizeModuleId(value: unknown): LabModuleId {
   if (value === "propose") return "mvConcept";
+  if (value === "replicatePredictions" || value === "bluePredictions") {
+    return "predictions";
+  }
   return isModuleId(value) ? value : "groups";
 }
 

@@ -202,3 +202,10 @@ pub async fn replicate_prediction_get(
         .await
         .map_err(|e| format!("Prediction get task failed: {e}"))?
 }
+
+#[tauri::command]
+pub async fn replicate_prediction_delete(prediction_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || history::delete_prediction(&prediction_id))
+        .await
+        .map_err(|e| format!("Prediction delete task failed: {e}"))?
+}

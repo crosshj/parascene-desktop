@@ -1,4 +1,5 @@
 mod auth_store;
+mod blue;
 mod clipboard;
 mod http_client;
 mod library;
@@ -8,6 +9,11 @@ mod replicate;
 mod user_avatar;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
+use blue::{
+    blue_capabilities, blue_credentials_clear, blue_credentials_set, blue_credentials_status,
+    blue_job_delete, blue_job_download, blue_job_get, blue_job_wait, blue_jobs_list, blue_method_run,
+    blue_method_run_cancel, blue_upload_file,
+};
 use clipboard::clipboard_write_text;
 use user_avatar::auth_ensure_user_avatar;
 use http_client::{
@@ -59,7 +65,7 @@ use replicate::{
     replicate_model_set_enabled, replicate_model_update, replicate_models_check_new,
     replicate_models_crawl_cancel, replicate_models_crawl_pause, replicate_models_crawl_start,
     replicate_models_list_cached, replicate_models_list_enabled, replicate_pick_local_file,
-    replicate_prediction_download, replicate_prediction_get, replicate_prediction_wait,
+    replicate_prediction_download, replicate_prediction_delete, replicate_prediction_get, replicate_prediction_wait,
     replicate_predictions_list, replicate_token_clear, replicate_token_set,
     replicate_token_status,
 };
@@ -356,8 +362,21 @@ pub fn run() {
             replicate_pick_local_file,
             replicate_predictions_list,
             replicate_prediction_get,
+            replicate_prediction_delete,
             replicate_prediction_download,
             replicate_prediction_wait,
+            blue_credentials_status,
+            blue_credentials_set,
+            blue_credentials_clear,
+            blue_capabilities,
+            blue_upload_file,
+            blue_method_run,
+            blue_method_run_cancel,
+            blue_jobs_list,
+            blue_job_get,
+            blue_job_wait,
+            blue_job_download,
+            blue_job_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

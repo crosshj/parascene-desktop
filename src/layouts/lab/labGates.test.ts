@@ -23,8 +23,8 @@ describe("labModuleGate", () => {
     expect(labModuleGate("replicateModels", ready)).toBeNull();
   });
 
-  it("does not gate replicatePredictions", () => {
-    expect(labModuleGate("replicatePredictions", ready)).toBeNull();
+  it("does not gate predictions", () => {
+    expect(labModuleGate("predictions", ready)).toBeNull();
   });
 
   it("blocks mvConcept when lyric align is missing", () => {

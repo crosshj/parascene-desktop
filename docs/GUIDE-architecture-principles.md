@@ -23,7 +23,9 @@ Implications:
 
 This is **not** only “desktop talks to third-party APIs.” Replicate direct already lands local-only. **Parascene Blue direct** is the first-party counterpart: user Blue credentials → Blue HTTP (incl. `/api/files`) → local library import.
 
-**Settled for Blue-direct proof:** Blue-direct jobs must not create Parascene Creations. The existing **Parascene** product path (credits / `server_id: 6` / Creation ingest) remains for web migrants and stays Creation-backed.
+**Lab is the first ship surface:** Desktop Lab’s **Parascene Blue methods** + unified **Predictions** (Replicate + Blue) are the in-app **direct-to-provider / no-Creation** path for Blue (Settings creds → Blue API → cache under `~/Movies/Parascene/Cache/blue/` → optional local library import). Editor product-lane gens via `server_id: 6` stay Creation-backed and must not be labeled “Blue.”
+
+**Settled for Blue-direct Lab proof:** Blue-direct Lab jobs must not create Parascene Creations. The existing **Parascene** product path (credits / `server_id: 6` / Creation ingest) remains for web migrants and stays Creation-backed.
 
 **Still open:**
 
@@ -32,13 +34,11 @@ This is **not** only “desktop talks to third-party APIs.” Replicate direct a
 - What the web app shows (or does not show) for those jobs
 - Long-term Blue auth model (token vs session vs OAuth)
 
-Until Blue-direct is shipped: default product-lane gens stay Creation-backed.
-
 ## Summary
 
 | Idea | Status |
 | --- | --- |
 | Desktop reduces web/DB load via local catalog, files, and offline-capable work | **Yes — design goal** |
 | Not everything must be stored in Parascene cloud / DB | **Yes** |
-| Parascene Blue direct gens without a Creation row (local import) | **Yes — proof plan** |
+| Parascene Blue direct gens without a Creation row (local import) | **Yes — Lab lane shipped**; Editor/timeline clone still open |
 | Promote local gens → Parascene Creations | **Open** |

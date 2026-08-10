@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
 import {
+  blueCredentialsClear,
+  blueCredentialsSet,
+  blueCredentialsStatus,
+} from "../blue/blueClient";
+import {
   getLabDepsStatus,
   installDemucs,
   openLocalToolsDoc,
@@ -15,6 +20,7 @@ import {
   replicateTokenStatus,
 } from "../replicate/replicateClient";
 import {
+  notifyBlueCredentialsChanged,
   notifyOpenAiKeyChanged,
   notifyReplicateTokenChanged,
 } from "./events";
@@ -24,6 +30,12 @@ type Props = {
   onClose: () => void;
 };
 
+const BLUE_CREDS_PLACEHOLDER = `{
+  "token": "…",
+  "cfAccessClientId": "….access",
+  "cfAccessClientSecret": "…"
+}`;
+
 /**
  * App settings (account menu): API keys + local tool readiness.
  */
@@ -32,6 +44,9 @@ export function SettingsModal({ open, onClose }: Props) {
   const [replicateToken, setReplicateToken] = useState("");
   const [replicatePreview, setReplicatePreview] = useState<string | null>(null);
   const [replicateConfigured, setReplicateConfigured] = useState(false);
+  const [blueJson, setBlueJson] = useState("");
+  const [blueConfigured, setBlueConfigured] = useState(false);
+  const [bluePreview, setBluePreview] = useState<string | null>(null);
   const [deps, setDeps] = useState<LabDepsStatus | null>(null);
   const [depsError, setDepsError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -59,6 +74,18 @@ export function SettingsModal({ open, onClose }: Props) {
     }
   };
 
+  const refreshBlue = async () => {
+    try {
+      const st = await blueCredentialsStatus();
+      setBlueConfigured(st.configured);
+      setBluePreview(st.preview ?? null);
+      setBlueJson("");
+    } catch {
+      setBlueConfigured(false);
+      setBluePreview(null);
+    }
+  };
+
   useEffect(() => {
     if (!open) return;
     // Intentional: reset the form to persisted values each time the modal opens.
@@ -67,6 +94,7 @@ export function SettingsModal({ open, onClose }: Props) {
     setInstallNote(null);
     void refreshDeps();
     void refreshReplicate();
+    void refreshBlue();
   }, [open]);
 
   useEffect(() => {
@@ -91,6 +119,10 @@ export function SettingsModal({ open, onClose }: Props) {
         await replicateTokenSet(replicateToken.trim());
         notifyReplicateTokenChanged();
       }
+      if (blueJson.trim()) {
+        await blueCredentialsSet(blueJson.trim());
+        notifyBlueCredentialsChanged();
+      }
     } catch (err) {
       setDepsError(err instanceof Error ? err.message : String(err));
       return;
@@ -105,6 +137,18 @@ export function SettingsModal({ open, onClose }: Props) {
       setReplicatePreview(null);
       setReplicateToken("");
       notifyReplicateTokenChanged();
+    } catch (err) {
+      setDepsError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const clearBlue = async () => {
+    try {
+      await blueCredentialsClear();
+      setBlueConfigured(false);
+      setBluePreview(null);
+      setBlueJson("");
+      notifyBlueCredentialsChanged();
     } catch (err) {
       setDepsError(err instanceof Error ? err.message : String(err));
     }
@@ -190,6 +234,41 @@ export function SettingsModal({ open, onClose }: Props) {
               onClick={() => void clearReplicate()}
             >
               Clear Replicate token
+            </button>
+          ) : null}
+
+          <label>
+            Parascene Blue credentials (JSON)
+            <textarea
+              className="control"
+              value={blueJson}
+              onChange={(e) => setBlueJson(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              rows={6}
+              placeholder={
+                blueConfigured
+                  ? `Configured (${bluePreview ?? "••••"}) — paste JSON to replace`
+                  : BLUE_CREDS_PLACEHOLDER
+              }
+            />
+          </label>
+          <p className="muted settings-hint">
+            Stored in the system keychain (same as Replicate). Direct Blue Lab
+            at <code>https://blue.parascene.com</code> — local import only, no
+            Parascene Creation. Optional fallback:{" "}
+            <code>PARASCENE_BLUE_TOKEN</code>,{" "}
+            <code>PARASCENE_BLUE_CF_ACCESS_CLIENT_ID</code>,{" "}
+            <code>PARASCENE_BLUE_CF_ACCESS_CLIENT_SECRET</code> in the process
+            env when Settings is empty.
+          </p>
+          {blueConfigured ? (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => void clearBlue()}
+            >
+              Clear Blue credentials
             </button>
           ) : null}
 

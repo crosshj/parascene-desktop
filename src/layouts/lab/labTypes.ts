@@ -1,6 +1,7 @@
 export type LabModuleId =
   | "replicateModels"
-  | "replicatePredictions"
+  | "blueMethods"
+  | "predictions"
   | "kreaMoodboards"
   | "groups"
   | "create"
@@ -28,9 +29,14 @@ export const LAB_MODULES: {
     blurb: "Browse cached Replicate catalog",
   },
   {
-    id: "replicatePredictions",
-    label: "Replicate predictions",
-    blurb: "In-progress and completed Lab runs",
+    id: "blueMethods",
+    label: "Parascene Blue methods",
+    blurb: "Direct Blue methods · no Creation",
+  },
+  {
+    id: "predictions",
+    label: "Predictions",
+    blurb: "Replicate + Blue Lab runs",
   },
   {
     id: "kreaMoodboards",

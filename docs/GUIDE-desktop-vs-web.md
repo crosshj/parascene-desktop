@@ -61,8 +61,8 @@ Three lanes. Labels in the UI must match the lane, not legacy internal ids.
 
 **Settled pattern:** Blue-direct and Replicate are both unavailable until the user configures credentials in Settings (status / set / clear). Show a clear CTA — same product idea as the existing Replicate token block in Settings.
 
-- Replicate: token in system keychain (already shipped)
-- Blue-direct: user-enterable Blue creds (base URL, API token, CF Access client id/secret; cookie only if still required) — Settings pattern like Replicate; details in the Blue-direct plan
+- Replicate: token in system keychain (already shipped; Lab models + Predictions)
+- Blue-direct: user-enterable Blue creds (API token + CF Access client id/secret; base URL hardcoded to `https://blue.parascene.com`) — Settings pattern like Replicate; optional `PARASCENE_BLUE_*` env fallback; Lab methods + Predictions shipped — details in the Blue-direct plan
 
 Do not silently fall back Blue-direct → product path; that muddies labels and media.
 
@@ -82,7 +82,7 @@ Do not silently fall back Blue-direct → product path; that muddies labels and 
 | Product path labeled Parascene; direct path labeled Parascene Blue | **Settled** |
 | Credits-first product lane coexists with BYO Replicate + Blue-direct | **Settled** |
 | Gate Blue-direct and Replicate on Settings credentials | **Settled** |
-| Blue-direct gens land local-only (no Creation) for the proof | **Settled for proof** — promote-to-Creation later is open |
+| Blue-direct gens land local-only (no Creation) for the Lab proof | **Settled — Lab shipped**; Editor promote path / Phase B still open |
 | Long-term Blue auth (service token vs session vs OAuth) | **Open** |
 | When/whether local gens promote to Parascene Creations | **Open** |
 
