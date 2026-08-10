@@ -27,7 +27,10 @@ When the user reports a Sync folders failure:
 | --- | --- | --- |
 | `project folder marker cannot be changed` | Folder API **forbids** clearing `meta.parascene_desktop.project_id` via `update` (even with `project_id`). Release must be ownership-asserted **delete** + **create** regular (same id/members). Sync rewrites stuck empty-meta clears to that pair. | Disk trace; pending should become `delete`+`create`, not `update` meta clear. |
 | `project folder is locked on this client` | Mutate without ownership assertion, or user-edit lock on a marked folder with no local project doc. | Disk trace pending list. Not a filesystem lock. |
+| `folder id already exists` | Pending `create` for an id already on cloud (partial upload / never-acked create). Sync **drops** that create unless a pending `delete` for the same id remains (release pair). Retry Sync folders. | Disk trace phase `drop-redundant-ops`; pending should lose the redundant create. |
+| `folder not found` | Pending `delete` (or mutate) for an id already gone from cloud. Sync drops orphan deletes and retries remaining ops. | Disk trace phase `drop-redundant-ops`. |
 | `Dropped N unowned project-marker clear(s)` | Heal: Sync discarded foreign marker clears and restored cloud project folders as browse-only. | Expected after mistaken auto-liberate. |
+| `Dropped N redundant folder op(s)` | Heal: Sync discarded creates already on cloud and/or deletes already absent. | Expected; Retry should then upload remaining updates/moves. |
 | `base_revision is stale` / folder conflicts UI | Cloud revision moved; need conflict resolution or retry after pull. | Sync conflict cards. |
 | `Library folders are not available` / 501 | Folders API unavailable. | Auth + API host. |
 | `Some folder changes are still pending` | Upload loop exited with ops left. | Disk trace + `folder_pending_ops`. |

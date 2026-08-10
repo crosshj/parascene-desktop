@@ -119,6 +119,16 @@ const KNOWN_HINTS: Array<{ test: RegExp; hint: string }> = [
       "User-edit lock on a project-marked folder (no local project document), or a mutate without ownership assertion. Unowned empty-meta clears are dropped on Sync — this client must not take over foreign project markers. Owned clears need delete+create, not empty-meta update. See docs/STANDARDS-sync-diagnostics.md.",
   },
   {
+    test: /folder id already exists/i,
+    hint:
+      "Pending create targets a folder id already on cloud (often after a partial upload). Sync drops that create unless a pending delete for the same id remains (project release). Retry Sync folders. See docs/STANDARDS-sync-diagnostics.md.",
+  },
+  {
+    test: /folder not found/i,
+    hint:
+      "Pending delete or mutate targets a folder already gone from cloud. Sync drops orphan deletes; remaining ops retry. See docs/STANDARDS-sync-diagnostics.md.",
+  },
+  {
     test: /base_revision is stale|conflict/i,
     hint:
       "Cloud revision moved; resolve folder conflicts in Sync or retry after pull.",

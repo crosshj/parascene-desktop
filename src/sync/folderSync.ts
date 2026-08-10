@@ -272,6 +272,51 @@ export function dropUnownedMarkerClears(
   return { kept, dropped };
 }
 
+/**
+ * Drop pending creates/deletes that the cloud already reflects so Sync does not
+ * loop on `folder id already exists` / `folder not found`.
+ *
+ * - Drop `create` when the folder id is already on cloud, unless a pending
+ *   `delete` for that id remains (project release: delete then recreate).
+ * - Drop `delete` when the folder id is already absent from cloud.
+ */
+export function dropRedundantFolderOps(
+  pending: PendingFolderOp[],
+  cloud: RemoteLibraryFolder[],
+): { kept: PendingFolderOp[]; dropped: PendingFolderOp[] } {
+  const cloudIds = new Set(
+    cloud.map((folder) => folder.id).filter((id) => Boolean(id?.trim())),
+  );
+  const pendingDeleteIds = new Set<string>();
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (op.op === "delete" && op.id.trim()) {
+      pendingDeleteIds.add(op.id.trim());
+    }
+  }
+
+  const kept: PendingFolderOp[] = [];
+  const dropped: PendingFolderOp[] = [];
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (op.op === "create") {
+      const id = op.id.trim();
+      if (id && cloudIds.has(id) && !pendingDeleteIds.has(id)) {
+        dropped.push(row);
+        continue;
+      }
+    } else if (op.op === "delete") {
+      const id = op.id.trim();
+      if (id && !cloudIds.has(id)) {
+        dropped.push(row);
+        continue;
+      }
+    }
+    kept.push(row);
+  }
+  return { kept, dropped };
+}
+
 /** Normalize owned marker-clear updates (preserve project_id on empty meta). */
 export function rewritePendingMarkerClears(
   pending: PendingFolderOp[],
@@ -470,34 +515,9 @@ export function detectFolderConflicts(
   for (const row of pending) {
     const op = row.op;
     if (op.op === "create") {
-      const cloudFolder = remote.byId.get(op.id);
-      if (cloudFolder) {
-        // Distinct create ids are safe; same id already on cloud is unusual — treat as meta conflict.
-        const local = asRemote({
-          id: op.id,
-          title: op.title ?? "Untitled folder",
-          description: op.description ?? "",
-          creation_ids: op.creation_ids ?? [],
-          member_count: (op.creation_ids ?? []).length,
-          created_at: null,
-          updated_at: null,
-          meta: op.meta ?? {},
-        });
-        const cloudRow = asRemote(cloudFolder);
-        if (
-          local.title !== cloudRow.title ||
-          local.description !== cloudRow.description
-        ) {
-          push({
-            id: `folder_meta:${op.id}`,
-            kind: "folder_meta",
-            summary: `Folder “${folderLabel(local)}” was changed on both sides`,
-            folderId: op.id,
-            localLabel: folderLabel(local),
-            cloudLabel: folderLabel(cloudRow),
-          });
-        }
-      }
+      // Create for an id already on cloud is healed by dropRedundantFolderOps
+      // (unless paired with a pending delete for release). Title drift stays on
+      // pending updates — do not surface a folder_meta conflict here.
       continue;
     }
 
@@ -855,6 +875,28 @@ export async function syncLibraryFolders(opts?: {
   let guard = 0;
   while (state.pendingOps.length > 0 && guard < 20) {
     guard += 1;
+
+    // Drop creates for ids already on cloud (unless paired with delete for release)
+    // and deletes for ids already gone — prevents stuck `folder id already exists`.
+    {
+      const { kept, dropped } = dropRedundantFolderOps(
+        state.pendingOps,
+        cloud.folders,
+      );
+      if (dropped.length > 0) {
+        logFolderSyncFailure(
+          buildFolderSyncFailureTrace({
+            phase: "drop-redundant-ops",
+            message: `Dropped ${dropped.length} redundant folder op(s) already reflected on cloud.`,
+            revision: state.revision,
+            pending: dropped,
+          }),
+        );
+        state = await setFolderPendingOps(kept.map((row) => row.op));
+      }
+    }
+    if (state.pendingOps.length === 0) break;
+
     const { ops, seqs } = prepareOpsForUpload(state.pendingOps);
     const batches = chunkOps(ops);
     if (batches.length === 0) break;
@@ -915,7 +957,9 @@ export async function syncLibraryFolders(opts?: {
           message,
         });
       }
-      // On 400 / other errors: re-pull then surface.
+      // On 400 / other errors: re-pull, then heal redundant create/delete if the
+      // API reported ids that already exist or are already gone.
+      const rawMessage = e instanceof Error ? e.message : String(e);
       try {
         const fresh = await pullSnapshot();
         cloud = fresh;
@@ -927,7 +971,25 @@ export async function syncLibraryFolders(opts?: {
       } catch {
         /* keep prior state */
       }
-      const rawMessage = e instanceof Error ? e.message : String(e);
+      if (/folder id already exists|folder not found/i.test(rawMessage)) {
+        const { kept, dropped } = dropRedundantFolderOps(
+          state.pendingOps,
+          cloud.folders,
+        );
+        if (dropped.length > 0) {
+          logFolderSyncFailure(
+            buildFolderSyncFailureTrace({
+              phase: "drop-redundant-ops",
+              message: `After mutate error (${rawMessage}): dropped ${dropped.length} redundant folder op(s); retrying upload.`,
+              revision: state.revision,
+              pending: dropped,
+              uploadBatch: batch,
+            }),
+          );
+          state = await setFolderPendingOps(kept.map((row) => row.op));
+          continue;
+        }
+      }
       const message = withPendingOpsContext(rawMessage, state.pendingOps);
       logFolderSyncFailure(
         buildFolderSyncFailureTrace({

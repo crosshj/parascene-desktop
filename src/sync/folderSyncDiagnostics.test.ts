@@ -74,6 +74,35 @@ describe("folderSyncDiagnostics", () => {
     expect(trace.hint).toMatch(/immutable|project-marked|meta\.parascene_desktop/i);
     expect(trace.pending[0]?.clearsProjectMeta).toBe(true);
   });
+
+  it("hints for folder id already exists and folder not found", () => {
+    const pending: PendingFolderOp[] = [
+      {
+        seq: 1,
+        createdAt: "t",
+        op: {
+          op: "create",
+          id: "a0d03fda-1546-4ffd-9465-987298887ebe",
+          title: "Silent Killer",
+        },
+      },
+    ];
+    const exists = buildFolderSyncFailureTrace({
+      phase: "mutate",
+      message: withPendingOpsContext("folder id already exists", pending),
+      revision: 9,
+      pending,
+    });
+    expect(exists.hint).toMatch(/drop.*create|already on cloud/i);
+
+    const missing = buildFolderSyncFailureTrace({
+      phase: "mutate",
+      message: "folder not found",
+      revision: 9,
+      pending: [],
+    });
+    expect(missing.hint).toMatch(/orphan delete|already gone/i);
+  });
 });
 
 describe("ownership-asserted marker clears", () => {

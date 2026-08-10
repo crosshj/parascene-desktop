@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyConflictResolutions,
   detectFolderConflicts,
+  dropRedundantFolderOps,
   prepareOpsForUpload,
   syncLibraryFolders,
   LIBRARY_FOLDER_OPS_MAX,
@@ -275,6 +276,80 @@ describe("folderSync helpers", () => {
         project_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       },
     ]);
+  });
+
+  it("does not conflict when a pending create id already exists on cloud", () => {
+    const folderId = "11111111-1111-4111-8111-111111111111";
+    const cloud = [remoteFolder({ id: folderId, title: "Cloud title" })];
+    const ops = [
+      pending(1, {
+        op: "create",
+        id: folderId,
+        title: "Local title",
+        description: "",
+      }),
+      pending(2, {
+        op: "update",
+        id: folderId,
+        title: "Local title",
+        description: "",
+      }),
+    ];
+    expect(detectFolderConflicts([], cloud, ops)).toEqual([]);
+  });
+});
+
+describe("dropRedundantFolderOps", () => {
+  it("drops create when cloud already has the folder id", () => {
+    const folderId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const pendingOps = [
+      pending(1, { op: "create", id: folderId, title: "Mine" }),
+      pending(2, { op: "update", id: folderId, title: "Renamed" }),
+      pending(3, { op: "move", folder_id: folderId, creation_ids: [1] }),
+    ];
+    const { kept, dropped } = dropRedundantFolderOps(pendingOps, [
+      remoteFolder({ id: folderId, title: "Mine" }),
+    ]);
+    expect(dropped.map((row) => row.op.op)).toEqual(["create"]);
+    expect(kept.map((row) => row.op.op)).toEqual(["update", "move"]);
+  });
+
+  it("keeps create when a pending delete targets the same id (release)", () => {
+    const folderId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const projectId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const pendingOps = [
+      pending(1, { op: "delete", id: folderId, project_id: projectId }),
+      pending(2, {
+        op: "create",
+        id: folderId,
+        title: "Released",
+        meta: {},
+      }),
+    ];
+    const { kept, dropped } = dropRedundantFolderOps(pendingOps, [
+      remoteFolder({
+        id: folderId,
+        title: "Released",
+        meta: { parascene_desktop: { project_id: projectId } },
+      }),
+    ]);
+    expect(dropped).toEqual([]);
+    expect(kept.map((row) => row.op.op)).toEqual(["delete", "create"]);
+  });
+
+  it("drops delete when the folder is already absent from cloud", () => {
+    const folderId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const pendingOps = [
+      pending(1, { op: "delete", id: folderId, project_id: "p" }),
+      pending(2, {
+        op: "create",
+        id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        title: "New",
+      }),
+    ];
+    const { kept, dropped } = dropRedundantFolderOps(pendingOps, []);
+    expect(dropped.map((row) => row.op.op)).toEqual(["delete"]);
+    expect(kept.map((row) => row.op.op)).toEqual(["create"]);
   });
 });
 
@@ -621,6 +696,191 @@ describe("syncLibraryFolders", () => {
           title: "Orphan",
           meta: {},
           creation_ids: [101],
+        }),
+      ],
+    });
+  });
+
+  it("drops stuck create when cloud already has the folder and uploads remaining ops", async () => {
+    const folderId = "a0d03fda-1546-4ffd-9465-987298887ebe";
+    const createOp = pending(1, {
+      op: "create",
+      id: folderId,
+      title: "Project (2 assets)",
+    });
+    const updateOp = pending(2, {
+      op: "update",
+      id: folderId,
+      title: "Silent Killer",
+    });
+    const moveOp = pending(3, {
+      op: "move",
+      folder_id: folderId,
+      creation_ids: [42],
+    });
+    const initialPending = [createOp, updateOp, moveOp];
+    const healedPending = [updateOp, moveOp];
+
+    getFolderSyncState
+      .mockResolvedValueOnce(
+        state({
+          revision: 9,
+          pendingOps: initialPending,
+          baselineFolders: [],
+        }),
+      )
+      .mockResolvedValueOnce(
+        state({ revision: 10, pendingOps: [] }),
+      );
+    getLibraryFolders.mockResolvedValue({
+      revision: 9,
+      folders: [remoteFolder({ id: folderId, title: "Project (2 assets)" })],
+    });
+    setFolderPendingOps.mockResolvedValue(
+      state({ revision: 9, pendingOps: healedPending, baselineFolders: [] }),
+    );
+    applyFolderSnapshot.mockResolvedValue(
+      state({ revision: 10, pendingOps: healedPending }),
+    );
+    mutateLibraryFolders.mockResolvedValue({
+      revision: 10,
+      folders: [remoteFolder({ id: folderId, title: "Silent Killer", creation_ids: [42] })],
+    });
+    ackFolderOps.mockResolvedValue(state({ revision: 10, pendingOps: [] }));
+
+    const result = await syncLibraryFolders();
+    expect(result.ok).toBe(true);
+    expect(setFolderPendingOps).toHaveBeenCalledWith([
+      expect.objectContaining({ op: "update", id: folderId, title: "Silent Killer" }),
+      expect.objectContaining({ op: "move", folder_id: folderId }),
+    ]);
+    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+      baseRevision: 9,
+      operations: [
+        expect.objectContaining({ op: "update", id: folderId, title: "Silent Killer" }),
+        expect.objectContaining({ op: "move", folder_id: folderId }),
+      ],
+    });
+    expect(
+      mutateLibraryFolders.mock.calls[0]![0].operations.some(
+        (op: LibraryFolderOperation) => op.op === "create",
+      ),
+    ).toBe(false);
+  });
+
+  it("heals after folder id already exists mutate error then retries", async () => {
+    const folderId = "a0d03fda-1546-4ffd-9465-987298887ebe";
+    const createOp = pending(1, {
+      op: "create",
+      id: folderId,
+      title: "Project (2 assets)",
+    });
+    const updateOp = pending(2, {
+      op: "update",
+      id: folderId,
+      title: "Silent Killer",
+    });
+    const pendingOps = [createOp, updateOp];
+
+    getFolderSyncState
+      .mockResolvedValueOnce(
+        state({ revision: 9, pendingOps, baselineFolders: [] }),
+      )
+      // After failed mutate re-pull + getFolderSyncState
+      .mockResolvedValueOnce(
+        state({ revision: 9, pendingOps, baselineFolders: [] }),
+      )
+      .mockResolvedValueOnce(state({ revision: 10, pendingOps: [] }));
+
+    getLibraryFolders
+      // Initial pull — cloud empty so create is not dropped pre-upload
+      .mockResolvedValueOnce({ revision: 9, folders: [] })
+      // Re-pull after error — folder now on cloud
+      .mockResolvedValueOnce({
+        revision: 9,
+        folders: [remoteFolder({ id: folderId, title: "Project (2 assets)" })],
+      });
+
+    mutateLibraryFolders
+      .mockRejectedValueOnce(new Error("folder id already exists"))
+      .mockResolvedValueOnce({
+        revision: 10,
+        folders: [remoteFolder({ id: folderId, title: "Silent Killer" })],
+      });
+
+    applyFolderSnapshot.mockImplementation(async (revision: number) =>
+      state({
+        revision,
+        pendingOps:
+          revision === 10 ? [updateOp] : pendingOps,
+      }),
+    );
+    setFolderPendingOps.mockResolvedValue(
+      state({ revision: 9, pendingOps: [updateOp], baselineFolders: [] }),
+    );
+    ackFolderOps.mockResolvedValue(state({ revision: 10, pendingOps: [] }));
+
+    const result = await syncLibraryFolders();
+    expect(result.ok).toBe(true);
+    expect(mutateLibraryFolders).toHaveBeenCalledTimes(2);
+    expect(mutateLibraryFolders.mock.calls[1]![0].operations).toEqual([
+      expect.objectContaining({ op: "update", id: folderId, title: "Silent Killer" }),
+    ]);
+  });
+
+  it("still uploads delete+create release when cloud still has the project folder", async () => {
+    const folderId = "a9941ef5-5138-457b-ac70-d2b29d807d7d";
+    const projectId = "16fba4e5-d353-4707-b5f4-f9d29c6a645d";
+    const pendingOps = [
+      pending(1, { op: "delete", id: folderId, project_id: projectId }),
+      pending(2, {
+        op: "create",
+        id: folderId,
+        title: "Sana Sinabi Ko Na",
+        meta: {},
+      }),
+    ];
+    getFolderSyncState
+      .mockResolvedValueOnce(
+        state({ revision: 9, pendingOps, baselineFolders: [] }),
+      )
+      .mockResolvedValueOnce(state({ revision: 10, pendingOps: [] }));
+    getLibraryFolders.mockResolvedValue({
+      revision: 9,
+      folders: [
+        remoteFolder({
+          id: folderId,
+          title: "Sana Sinabi Ko Na",
+          meta: { parascene_desktop: { project_id: projectId } },
+        }),
+      ],
+    });
+    applyFolderSnapshot.mockResolvedValue(
+      state({ revision: 10, pendingOps: [] }),
+    );
+    mutateLibraryFolders.mockResolvedValue({
+      revision: 10,
+      folders: [
+        remoteFolder({ id: folderId, title: "Sana Sinabi Ko Na", meta: {} }),
+      ],
+    });
+    ackFolderOps.mockResolvedValue(state({ revision: 10, pendingOps: [] }));
+
+    const result = await syncLibraryFolders();
+    expect(result.ok).toBe(true);
+    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+      baseRevision: 9,
+      operations: [
+        expect.objectContaining({
+          op: "delete",
+          id: folderId,
+          project_id: projectId,
+        }),
+        expect.objectContaining({
+          op: "create",
+          id: folderId,
+          title: "Sana Sinabi Ko Na",
+          meta: {},
         }),
       ],
     });
