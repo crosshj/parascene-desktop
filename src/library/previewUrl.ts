@@ -41,6 +41,14 @@ function pathExtension(path: string): string {
   return base.slice(dot + 1).toLowerCase();
 }
 
+/** True when a URL/path is cover/poster art rather than playable A/V. */
+export function urlLooksLikeImage(url: string | null | undefined): boolean {
+  const trimmed = url?.trim();
+  if (!trimmed) return false;
+  const path = trimmed.split(/[?#]/)[0] ?? "";
+  return IMAGE_EXTS.has(pathExtension(path));
+}
+
 /**
  * True when `localPath` looks like real playable media for this creation kind.
  * Cloud audio imports often store the cover PNG as `local_path` and mark
@@ -101,6 +109,34 @@ export function withPreviewCacheBust(
 /** True when the backend can fetch cloud bytes for this creation. */
 export function canFetchLocal(c: Creation): boolean {
   return Boolean(c.remoteUrl || c.fitThumbnailUrl || c.thumbnailUrl);
+}
+
+/**
+ * True when Parascene has a remote that could become playable audio/video.
+ * Cover-only Suno/YouTube rows point `remote_url` at a PNG — caching that
+ * never yields a track or movie, so the UI must not wait on "Saving locally…".
+ */
+export function canFetchPlayableMedia(c: Creation): boolean {
+  const kind = String(c.mediaType ?? "")
+    .trim()
+    .toLowerCase();
+  if (kind === "audio" || kind === "video") {
+    if (kind === "video" && c.videoUrl?.trim() && !urlLooksLikeImage(c.videoUrl)) {
+      return true;
+    }
+    return Boolean(c.remoteUrl?.trim()) && !urlLooksLikeImage(c.remoteUrl);
+  }
+  return canFetchLocal(c);
+}
+
+/** Audio/video with no playable local file and no playable remote to cache. */
+export function isCoverOnlyCloudAv(c: Creation): boolean {
+  const kind = String(c.mediaType ?? "")
+    .trim()
+    .toLowerCase();
+  if (kind !== "audio" && kind !== "video") return false;
+  if (isPlayableLocalPath(c.localPath, c.mediaType)) return false;
+  return !canFetchPlayableMedia(c);
 }
 
 function statusKey(c: Creation): string {

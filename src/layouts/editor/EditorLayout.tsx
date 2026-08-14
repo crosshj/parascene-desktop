@@ -201,8 +201,6 @@ export function EditorLayout() {
     rightCollapsed,
     toggleLeft,
     toggleRight,
-    setPrimaryTab,
-    setLibrarySurface,
   } = useShell();
   const confirm = useConfirm();
 
@@ -2140,25 +2138,6 @@ export function EditorLayout() {
 
   return (
     <div ref={workspaceRef} className={workspaceClass} style={style}>
-      {outsideReferenceIds.length > 0 ? (
-        <div className="editor-outside-reference-warning" role="status">
-          <span>
-            {outsideReferenceIds.length} referenced file
-            {outsideReferenceIds.length === 1 ? " is" : "s are"} outside the
-            project folder.
-          </span>
-          <button
-            type="button"
-            className="linkish"
-            onClick={() => {
-              setLibrarySurface("creations");
-              setPrimaryTab("library");
-            }}
-          >
-            Open Library
-          </button>
-        </div>
-      ) : null}
       {showAssetsPane ? (
         <AssetBrowserPane
           assets={project.assets}
@@ -2198,6 +2177,10 @@ export function EditorLayout() {
           onDeleteCompositions={(ids) => {
             void deleteCompositionsFromProject(ids);
           }}
+          outsideReferenceIds={outsideReferenceIds}
+          onAddOutsideToProject={(id) => {
+            void addCreationsToOpenProject([id]);
+          }}
         />
       ) : null}
 
@@ -2218,6 +2201,7 @@ export function EditorLayout() {
         assetId={previewAssetId}
         openCompositionId={openCompositionId}
         onOpenCompositionIdChange={setOpenCompositionId}
+        outsideReferenceIds={outsideReferenceIds}
         addAssetMode={addAssetMode}
         addAssetSlotActive={addAssetSlotActive}
         addAssetIntent={addAssetIntent}
@@ -2427,6 +2411,7 @@ export function EditorLayout() {
         canJoinSelected={Boolean(joinPair)}
         onJoinSelected={openJoinStudio}
         joinBusy={joinStudioOpen}
+        outsideReferenceIds={outsideReferenceIds}
       />
 
       {joinStudioOpen && joinStudioPair ? (

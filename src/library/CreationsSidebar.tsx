@@ -262,7 +262,6 @@ export function CreationsSidebar({
   onReleaseOrphanFolder,
   hasFolders = false,
   onNewProject,
-  onAddToProject,
   onNewFolder,
   onAddToFolder,
   onRemoveFromFolder,
@@ -282,7 +281,6 @@ export function CreationsSidebar({
   onReleaseOrphanFolder?: () => void;
   hasFolders?: boolean;
   onNewProject?: () => void;
-  onAddToProject?: () => void;
   onNewFolder?: () => void;
   onAddToFolder?: () => void;
   onRemoveFromFolder?: () => void;
@@ -414,15 +412,6 @@ export function CreationsSidebar({
               >
                 New project…
               </button>
-              {hasOpenProject ? (
-                <button
-                  type="button"
-                  className="creations-sidebar-action-btn"
-                  onClick={onAddToProject}
-                >
-                  Add to project…
-                </button>
-              ) : null}
             </>
           ) : null}
           <button

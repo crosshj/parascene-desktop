@@ -512,9 +512,10 @@ pub(crate) fn needs_download(c: &Creation) -> bool {
     if c.remote_url.as_deref().unwrap_or("").is_empty() {
         return false;
     }
-    // Cover-only "local" audio is not playable media — but re-fetching the same
-    // image URL cannot produce audio. Skip until a real audio remote exists.
-    if c.media_type.eq_ignore_ascii_case("audio") {
+    // Cover-only A/V: remote is poster/cover art, not playable media.
+    if c.media_type.eq_ignore_ascii_case("audio")
+        || c.media_type.eq_ignore_ascii_case("video")
+    {
         let local_is_image = c
             .local_path
             .as_deref()

@@ -96,7 +96,7 @@ pub struct SyncStatus {
     /// Bytes used under Library/thumbs.
     pub thumbs_bytes: u64,
     /// Cloud-backed creations that can't be cached (no downloadable URLs). Capped.
-    /// Excludes local-only imports (never existed in Parascene cloud).
+    /// Excludes local-only imports and cover-only cloud A/V (Suno/YouTube).
     pub without_cloud_urls: Vec<WithoutCloudUrl>,
 }
 
@@ -1038,9 +1038,23 @@ const CLOUD_BACKED: &str = r#"
   )
 "#;
 
+/// Audio/video whose remote_url is cover/poster art — caching cannot produce
+/// playable media (same idea as download::needs_download).
+const AV_REMOTE_IS_COVER: &str = r#"
+  lower(media_type) IN ('audio', 'video')
+  AND remote_url IS NOT NULL AND remote_url != ''
+  AND (
+    lower(remote_url) LIKE '%.png%'
+    OR lower(remote_url) LIKE '%.jpg%'
+    OR lower(remote_url) LIKE '%.jpeg%'
+    OR lower(remote_url) LIKE '%.webp%'
+    OR lower(remote_url) LIKE '%.gif%'
+  )
+"#;
+
 fn list_without_cloud_urls(conn: &Connection) -> Result<Vec<WithoutCloudUrl>, String> {
-    // Matches unsyncableThumbCount ∪ unsyncableMediaCount: cloud-backed, no local
-    // file, and no downloadable URL under the same rules as cache-missing queries.
+    // Matches unsyncableThumbCount ∪ unsyncableMediaCount. Cover-only Suno/YouTube
+    // A/V are expected to stay on the host — don't list them as a Sync problem.
     let mut stmt = conn
         .prepare(
             &format!(
@@ -1108,9 +1122,12 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
     )?;
     let missing_media_cacheable = count_where(
         conn,
-        r#"SELECT COUNT(*) FROM creations
+        &format!(
+            r#"SELECT COUNT(*) FROM creations
            WHERE (local_path IS NULL OR local_path = '')
-             AND remote_url IS NOT NULL AND remote_url != ''"#,
+             AND remote_url IS NOT NULL AND remote_url != ''
+             AND NOT ({AV_REMOTE_IS_COVER})"#
+        ),
     )?;
     let missing_thumb_uncacheable = count_where(
         conn,

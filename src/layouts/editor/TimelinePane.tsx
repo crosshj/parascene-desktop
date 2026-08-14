@@ -135,6 +135,8 @@ type TimelinePaneProps = {
   canJoinSelected?: boolean;
   onJoinSelected?: () => void;
   joinBusy?: boolean;
+  /** Creation ids referenced by the project but not in the project folder. */
+  outsideReferenceIds?: readonly string[];
 };
 
 type PointerDropDetail = {
@@ -169,6 +171,17 @@ function formatTransportClock(sec: number): string {
 function formatClipDuration(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return "0.0s";
   return `${(Math.round(sec * 10) / 10).toFixed(1)}s`;
+}
+
+function clipUsesOutsideReference(
+  clip: TimelineClip,
+  outsideIds: ReadonlySet<string>,
+): boolean {
+  if (outsideIds.size === 0) return false;
+  if (clip.assetId && outsideIds.has(clip.assetId)) return true;
+  return (clip.slideshow?.imageAssetIds ?? []).some((id) =>
+    outsideIds.has(id),
+  );
 }
 
 function clipDisplayThumbUrl(
@@ -401,6 +414,7 @@ function MiniClip({
   resizeEnabled = false,
   resizing = false,
   moveEnabled = true,
+  outsideFolder = false,
   onPointerDown,
   onResizePointerDown,
 }: {
@@ -438,6 +452,7 @@ function MiniClip({
   resizing?: boolean;
   /** False when synced to timeline — clip can be selected but not dragged. */
   moveEnabled?: boolean;
+  outsideFolder?: boolean;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
@@ -539,6 +554,14 @@ function MiniClip({
           className="editor-timeline-clip-bake is-failed"
           aria-label={bakeError?.trim() || "Slideshow render failed"}
           title={bakeError?.trim() || "Slideshow render failed"}
+        >
+          !
+        </span>
+      ) : outsideFolder ? (
+        <span
+          className="editor-timeline-clip-bake is-outside"
+          aria-label="Media is outside the project folder"
+          title="This clip’s media is outside the project folder"
         >
           !
         </span>
@@ -672,8 +695,13 @@ export function TimelinePane({
   canJoinSelected = false,
   onJoinSelected,
   joinBusy = false,
+  outsideReferenceIds = [],
 }: TimelinePaneProps) {
   const thumbAspectRatio = projectAspectCss(aspectRatio);
+  const outsideIdSet = useMemo(
+    () => new Set(outsideReferenceIds.map((id) => id.trim()).filter(Boolean)),
+    [outsideReferenceIds],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
   const [ghost, setGhost] = useState<TimelineGhostClip | null>(null);
@@ -2122,6 +2150,7 @@ export function TimelinePane({
                     }
                     onPointerDown={(event) => beginClipPress(clip, event)}
                     onResizePointerDown={(event) => armClipResize(clip, event)}
+                    outsideFolder={clipUsesOutsideReference(clip, outsideIdSet)}
                   />
                   );
                 })
@@ -2277,6 +2306,7 @@ export function TimelinePane({
                     }
                     onPointerDown={(event) => beginClipPress(clip, event)}
                     onResizePointerDown={(event) => armClipResize(clip, event)}
+                    outsideFolder={clipUsesOutsideReference(clip, outsideIdSet)}
                   />
                   );
                 })

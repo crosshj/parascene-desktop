@@ -89,6 +89,9 @@ describe("CreationLightbox group carousel", () => {
       </ConfirmProvider>,
     );
 
+    expect(
+      await screen.findByRole("heading", { name: "Group" }),
+    ).toBeInTheDocument();
     await screen.findByRole("heading", { name: "First" });
     const previous = screen.getByRole("button", {
       name: "Previous in group",
@@ -99,6 +102,7 @@ describe("CreationLightbox group carousel", () => {
 
     await user.click(next);
     expect(screen.getByRole("heading", { name: "Second" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Group" })).toBeInTheDocument();
     await user.click(next);
     expect(screen.getByRole("heading", { name: "First" })).toBeInTheDocument();
 
@@ -159,6 +163,7 @@ describe("CreationLightbox group carousel", () => {
       </ConfirmProvider>,
     );
 
+    await screen.findByRole("heading", { name: "Videos" });
     await screen.findByRole("heading", { name: "Clip A" });
     const video = document.querySelector("video");
     expect(video).toBeTruthy();
@@ -170,5 +175,46 @@ describe("CreationLightbox group carousel", () => {
     const nextVideo = document.querySelector("video");
     expect(nextVideo?.getAttribute("src") ?? "").toContain("11.mp4");
     expect(nextVideo?.hasAttribute("loop")).toBe(true);
+  });
+});
+
+describe("CreationLightbox cloud A/V", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "library_ensure_local") return undefined;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+  });
+
+  it("shows Suno cloud audio instead of Saving locally", async () => {
+    const suno = creation("20794", "Beat the Meat", {
+      mediaType: "audio",
+      localPath: null,
+      localThumbPath: "/tmp/20794.png",
+      downloadState: "remote",
+      remoteUrl:
+        "https://www.parascene.com/api/images/created/26_x.png?creation_id=20794",
+      remoteJson: JSON.stringify({
+        meta: {
+          import: {
+            provider: "suno",
+            url: "https://suno.com/song/abc",
+          },
+        },
+      }),
+    });
+    render(
+      <ConfirmProvider>
+        <CreationLightbox creation={suno} onClose={vi.fn()} />
+      </ConfirmProvider>,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Play on Suno" }).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getByText(/cloud · Suno/i)).toBeInTheDocument();
+    expect(screen.getByText("Cloud audio · Suno")).toBeInTheDocument();
+    expect(screen.queryByText("Saving locally…")).not.toBeInTheDocument();
   });
 });

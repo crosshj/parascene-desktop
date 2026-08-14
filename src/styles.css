@@ -718,25 +718,6 @@ input[type="checkbox"].control,
   letter-spacing: 0.025em;
 }
 
-.editor-outside-reference-warning {
-  position: absolute;
-  z-index: 20;
-  top: 0.45rem;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  max-width: min(42rem, calc(100% - 2rem));
-  padding: 0.4rem 0.65rem;
-  border: 1px solid color-mix(in srgb, #f6b94f 55%, var(--border));
-  border-radius: 7px;
-  background: color-mix(in srgb, #2c200b 90%, var(--surface));
-  color: var(--text);
-  font-size: 0.78rem;
-  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.35);
-}
-
 .folder-edit-dialog {
   width: min(26rem, 100%);
 }
@@ -1802,7 +1783,9 @@ input[type="checkbox"].control,
 .creation-group-badge,
 .creation-play-badge,
 .creation-audio-badge,
-.creation-in-project-badge {
+.creation-cloud-badge,
+.creation-in-project-badge,
+.creation-outside-project-badge {
   background: rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -1811,6 +1794,11 @@ input[type="checkbox"].control,
 .creation-in-project-badge {
   color: color-mix(in srgb, var(--accent) 70%, #fff);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.creation-outside-project-badge {
+  color: #f6b94f;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f6b94f 55%, transparent);
 }
 
 .creation-play-badge svg {
@@ -1963,10 +1951,35 @@ input[type="checkbox"].control,
 
 .creation-lightbox-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.creation-lightbox-group-title {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.creation-lightbox-actions-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.creation-lightbox-action-btns {
+  display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.75rem;
 }
 
 .creation-lightbox-close {
@@ -2144,6 +2157,41 @@ input[type="checkbox"].control,
   margin: 0;
   text-align: center;
   z-index: 1;
+}
+
+.cloud-host-note {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.cloud-host-caption {
+  margin: 0;
+  text-align: center;
+}
+
+.creation-lightbox-cloud {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.editor-preview-cloud {
+  position: absolute;
+  left: 50%;
+  bottom: 0.75rem;
+  transform: translateX(-50%);
+  z-index: 2;
+  width: max-content;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.35rem 0.55rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  pointer-events: auto;
 }
 
 .creation-lightbox-meta {
@@ -4251,6 +4299,7 @@ input[type="checkbox"].control,
 }
 
 .composition-simple-card {
+  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
@@ -4263,6 +4312,82 @@ input[type="checkbox"].control,
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+.composition-simple-card.has-outside {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f6b94f 70%, transparent);
+}
+
+.composition-outside-flag {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, #2c200b 88%, var(--surface));
+  border: 1px solid color-mix(in srgb, #f6b94f 60%, var(--border));
+  color: #f6b94f;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.composition-outside-note {
+  margin: 0.45rem 0 0;
+  max-width: 36rem;
+  color: #f6b94f;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.composite-source-row {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.composite-source-card {
+  width: 8.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.composite-source-thumb {
+  position: relative;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #0a0a0a;
+  display: grid;
+  place-items: center;
+}
+
+.composite-source-card.is-outside .composite-source-thumb {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f6b94f 70%, transparent);
+}
+
+.composite-source-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.composite-source-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+
+.composite-source-meta .btn {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.4rem;
 }
 
 .composition-card-hit:hover .composition-simple-card {
@@ -5297,6 +5422,18 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   height: 14px;
   background: #7f1d1d;
   color: #fecaca;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.editor-timeline-clip-bake.is-outside {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  background: #5c4310;
+  color: #f6b94f;
   font-size: 10px;
   font-weight: 700;
   line-height: 1;

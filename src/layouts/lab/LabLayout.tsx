@@ -1297,6 +1297,9 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       if (result.collapsedIds.length > 0) {
         removeCreationsFromOpenProject(result.collapsedIds);
       }
+      if (result.mergedOrphanIds.length > 0) {
+        removeCreationsFromOpenProject(result.mergedOrphanIds);
+      }
       const parts: string[] = [];
       if (result.groupedIds.length > 0) {
         parts.push(
@@ -1306,6 +1309,11 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       if (result.collapsedIds.length > 0) {
         parts.push(
           `Collapsed ${result.collapsedIds.length} cabinet member(s) from the folder`,
+        );
+      }
+      if (result.mergedOrphanIds.length > 0) {
+        parts.push(
+          `Removed ${result.mergedOrphanIds.length} unstamped duplicate cover(s)`,
         );
       }
       return {
@@ -1498,7 +1506,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
                 const ok = await confirm({
                   title: "Dedupe desktop cabinets?",
                   message:
-                    "Scans the Library for duplicate Parascene Desktop Images/Videos group covers, merges orphan members into one keeper per media type, and updates project pointers. Creative (non-desktop) packs are left alone.",
+                    "Scans the Library for duplicate Parascene Desktop Images/Videos covers, including unstamped regroup covers at Library root whose members match a cabinet. Merges orphans into one keeper per media type and updates project pointers. Creative (non-desktop) packs are left alone.",
                   confirmLabel: "Dedupe cabinets",
                 });
                 if (!ok) throw new Error("Cancelled");
@@ -1508,7 +1516,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
                 const ok = await confirm({
                   title: "Repair cabinets in project folder?",
                   message:
-                    "File loose Videos/Images from this project folder into the matching cabinet group, then unfile those members so the folder keeps covers (plus local-only). Timeline refs stay valid.",
+                    "File loose Videos/Images from this project folder into the matching cabinet group, unfile those members so the folder keeps covers (plus local-only), and remove unstamped duplicate covers at Library root whose members match these cabinets. Timeline refs stay valid.",
                   confirmLabel: "Repair cabinets",
                 });
                 if (!ok) throw new Error("Cancelled");

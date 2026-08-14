@@ -1261,7 +1261,6 @@ function CreationsPanel({
   const [folderFilterFetchedKey, setFolderFilterFetchedKey] = useState("");
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [pickFolderOpen, setPickFolderOpen] = useState(false);
-  const [pickProjectFolderOpen, setPickProjectFolderOpen] = useState(false);
   const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
   /** Sidebar highlight — updates immediately on click. */
   const [sidebarFilters, setSidebarFilters] = useState<CreationFilterToggles>(
@@ -1937,68 +1936,16 @@ function CreationsPanel({
     setDeferredKeepIds(new Set());
   }, [createProject, selectedIds]);
 
-  const fileSelectionInProject = useCallback(
-    async (projectId: string, ids: string[]) => {
-      return addCreationsToProject(projectId, ids);
-    },
-    [addCreationsToProject],
-  );
-
-  const onAddSelectionToProject = useCallback(() => {
-    if (selectedIds.size === 0) return;
-    const projectFolders = folders.filter(
-      (folder) =>
-        folder.kind === "project" &&
-        folder.projectId &&
-        localProjectIds.has(folder.projectId),
-    );
-    const openFolder = projectFolders.find(
-      (folder) => folder.projectId === openProjectId,
-    );
-    if (openFolder?.projectId) {
-      void fileSelectionInProject(openFolder.projectId, [...selectedIds])
-        .then((result) => {
-          if (!result) return;
-          setSelectedIds(new Set());
-          setDeferredKeepIds(new Set());
-          return refreshFolders();
-        })
-        .catch((error) => {
-          window.alert(error instanceof Error ? error.message : String(error));
-        });
-      return;
-    }
-    if (projectFolders.length === 1 && projectFolders[0]?.projectId) {
-      void fileSelectionInProject(projectFolders[0].projectId, [...selectedIds])
-        .then((result) => {
-          if (!result) return;
-          setSelectedIds(new Set());
-          setDeferredKeepIds(new Set());
-          return refreshFolders();
-        })
-        .catch((error) => {
-          window.alert(error instanceof Error ? error.message : String(error));
-        });
-      return;
-    }
-    setPickProjectFolderOpen(true);
-  }, [fileSelectionInProject, folders, localProjectIds, openProjectId, refreshFolders, selectedIds]);
-
-  const onAddSelectionToClosedProject = useCallback(
-    async (folder: LibraryFolder) => {
-      if (!folder.projectId || selectedIds.size === 0) return;
-      try {
-        const result = await fileSelectionInProject(folder.projectId, [...selectedIds]);
-        if (!result) return;
-        setPickProjectFolderOpen(false);
-        setSelectedIds(new Set());
-        setDeferredKeepIds(new Set());
-        await refreshFolders();
-      } catch (error) {
-        window.alert(error instanceof Error ? error.message : String(error));
-      }
-    },
-    [fileSelectionInProject, refreshFolders, selectedIds],
+  const pickableFolders = useMemo(
+    () =>
+      folders.filter(
+        (folder) =>
+          folder.kind === "regular" ||
+          (folder.kind === "project" &&
+            Boolean(folder.projectId) &&
+            localProjectIds.has(folder.projectId as string)),
+      ),
+    [folders, localProjectIds],
   );
 
   const onCreateFolderFromSelection = useCallback(
@@ -2021,16 +1968,28 @@ function CreationsPanel({
     async (folder: LibraryFolder) => {
       if (selectedIds.size === 0) return;
       try {
-        await addToFolder(folder.id, [...selectedIds]);
+        if (folder.kind === "project") {
+          if (!folder.projectId) return;
+          const result = await addCreationsToProject(folder.projectId, [
+            ...selectedIds,
+          ]);
+          if (!result) return;
+        } else {
+          await addToFolder(folder.id, [...selectedIds]);
+        }
         setPickFolderOpen(false);
         setSelectedIds(new Set());
         setDeferredKeepIds(new Set());
         await refreshFolders();
       } catch (error) {
-        console.error(error);
+        if (folder.kind === "project") {
+          window.alert(error instanceof Error ? error.message : String(error));
+        } else {
+          console.error(error);
+        }
       }
     },
-    [refreshFolders, selectedIds],
+    [addCreationsToProject, refreshFolders, selectedIds],
   );
 
   const onRemoveSelectionFromFolder = useCallback(async () => {
@@ -2212,9 +2171,8 @@ function CreationsPanel({
                   }
                 : undefined
             }
-            hasFolders={folders.length > 0 || seedFolders.length > 0}
+            hasFolders={pickableFolders.length > 0 || seedFolders.length > 0}
             onNewProject={onNewProjectFromSelection}
-            onAddToProject={onAddSelectionToProject}
             onNewFolder={() => setCreateFolderOpen(true)}
             onAddToFolder={() => setPickFolderOpen(true)}
             onRemoveFromFolder={() => {
@@ -2378,29 +2336,12 @@ function CreationsPanel({
             ) : null}
             {pickFolderOpen ? (
               <FolderPickModal
-                folders={folders.filter((folder) => folder.kind === "regular")}
+                folders={pickableFolders}
                 creationsById={folderFilterCreationsById}
                 selectedCount={selectedIds.size}
                 onCancel={() => setPickFolderOpen(false)}
                 onPick={(folder) => {
                   void onAddSelectionToFolder(folder);
-                }}
-              />
-            ) : null}
-            {pickProjectFolderOpen ? (
-              <FolderPickModal
-                title="Add to project"
-                folders={folders.filter(
-                  (folder) =>
-                    folder.kind === "project" &&
-                    Boolean(folder.projectId) &&
-                    localProjectIds.has(folder.projectId as string),
-                )}
-                creationsById={folderFilterCreationsById}
-                selectedCount={selectedIds.size}
-                onCancel={() => setPickProjectFolderOpen(false)}
-                onPick={(folder) => {
-                  void onAddSelectionToClosedProject(folder);
                 }}
               />
             ) : null}

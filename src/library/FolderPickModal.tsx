@@ -41,10 +41,10 @@ export function FolderPickModal({
 
   const selectionLabel =
     selectedCount != null && selectedCount > 0
-      ? `Choose a folder for ${selectedCount} selected ${
+      ? `Choose a folder or project for ${selectedCount} selected ${
           selectedCount === 1 ? "item" : "items"
         }.`
-      : "Choose a folder.";
+      : "Choose a folder or project.";
 
   return (
     <div
@@ -61,7 +61,9 @@ export function FolderPickModal({
       >
         <h2 id="folder-pick-title">{title}</h2>
         {folders.length === 0 ? (
-          <p className="muted">No folders yet. Create one from a selection.</p>
+          <p className="muted">
+            No folders yet. Create a folder or project from a selection.
+          </p>
         ) : (
           <>
             <p className="folder-pick-subtitle muted">{selectionLabel}</p>

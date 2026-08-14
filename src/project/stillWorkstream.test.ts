@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendWorkstreamEditNode,
   compositionInternalCreationIds,
+  compositionOutsideMemberIds,
   createComposition,
   createPlateWorkstream,
   defaultPlateRecipe,
@@ -160,5 +161,16 @@ describe("stillWorkstream", () => {
     expect(result.creationIdToDelete).toBe("bake1");
     expect(result.stream.selectedNodeId).toBeNull();
     expect(result.stream.nodes[0]?.status).toBe("discarded");
+  });
+
+  it("lists composition members that sit outside the project folder", () => {
+    const stream = createComposition({
+      memberIds: ["20830", "20804"],
+      recipe,
+    });
+    expect(
+      compositionOutsideMemberIds(stream, new Set(["20830"])),
+    ).toEqual(["20830"]);
+    expect(compositionOutsideMemberIds(stream, new Set())).toEqual([]);
   });
 });

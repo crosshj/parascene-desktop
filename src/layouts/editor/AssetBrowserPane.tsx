@@ -39,6 +39,7 @@ import {
 import type { ProjectAsset } from "../../project/types";
 import {
   compositionInternalCreationIds,
+  compositionOutsideMemberIds,
   type StillWorkstream,
 } from "../../project/stillWorkstream";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
@@ -88,12 +89,16 @@ type AssetBrowserPaneProps = {
   openCompositionId?: string | null;
   onOpenComposition?: (composition: StillWorkstream) => void;
   onDeleteCompositions?: (compositionIds: string[]) => void;
+  /** Creation ids referenced by the project but not in the project folder. */
+  outsideReferenceIds?: readonly string[];
+  onAddOutsideToProject?: (creationId: string) => void;
 };
 
 type AssetContextMenu =
   | { kind: "assets"; assetIds: string[]; x: number; y: number }
   | { kind: "folders"; folderIds: string[]; x: number; y: number }
-  | { kind: "compositions"; compositionIds: string[]; x: number; y: number };
+  | { kind: "compositions"; compositionIds: string[]; x: number; y: number }
+  | { kind: "outside"; assetIds: string[]; x: number; y: number };
 
 function kindFromCreation(
   creation: Creation | undefined,
@@ -231,6 +236,8 @@ export function AssetBrowserPane({
   openCompositionId = null,
   onOpenComposition,
   onDeleteCompositions,
+  outsideReferenceIds = [],
+  onAddOutsideToProject,
 }: AssetBrowserPaneProps) {
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
@@ -293,9 +300,26 @@ export function AssetBrowserPane({
   const showRootCompositions =
     !folderView && visibleCompositions.length > 0 && Boolean(onOpenComposition);
 
+  const outsideIdSet = useMemo(
+    () => new Set(outsideReferenceIds.map((id) => id.trim()).filter(Boolean)),
+    [outsideReferenceIds],
+  );
+
+  const extraOutsideIds = useMemo(() => {
+    const owned = new Set(rootAssets.map((asset) => asset.id));
+    const ids: string[] = [];
+    for (const stream of compositions) {
+      for (const id of compositionOutsideMemberIds(stream, outsideIdSet)) {
+        if (!owned.has(id) && !ids.includes(id)) ids.push(id);
+      }
+    }
+    return ids;
+  }, [compositions, outsideIdSet, rootAssets]);
+
   const assetIdsKey = useMemo(
-    () => rootAssets.map((a) => a.id).join("\0"),
-    [rootAssets],
+    () =>
+      [...rootAssets.map((a) => a.id), ...extraOutsideIds].join("\0"),
+    [extraOutsideIds, rootAssets],
   );
 
   useEffect(() => {
@@ -455,6 +479,13 @@ export function AssetBrowserPane({
   const visible = displayAssets.filter((asset) => {
     if (filter === "all") return true;
     return kindFromCreation(creationsById[asset.id], asset.kind) === filter;
+  });
+  const visibleOutsideIds = extraOutsideIds.filter((id) => {
+    if (visible.some((asset) => asset.id === id)) return false;
+    if (filter !== "all" && filter !== "image") {
+      return kindFromCreation(creationsById[id], "image") === filter;
+    }
+    return true;
   });
 
   const visibleFolders = useMemo(() => {
@@ -710,6 +741,7 @@ export function AssetBrowserPane({
 
       <div className="editor-asset-scroll">
         {visible.length === 0 &&
+        visibleOutsideIds.length === 0 &&
         !showRootFolders &&
         !showRootCompositions &&
         !showAddSlot ? (
@@ -732,6 +764,12 @@ export function AssetBrowserPane({
                       composition={composition}
                       aspectCss={projectAspectCss(aspectRatio)}
                       selected={openCompositionId === composition.id}
+                      outsideCount={
+                        compositionOutsideMemberIds(
+                          composition,
+                          outsideIdSet,
+                        ).length
+                      }
                       onOpen={(next) => {
                         // Clear ordinary asset selection first. EditorLayout's
                         // selection path closes any open composition, so the
@@ -777,6 +815,7 @@ export function AssetBrowserPane({
                       creation={creation}
                       aspectCss={creationAspectCss(creation)}
                       selected={selected}
+                      outsideProject={outsideIdSet.has(asset.id)}
                       onOpen={(row, event) => selectAsset(row.id, event)}
                       onContextMenu={(row, event) =>
                         openContextMenu(row.id, event)
@@ -793,6 +832,44 @@ export function AssetBrowserPane({
                       onContextMenu={(event) =>
                         openContextMenu(asset.id, event)
                       }
+                    />
+                  )}
+                </li>
+              );
+            })}
+            {visibleOutsideIds.map((id) => {
+              const creation = creationsById[id];
+              const selected = selectedIds.includes(id);
+              return (
+                <li key={`outside:${id}`}>
+                  {creation ? (
+                    <CreationCard
+                      creation={creation}
+                      aspectCss={creationAspectCss(creation)}
+                      selected={selected}
+                      outsideProject
+                      onOpen={(row, event) => selectAsset(row.id, event)}
+                      onContextMenu={(row, event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setContextMenu({
+                          kind: "outside",
+                          assetIds: [row.id],
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
+                    />
+                  ) : (
+                    <StubAssetTile
+                      asset={{
+                        id,
+                        name: id,
+                        kind: "image",
+                      }}
+                      selected={selected}
+                      onSelect={(event) => selectAsset(id, event)}
+                      onContextMenu={(event) => openContextMenu(id, event)}
                     />
                   )}
                 </li>
@@ -826,6 +903,20 @@ export function AssetBrowserPane({
                   {contextMenu.compositionIds.length > 1
                     ? ` (${contextMenu.compositionIds.length})`
                     : ""}
+                </button>
+              ) : null}
+              {contextMenu.kind === "outside" && onAddOutsideToProject ? (
+                <button
+                  type="button"
+                  className="editor-asset-context-item"
+                  role="menuitem"
+                  onClick={() => {
+                    const id = contextMenu.assetIds[0];
+                    setContextMenu(null);
+                    if (id) onAddOutsideToProject(id);
+                  }}
+                >
+                  Add to this project
                 </button>
               ) : null}
               {contextMenu.kind === "assets" &&

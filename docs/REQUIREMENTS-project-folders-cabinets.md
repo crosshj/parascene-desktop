@@ -125,9 +125,9 @@ Library delete of a creation is **item-scoped**: block only when that creation h
 ### 4.7 Dedupe cabinets
 
 - **When:** Lab → Dedupe cabinets.
-- **Writes:** Ungroup orphan covers; append members into keeper; update pointers; keepers on folder; orphans removed from project.
+- **Writes:** Ungroup orphan covers; append members into keeper; update pointers; keepers on folder; orphans removed from project. Also ungroups **unstamped** regroup covers (no `meta.desktop` / party name) whose `source_creation_ids` exactly match a keeper cabinet — those otherwise sit at Library root.
 - **Why:** One Images + one Videos cover per project.
-- **Risk:** Wrong keeper preference merges the richer cabinet away.
+- **Risk:** Wrong keeper preference merges the richer cabinet away. Unstamped matching is exact member-set only so ordinary creative packs are left alone.
 
 ### 4.8 `fileCreationIntoProjectGroup` (core filing)
 
@@ -139,7 +139,7 @@ Library delete of a creation is **item-scoped**: block only when that creation h
 ### 4.9 Repair / collapse cabinets in folder
 
 - **When:** Lab → Repair cabinets in folder; also on open for ready projects with cabinets (collapse only).
-- **Writes:** Repair appends loose folder images/videos into cabinet group meta and ensures covers on folder; then **collapse** unfiles members that appear in cover `source_creation_ids` (covers + local-only remain). Remirror `creationIds`.
+- **Writes:** Repair appends loose folder images/videos into cabinet group meta and ensures covers on folder; then **collapse** unfiles members that appear in cover `source_creation_ids` (covers + local-only remain). Also removes unstamped duplicate covers whose members match this project's cabinets. Remirror `creationIds`.
 - **Why:** Members belong in group meta; folder stays cover-primary; timeline refs remain valid.
 - **Risk:** Collapse must not delete media or drop timeline refs — only unfile from `folder_items`.
 
@@ -301,6 +301,7 @@ Legacy flat projects are valid forever without cabinets. Cabinets are additive o
 | Ensure/jobs `projectCreationIds` | **Closed** — covers only |
 | Timeline refs to cabinet members **not** in `folder_items` | **Closed** — allowed when cover is in folder (`isProjectOwnedCreation`) |
 | Unfiling already-expanded members from polluted folders | **Closed** — collapse on open + Lab repair |
+| Unstamped regroup cover at Library root with the same members as a cabinet | **Closed** — Lab Dedupe / Repair ungroups it into the keeper; exact member-set match only |
 
 ---
 

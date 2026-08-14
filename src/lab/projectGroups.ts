@@ -24,7 +24,10 @@ import {
   getCreations,
   listCreations,
 } from "../library/catalogClient";
-import { groupSourceCreationIds } from "../library/creationFlags";
+import {
+  groupSourceCreationIds,
+  isGroupCreation,
+} from "../library/creationFlags";
 import type { Creation } from "../library/types";
 import {
   DEFAULT_PROJECT_ASPECT_RATIO,
@@ -44,6 +47,7 @@ import {
   type DesktopProjectGroupRole,
 } from "../project/desktopProjectGroups";
 import {
+  loadStoredProjects,
   replaceStoredProjectAssets,
   setStoredProjectGroupIds,
 } from "../project/projectStore";
@@ -893,6 +897,7 @@ export type RepairCabinetFolderResult = {
   messages: string[];
   groupedIds: string[];
   collapsedIds: string[];
+  mergedOrphanIds: string[];
   imagesGroupId: string | null;
   videosGroupId: string | null;
 };
@@ -925,6 +930,7 @@ export async function repairProjectCabinetFolderMembership(opts: {
       messages,
       groupedIds,
       collapsedIds: [],
+      mergedOrphanIds: [],
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
     };
@@ -936,6 +942,7 @@ export async function repairProjectCabinetFolderMembership(opts: {
       messages,
       groupedIds,
       collapsedIds: [],
+      mergedOrphanIds: [],
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
     };
@@ -1025,9 +1032,40 @@ export async function repairProjectCabinetFolderMembership(opts: {
   });
   messages.push(...collapsed.messages);
 
-  if (groupedIds.length === 0 && collapsed.removedIds.length === 0) {
+  onProgress("Looking for unstamped duplicate covers at Library root…");
+  const catalog = await listCreations();
+  const keepers: CabinetKeeperRef[] = [];
+  if (nextImages) {
+    keepers.push({
+      coverId: nextImages,
+      role: "project_images",
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+    });
+  }
+  if (nextVideos) {
+    keepers.push({
+      coverId: nextVideos,
+      role: "project_videos",
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+    });
+  }
+  const unstamped = await mergeUnstampedCabinetDuplicates({
+    catalog,
+    keepers,
+    sdk,
+    messages,
+    onProgress,
+  });
+
+  if (
+    groupedIds.length === 0 &&
+    collapsed.removedIds.length === 0 &&
+    unstamped.mergedOrphanIds.length === 0
+  ) {
     messages.push(
-      "Nothing new to group or collapse. Open the Videos/Images cover in the project folder to browse members.",
+      "Nothing new to group, collapse, or dedupe. Open the Videos/Images cover in the project folder to browse members.",
     );
   }
 
@@ -1035,9 +1073,250 @@ export async function repairProjectCabinetFolderMembership(opts: {
     messages,
     groupedIds,
     collapsedIds: collapsed.removedIds,
+    mergedOrphanIds: unstamped.mergedOrphanIds,
     imagesGroupId: nextImages,
     videosGroupId: nextVideos,
   };
+}
+
+export type CabinetKeeperRef = {
+  coverId: string;
+  role: DesktopProjectGroupRole;
+  projectId: string | null;
+  projectTitle: string | null;
+};
+
+export type UnstampedCabinetDuplicate = {
+  orphanId: string;
+  keeperId: string;
+  role: DesktopProjectGroupRole;
+  projectId: string | null;
+  projectTitle: string | null;
+};
+
+function cabinetMemberIdSet(
+  creation: Creation | undefined,
+  coverId: string,
+): Set<string> {
+  if (!creation) return new Set();
+  return new Set(
+    groupSourceCreationIds(creation).filter((id) => id && id !== coverId),
+  );
+}
+
+function memberSetsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size === 0 || a.size !== b.size) return false;
+  for (const id of a) {
+    if (!b.has(id)) return false;
+  }
+  return true;
+}
+
+/**
+ * Unstamped regroup covers (filename `group/…`, no desktop meta/party name)
+ * whose members exactly match a project Images/Videos cabinet. Those sit at
+ * Library root because they were never filed; Dedupe/Repair should merge them
+ * into the keeper instead of leaving a second cover.
+ */
+export function findUnstampedCabinetDuplicates(
+  catalog: readonly Creation[],
+  keepers: readonly CabinetKeeperRef[],
+): UnstampedCabinetDuplicate[] {
+  const byId = new Map(catalog.map((row) => [row.id, row]));
+  const keeperIds = new Set(keepers.map((keeper) => keeper.coverId));
+  const resolved = keepers
+    .map((keeper) => ({
+      ...keeper,
+      members: cabinetMemberIdSet(byId.get(keeper.coverId), keeper.coverId),
+    }))
+    .filter((keeper) => keeper.members.size > 0);
+
+  const matches: UnstampedCabinetDuplicate[] = [];
+  const claimed = new Set<string>();
+  for (const row of catalog) {
+    if (keeperIds.has(row.id) || claimed.has(row.id)) continue;
+    if (identifyDesktopCabinet(row)) continue;
+    if (!isGroupCreation(row)) continue;
+    const members = cabinetMemberIdSet(row, row.id);
+    if (members.size === 0) continue;
+    const keeper = resolved.find((candidate) =>
+      memberSetsEqual(candidate.members, members),
+    );
+    if (!keeper) continue;
+    claimed.add(row.id);
+    matches.push({
+      orphanId: row.id,
+      keeperId: keeper.coverId,
+      role: keeper.role,
+      projectId: keeper.projectId,
+      projectTitle: keeper.projectTitle,
+    });
+  }
+  return matches;
+}
+
+function collectCabinetKeepers(opts: {
+  catalog: readonly Creation[];
+  buckets: readonly DedupeCabinetBucket[];
+  preferredImagesGroupId?: string | null;
+  preferredVideosGroupId?: string | null;
+}): CabinetKeeperRef[] {
+  const byId = new Map(opts.catalog.map((row) => [row.id, row]));
+  const refs: CabinetKeeperRef[] = [];
+  const seen = new Set<string>();
+  const add = (ref: CabinetKeeperRef) => {
+    const coverId = ref.coverId.trim();
+    if (!coverId || seen.has(coverId) || !byId.has(coverId)) return;
+    seen.add(coverId);
+    refs.push({ ...ref, coverId });
+  };
+
+  for (const bucket of opts.buckets) {
+    const preferred =
+      bucket.role === "project_images"
+        ? opts.preferredImagesGroupId
+        : opts.preferredVideosGroupId;
+    const candidates: CabinetCandidate[] = bucket.coverIds.map((id) => {
+      const row = byId.get(id);
+      const members = row
+        ? groupSourceCreationIds(row).filter((mid) => mid !== id)
+        : [];
+      return {
+        id,
+        memberCount: members.length,
+        createdAt: row?.createdAt || "",
+      };
+    });
+    const keeper =
+      pickCabinetKeeper(candidates, preferred) ?? bucket.coverIds[0];
+    if (!keeper) continue;
+    add({
+      coverId: keeper,
+      role: bucket.role,
+      projectId: bucket.projectId,
+      projectTitle: bucket.projectTitle,
+    });
+  }
+
+  for (const project of loadStoredProjects()) {
+    const title = project.title?.trim() || null;
+    if (project.imagesGroupId) {
+      add({
+        coverId: project.imagesGroupId,
+        role: "project_images",
+        projectId: project.id,
+        projectTitle: title,
+      });
+    }
+    if (project.videosGroupId) {
+      add({
+        coverId: project.videosGroupId,
+        role: "project_videos",
+        projectId: project.id,
+        projectTitle: title,
+      });
+    }
+  }
+  return refs;
+}
+
+async function ungroupAndMergeOrphan(opts: {
+  sdk: ParasceneSdk;
+  orphanId: string;
+  keeperId: string;
+  kind: ProjectGroupKind;
+  projectId: string;
+  projectTitle: string;
+  keeperMemberIds: ReadonlySet<string>;
+  messages: string[];
+  onProgress: (note: string) => void;
+}): Promise<boolean> {
+  opts.onProgress(`Ungrouping orphan ${opts.orphanId}…`);
+  let restored: string[] = [];
+  try {
+    const result = await opts.sdk.ungroupCreations(opts.orphanId);
+    restored = result.restoredCreationIds;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    opts.messages.push(`Failed to ungroup ${opts.orphanId}: ${msg}`);
+    return false;
+  }
+  try {
+    await deleteLocal(opts.orphanId);
+  } catch {
+    /* already gone */
+  }
+
+  const members = restored.filter(
+    (id) =>
+      id &&
+      id !== opts.orphanId &&
+      id !== opts.keeperId &&
+      !opts.keeperMemberIds.has(id),
+  );
+  if (members.length === 0) {
+    opts.messages.push(
+      `Removed duplicate cover ${opts.orphanId}; members already in ${opts.keeperId}.`,
+    );
+    return true;
+  }
+  opts.onProgress(
+    `Appending ${members.length} member(s) from ${opts.orphanId} into ${opts.keeperId}…`,
+  );
+  try {
+    await groupMembers({
+      sdk: opts.sdk,
+      kind: opts.kind,
+      existingGroupId: opts.keeperId,
+      memberIds: members,
+      projectId: opts.projectId || "unknown",
+      projectTitle: opts.projectTitle,
+    });
+    opts.messages.push(
+      `Merged ${members.length} member(s) from ${opts.orphanId} into ${opts.keeperId}.`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    opts.messages.push(`Failed merging ${opts.orphanId} → ${opts.keeperId}: ${msg}`);
+  }
+  return true;
+}
+
+async function mergeUnstampedCabinetDuplicates(opts: {
+  catalog: readonly Creation[];
+  keepers: readonly CabinetKeeperRef[];
+  sdk: ParasceneSdk;
+  messages: string[];
+  onProgress: (note: string) => void;
+}): Promise<{ mergedOrphanIds: string[] }> {
+  const duplicates = findUnstampedCabinetDuplicates(opts.catalog, opts.keepers);
+  const mergedOrphanIds: string[] = [];
+  if (duplicates.length === 0) {
+    return { mergedOrphanIds };
+  }
+  const byId = new Map(opts.catalog.map((row) => [row.id, row]));
+  opts.onProgress(
+    `Merging ${duplicates.length} unstamped duplicate cover(s)…`,
+  );
+  for (const duplicate of duplicates) {
+    const keeperMembers = cabinetMemberIdSet(
+      byId.get(duplicate.keeperId),
+      duplicate.keeperId,
+    );
+    const removed = await ungroupAndMergeOrphan({
+      sdk: opts.sdk,
+      orphanId: duplicate.orphanId,
+      keeperId: duplicate.keeperId,
+      kind: projectGroupKindForRole(duplicate.role),
+      projectId: duplicate.projectId?.trim() || "",
+      projectTitle: duplicate.projectTitle?.trim() || "Project",
+      keeperMemberIds: keeperMembers,
+      messages: opts.messages,
+      onProgress: opts.onProgress,
+    });
+    if (removed) mergedOrphanIds.push(duplicate.orphanId);
+  }
+  return { mergedOrphanIds };
 }
 
 export type DedupeCabinetBucket = {
@@ -1138,111 +1417,100 @@ export async function dedupeDesktopProjectCabinets(opts?: {
     `Found ${buckets.length} cabinet bucket(s); ${duplicateBuckets.length} with duplicates.`,
   );
 
-  if (duplicateBuckets.length === 0) {
-    messages.push("No duplicate desktop cabinets found.");
-    applyCabinetPointersFromBuckets(buckets, projectUpdates, messages);
-    await persistProjectCabinetUpdates(projectUpdates, messages);
-    return {
-      messages,
-      keeperIds: buckets.flatMap((b) => b.coverIds),
-      mergedOrphanIds,
-      projectUpdates,
-    };
-  }
-
   const sdk = createAuthedSdk();
   const byId = new Map(catalog.map((c) => [c.id, c]));
 
-  for (const bucket of duplicateBuckets) {
-    const kind = projectGroupKindForRole(bucket.role);
-    const preferred =
-      bucket.role === "project_images"
-        ? opts?.preferredImagesGroupId
-        : opts?.preferredVideosGroupId;
-    const candidates: CabinetCandidate[] = bucket.coverIds.map((id) => {
-      const row = byId.get(id);
-      const members = row
-        ? groupSourceCreationIds(row).filter((mid) => mid !== id)
-        : [];
-      return {
-        id,
-        memberCount: members.length,
-        createdAt: row?.createdAt || "",
-      };
-    });
-    const keeper = pickCabinetKeeper(candidates, preferred);
-    if (!keeper) continue;
+  if (duplicateBuckets.length === 0) {
+    applyCabinetPointersFromBuckets(buckets, projectUpdates, messages);
+  } else {
+    for (const bucket of duplicateBuckets) {
+      const kind = projectGroupKindForRole(bucket.role);
+      const preferred =
+        bucket.role === "project_images"
+          ? opts?.preferredImagesGroupId
+          : opts?.preferredVideosGroupId;
+      const candidates: CabinetCandidate[] = bucket.coverIds.map((id) => {
+        const row = byId.get(id);
+        const members = row
+          ? groupSourceCreationIds(row).filter((mid) => mid !== id)
+          : [];
+        return {
+          id,
+          memberCount: members.length,
+          createdAt: row?.createdAt || "",
+        };
+      });
+      const keeper = pickCabinetKeeper(candidates, preferred);
+      if (!keeper) continue;
 
-    const orphans = bucket.coverIds.filter((id) => id !== keeper);
-    const projectTitle =
-      bucket.projectTitle?.trim() ||
-      deriveTitleFromParty(byId.get(keeper)?.title, bucket.role) ||
-      "Project";
-    const projectId = bucket.projectId?.trim() || "";
+      const orphans = bucket.coverIds.filter((id) => id !== keeper);
+      const projectTitle =
+        bucket.projectTitle?.trim() ||
+        deriveTitleFromParty(byId.get(keeper)?.title, bucket.role) ||
+        "Project";
+      const projectId = bucket.projectId?.trim() || "";
+      const keeperMemberIds = cabinetMemberIdSet(byId.get(keeper), keeper);
 
-    onProgress(
-      `Merging ${orphans.length} orphan ${kind} cover(s) into ${keeper}…`,
-    );
-
-    for (const orphan of orphans) {
-      onProgress(`Ungrouping orphan ${orphan}…`);
-      let restored: string[] = [];
-      try {
-        const result = await sdk.ungroupCreations(orphan);
-        restored = result.restoredCreationIds;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        messages.push(`Failed to ungroup ${orphan}: ${msg}`);
-        continue;
-      }
-      try {
-        await deleteLocal(orphan);
-      } catch {
-        /* already gone */
-      }
-      mergedOrphanIds.push(orphan);
-
-      const members = restored.filter(
-        (id) => id && id !== orphan && id !== keeper,
-      );
-      if (members.length === 0) {
-        messages.push(`Orphan ${orphan} had no members to merge.`);
-        continue;
-      }
       onProgress(
-        `Appending ${members.length} member(s) from ${orphan} into ${keeper}…`,
+        `Merging ${orphans.length} orphan ${kind} cover(s) into ${keeper}…`,
       );
-      try {
-        await groupMembers({
+
+      for (const orphan of orphans) {
+        const removed = await ungroupAndMergeOrphan({
           sdk,
+          orphanId: orphan,
+          keeperId: keeper,
           kind,
-          existingGroupId: keeper,
-          memberIds: members,
-          projectId: projectId || "unknown",
+          projectId,
           projectTitle,
+          keeperMemberIds,
+          messages,
+          onProgress,
         });
-        messages.push(
-          `Merged ${members.length} member(s) from ${orphan} into ${keeper}.`,
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        messages.push(`Failed merging ${orphan} → ${keeper}: ${msg}`);
+        if (removed) mergedOrphanIds.push(orphan);
+      }
+
+      keeperIds.push(keeper);
+      if (projectId) {
+        const update: DedupeDesktopCabinetsResult["projectUpdates"][number] = {
+          projectId,
+        };
+        if (kind === "images") update.imagesGroupId = keeper;
+        else update.videosGroupId = keeper;
+        projectUpdates.push(update);
       }
     }
 
-    keeperIds.push(keeper);
-    if (projectId) {
-      const update: DedupeDesktopCabinetsResult["projectUpdates"][number] = {
-        projectId,
-      };
-      if (kind === "images") update.imagesGroupId = keeper;
-      else update.videosGroupId = keeper;
-      projectUpdates.push(update);
+    const singles = buckets.filter((b) => b.coverIds.length === 1);
+    applyCabinetPointersFromBuckets(singles, projectUpdates, messages);
+  }
+
+  const keepers = collectCabinetKeepers({
+    catalog,
+    buckets,
+    preferredImagesGroupId: opts?.preferredImagesGroupId,
+    preferredVideosGroupId: opts?.preferredVideosGroupId,
+  });
+  const unstamped = await mergeUnstampedCabinetDuplicates({
+    catalog,
+    keepers,
+    sdk,
+    messages,
+    onProgress,
+  });
+  mergedOrphanIds.push(...unstamped.mergedOrphanIds);
+  if (keeperIds.length === 0) {
+    keeperIds.push(...keepers.map((keeper) => keeper.coverId));
+  } else {
+    for (const keeper of keepers) {
+      if (!keeperIds.includes(keeper.coverId)) keeperIds.push(keeper.coverId);
     }
   }
 
-  const singles = buckets.filter((b) => b.coverIds.length === 1);
-  applyCabinetPointersFromBuckets(singles, projectUpdates, messages);
+  if (duplicateBuckets.length === 0 && unstamped.mergedOrphanIds.length === 0) {
+    messages.push("No duplicate desktop cabinets found.");
+  }
+
   await persistProjectCabinetUpdates(projectUpdates, messages);
   onProgress(
     `Dedupe finished: ${mergedOrphanIds.length} orphan(s) merged, ${keeperIds.length} keeper(s).`,

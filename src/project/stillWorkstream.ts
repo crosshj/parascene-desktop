@@ -182,6 +182,18 @@ export function compositionInternalCreationIds(
   return hidden;
 }
 
+/** Composition source images that are referenced but not in the project folder. */
+export function compositionOutsideMemberIds(
+  stream: Pick<StillWorkstream, "memberIds">,
+  outsideIds: ReadonlySet<string>,
+): string[] {
+  if (outsideIds.size === 0) return [];
+  return stream.memberIds.filter((id) => {
+    const trimmed = id.trim();
+    return Boolean(trimmed) && outsideIds.has(trimmed);
+  });
+}
+
 export function selectWorkstreamNode(
   stream: StillWorkstream,
   nodeId: string,

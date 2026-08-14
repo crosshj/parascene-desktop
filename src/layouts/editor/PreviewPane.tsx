@@ -40,13 +40,15 @@ import {
   runStillImageEdit,
 } from "./stillImageEdit";
 import { AudioWaveform } from "../../library/AudioWaveform";
+import { CloudHostNote } from "../../library/CloudHostNote";
+import { cloudHostCaption } from "../../library/cloudImport";
 import {
   clipThumbnailKey,
   ensureClipThumbnail,
   getCachedClipThumbnail,
 } from "../../library/clipThumbnail";
 import {
-  canFetchLocal,
+  canFetchPlayableMedia,
   creationDetailUrl,
   creationPreviewUrl,
   isParasceneUnavailable,
@@ -214,6 +216,8 @@ type PreviewPaneProps = {
   onOpenCompositionIdChange?: (id: string | null) => void;
   /** Play/pause the timeline (used when generate panel is focused, no field active). */
   onToggleTimelinePlay?: () => void;
+  /** Creation ids referenced by the project but not in the project folder. */
+  outsideReferenceIds?: readonly string[];
 };
 
 type Size = { w: number; h: number };
@@ -380,6 +384,7 @@ export function PreviewPane({
   openCompositionId = null,
   onOpenCompositionIdChange,
   onToggleTimelinePlay,
+  outsideReferenceIds = [],
 }: PreviewPaneProps) {
   const confirm = useConfirm();
   const {
@@ -658,7 +663,7 @@ export function PreviewPane({
             if (
               row &&
               !creationDetailUrl(row) &&
-              canFetchLocal(row) &&
+              canFetchPlayableMedia(row) &&
               !isParasceneUnavailable(row)
             ) {
               void ensureLocal([row.id], { fullMedia: true, urgent: true });
@@ -714,7 +719,7 @@ export function PreviewPane({
         setCreation(row);
         if (
           !creationDetailUrl(row) &&
-          canFetchLocal(row) &&
+          canFetchPlayableMedia(row) &&
           !isParasceneUnavailable(row)
         ) {
           void ensureLocal([row.id], { fullMedia: true, urgent: true });
@@ -773,8 +778,10 @@ export function PreviewPane({
     Boolean(creation) &&
     !detail &&
     !catalogThumb &&
-    canFetchLocal(creation!) &&
+    canFetchPlayableMedia(creation!) &&
     !unavailable;
+  const cloudCaption =
+    creationMatchesAsset && creation ? cloudHostCaption(creation) : null;
   const mediaType = String(
     (creationMatchesAsset ? creation?.mediaType : null) ?? "",
   )
@@ -1614,6 +1621,46 @@ export function PreviewPane({
     selectionIntentMode,
   ]);
 
+  const fileCompositionMembers = useCallback(
+    async (ids: readonly string[]) => {
+      const owned = new Set(project.assets.map((asset) => asset.id));
+      const missing = [
+        ...new Set(ids.map((id) => id.trim()).filter(Boolean)),
+      ].filter((id) => !owned.has(id));
+      if (missing.length === 0) return;
+      await addCreationsToOpenProject(missing);
+    },
+    [addCreationsToOpenProject, project.assets],
+  );
+
+  const sourcePreviewUrls = useMemo(() => {
+    const out: Record<string, string | null> = {};
+    for (const item of selectionItems) {
+      out[item.id] = item.thumbUrl;
+    }
+    return out;
+  }, [selectionItems]);
+
+  const onAddSourceToProject = useCallback(
+    async (creationId: string) => {
+      if (compositeBusy) return;
+      setCompositeBusy(true);
+      setCompositeError(null);
+      try {
+        await addCreationsToOpenProject([creationId]);
+        setCompositeStatus("Added source to this project.");
+      } catch (error) {
+        setCompositeError(
+          error instanceof Error ? error.message : String(error),
+        );
+        setCompositeStatus(null);
+      } finally {
+        setCompositeBusy(false);
+      }
+    },
+    [addCreationsToOpenProject, compositeBusy],
+  );
+
   const onCreateComposition = useCallback(() => {
     const ids = activeImageIds;
     if (ids.length < 2 || compositeBusy) return;
@@ -1622,16 +1669,24 @@ export function PreviewPane({
       recipe: plateRecipe,
       title: `Composition (${ids.length})`,
     });
-    void upsertOpenStillWorkstream(stream).catch((error) => {
-      setCompositeError(error instanceof Error ? error.message : String(error));
-    });
     setActiveWorkstreamId(stream.id);
     onOpenCompositionIdChange?.(stream.id);
     setCompositeError(null);
     setCompositeStatus("Composition created in Assets — iterate inside it.");
+    void (async () => {
+      try {
+        await fileCompositionMembers(ids);
+        await upsertOpenStillWorkstream(stream);
+      } catch (error) {
+        setCompositeError(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
   }, [
     activeImageIds,
     compositeBusy,
+    fileCompositionMembers,
     onOpenCompositionIdChange,
     plateRecipe,
     upsertOpenStillWorkstream,
@@ -1649,8 +1704,11 @@ export function PreviewPane({
       }).catch((error) => {
         setCompositeError(error instanceof Error ? error.message : String(error));
       });
+      void fileCompositionMembers(activeImageIds).catch((error) => {
+        setCompositeError(error instanceof Error ? error.message : String(error));
+      });
     },
-    [activeImageIds, activeWorkstream, upsertOpenStillWorkstream],
+    [activeImageIds, activeWorkstream, fileCompositionMembers, upsertOpenStillWorkstream],
   );
 
   const onExportRun = useCallback(async (nodeId: string) => {
@@ -2000,6 +2058,9 @@ export function PreviewPane({
       }).catch((error) => {
         setCompositeError(error instanceof Error ? error.message : String(error));
       });
+      void fileCompositionMembers(ids).catch((error) => {
+        setCompositeError(error instanceof Error ? error.message : String(error));
+      });
     }
     if (selectionIntentMode !== "slideshow") return;
     if (ids.length < 2) {
@@ -2067,7 +2128,9 @@ export function PreviewPane({
             : stagedDraft?.kind === "slideshow"
               ? `Slideshow • ${slideshowCount} images`
               : sourceKind === "asset"
-                ? `Asset • ${assetDisplayName}`
+                ? cloudCaption
+                  ? `Asset • ${assetDisplayName} · ${cloudCaption}`
+                  : `Asset • ${assetDisplayName}`
                 : null;
 
   const onStagingDraftChange = (draft: StagedClipDraft) => {
@@ -2414,6 +2477,7 @@ export function PreviewPane({
   else if (wantsReverse && reverseError) status = reverseError;
   else if (wantsReverse && needsReverseBake) status = "Hit Bake to reverse";
   else if (!useDetail && !thumb && waitingLocal) status = "Saving locally…";
+  else if (!useDetail && cloudCaption) status = null;
   else if (!useDetail && !thumb) status = "No local media";
 
   const transportSec = currentSec;
@@ -2587,6 +2651,13 @@ export function PreviewPane({
                     }}
                     nodePreviewUrls={workstreamNodePreviewUrls}
                     onCloseComposition={onCloseComposition}
+                    outsideSourceIds={activeImageIds.filter((id) =>
+                      outsideReferenceIds.includes(id),
+                    )}
+                    sourcePreviewUrls={sourcePreviewUrls}
+                    onAddSourceToProject={(id) => {
+                      void onAddSourceToProject(id);
+                    }}
                   />
                 </div>
               </div>
@@ -2644,6 +2715,13 @@ export function PreviewPane({
                         onSelectPlate: () => {},
                         onDeleteNode: () => {},
                         nodePreviewUrls: {},
+                        outsideSourceIds: activeImageIds.filter((id) =>
+                          outsideReferenceIds.includes(id),
+                        ),
+                        sourcePreviewUrls,
+                        onAddSourceToProject: (id) => {
+                          void onAddSourceToProject(id);
+                        },
                       }
                     : null
                 }
@@ -2739,6 +2817,12 @@ export function PreviewPane({
                   <span className="editor-preview-wait muted">
                     Saving locally…
                   </span>
+                ) : null}
+                {!useDetail && !waitingLocal && cloudCaption && creation ? (
+                  <CloudHostNote
+                    creation={creation}
+                    className="cloud-host-note editor-preview-cloud"
+                  />
                 ) : null}
                 {!useDetail && wantsReverse && reverseBusy ? (
                   <span className="editor-preview-wait muted">Baking reverse…</span>

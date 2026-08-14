@@ -12,9 +12,11 @@ import {
   isPublishedCreation,
 } from "./creationFlags";
 import { AudioWaveform } from "./AudioWaveform";
+import { parseCloudImport } from "./cloudImport";
 import {
   canFetchLocal,
   creationPreviewUrl,
+  isCoverOnlyCloudAv,
   isParasceneUnavailable,
 } from "./previewUrl";
 import type { Creation } from "./types";
@@ -145,6 +147,23 @@ function GroupBadge() {
   );
 }
 
+function CloudBadge({ title }: { title: string }) {
+  return (
+    <span className="creation-badge creation-cloud-badge" title={title} aria-hidden>
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M18 18H7a4 4 0 0 1-.6-7.95A6 6 0 0 1 18.3 10.1 3.5 3.5 0 0 1 18 18z" />
+      </svg>
+    </span>
+  );
+}
+
 /** Centered eye-with-slash — NSFW board preview (lightbox reveals clear media). */
 function NsfwHiddenBadge() {
   return (
@@ -187,6 +206,29 @@ function InProjectBadge() {
   );
 }
 
+function OutsideProjectBadge() {
+  return (
+    <span
+      className="creation-badge creation-outside-project-badge"
+      title="Outside the project folder"
+      aria-hidden
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+        <path d="M10.3 4.7 2.4 18.5A1.8 1.8 0 0 0 4 21h16a1.8 1.8 0 0 0 1.6-2.5L13.7 4.7a1.8 1.8 0 0 0-3.4 0Z" />
+      </svg>
+    </span>
+  );
+}
+
 /**
  * Board card: local thumbnail + catalog aspect slot. Published / group / play /
  * audio / in-project sit top-left as matching badges. NSFW stays centered with
@@ -198,6 +240,7 @@ export const CreationCard = memo(function CreationCard({
   selected = false,
   dimmed = false,
   inProject = false,
+  outsideProject = false,
   onOpen,
   onToggleSelect,
   onContextMenu,
@@ -209,6 +252,8 @@ export const CreationCard = memo(function CreationCard({
   dimmed?: boolean;
   /** Open project includes this creation. */
   inProject?: boolean;
+  /** Referenced by the project but not in the project folder. */
+  outsideProject?: boolean;
   onOpen: (
     creation: Creation,
     event: ReactMouseEvent<HTMLButtonElement>,
@@ -236,10 +281,18 @@ export const CreationCard = memo(function CreationCard({
   const isNsfw = creation.nsfw === true;
   const published = isPublishedCreation(creation);
   const isGroup = isGroupCreation(creation);
-  const showPlay = isVideo && Boolean(paintSrc);
+  const cloudImport = parseCloudImport(creation);
+  const showCloudBadge = Boolean(cloudImport);
+  const showPlay = isVideo && Boolean(paintSrc) && !isCoverOnlyCloudAv(creation);
   const showAudioBadge = isAudio;
   const showCornerBadges =
-    published || isGroup || showPlay || showAudioBadge || inProject;
+    published ||
+    isGroup ||
+    showCloudBadge ||
+    showPlay ||
+    showAudioBadge ||
+    inProject ||
+    outsideProject;
   const cardTitle = creationCardTitle(creation);
 
   // Don't mount <img> until decoded — avoids grey flash on virtual remount.
@@ -305,7 +358,7 @@ export const CreationCard = memo(function CreationCard({
         aria-label={
           unavailable
             ? `${creation.title} (unavailable)`
-            : `${selected ? "Selected. " : ""}${dimmed ? "Marked pending until filter changes. " : ""}${inProject ? "In current project. " : ""}Open ${creation.title}${isNsfw ? ", NSFW" : ""}${published ? ", published" : ""}${isGroup ? ", group" : ""}${showPlay ? ", video" : ""}${isAudio ? ", audio" : ""}. Shift-click to ${selected ? "deselect" : "select"}.`
+            : `${selected ? "Selected. " : ""}${dimmed ? "Marked pending until filter changes. " : ""}${inProject ? "In current project. " : ""}Open ${creation.title}${isNsfw ? ", NSFW" : ""}${published ? ", published" : ""}${isGroup ? ", group" : ""}${showCloudBadge ? `, cloud ${cloudImport?.label ?? ""}` : ""}${showPlay ? ", video" : ""}${isAudio ? ", audio" : ""}. Shift-click to ${selected ? "deselect" : "select"}.`
         }
       >
         <span
@@ -340,8 +393,12 @@ export const CreationCard = memo(function CreationCard({
           {showCornerBadges ? (
             <span className="creation-badge-row" aria-hidden>
               {inProject ? <InProjectBadge /> : null}
+              {outsideProject ? <OutsideProjectBadge /> : null}
               {published ? <PublishedBadge /> : null}
               {isGroup ? <GroupBadge /> : null}
+              {showCloudBadge ? (
+                <CloudBadge title={`Cloud · ${cloudImport?.label ?? "host"}`} />
+              ) : null}
               {showPlay ? <VideoPlayBadge /> : null}
               {showAudioBadge ? <AudioBadge /> : null}
             </span>

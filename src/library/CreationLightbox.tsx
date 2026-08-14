@@ -24,10 +24,14 @@ import {
   isGroupCreation,
 } from "./creationFlags";
 import { isLocalOnlyCreation } from "./creationFilters";
+import { CloudHostNote } from "./CloudHostNote";
+import { cloudPlayAction, parseCloudImport } from "./cloudImport";
 import {
   canFetchLocal,
+  canFetchPlayableMedia,
   creationDetailUrl,
   creationPreviewUrl,
+  isCoverOnlyCloudAv,
   isParasceneUnavailable,
 } from "./previewUrl";
 import type { Creation } from "./types";
@@ -102,19 +106,23 @@ export function CreationLightbox({
     .toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
-  // Cover-only cloud audio (PNG stored as local_path) has no playable detail.
-  // Don't keep "Saving locally…" spinning — there is nothing fetchable to play.
+  // Cover-only cloud A/V (Suno/YouTube poster PNG) has nothing playable to cache.
   const waiting =
     !detail &&
-    canFetchLocal(displayedCreation) &&
-    !unavailable &&
-    !(isAudio && Boolean(displayedCreation.localPath?.trim()));
+    canFetchPlayableMedia(displayedCreation) &&
+    !unavailable;
+  const cloudImport = parseCloudImport(displayedCreation);
+  const cloudPlay = cloudPlayAction(displayedCreation);
+  const showCloudHost =
+    Boolean(cloudImport) || isCoverOnlyCloudAv(displayedCreation);
   const webUrl = creationPageUrl(getEnvConfig().baseUrl, creation.id);
   const [busyKind, setBusyKind] = useState<"fill" | "delete" | "cover" | null>(
     null,
   );
   const busy = busyKind !== null;
   const [actionError, setActionError] = useState<string | null>(null);
+  const isGroup = isGroupCreation(creation);
+  const groupTitle = (liveCreation.title || creation.title || "").trim();
   const isFolderCover =
     Boolean(folderCover) &&
     folderCover!.coverCreationId === displayedCreation.id;
@@ -234,13 +242,11 @@ export function CreationLightbox({
   }, [creation.id, groupIds]);
 
   // Utmost priority: jump the download queue the moment the lightbox opens.
-  // Skip cover-only cloud audio — remote_url is the PNG, not a playable track.
+  // Skip cover-only cloud A/V — remote_url is a PNG, not a playable track/movie.
   useEffect(() => {
-    if (detail || unavailable || !canFetchLocal(displayedCreation)) return;
-    const kind = String(displayedCreation.mediaType ?? "")
-      .trim()
-      .toLowerCase();
-    if (kind === "audio" && displayedCreation.localPath?.trim()) return;
+    if (detail || unavailable || !canFetchPlayableMedia(displayedCreation)) {
+      return;
+    }
     void ensureLocal([displayedCreation.id], {
       fullMedia: true,
       urgent: true,
@@ -315,7 +321,11 @@ export function CreationLightbox({
       className="creation-lightbox"
       role="dialog"
       aria-modal="true"
-      aria-label={displayedCreation.title}
+      aria-label={
+        isGroup && groupTitle
+          ? `${groupTitle}: ${displayedCreation.title}`
+          : displayedCreation.title
+      }
       onClick={onClose}
     >
       <div
@@ -323,61 +333,79 @@ export function CreationLightbox({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="creation-lightbox-actions">
-          {canOpenOnWeb ? (
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => {
-                void openUrl(webUrl);
-              }}
-            >
-              View on Parascene
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="btn ghost"
-            disabled={busy}
-            onClick={() => {
-              void onFillThumb();
-            }}
-          >
-            {busyKind === "fill" ? "Re-genning…" : "Re-gen thumb"}
-          </button>
-          {folderCover ? (
+          {isGroup && groupTitle ? (
+            <h2 className="creation-lightbox-group-title">{groupTitle}</h2>
+          ) : (
+            <span className="creation-lightbox-actions-spacer" aria-hidden />
+          )}
+          <div className="creation-lightbox-action-btns">
+            {cloudPlay ? (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  void openUrl(cloudPlay.url);
+                }}
+              >
+                {cloudPlay.label}
+              </button>
+            ) : null}
+            {canOpenOnWeb ? (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  void openUrl(webUrl);
+                }}
+              >
+                View on Parascene
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn ghost"
               disabled={busy}
               onClick={() => {
-                void onToggleFolderCover();
+                void onFillThumb();
               }}
             >
-              {busyKind === "cover"
-                ? "Saving…"
-                : isFolderCover
-                  ? "Clear cover"
-                  : coverLabel}
+              {busyKind === "fill" ? "Re-genning…" : "Re-gen thumb"}
             </button>
-          ) : null}
-          <button
-            type="button"
-            className="btn ghost"
-            disabled={busy}
-            onClick={() => {
-              void onDeleteLocal();
-            }}
-          >
-            {busyKind === "delete" ? "Deleting…" : "Delete locally"}
-          </button>
-          <button
-            type="button"
-            className="btn creation-lightbox-close"
-            onClick={onClose}
-            disabled={busy}
-          >
-            Close
-          </button>
+            {folderCover ? (
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={busy}
+                onClick={() => {
+                  void onToggleFolderCover();
+                }}
+              >
+                {busyKind === "cover"
+                  ? "Saving…"
+                  : isFolderCover
+                    ? "Clear cover"
+                    : coverLabel}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={busy}
+              onClick={() => {
+                void onDeleteLocal();
+              }}
+            >
+              {busyKind === "delete" ? "Deleting…" : "Delete locally"}
+            </button>
+            <button
+              type="button"
+              className="btn creation-lightbox-close"
+              onClick={onClose}
+              disabled={busy}
+            >
+              Close
+            </button>
+          </div>
         </div>
         {actionError ? <p className="library-error">{actionError}</p> : null}
         <div
@@ -423,6 +451,11 @@ export function CreationLightbox({
                       event.currentTarget.load();
                     }}
                   />
+                ) : showCloudHost ? (
+                  <CloudHostNote
+                    creation={displayedCreation}
+                    className="cloud-host-note creation-lightbox-cloud"
+                  />
                 ) : (
                   <p className="creation-lightbox-wait muted">
                     {waiting
@@ -462,7 +495,12 @@ export function CreationLightbox({
                 ) : (
                   <div className="creation-lightbox-placeholder" aria-hidden />
                 )}
-                {waiting ? (
+                {showCloudHost ? (
+                  <CloudHostNote
+                    creation={displayedCreation}
+                    className="cloud-host-note creation-lightbox-cloud"
+                  />
+                ) : waiting ? (
                   <>
                     <span className="creation-lightbox-shimmer" aria-hidden />
                     <p className="creation-lightbox-wait muted">
@@ -506,8 +544,9 @@ export function CreationLightbox({
           <h2>{displayedCreation.title}</h2>
           <p className="muted">
             {displayedCreation.mediaType}
-            {" · "}
-            {displayedCreation.downloadState}
+            {cloudImport
+              ? ` · cloud · ${cloudImport.label}`
+              : ` · ${displayedCreation.downloadState}`}
             {displayedCreation.published ? " · published" : ""}
             {isGroupCarousel
               ? ` · ${safeIndex + 1} of ${carouselCount}`

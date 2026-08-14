@@ -47,7 +47,7 @@ It is:
 
 No need to recover individuals from flattened pixels.
 
-- **Members** = the source images in the composition (always real assets)
+- **Members** = the source images in the composition (always real assets). Creating or updating a composition files those members into the **current project folder**. They are not Library-folder items; the composition itself stays a project Assets card. If a source is still unfiled, the sandbox marks that thumb **Outside** and offers **Add to this project**.
 - **Bakes** = new images generated from the recipe (and AI edits of those)
 - **Show outside** = per-image visibility in the assets list (default: members hidden at top level, selected bake visible)
 - **Pop out** = set show-outside on an existing member/bake so it is usable at top level; still belongs to the composition
@@ -202,7 +202,7 @@ Bind is **Phase A**. Scope:
 - Attach remains available only before a working folder is bound
 - Same landing rule for video as for stills
 
-Composition vs Library folder: a composition is folder-like for its members/bakes and carries a recipe + stream. A Library folder is the broader container. Bind answers “what is this project’s working file pool?”; composition answers “how do these stills relate and bake?”
+Composition vs Library folder: a composition is folder-like for its members/bakes and carries a recipe + stream. A Library folder is the broader container. Bind answers “what is this project’s working file pool?”; composition answers “how do these stills relate and bake?” Members belong in the project folder; the composition record does not live in Library.
 
 ## Touch points
 

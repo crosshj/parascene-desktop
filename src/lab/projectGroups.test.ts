@@ -5,6 +5,7 @@ import {
   coverSourceIdFromRemoteGroup,
   expectedMembersAfterAppend,
   findCabinetCandidatesInCatalog,
+  findUnstampedCabinetDuplicates,
   idsForGroupApiCall,
   memberIdsFromRemoteGroup,
   pickCabinetKeeper,
@@ -362,5 +363,109 @@ describe("findCabinetCandidatesInCatalog / bucketDesktopCabinets", () => {
     );
     expect(stampedBucket?.coverIds).toEqual(["img-a"]);
     expect(titleBucket?.coverIds).toEqual(["img-party"]);
+  });
+});
+
+describe("findUnstampedCabinetDuplicates", () => {
+  const members = [19794, 19480, 19477];
+  const keeper = fakeCreation({
+    id: "18984",
+    title: "Parascene Desktop · Untitled project · Videos",
+    mediaType: "video",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creation_ids: members,
+        },
+        desktop: {
+          role: "project_videos",
+          client: "parascene-desktop",
+          projectId: "proj-fractal",
+        },
+      },
+    }),
+  });
+  const unstamped = fakeCreation({
+    id: "21550",
+    title: "group/26_1786166956367_qnkdz6p.png",
+    filename: "group/26_1786166956367_qnkdz6p.png",
+    mediaType: "video",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creation_ids: members,
+        },
+      },
+    }),
+  });
+  const creativePack = fakeCreation({
+    id: "pack",
+    title: "My pack",
+    filename: "group/pack.png",
+    remoteJson: JSON.stringify({
+      meta: {
+        group: {
+          kind: "group_creations",
+          source_creation_ids: [1, 2, 3],
+        },
+      },
+    }),
+  });
+
+  it("matches an unstamped regroup cover with the same members as a cabinet", () => {
+    const found = findUnstampedCabinetDuplicates(
+      [keeper, unstamped, creativePack],
+      [
+        {
+          coverId: "18984",
+          role: "project_videos",
+          projectId: "proj-fractal",
+          projectTitle: "fractal 0.4x dub",
+        },
+      ],
+    );
+    expect(found).toEqual([
+      {
+        orphanId: "21550",
+        keeperId: "18984",
+        role: "project_videos",
+        projectId: "proj-fractal",
+        projectTitle: "fractal 0.4x dub",
+      },
+    ]);
+  });
+
+  it("does not treat stamped cabinets or unrelated packs as duplicates", () => {
+    const otherCabinet = fakeCreation({
+      id: "18985",
+      title: "Parascene Desktop · Other · Videos",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: {
+            kind: "group_creations",
+            source_creation_ids: members,
+          },
+          desktop: {
+            role: "project_videos",
+            client: "parascene-desktop",
+            projectId: "proj-other",
+          },
+        },
+      }),
+    });
+    const found = findUnstampedCabinetDuplicates(
+      [keeper, otherCabinet, creativePack],
+      [
+        {
+          coverId: "18984",
+          role: "project_videos",
+          projectId: "proj-fractal",
+          projectTitle: "fractal 0.4x dub",
+        },
+      ],
+    );
+    expect(found).toEqual([]);
   });
 });

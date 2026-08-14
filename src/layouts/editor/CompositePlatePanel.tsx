@@ -2,7 +2,7 @@
  * Plate composite controls — slots, layout, live preview commit.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { StillWorkstream } from "../../project/stillWorkstream";
 import type { PlateRecipe } from "../../project/stillWorkstream";
 
@@ -35,10 +35,21 @@ export type CompositePlatePanelProps = {
   onDeleteNode: (nodeId: string) => void;
   nodePreviewUrls: Readonly<Record<string, string>>;
   onCloseComposition?: () => void;
+  /** Source image ids used by this plate that are not in the project folder. */
+  outsideSourceIds?: readonly string[];
+  /** Preview URLs for plate source ids. */
+  sourcePreviewUrls?: Readonly<Record<string, string | null>>;
+  /** File an outside source into the open project folder. */
+  onAddSourceToProject?: (creationId: string) => void;
 };
 
 const ASPECTS = ["1:1", "16:9", "9:16", "4:5", "4:3"] as const;
 const RESOLUTIONS = [1024, 1536, 2048, 3072] as const;
+
+function sourceSlotLabel(index: number, total: number): string {
+  if (total === 2) return index === 0 ? "Left" : "Right";
+  return `Source ${index + 1}`;
+}
 
 export function CompositePlatePanel({
   pickedIds,
@@ -67,10 +78,17 @@ export function CompositePlatePanel({
   onDeleteNode,
   nodePreviewUrls,
   onCloseComposition,
+  outsideSourceIds = [],
+  sourcePreviewUrls = {},
+  onAddSourceToProject,
 }: CompositePlatePanelProps) {
   const [showHistory, setShowHistory] = useState(true);
   const liveNodes =
     activeWorkstream?.nodes.filter((n) => n.status !== "discarded") ?? [];
+  const outsideSet = useMemo(
+    () => new Set(outsideSourceIds.map((id) => id.trim()).filter(Boolean)),
+    [outsideSourceIds],
+  );
 
   const swapLeftRight = () => {
     if (pickedIds.length < 2) return;
@@ -105,6 +123,49 @@ export function CompositePlatePanel({
             </button>
           ) : null}
         </header>
+      ) : null}
+
+      {pickedIds.length > 0 ? (
+        <section className="add-asset-generate-section composite-sources-section">
+          <h3>Sources</h3>
+          <ul className="composite-source-row">
+            {pickedIds.map((id, index) => {
+              const outside = outsideSet.has(id);
+              const thumb = sourcePreviewUrls[id] ?? null;
+              return (
+                <li key={`${id}:${index}`}>
+                  <article
+                    className={`composite-source-card${outside ? " is-outside" : ""}`}
+                  >
+                    <div className="composite-source-thumb">
+                      {thumb ? (
+                        <img src={thumb} alt="" draggable={false} />
+                      ) : (
+                        <span className="muted">No preview</span>
+                      )}
+                      {outside ? (
+                        <span className="composition-outside-flag">Outside</span>
+                      ) : null}
+                    </div>
+                    <div className="composite-source-meta">
+                      <strong>{sourceSlotLabel(index, pickedIds.length)}</strong>
+                      {outside && onAddSourceToProject ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={busy}
+                          onClick={() => onAddSourceToProject(id)}
+                        >
+                          Add to this project
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ) : null}
 
       <div className="composite-recipe-preview-layout">
