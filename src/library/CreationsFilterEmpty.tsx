@@ -1,3 +1,33 @@
+/** Centered empty state for an opened Library folder with no members. */
+export function FolderEmpty({
+  title,
+  canDelete,
+  onDelete,
+}: {
+  title: string;
+  canDelete: boolean;
+  onDelete?: () => void;
+}) {
+  return (
+    <div className="creations-filter-empty" role="status">
+      <p className="creations-filter-empty-title">Empty folder</p>
+      <p className="creations-filter-empty-copy">
+        “{title}” has no items.
+        {canDelete ? " You can delete it." : ""}
+      </p>
+      {canDelete && onDelete ? (
+        <button
+          type="button"
+          className="btn btn-danger"
+          onClick={onDelete}
+        >
+          Delete folder
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 /** Centered empty state for filter views with no matches. */
 export function CreationsFilterEmpty() {
   return (

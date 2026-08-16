@@ -3,10 +3,25 @@ import {
   coverCreationIdFromFolderMeta,
   desktopFolderMeta,
   filedIdSet,
+  isEmptyRegularFolder,
   omitFiledCreations,
   projectIdFromFolderMeta,
   remoteFoldersToCloudRows,
 } from "./folderClient";
+
+describe("isEmptyRegularFolder", () => {
+  it("allows deleting empty regular folders only", () => {
+    expect(
+      isEmptyRegularFolder({ kind: "regular", memberCount: 0 }),
+    ).toBe(true);
+    expect(
+      isEmptyRegularFolder({ kind: "regular", memberCount: 1 }),
+    ).toBe(false);
+    expect(
+      isEmptyRegularFolder({ kind: "project", memberCount: 0 }),
+    ).toBe(false);
+  });
+});
 
 describe("omitFiledCreations", () => {
   it("hides creations that belong to a folder", () => {

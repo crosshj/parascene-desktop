@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { creationAspectCss, creationPackHeight } from "./aspectRatio";
 import { ensureLocal } from "./catalogClient";
@@ -137,6 +138,7 @@ export function VirtualCreationsGrid({
   onToggleSelect,
   onOpenFolder,
   onToggleFolderSelect,
+  onFolderContextMenu,
   onNearEnd,
 }: {
   creations: Creation[];
@@ -163,6 +165,10 @@ export function VirtualCreationsGrid({
   onToggleSelect: (creation: Creation) => void;
   onOpenFolder?: (folder: LibraryFolder) => void;
   onToggleFolderSelect?: (folder: LibraryFolder) => void;
+  onFolderContextMenu?: (
+    folder: LibraryFolder,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => void;
   onNearEnd: () => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -390,6 +396,7 @@ export function VirtualCreationsGrid({
                     )}
                     onOpen={onOpenFolder ?? (() => {})}
                     onToggleSelect={onToggleFolderSelect}
+                    onContextMenu={onFolderContextMenu}
                   />
                 )
               ) : (

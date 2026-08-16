@@ -265,6 +265,7 @@ export function CreationsSidebar({
   onNewFolder,
   onAddToFolder,
   onRemoveFromFolder,
+  onDeleteFolders,
   onClearSelection,
   onAddFromDisk,
   importing = false,
@@ -284,6 +285,7 @@ export function CreationsSidebar({
   onNewFolder?: () => void;
   onAddToFolder?: () => void;
   onRemoveFromFolder?: () => void;
+  onDeleteFolders?: () => void;
   onClearSelection?: () => void;
   onAddFromDisk?: () => void;
   importing?: boolean;
@@ -413,6 +415,15 @@ export function CreationsSidebar({
                 New project…
               </button>
             </>
+          ) : null}
+          {onDeleteFolders ? (
+            <button
+              type="button"
+              className="creations-sidebar-action-btn is-danger"
+              onClick={onDeleteFolders}
+            >
+              {selectedFolderCount === 1 ? "Delete folder" : "Delete folders"}
+            </button>
           ) : null}
           <button
             type="button"

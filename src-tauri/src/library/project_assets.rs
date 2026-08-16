@@ -1,5 +1,6 @@
 use super::catalog::{
-    default_paths, delete_creation_local, ready_connection, sync_status_for, SyncStatus,
+    clear_native_project_index, default_paths, delete_creation_local,
+    prune_stale_creation_usage, ready_connection, sync_status_for, SyncStatus,
 };
 use super::folders::{
     cloud_meta_for_folder, convert_marked_project_folder_to_regular, emit_folders_updated,
@@ -1312,7 +1313,14 @@ pub fn library_check_creation_usage(
     let conn = ready_connection(&paths)?;
     let stale: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM project_usage_revisions WHERE state != 'ready')",
+            "SELECT EXISTS(
+               SELECT 1 FROM project_usage_revisions r
+               WHERE r.state != 'ready'
+                 AND EXISTS (
+                   SELECT 1 FROM folders f
+                   WHERE f.kind = 'project' AND f.project_id = r.project_id
+                 )
+             )",
             [],
             |row| row.get(0),
         )
@@ -1341,7 +1349,9 @@ pub fn library_check_creation_usage(
     let mut out = Vec::new();
     for row in rows {
         let row = row.map_err(|e| e.to_string())?;
-        if wanted.contains(&row.creation_id) {
+        if wanted.contains(&row.creation_id)
+            && project_folder(&conn, &row.project_id)?.is_some()
+        {
             out.push(row);
         }
     }
@@ -1364,12 +1374,13 @@ fn project_usage_state(conn: &Connection, project_id: &str) -> Result<Option<Str
 pub fn library_delete_creation_checked(
     app: AppHandle,
     creation_id: String,
-    #[allow(unused_variables)] audited_project_ids: Vec<String>,
+    audited_project_ids: Vec<String>,
 ) -> Result<SyncStatus, String> {
     let id = creation_id.trim();
     let paths = default_paths()?;
     let mut conn = ready_connection(&paths)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    prune_stale_creation_usage(&transaction, id, Some(&audited_project_ids))?;
     let mut stmt = transaction
         .prepare(
             "SELECT project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label
@@ -1503,36 +1514,7 @@ pub fn library_delete_project(
     if let Some(folder) = folder.as_ref() {
         convert_marked_project_folder_to_regular(&transaction, &project_id, &folder.id)?;
     }
-    transaction
-        .execute(
-            "DELETE FROM project_asset_usage WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| e.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_usage_revisions WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| e.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_assets WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| e.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_membership_revisions WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| e.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_library_bindings WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| e.to_string())?;
+    clear_native_project_index(&transaction, &project_id)?;
     transaction.commit().map_err(|e| e.to_string())?;
     emit_folders_updated(&app, &list_folders(&conn)?);
     let result = DeleteProjectResult {

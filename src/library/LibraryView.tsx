@@ -13,11 +13,13 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { isSessionReauthError } from "../auth/errors";
 import { useShell } from "../app/ShellProvider";
 import type { LibrarySurface } from "../app/shellSession";
-import { CreationsFilterEmpty } from "./CreationsFilterEmpty";
+import { useConfirm } from "../ui/ConfirmDialog";
+import { CreationsFilterEmpty, FolderEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
   folderConflictKindLabel,
@@ -88,7 +90,9 @@ import { FolderPickModal } from "./FolderPickModal";
 import {
   addToFolder,
   createFolder,
+  deleteFolder,
   getFolderSyncState,
+  isEmptyRegularFolder,
   listFiledCreationIds,
   listFolders,
   omitFiledCreations,
@@ -1225,6 +1229,7 @@ function CreationsPanel({
     creationsFilterId,
     setCreationsFilterId,
   } = useShell();
+  const confirm = useConfirm();
   const [active, setActive] = useState<Creation | null>(null);
 
   const deleteCreationFromLibrary = useCallback(
@@ -1262,6 +1267,11 @@ function CreationsPanel({
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [pickFolderOpen, setPickFolderOpen] = useState(false);
   const [editFolder, setEditFolder] = useState<LibraryFolder | null>(null);
+  const [folderContextMenu, setFolderContextMenu] = useState<{
+    folder: LibraryFolder;
+    x: number;
+    y: number;
+  } | null>(null);
   /** Sidebar highlight — updates immediately on click. */
   const [sidebarFilters, setSidebarFilters] = useState<CreationFilterToggles>(
     () => togglesFromFilterId(creationsFilterId),
@@ -2034,6 +2044,122 @@ function CreationsPanel({
     [editFolder, refreshFolders],
   );
 
+  const selectedFolders = useMemo(
+    () => folders.filter((folder) => selectedFolderIds.has(folder.id)),
+    [folders, selectedFolderIds],
+  );
+  const canDeleteSelectedFolders =
+    selectedFolderIds.size > 0 &&
+    selectedFolders.length === selectedFolderIds.size &&
+    selectedFolders.every(isEmptyRegularFolder);
+
+  const onDeleteFolders = useCallback(
+    async (targets: LibraryFolder[]) => {
+      const unique = new Map(targets.map((folder) => [folder.id, folder]));
+      const list = [...unique.values()];
+      if (list.length === 0) return;
+
+      const deletable = list.filter(isEmptyRegularFolder);
+      if (deletable.length === 0) {
+        const projectBlocked = list.some((folder) => folder.kind === "project");
+        await confirm({
+          title: list.length === 1 ? "Can't delete folder" : "Can't delete folders",
+          message: projectBlocked
+            ? "Project folders can only be removed by deleting their project."
+            : "Only empty folders can be deleted. Remove the items first.",
+          hideCancel: true,
+          confirmLabel: "OK",
+        });
+        return;
+      }
+
+      const ok = await confirm({
+        title: deletable.length === 1 ? "Delete folder?" : "Delete folders?",
+        message:
+          deletable.length === 1
+            ? `Delete “${deletable[0].title}”? This folder is empty.`
+            : `Delete ${deletable.length} empty folders?`,
+        confirmLabel:
+          deletable.length === 1 ? "Delete folder" : "Delete folders",
+        danger: true,
+        errorTitle: "Could not delete folder",
+        onConfirm: async () => {
+          const errors: string[] = [];
+          for (const folder of deletable) {
+            try {
+              await deleteFolder(folder.id);
+            } catch (error) {
+              errors.push(
+                `${folder.title}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
+          await refreshFolders();
+          if (errors.length > 0) {
+            throw new Error(errors.join("\n"));
+          }
+        },
+      });
+      if (!ok) return;
+      const deletedIds = new Set(deletable.map((folder) => folder.id));
+      setSelectedFolderIds((prev) => {
+        const next = new Set(prev);
+        for (const id of deletedIds) next.delete(id);
+        return next;
+      });
+      setFolderViewId((current) =>
+        current && deletedIds.has(current) ? null : current,
+      );
+      setFolderContextMenu(null);
+    },
+    [confirm, refreshFolders],
+  );
+
+  useEffect(() => {
+    if (!folderContextMenu) return;
+    const close = () => setFolderContextMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [folderContextMenu]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.closest("input, textarea, select, [contenteditable='true']") ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (active || editFolder || createFolderOpen || pickFolderOpen) return;
+      if (document.querySelector(".confirm-dialog")) return;
+      if (selectedFolderIds.size === 0 || selectedIds.size > 0) return;
+      event.preventDefault();
+      void onDeleteFolders(selectedFolders);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    active,
+    createFolderOpen,
+    editFolder,
+    onDeleteFolders,
+    pickFolderOpen,
+    selectedFolderIds.size,
+    selectedFolders,
+    selectedIds.size,
+  ]);
+
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const drag = dragRef.current;
@@ -2178,6 +2304,13 @@ function CreationsPanel({
             onRemoveFromFolder={() => {
               void onRemoveSelectionFromFolder();
             }}
+            onDeleteFolders={
+              canDeleteSelectedFolders
+                ? () => {
+                    void onDeleteFolders(selectedFolders);
+                  }
+                : undefined
+            }
             onClearSelection={onClearSelection}
             onAddFromDisk={onImportFromDisk}
             importing={importing}
@@ -2222,19 +2355,38 @@ function CreationsPanel({
                   {folderView.title}
                 </span>
                 {folderView.kind === "regular" ? (
-                  <button
-                    type="button"
-                    className="library-folder-edit"
-                    aria-label="Edit folder"
-                    onClick={() => setEditFolder(folderView)}
-                  >
-                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
-                      <path
-                        fill="currentColor"
-                        d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
-                      />
-                    </svg>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="library-folder-edit"
+                      aria-label="Edit folder"
+                      onClick={() => setEditFolder(folderView)}
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                        <path
+                          fill="currentColor"
+                          d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm14.06-9.31 1.99-1.99a1 1 0 0 0 0-1.41l-1.59-1.59a1 1 0 0 0-1.41 0L14.06 4.94l3.75 3.75z"
+                        />
+                      </svg>
+                    </button>
+                    {isEmptyRegularFolder(folderView) ? (
+                      <button
+                        type="button"
+                        className="library-folder-edit"
+                        aria-label="Delete folder"
+                        onClick={() => {
+                          void onDeleteFolders([folderView]);
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+                          <path
+                            fill="currentColor"
+                            d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM6 7h12l-1 14H7L6 7z"
+                          />
+                        </svg>
+                      </button>
+                    ) : null}
+                  </>
                 ) : (
                   <>
                     <span className="folder-project-badge">Project</span>
@@ -2260,7 +2412,17 @@ function CreationsPanel({
                 }
               />
             ) : showFilterEmpty && boardFolders.length === 0 ? (
-              <CreationsFilterEmpty />
+              folderView && folderView.memberCount === 0 ? (
+                <FolderEmpty
+                  title={folderView.title}
+                  canDelete={isEmptyRegularFolder(folderView)}
+                  onDelete={() => {
+                    void onDeleteFolders([folderView]);
+                  }}
+                />
+              ) : (
+                <CreationsFilterEmpty />
+              )
             ) : (
               <VirtualCreationsGrid
                 creations={visibleCreations}
@@ -2296,6 +2458,13 @@ function CreationsPanel({
                   setSelectedFolderIds(new Set());
                 }}
                 onToggleFolderSelect={onToggleFolderSelect}
+                onFolderContextMenu={(folder, event) => {
+                  setFolderContextMenu({
+                    folder,
+                    x: event.clientX,
+                    y: event.clientY,
+                  });
+                }}
                 onNearEnd={() => {
                   if (catalogListFilter) return;
                   if (gridFilterKey === "selected") return;
@@ -2355,6 +2524,56 @@ function CreationsPanel({
                 }}
               />
             ) : null}
+            {folderContextMenu
+              ? createPortal(
+                  <div
+                    className="library-folder-context-menu"
+                    role="menu"
+                    style={{
+                      left: folderContextMenu.x,
+                      top: folderContextMenu.y,
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onContextMenu={(event) => event.preventDefault()}
+                  >
+                    {folderContextMenu.folder.kind === "regular" ? (
+                      <button
+                        type="button"
+                        className="library-folder-context-item"
+                        role="menuitem"
+                        onClick={() => {
+                          const folder = folderContextMenu.folder;
+                          setFolderContextMenu(null);
+                          setEditFolder(folder);
+                        }}
+                      >
+                        Edit folder
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="library-folder-context-item is-danger"
+                      role="menuitem"
+                      disabled={!isEmptyRegularFolder(folderContextMenu.folder)}
+                      title={
+                        folderContextMenu.folder.kind === "project"
+                          ? "Project folders can only be removed by deleting their project."
+                          : folderContextMenu.folder.memberCount > 0
+                            ? "Remove the items first."
+                            : undefined
+                      }
+                      onClick={() => {
+                        const folder = folderContextMenu.folder;
+                        setFolderContextMenu(null);
+                        void onDeleteFolders([folder]);
+                      }}
+                    >
+                      Delete folder
+                    </button>
+                  </div>,
+                  document.body,
+                )
+              : null}
           </div>
         </div>
       )}
