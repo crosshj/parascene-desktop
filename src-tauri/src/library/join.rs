@@ -485,6 +485,7 @@ fn run_join_bake(app: &AppHandle, req: JoinBakeRequest) -> Result<Creation, Stri
             None,
             None,
             None,
+            None,
         )?;
     }
 

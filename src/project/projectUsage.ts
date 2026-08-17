@@ -47,7 +47,39 @@ export function collectProjectAssetUsage(
       label,
     );
     add(
+      clip.addAssetDraft?.firstFrameSource?.kind === "asset"
+        ? clip.addAssetDraft.firstFrameSource.assetId
+        : undefined,
+      "generation_start_frame",
+      clip.id,
+      label,
+    );
+    add(
+      clip.addAssetDraft?.lastFrameSource?.kind === "asset"
+        ? clip.addAssetDraft.lastFrameSource.assetId
+        : undefined,
+      "generation_start_frame",
+      clip.id,
+      label,
+    );
+    add(
       clip.addAssetGeneration?.startFrameAssetId,
+      "generation_start_frame",
+      clip.id,
+      label,
+    );
+    add(
+      clip.addAssetGeneration?.firstFrameSource?.kind === "asset"
+        ? clip.addAssetGeneration.firstFrameSource.assetId
+        : undefined,
+      "generation_start_frame",
+      clip.id,
+      label,
+    );
+    add(
+      clip.addAssetGeneration?.lastFrameSource?.kind === "asset"
+        ? clip.addAssetGeneration.lastFrameSource.assetId
+        : undefined,
       "generation_start_frame",
       clip.id,
       label,
@@ -210,30 +242,63 @@ export function pruneMissingProjectReferences(
         },
       };
     }
-    if (
-      clip.addAssetDraft?.startFrameAssetId &&
-      missing.has(clip.addAssetDraft.startFrameAssetId)
-    ) {
-      next = {
-        ...next,
-        addAssetDraft: {
-          ...clip.addAssetDraft,
-          startFrameAssetId: undefined,
-        },
-      };
+    if (clip.addAssetDraft) {
+      let draft = clip.addAssetDraft;
+      let changed = false;
+      if (
+        draft.startFrameAssetId &&
+        missing.has(draft.startFrameAssetId)
+      ) {
+        draft = { ...draft, startFrameAssetId: undefined };
+        changed = true;
+      }
+      if (
+        draft.firstFrameSource?.kind === "asset" &&
+        missing.has(draft.firstFrameSource.assetId)
+      ) {
+        draft = { ...draft, firstFrameSource: undefined, startFrameAssetId: undefined };
+        changed = true;
+      }
+      if (
+        draft.lastFrameSource?.kind === "asset" &&
+        missing.has(draft.lastFrameSource.assetId)
+      ) {
+        draft = { ...draft, lastFrameSource: undefined };
+        changed = true;
+      }
+      if (changed) {
+        next = { ...next, addAssetDraft: draft };
+      }
     }
     if (clip.addAssetGeneration) {
       const gen = clip.addAssetGeneration;
-      const startFrameAssetId =
+      let startFrameAssetId =
         gen.startFrameAssetId && missing.has(gen.startFrameAssetId)
           ? undefined
           : gen.startFrameAssetId;
+      let firstFrameSource = gen.firstFrameSource;
+      if (
+        firstFrameSource?.kind === "asset" &&
+        missing.has(firstFrameSource.assetId)
+      ) {
+        firstFrameSource = undefined;
+        startFrameAssetId = undefined;
+      }
+      let lastFrameSource = gen.lastFrameSource;
+      if (
+        lastFrameSource?.kind === "asset" &&
+        missing.has(lastFrameSource.assetId)
+      ) {
+        lastFrameSource = undefined;
+      }
       const creationId =
         gen.creationId && missing.has(gen.creationId) ? undefined : gen.creationId;
       if (!creationId) {
         next = { ...next, addAssetGeneration: undefined };
       } else if (
         startFrameAssetId !== gen.startFrameAssetId ||
+        firstFrameSource !== gen.firstFrameSource ||
+        lastFrameSource !== gen.lastFrameSource ||
         creationId !== gen.creationId
       ) {
         next = {
@@ -241,6 +306,8 @@ export function pruneMissingProjectReferences(
           addAssetGeneration: {
             ...gen,
             startFrameAssetId,
+            firstFrameSource,
+            lastFrameSource,
             creationId,
           },
         };

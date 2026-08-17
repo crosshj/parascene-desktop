@@ -6,6 +6,7 @@ import {
   addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
   findTimelineGenerationForAsset,
+  generatedClipShouldSyncToTimeline,
   initialAddAssetGenerationSteps,
   replaceAddAssetPlaceholderWithVideo,
   resolveAddAssetAudioMode,
@@ -73,6 +74,87 @@ describe("initialAddAssetGenerationSteps", () => {
   it("skips stills for text-to-video (images none)", () => {
     const steps = initialAddAssetGenerationSteps("none", "none");
     expect(steps.map((s) => s.id)).toEqual(["generate", "file"]);
+  });
+});
+
+describe("generatedClipShouldSyncToTimeline", () => {
+  it("locks only when timeline song audio was used", () => {
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "start_frame",
+        audioMode: "vocals",
+        server: "blue_direct",
+      }),
+    ).toBe(true);
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "start_frame",
+        audioMode: "full_mix",
+        server: "parascene_blue",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not lock for frames-only or no timeline audio", () => {
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "start_frame",
+      }),
+    ).toBe(false);
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "first_last",
+      }),
+    ).toBe(false);
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "motion_match",
+      }),
+    ).toBe(false);
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "none",
+      }),
+    ).toBe(false);
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "start_frame",
+        startFrameAssetId: "img-1",
+        audioMode: "none",
+      }),
+    ).toBe(false);
+    expect(
+      generatedClipShouldSyncToTimeline({
+        prompt: "x",
+        generatedAt: "t",
+        creationId: "c",
+        mode: "start_frame",
+        audioMode: "vocals",
+        server: "replicate",
+      }),
+    ).toBe(false);
+    expect(generatedClipShouldSyncToTimeline(undefined)).toBe(false);
   });
 });
 
@@ -146,7 +228,36 @@ describe("replaceAddAssetPlaceholderWithVideo", () => {
       "new-video",
     );
     expect(next[0]?.addAssetGeneration).toBeUndefined();
-    expect(next[0]?.timelineLocked).toBe(true);
+    expect(next[0]?.timelineLocked).toBeUndefined();
+  });
+
+  it("does not sync text-to-video fills to the timeline", () => {
+    const timeline = [
+      {
+        id: "placeholder",
+        lane: "video" as const,
+        kind: "video" as const,
+        label: "0:09",
+        startSec: 0,
+        endSec: 9,
+        isAddAssetPlaceholder: true,
+      },
+    ];
+    const next = replaceAddAssetPlaceholderWithVideo(
+      timeline,
+      "placeholder",
+      "new-video",
+      {
+        addAssetGeneration: {
+          prompt: "A city at dusk",
+          generatedAt: "2026-07-22T12:00:00.000Z",
+          creationId: "gen-t2v",
+          mode: "none",
+          model: "ltx_t2v",
+        },
+      },
+    );
+    expect(next[0]?.timelineLocked).toBeUndefined();
   });
 });
 

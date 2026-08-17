@@ -1,13 +1,3 @@
-/**
- * Shared state + UI parts for Replicate text → image into Assets.
- */
-
-import {
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
 import { useShell } from "../../app/ShellProvider";
 import {
   applyManifest,
@@ -18,51 +8,40 @@ import {
   creationUpsertWithAddAssetGeneration,
   makeTextToImageGeneration,
 } from "../../project/desktopAddAssetGeneration";
-import { runReplicateTextToImage } from "./addAssetReplicateTextToImage";
+import { runBlueDirectTextToImage } from "./addAssetBlueDirectGenerate";
 import {
-  loadReplicateTextToImageModels,
-  type ReplicateTextToImageModelOption,
-} from "./replicateTextToImageModels";
+  loadBlueStillModels,
+  pickBlueStillModel,
+  type BlueStillModelOption,
+} from "./blueStillModels";
 import type { LibraryGenerateUiState } from "./generateDualView";
+import { useEffect, useRef, useState } from "react";
 
-export type ReplicateTextToImageFormParts = {
-  fields: ReactNode;
-  footer: ReactNode;
-};
-
-export type UseReplicateTextToImageFormOpts = {
-  idPrefix?: string;
+type BlueDirectTextToImageFormProps = {
   locked?: boolean;
   hideInlineProgress?: boolean;
   onGenerateStateChange?: (state: LibraryGenerateUiState) => void;
   onGenerateNew?: () => void;
+  /** Seed values for review / Generate new fork. */
   initialPrompt?: string;
   initialModelId?: string;
 };
 
-export function useReplicateTextToImageForm(
-  idPrefixOrOpts: string | UseReplicateTextToImageFormOpts = "replicate-t2i",
-): ReplicateTextToImageFormParts {
-  const opts: UseReplicateTextToImageFormOpts =
-    typeof idPrefixOrOpts === "string"
-      ? { idPrefix: idPrefixOrOpts }
-      : idPrefixOrOpts;
-  const idPrefix = opts.idPrefix ?? "replicate-t2i";
-  const locked = opts.locked ?? false;
-  const hideInlineProgress = opts.hideInlineProgress ?? false;
-  const onGenerateStateChange = opts.onGenerateStateChange;
-  const onGenerateNew = opts.onGenerateNew;
-  const initialPrompt = opts.initialPrompt ?? "";
-  const initialModelId = opts.initialModelId?.trim() || null;
-
+export function BlueDirectTextToImageForm({
+  locked = false,
+  hideInlineProgress = false,
+  onGenerateStateChange,
+  onGenerateNew,
+  initialPrompt = "",
+  initialModelId,
+}: BlueDirectTextToImageFormProps) {
   const { project, addCreationsToOpenProject } = useShell();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
-
-  const [models, setModels] = useState<ReplicateTextToImageModelOption[] | null>(
-    null,
-  );
+  const [models, setModels] = useState<BlueStillModelOption[] | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [modelId, setModelId] = useState<string | null>(initialModelId);
+  const [modelId, setModelId] = useState<string | null>(
+    initialModelId?.trim() || null,
+  );
   const [prompt, setPrompt] = useState(initialPrompt);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -72,7 +51,7 @@ export function useReplicateTextToImageForm(
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
   const fieldsLocked = locked || running || doneLocked;
-  const reviewModelId = modelId?.trim() || initialModelId || "";
+  const reviewModelId = modelId?.trim() || initialModelId?.trim() || "";
 
   const reportState = (state: LibraryGenerateUiState) => {
     onGenerateStateChange?.(state);
@@ -81,17 +60,15 @@ export function useReplicateTextToImageForm(
   useEffect(() => {
     if (fieldsLocked && reviewModelId) return;
     let cancelled = false;
-    void loadReplicateTextToImageModels()
+    void loadBlueStillModels("text2image")
       .then((rows) => {
         if (cancelled) return;
         setModels(rows);
-        setModelId((prev) => {
-          const preferred = prev || initialModelId;
-          if (preferred && rows.some((m) => m.id === preferred)) {
-            return preferred;
-          }
-          return rows[0]?.id ?? null;
-        });
+        setModelsError(null);
+        setModelId(
+          (prev) =>
+            pickBlueStillModel(rows, prev ?? initialModelId)?.id ?? null,
+        );
       })
       .catch((err) => {
         if (cancelled) return;
@@ -114,7 +91,7 @@ export function useReplicateTextToImageForm(
   const canGenerate =
     !fieldsLocked &&
     Boolean(prompt.trim()) &&
-    Boolean(selected || modelId) &&
+    Boolean(selected?.id || modelId) &&
     Boolean(project.id);
 
   const handleGenerateNew = () => {
@@ -127,23 +104,24 @@ export function useReplicateTextToImageForm(
   };
 
   const handleGenerate = async () => {
-    if (!selected || fieldsLocked || !prompt.trim() || !project.id) return;
+    const model = selected?.id ?? modelId;
+    if (!canGenerate || !project.id || !model) return;
     const started = Date.now();
     setRunning(true);
     setError(null);
     setSuccessNote(null);
-    setStatus(`Running ${selected.id}…`);
+    setStatus("Running Direct to Blue…");
     reportState({
       phase: "running",
-      progressNote: `Running ${selected.id}…`,
+      progressNote: "Running Direct to Blue…",
       startedAtMs: started,
     });
     try {
-      const result = await runReplicateTextToImage({
-        model: selected,
+      const result = await runBlueDirectTextToImage({
         prompt,
-        projectId: project.id,
         aspectRatio,
+        projectId: project.id,
+        model,
         onProgress: (note) => {
           setStatus(note);
           reportState({
@@ -162,20 +140,20 @@ export function useReplicateTextToImageForm(
             makeTextToImageGeneration({
               prompt,
               creationId: result.creationId,
-              model: selected.id,
-              server: "replicate",
+              model,
+              server: "blue_direct",
             }),
           ),
         ]);
       } catch {
-        // Provenance stamp is best-effort.
+        // Provenance stamp is best-effort; image is already in Assets.
       }
       setStatus(null);
-      setSuccessNote("Added image to Assets.");
+      setSuccessNote("Added image to Assets (local-only).");
       setDoneLocked(true);
       reportState({
         phase: "done",
-        progressNote: "Added image to Assets.",
+        progressNote: "Added image to Assets (local-only).",
         startedAtMs: started,
       });
     } catch (err) {
@@ -193,29 +171,30 @@ export function useReplicateTextToImageForm(
     }
   };
 
-  const fields = (
+  return (
     <>
       <section className="add-asset-generate-section">
+        <h3>Model</h3>
         {modelsError ? (
           <p className="add-asset-generate-error">{modelsError}</p>
         ) : null}
         {fieldsLocked && reviewModelId && models == null ? (
           <label className="add-asset-generate-field">
-            <span>Model</span>
+            <span>Blue model</span>
             <select className="control" value={reviewModelId} disabled>
               <option value={reviewModelId}>{reviewModelId}</option>
             </select>
           </label>
         ) : models == null ? (
-          <p className="muted">Loading models…</p>
+          <p className="muted">Loading Blue models…</p>
         ) : models.length === 0 ? (
           <p className="muted">
-            No enabled Replicate text → image models. Enable models in Lab →
-            Replicate.
+            No text-to-image models from Blue. Check Settings → Blue
+            credentials.
           </p>
         ) : (
           <label className="add-asset-generate-field">
-            <span>Model</span>
+            <span>Blue model</span>
             <select
               className="control"
               value={selected?.id ?? reviewModelId}
@@ -223,7 +202,7 @@ export function useReplicateTextToImageForm(
               onChange={(event) => setModelId(event.target.value || null)}
             >
               {models.map((m) => (
-                <option key={m.id} value={m.id}>
+                <option key={m.id} value={m.id} title={m.hint}>
                   {m.label}
                 </option>
               ))}
@@ -231,70 +210,66 @@ export function useReplicateTextToImageForm(
           </label>
         )}
       </section>
-
       <section className="add-asset-generate-section">
-        <label
-          className="add-asset-generate-prompt-label"
-          htmlFor={`${idPrefix}-prompt`}
-        >
-          <span>Prompt</span>
-          <textarea
-            id={`${idPrefix}-prompt`}
-            ref={promptRef}
-            className="add-asset-generate-prompt is-auto-size"
-            rows={2}
-            value={prompt}
-            disabled={fieldsLocked}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Describe the image to generate…"
-          />
-        </label>
+        <h3>Prompt</h3>
+        <textarea
+          ref={promptRef}
+          className="add-asset-generate-prompt"
+          rows={3}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Describe the image…"
+          disabled={fieldsLocked}
+        />
       </section>
-
       {!hideInlineProgress && status ? (
-        <section className="add-asset-generate-section">
-          <p className="muted add-asset-generate-progress-note">{status}</p>
-        </section>
+        <p className="muted" style={{ margin: 0 }}>
+          {status}
+        </p>
       ) : null}
-      {(!hideInlineProgress || Boolean(error && !running)) && error ? (
-        <section className="add-asset-generate-section">
-          <p className="add-asset-generate-error" role="alert">
-            {error}
-          </p>
-        </section>
+      {!hideInlineProgress && error ? (
+        <p className="add-asset-generate-error" role="alert">
+          {error}
+        </p>
       ) : null}
       {!hideInlineProgress && successNote ? (
-        <section className="add-asset-generate-section">
-          <p className="muted" style={{ margin: 0 }}>
-            {successNote}
-          </p>
-        </section>
+        <p className="muted" style={{ margin: 0 }}>
+          {successNote}
+        </p>
       ) : null}
+      {hideInlineProgress && error && !running ? (
+        <p className="add-asset-generate-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="add-asset-generate-footer preview-intent-footer">
+        {doneLocked && onGenerateNew ? (
+          <button
+            type="button"
+            className="btn primary"
+            onClick={handleGenerateNew}
+          >
+            Generate new
+          </button>
+        ) : locked && onGenerateNew ? (
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onGenerateNew}
+          >
+            Generate new
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!canGenerate}
+            onClick={() => void handleGenerate()}
+          >
+            {running ? "Generating…" : "Generate"}
+          </button>
+        )}
+      </div>
     </>
   );
-
-  const footer = (
-    <div className="add-asset-generate-footer preview-intent-footer">
-      {doneLocked || (locked && onGenerateNew) ? (
-        <button
-          type="button"
-          className="btn btn-primary editor-add-asset-generate"
-          onClick={doneLocked ? handleGenerateNew : () => onGenerateNew?.()}
-        >
-          Generate new
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="btn btn-primary editor-add-asset-generate"
-          disabled={!canGenerate}
-          onClick={() => void handleGenerate()}
-        >
-          {running ? "Generating…" : "Generate image"}
-        </button>
-      )}
-    </div>
-  );
-
-  return { fields, footer };
 }

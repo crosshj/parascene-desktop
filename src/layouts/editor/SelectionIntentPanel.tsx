@@ -1,16 +1,20 @@
 import type { BakeInfo } from "../../library/slideshowMedia";
 import {
-  ADD_ASSET_PROVIDERS,
+  GENERATE_INTENTS,
+  GENERATE_SERVERS,
   SELECTION_INTENT_MODES,
   addAssetIntentAllowsLibraryGeneration,
   addAssetIntentAllowsTimelinePlacement,
-  addAssetMethodsForProvider,
-  findAddAssetMethod,
+  findGenerateIntent,
   findSelectionIntentMode,
+  intentServerCapability,
+  makeAddAssetIntent,
+  resolveAddAssetIntent,
   selectionModeAllowsTimelinePlacement,
+  serversForIntent,
   type AddAssetIntent,
-  type AddAssetMethodId,
-  type AddAssetProviderId,
+  type GenerateIntentId,
+  type GenerateServerId,
   type SelectionIntentModeId,
 } from "./previewIntent";
 import { ClipDragHandle, ClipPlaceHandle, StagingFields } from "./PreviewStaging";
@@ -20,6 +24,10 @@ import {
   type CompositePlatePanelProps,
 } from "./CompositePlatePanel";
 import { ReplicateTextToImageFormLayout } from "./ReplicateTextToImageForm";
+import { BlueDirectTextToImageForm } from "./BlueDirectTextToImageForm";
+import { GenerateIntentIcon } from "./GenerateIntentIcon";
+import { GenerateServerIcon } from "./GenerateServerIcon";
+import { saveLastGenerateIntent } from "./generateIntentPrefs";
 
 export type SelectionImageItem = {
   id: string;
@@ -76,10 +84,13 @@ export function SelectionIntentPanel({
     modeId === "generate_from_selection" && selected?.wired === true;
   const showComposite =
     modeId === "composite" && selected?.wired === true && Boolean(composite);
-  const provider = generateIntent?.provider ?? null;
-  const methodId = generateIntent?.methodId ?? null;
-  const methods = provider ? addAssetMethodsForProvider(provider) : [];
-  const selectedMethod = findAddAssetMethod(methodId);
+  const resolvedGenerate = generateIntent
+    ? resolveAddAssetIntent(generateIntent)
+    : null;
+  const intentId = resolvedGenerate?.intentId ?? null;
+  const server = resolvedGenerate?.server ?? null;
+  const capability =
+    intentId && server ? intentServerCapability(intentId, server) : null;
   const canPlaceSlideshow =
     modeId === "slideshow" &&
     selectionModeAllowsTimelinePlacement(modeId) &&
@@ -88,12 +99,12 @@ export function SelectionIntentPanel({
   const canPlaceGenerate =
     showGenerate &&
     canGenerate &&
-    addAssetIntentAllowsTimelinePlacement(generateIntent);
+    addAssetIntentAllowsTimelinePlacement(resolvedGenerate);
   const canLibraryGenerate =
-    showGenerate && addAssetIntentAllowsLibraryGeneration(generateIntent);
+    showGenerate && addAssetIntentAllowsLibraryGeneration(resolvedGenerate);
   const firstPicked = items.find((item) => item.id === pickedIds[0]);
   const generateDraft = canPlaceGenerate
-    ? addAssetDragDraftFromIntent(generateIntent, {
+    ? addAssetDragDraftFromIntent(resolvedGenerate, {
         startFrameAssetId: pickedIds[0] ?? null,
         thumbUrl: firstPicked?.thumbUrl ?? null,
       })
@@ -106,17 +117,23 @@ export function SelectionIntentPanel({
     onPickedIdsChange(orderedPick(allIds, next));
   };
 
-  const selectProvider = (next: AddAssetProviderId) => {
-    const first = addAssetMethodsForProvider(next)[0];
-    onGenerateIntentChange({
-      provider: next,
-      methodId: first?.id ?? "blue_timeline_fill",
-    });
+  const selectIntent = (next: GenerateIntentId) => {
+    const caps = serversForIntent(next);
+    const preferred =
+      (server && caps.find((c) => c.server === server)?.server) ||
+      caps.find((c) => c.status === "wired")?.server ||
+      caps[0]?.server ||
+      "parascene_blue";
+    const intent = makeAddAssetIntent(next, preferred);
+    saveLastGenerateIntent(intent);
+    onGenerateIntentChange(intent);
   };
 
-  const selectMethod = (next: AddAssetMethodId) => {
-    if (!provider) return;
-    onGenerateIntentChange({ provider, methodId: next });
+  const selectServer = (next: GenerateServerId) => {
+    if (!intentId) return;
+    const intent = makeAddAssetIntent(intentId, next);
+    saveLastGenerateIntent(intent);
+    onGenerateIntentChange(intent);
   };
 
   const title =
@@ -207,17 +224,12 @@ export function SelectionIntentPanel({
                 role="listitem"
                 className={`preview-intent-choice${
                   modeId === m.id ? " is-selected" : ""
-                }`}
+                }${!m.wired ? " is-soon" : ""}`}
                 aria-pressed={modeId === m.id}
                 disabled={disabled}
                 onClick={() => onModeChange(m.id)}
               >
-                <span className="preview-intent-choice-label">
-                  {m.label}
-                  {!m.wired ? (
-                    <span className="preview-intent-badge">Soon</span>
-                  ) : null}
-                </span>
+                <span className="preview-intent-choice-label">{m.label}</span>
                 <span className="muted preview-intent-choice-desc">
                   {m.id === "slideshow" && !canSlideshow
                     ? "Pick at least two images for a slideshow."
@@ -251,65 +263,93 @@ export function SelectionIntentPanel({
       {showGenerate ? (
         <>
           <section className="add-asset-generate-section">
-            <h3>Provider</h3>
+            <h3>Intent</h3>
             <div className="preview-intent-choice-grid" role="list">
-              {ADD_ASSET_PROVIDERS.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  role="listitem"
-                  className={`preview-intent-choice${
-                    provider === p.id ? " is-selected" : ""
-                  }`}
-                  aria-pressed={provider === p.id}
-                  onClick={() => selectProvider(p.id)}
-                >
-                  <span className="preview-intent-choice-label">{p.label}</span>
-                  <span className="muted preview-intent-choice-desc">
-                    {p.description}
-                  </span>
-                </button>
-              ))}
+              {GENERATE_INTENTS.map((item) => {
+                const anyWired = serversForIntent(item.id).some(
+                  (c) => c.status === "wired",
+                );
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="listitem"
+                    className={`preview-intent-choice preview-intent-choice--compact${
+                      intentId === item.id ? " is-selected" : ""
+                    }${!anyWired ? " is-soon" : ""}`}
+                    aria-pressed={intentId === item.id}
+                    onClick={() => selectIntent(item.id)}
+                  >
+                    <span className="preview-intent-choice-icon">
+                      <GenerateIntentIcon intentId={item.id} />
+                    </span>
+                    <span className="preview-intent-choice-text">
+                      <span className="preview-intent-choice-label">
+                        {item.label}
+                      </span>
+                      <span className="muted preview-intent-choice-desc">
+                        {item.description}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </section>
 
-          {provider ? (
+          {intentId ? (
             <section className="add-asset-generate-section">
-              <h3>Method</h3>
+              <h3>Server</h3>
               <div className="preview-intent-choice-grid" role="list">
-                {methods.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    role="listitem"
-                    className={`preview-intent-choice${
-                      methodId === m.id ? " is-selected" : ""
-                    }`}
-                    aria-pressed={methodId === m.id}
-                    onClick={() => selectMethod(m.id)}
-                  >
-                    <span className="preview-intent-choice-label">
-                      {m.label}
-                      {!m.wired ? (
-                        <span className="preview-intent-badge">Soon</span>
-                      ) : null}
-                    </span>
-                    <span className="muted preview-intent-choice-desc">
-                      {m.description}
-                    </span>
-                  </button>
-                ))}
+                {serversForIntent(intentId).map((cap) => {
+                  const def = GENERATE_SERVERS.find((s) => s.id === cap.server);
+                  if (!def) return null;
+                  const soon = cap.status === "coming_soon";
+                  return (
+                    <button
+                      key={cap.server}
+                      type="button"
+                      role="listitem"
+                      className={`preview-intent-choice preview-intent-choice--compact${
+                        server === cap.server ? " is-selected" : ""
+                      }${soon ? " is-soon" : ""}`}
+                      aria-pressed={server === cap.server}
+                      onClick={() => selectServer(cap.server)}
+                    >
+                      <span className="preview-intent-choice-icon preview-intent-choice-icon--brand">
+                        <GenerateServerIcon serverId={cap.server} />
+                      </span>
+                      <span className="preview-intent-choice-text">
+                        <span className="preview-intent-choice-label">
+                          {def.label}
+                        </span>
+                        <span className="muted preview-intent-choice-desc">
+                          {def.description}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </section>
           ) : null}
 
-          {selectedMethod && !selectedMethod.wired && !canLibraryGenerate ? (
+          {capability?.status === "coming_soon" ? (
             <section className="add-asset-generate-section">
               <div className="add-asset-generate-callout">
                 <p className="muted" style={{ margin: 0 }}>
-                  Coming soon — pick Timeline video fill under Parascene or
-                  Replicate to place a blank clip. The first picked image seeds
-                  the start frame.
+                  Coming soon
+                  {intentId
+                    ? ` — ${findGenerateIntent(intentId)?.label ?? ""}`
+                    : ""}
+                  {server
+                    ? ` on ${
+                        GENERATE_SERVERS.find((s) => s.id === server)?.label ??
+                        "this server"
+                      }`
+                    : ""}
+                  . Pick a ready path to place a blank clip; the first picked
+                  image seeds the start frame.
                 </p>
               </div>
             </section>
@@ -319,9 +359,13 @@ export function SelectionIntentPanel({
             <section className="add-asset-generate-section">
               <div className="add-asset-generate-callout">
                 <p className="muted" style={{ margin: 0 }}>
-                  Place or drag the clip onto the timeline. The first picked
-                  image is used as the start frame; generation options open
-                  once it is on the timeline.
+                  Place or drag the clip onto the timeline
+                  {intentId && server
+                    ? ` (${findGenerateIntent(intentId)?.label} · ${
+                        GENERATE_SERVERS.find((s) => s.id === server)?.label
+                      })`
+                    : ""}
+                  . The first picked image is used as the start frame.
                 </p>
               </div>
             </section>
@@ -347,7 +391,7 @@ export function SelectionIntentPanel({
     </>
   );
 
-  if (canLibraryGenerate) {
+  if (canLibraryGenerate && server === "replicate") {
     return (
       <ReplicateTextToImageFormLayout idPrefix="selection-t2i">
         {({ fields, footer }) => (
@@ -363,6 +407,20 @@ export function SelectionIntentPanel({
           </div>
         )}
       </ReplicateTextToImageFormLayout>
+    );
+  }
+
+  if (canLibraryGenerate && server === "blue_direct") {
+    return (
+      <div
+        className="add-asset-generate-pane preview-intent-pane"
+        aria-label="Choose what to do with selection"
+      >
+        <div className="add-asset-generate-body">
+          {body}
+          <BlueDirectTextToImageForm />
+        </div>
+      </div>
     );
   }
 

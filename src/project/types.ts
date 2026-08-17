@@ -136,7 +136,14 @@ export type TimelineClip = {
 };
 
 /** Parascene Blue model for timeline fill (WAN = no audio; LTX = optional audio). */
-export type AddAssetBlueModel = "wan" | "ltx";
+/** Concrete Blue model id (e.g. `wan_i2v`, `minimax_i2v`) or legacy `wan`/`ltx`. */
+export type AddAssetBlueModel = string;
+
+/** Where a generate still comes from — timeline neighbor, Assets image, or unused. */
+export type AddAssetFrameSource =
+  | { kind: "timeline" }
+  | { kind: "asset"; assetId: string }
+  | { kind: "none" };
 
 /**
  * In-flight add-asset generation on a placeholder.
@@ -145,13 +152,15 @@ export type AddAssetBlueModel = "wan" | "ltx";
  */
 export type AddAssetGenerationJob = {
   status: "starting" | "waiting" | "downloading" | "importing";
-  provider: "replicate" | "parascene_blue";
+  provider: "replicate" | "parascene_blue" | "blue_direct";
   /** ISO timestamp when Generate was pressed. */
   startedAt: string;
   /** Replicate prediction id once created remotely. */
   replicatePredictionId?: string;
   /** Parascene creation id once create() returns. */
   pendingCreationId?: string;
+  /** Direct to Blue job id once submitted. */
+  blueJobId?: string;
   /** Model id for resume/provenance (`owner/name` or `ltx_a2v`, …). */
   model?: string;
 };
@@ -160,15 +169,22 @@ export type AddAssetGenerationJob = {
 export type AddAssetDraft = {
   prompt?: string;
   audioMode?: "vocals" | "full_mix" | "none";
-  /** Images mode: none = text→video; start_frame / first_last / motion_match as today. */
+  /**
+   * Continuity within Image to Video (start / first+last / motion_match).
+   * Text to Video uses `none`.
+   */
   continuityMode?: AddAssetGenerationMode;
-  /** Parascene Blue model (wan_t2v|wan_i2v / ltx_t2v|ltx_a2v|ltx_i2v). */
+  /** Parascene / Blue model family (wan / ltx). */
   blueModel?: AddAssetBlueModel;
-  /** Pre-drop intent: generation provider (e.g. parascene_blue). */
+  /** Intent-first Generate: modality recipe. */
+  intentId?: string;
+  /** Intent-first Generate: server lane (`parascene_blue` | `blue_direct` | `replicate`). */
+  server?: string;
+  /** @deprecated Prefer server — legacy provider id. */
   provider?: string;
-  /** Pre-drop intent: method id within the provider catalog. */
+  /** @deprecated Prefer intentId — legacy method id. */
   methodId?: string;
-  /** Replicate model id `owner/name` when provider is replicate. */
+  /** Replicate model id `owner/name` when server is replicate. */
   replicateModel?: string;
   /** User opted into nearest allowed Replicate duration. */
   useNearestDuration?: boolean;
@@ -180,6 +196,8 @@ export type AddAssetDraft = {
    * Also mirrored while {@link generationJob} is waiting on Replicate.
    */
   replicatePredictionId?: string;
+  /** Direct to Blue job id for download-retry after remote success. */
+  blueJobId?: string;
   /** Active remote generation — cleared on success or hard failure. */
   generationJob?: AddAssetGenerationJob;
   /** Optional Replicate model params (resolution, audio, seed, …). */
@@ -199,6 +217,17 @@ export type AddAssetDraft = {
    * (Fit / Fill / Stretch). Defaults to Fit.
    */
   startFrameFraming?: "fit" | "fill" | "stretch";
+  /** First / start still source (timeline neighbor or Assets). */
+  firstFrameSource?: AddAssetFrameSource;
+  /** Last still source when continuity is first_last. */
+  lastFrameSource?: AddAssetFrameSource;
+  /**
+   * Preview of the first/start still (cloned from a prior generation so Form
+   * can show frames before neighbors/assets resolve).
+   */
+  startFramePreviewUrl?: string;
+  /** Preview of the last still when continuity is first_last. */
+  endFramePreviewUrl?: string;
 };
 
 /** Persisted provenance for add-asset generated timeline clips. */
@@ -222,14 +251,29 @@ export type AddAssetGeneration = {
   mode?: AddAssetGenerationMode;
   /** Model id (Parascene create id or Replicate owner/name). */
   model?: string;
-  /** Provider used for the run — seed for “Duplicate as new generate”. */
+  /** Intent-first modality recipe. */
+  intentId?: string;
+  /** Server lane (`parascene_blue` | `blue_direct` | `replicate`). */
+  server?: string;
+  /** @deprecated Prefer server. */
   provider?: string;
-  /** Method id within the provider catalog. */
+  /** @deprecated Prefer intentId. */
   methodId?: string;
   /** Project image used as start frame, when applicable. */
   startFrameAssetId?: string;
   /** Framing applied to start/bridge stills. */
   startFrameFraming?: "fit" | "fill" | "stretch";
+  /** First / start still source used at generate time. */
+  firstFrameSource?: AddAssetFrameSource;
+  /** Last still source when mode is first_last. */
+  lastFrameSource?: AddAssetFrameSource;
+  /**
+   * Preview URL of the start still actually sent to generation (Assets pick or
+   * timeline-extracted). Used to render locked Form without re-extracting.
+   */
+  startFramePreviewUrl?: string;
+  /** Preview URL of the last-frame still when mode is first_last. */
+  endFramePreviewUrl?: string;
   /** User opted into nearest allowed Replicate duration. */
   useNearestDuration?: boolean;
   /** Optional Replicate model params captured at generate time. */

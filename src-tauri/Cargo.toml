@@ -1,6 +1,6 @@
 [package]
 name = "parascene-desktop"
-version = "1.1.40"
+version = "1.1.41"
 description = "Parascene Desktop"
 authors = ["Parascene"]
 edition = "2021"
@@ -40,6 +40,7 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 pollster = "1.0.1"
 arboard = "3"
 unicode-segmentation = "1"
+sha2 = "0.10"
 
 # Deep-link handoff on Windows/Linux starts a second process; single-instance
 # forwards argv (incl. parascene://) into the first process and exits the second.

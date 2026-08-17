@@ -7,6 +7,10 @@
 import type { Creation, CreationUpsert } from "../library/types";
 import { DESKTOP_GROUP_META_KEY } from "./desktopProjectGroups";
 import type { AddAssetGeneration } from "./types";
+import {
+  resolveFirstFrameSource,
+  resolveLastFrameSource,
+} from "./addAssetFrameSource";
 
 export const ADD_ASSET_GENERATION_META_KEY = "addAssetGeneration";
 
@@ -93,6 +97,14 @@ export function normalizeAddAssetGeneration(
     typeof row.methodId === "string" && row.methodId.trim()
       ? row.methodId.trim()
       : undefined;
+  const intentId =
+    typeof row.intentId === "string" && row.intentId.trim()
+      ? row.intentId.trim()
+      : undefined;
+  const server =
+    typeof row.server === "string" && row.server.trim()
+      ? row.server.trim()
+      : undefined;
   const startFrameAssetId =
     typeof row.startFrameAssetId === "string" && row.startFrameAssetId.trim()
       ? row.startFrameAssetId.trim()
@@ -103,6 +115,26 @@ export function normalizeAddAssetGeneration(
       : row.startFrameFraming === "fit"
         ? "fit"
         : undefined;
+  const startFramePreviewUrl =
+    typeof row.startFramePreviewUrl === "string" &&
+    row.startFramePreviewUrl.trim()
+      ? row.startFramePreviewUrl.trim()
+      : undefined;
+  const endFramePreviewUrl =
+    typeof row.endFramePreviewUrl === "string" && row.endFramePreviewUrl.trim()
+      ? row.endFramePreviewUrl.trim()
+      : undefined;
+  const firstFrameSource = resolveFirstFrameSource({
+    firstFrameSource: row.firstFrameSource,
+    startFrameAssetId,
+  });
+  const lastFrameSource = resolveLastFrameSource({
+    lastFrameSource: row.lastFrameSource,
+    continuityMode: mode,
+  });
+  const legacyStartFrameAssetId =
+    startFrameAssetId ??
+    (firstFrameSource?.kind === "asset" ? firstFrameSource.assetId : undefined);
   const useNearestDuration = row.useNearestDuration === true ? true : undefined;
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
   return {
@@ -113,10 +145,16 @@ export function normalizeAddAssetGeneration(
     creationId: row.creationId.trim(),
     mode,
     model,
+    intentId,
+    server,
     provider,
     methodId,
-    startFrameAssetId,
+    startFrameAssetId: legacyStartFrameAssetId,
     startFrameFraming,
+    firstFrameSource,
+    lastFrameSource,
+    startFramePreviewUrl,
+    endFramePreviewUrl,
     useNearestDuration,
     replicateTweaks,
   };
@@ -242,4 +280,35 @@ export function preserveDesktopAddAssetGeneration(
     prompt: upsert.prompt?.trim() || prior.prompt.trim() || upsert.prompt,
     remoteJson: mergeAddAssetGenerationIntoRemoteJson(upsert.remoteJson, prior),
   };
+}
+
+/** Provenance stamp for library Text → Image generates. */
+export function makeTextToImageGeneration(opts: {
+  prompt: string;
+  creationId: string;
+  model: string;
+  server: "blue_direct" | "replicate";
+}): AddAssetGeneration {
+  const server = opts.server;
+  return {
+    prompt: opts.prompt.trim(),
+    generatedAt: new Date().toISOString(),
+    creationId: opts.creationId.trim(),
+    mode: "none",
+    model: opts.model.trim(),
+    intentId: "text_to_image",
+    server,
+    provider: server,
+    methodId: "text_to_image",
+  };
+}
+
+export function isTextToImageGeneration(
+  generation: AddAssetGeneration | null | undefined,
+): boolean {
+  if (!generation) return false;
+  if (generation.intentId === "text_to_image") return true;
+  if (generation.methodId === "text_to_image") return true;
+  if (generation.methodId === "replicate_text_to_image") return true;
+  return false;
 }

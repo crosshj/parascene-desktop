@@ -351,14 +351,13 @@ describe("projectStore", () => {
     });
     expect(clip?.timelineLocked).toBe(true);
     expect(clip?.speed).toBe(1.5);
-    expect(clip?.addAssetGeneration).toEqual({
+    expect(clip?.addAssetGeneration).toMatchObject({
       prompt: "Wave at camera",
       audioMode: "full_mix",
       lyricsText: "Hello world",
       generatedAt: "2026-07-22T12:00:00.000Z",
       creationId: "gen-99",
       mode: "start_frame",
-      model: undefined,
     });
   });
 
@@ -392,12 +391,13 @@ describe("projectStore", () => {
         methodId: "blue_timeline_fill",
       },
     });
-    expect(clip?.addAssetDraft).toEqual({
+    expect(clip?.addAssetDraft).toMatchObject({
       prompt: "Pasted bridge prompt",
       audioMode: "vocals",
       continuityMode: "first_last",
       provider: "parascene_blue",
       methodId: "blue_timeline_fill",
+      lastFrameSource: { kind: "timeline" },
     });
   });
 

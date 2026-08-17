@@ -50,10 +50,12 @@ Three lanes. Labels in the UI must match the lane, not legacy internal ids.
 | Lane | UI label | Backend | Billing / access | Media landing |
 | --- | --- | --- | --- | --- |
 | Product path | **Parascene** | www OAuth → create API (`server_id: 6` today) → Creation → sync | **Credits-first** (familiar for people coming from web); not bleeding-edge | Parascene Creation + local library ingest |
-| Blue direct | **Parascene Blue** | `https://blue.parascene.com` (upload, generate, poll) | User-supplied Blue credentials; gated like Replicate | Local library import only (no Creation required) |
+| Blue direct | **Direct to Blue** | `https://blue.parascene.com` (upload, generate, poll) | User-supplied Blue credentials; gated like Replicate | Local library import only (no Creation required) |
 | Replicate direct | **Replicate** | Replicate API | User API token in Settings (keychain) | Local library import |
 
-**Settled naming:** Do **not** call the product/Creation path “Parascene Blue.” That name is reserved for direct Blue. Stable code ids (e.g. `parascene_blue`) may remain legacy until renamed; user-facing copy must be honest.
+**Generate IA:** Intent first (Text to Image, Image to Video, …), then server under that intent. Lab may still say “Parascene Blue” for the method explorer; Generate uses **Direct to Blue**. Timeline Generate: independent first/last frame sources, Result | Form dual view (Form sticky when browsing finished gens), Generate new with durable frame stamps — [PLAN-timeline-fill.md](./PLAN-timeline-fill.md).
+
+**Settled naming:** Do **not** call the product/Creation path “Parascene Blue” or “Direct to Blue.” Stable code ids (e.g. `parascene_blue`) may remain legacy until renamed; user-facing copy must be honest.
 
 **Credits-first on desktop:** Keep a Parascene credits story for web migrants and account-linked gen. That lane stays the non-bleeding-edge default. Blue-direct and Replicate are the power lanes.
 
@@ -79,10 +81,10 @@ Do not silently fall back Blue-direct → product path; that muddies labels and 
 | --- | --- |
 | Web = social / softer; desktop = studio / export / viral → web | **Settled** |
 | Desktop eases web/DB load; not everything in cloud | **Settled** |
-| Product path labeled Parascene; direct path labeled Parascene Blue | **Settled** |
+| Product path labeled Parascene; direct path labeled Direct to Blue (Generate) | **Settled** |
 | Credits-first product lane coexists with BYO Replicate + Blue-direct | **Settled** |
 | Gate Blue-direct and Replicate on Settings credentials | **Settled** |
-| Blue-direct gens land local-only (no Creation) for the Lab proof | **Settled — Lab shipped**; Editor promote path / Phase B still open |
+| Blue-direct gens land local-only (no Creation) for Lab + Generate Direct to Blue | **Settled**; promote-to-Creation still open |
 | Long-term Blue auth (service token vs session vs OAuth) | **Open** |
 | When/whether local gens promote to Parascene Creations | **Open** |
 

@@ -325,25 +325,36 @@ export function AssetBrowserPane({
   useEffect(() => {
     if (!contextMenu) return;
 
-    let close: (() => void) | null = null;
+    let onPointerDown: ((event: PointerEvent) => void) | null = null;
     let onKey: ((event: KeyboardEvent) => void) | null = null;
     let onScroll: (() => void) | null = null;
 
     // Defer so the opening right-click doesn't immediately dismiss the menu.
     const timer = window.setTimeout(() => {
-      close = () => setContextMenu(null);
-      onKey = (event: KeyboardEvent) => {
-        if (event.key === "Escape") close?.();
+      onPointerDown = (event: PointerEvent) => {
+        const target = event.target;
+        if (
+          target instanceof Element &&
+          target.closest(".editor-asset-context-menu")
+        ) {
+          return;
+        }
+        setContextMenu(null);
       };
-      onScroll = () => close?.();
-      window.addEventListener("pointerdown", close);
+      onKey = (event: KeyboardEvent) => {
+        if (event.key === "Escape") setContextMenu(null);
+      };
+      onScroll = () => setContextMenu(null);
+      window.addEventListener("pointerdown", onPointerDown);
       window.addEventListener("keydown", onKey);
       window.addEventListener("scroll", onScroll, true);
     }, 0);
 
     return () => {
       window.clearTimeout(timer);
-      if (close) window.removeEventListener("pointerdown", close);
+      if (onPointerDown) {
+        window.removeEventListener("pointerdown", onPointerDown);
+      }
       if (onKey) window.removeEventListener("keydown", onKey);
       if (onScroll) window.removeEventListener("scroll", onScroll, true);
     };
@@ -528,7 +539,15 @@ export function AssetBrowserPane({
 
   const isLocalOnlyAsset = (assetId: string): boolean => {
     const creation = creationsById[assetId];
-    return creation ? isLocalOnlyCreation(creation) : false;
+    if (!creation) return false;
+    // Desktop Generate stamps local rows with remoteJson provenance — still
+    // deletable as long as there is no cloud remote_url.
+    if (creation.remoteUrl?.trim()) return false;
+    return (
+      isLocalOnlyCreation(creation) ||
+      String(creation.downloadState ?? "").toLowerCase() === "local" ||
+      creation.id.startsWith("local-")
+    );
   };
 
   const groupMembershipByMemberId = useMemo(() => {

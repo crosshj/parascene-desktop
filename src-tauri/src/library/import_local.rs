@@ -8,7 +8,9 @@ use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
@@ -64,6 +66,113 @@ fn new_local_id(index: usize) -> String {
     )
 }
 
+/// SHA-256 of file bytes — used to reuse exact project-asset duplicates.
+fn file_content_sha256(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("Could not hash {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn find_project_asset_id_by_checksum(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    checksum: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT c.id FROM creations c
+         INNER JOIN project_assets pa ON pa.creation_id = c.id
+         WHERE pa.project_id = ?1 AND c.checksum = ?2
+         ORDER BY c.created_at ASC
+         LIMIT 1",
+        params![project_id, checksum],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("Lookup project asset by checksum failed: {e}"))
+}
+
+fn set_creation_checksum(
+    conn: &rusqlite::Connection,
+    id: &str,
+    checksum: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE creations SET checksum = ?1, updated_at = ?2 WHERE id = ?3",
+        params![checksum, Utc::now().to_rfc3339(), id],
+    )
+    .map_err(|e| format!("Could not store checksum for {id}: {e}"))?;
+    Ok(())
+}
+
+/// Prefer an existing project member with the same bytes; backfill checksums when missing.
+fn find_or_backfill_project_duplicate(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    checksum: &str,
+    source_len: u64,
+) -> Result<Option<String>, String> {
+    if let Some(id) = find_project_asset_id_by_checksum(conn, project_id, checksum)? {
+        return Ok(Some(id));
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.checksum, c.local_path FROM creations c
+             INNER JOIN project_assets pa ON pa.creation_id = c.id
+             WHERE pa.project_id = ?1
+               AND c.local_path IS NOT NULL
+               AND c.local_path != ''",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let (id, existing_checksum, local_path) = row.map_err(|e| e.to_string())?;
+        if let Some(existing) = existing_checksum
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if existing == checksum {
+                return Ok(Some(id));
+            }
+            continue;
+        }
+        let path = PathBuf::from(&local_path);
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() != source_len || !path.is_file() {
+            continue;
+        }
+        let digest = file_content_sha256(&path)?;
+        set_creation_checksum(conn, &id, &digest)?;
+        if digest == checksum {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
 fn probe_image_size(path: &Path) -> (Option<i64>, Option<i64>, Option<String>) {
     let Ok(reader) = image::ImageReader::open(path) else {
         return (None, None, None);
@@ -106,6 +215,7 @@ pub(crate) fn insert_local_creation(
     width: Option<i64>,
     height: Option<i64>,
     aspect_ratio: Option<&str>,
+    checksum: Option<&str>,
 ) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
     conn.execute(
@@ -119,7 +229,7 @@ pub(crate) fn insert_local_creation(
         ) VALUES (
           ?1, ?2, ?3, NULL, NULL, NULL, NULL,
           ?4, NULL, 0, NULL, ?5, 'local',
-          NULL, NULL, NULL, ?5,
+          ?10, NULL, NULL, ?5,
           ?6, NULL, NULL, 'local', ?7, ?8, ?9,
           0, 0, NULL
         )
@@ -134,6 +244,7 @@ pub(crate) fn insert_local_creation(
             width,
             height,
             aspect_ratio,
+            checksum,
         ],
     )
     .map_err(|e| format!("Insert local creation failed: {e}"))?;
@@ -195,6 +306,43 @@ pub(crate) fn import_paths(
             continue;
         }
 
+        let checksum = file_content_sha256(source)?;
+        let source_len = fs::metadata(source)
+            .map(|m| m.len())
+            .map_err(|e| format!("Could not stat {}: {e}", source.display()))?;
+
+        // Project Assets: reuse an exact byte-identical member instead of
+        // minting another local-* row (guards import loops / re-downloads).
+        if let Some(project_id) = project_id {
+            let conn = ready_connection(&paths)?;
+            if let Some(existing_id) =
+                find_or_backfill_project_duplicate(&conn, project_id, &checksum, source_len)?
+            {
+                if let Some(existing) = get_creation_by_id(&conn, &existing_id)? {
+                    let local_ok = existing
+                        .local_path
+                        .as_deref()
+                        .map(|p| Path::new(p).is_file())
+                        .unwrap_or(false);
+                    if local_ok {
+                        if let Some(folder_id) = folder_id {
+                            let mut write = ready_connection(&paths)?;
+                            let transaction = write.transaction().map_err(|e| e.to_string())?;
+                            move_creations_into_folder(
+                                &transaction,
+                                folder_id,
+                                std::slice::from_ref(&existing_id),
+                                &Utc::now().to_rfc3339(),
+                            )?;
+                            transaction.commit().map_err(|e| e.to_string())?;
+                        }
+                        imported.push(existing);
+                        continue;
+                    }
+                }
+            }
+        }
+
         let original_name = source
             .file_name()
             .and_then(|n| n.to_str())
@@ -229,6 +377,7 @@ pub(crate) fn import_paths(
                 width,
                 height,
                 aspect_ratio.as_deref(),
+                Some(&checksum),
             )?;
             if let Some(folder_id) = folder_id {
                 move_creations_into_folder(
@@ -361,6 +510,7 @@ mod tests {
             Some(100),
             Some(100),
             Some("1:1"),
+            None,
         )
         .expect("creation");
         move_creations_into_folder(
@@ -393,5 +543,22 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_content_sha256_is_stable_for_same_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "parascene-hash-test-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("output.mp4");
+        fs::write(&path, b"exact-bytes").expect("write");
+        let a = file_content_sha256(&path).expect("hash a");
+        let b = file_content_sha256(&path).expect("hash b");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
+        let _ = fs::remove_dir_all(dir);
     }
 }

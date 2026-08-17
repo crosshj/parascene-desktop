@@ -735,14 +735,14 @@ fn still_framing_filter(
 ) -> String {
     match framing.trim().to_ascii_lowercase().as_str() {
         "fill" => format!(
-            "setsar=1,scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,format=yuvj420p"
+            "setsar=1,scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,format=yuv420p"
         ),
         "stretch" => format!(
-            "setsar=1,scale={out_w}:{out_h},setsar=1,format=yuvj420p"
+            "setsar=1,scale={out_w}:{out_h},setsar=1,format=yuv420p"
         ),
         // Fit: contain into 16:9 stage → center-crop project matte → scale out.
         _ => format!(
-            "setsar=1,scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,format=yuvj420p"
+            "setsar=1,scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,format=yuv420p"
         ),
     }
 }
@@ -777,13 +777,13 @@ pub async fn library_apply_image_framing(
     let fp = source_fingerprint(&src)?;
     let dir = cache_dir("framed-stills")?;
     let aspect_slug = aspect_key.replace(':', "x");
-    // v2: Fit matches editor stage→matte crop (not direct contain into project).
-    let dest = dir.join(format!("{fp}-{framing_key}-{aspect_slug}-v2.jpg"));
+    // v3: baseline yuv420p JPEG (not yuvj) for Blue/Comfy compatibility.
+    let dest = dir.join(format!("{fp}-{framing_key}-{aspect_slug}-v3.jpg"));
     if dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Ok(dest.to_string_lossy().to_string());
     }
 
-    let tmp = dir.join(format!("{fp}-{framing_key}-{aspect_slug}-v2.tmp.jpg"));
+    let tmp = dir.join(format!("{fp}-{framing_key}-{aspect_slug}-v3.tmp.jpg"));
     let _ = fs::remove_file(&tmp);
     let vf = still_framing_filter(out_w, out_h, crop_w, crop_h, framing_key);
     let src_arg = src.to_string_lossy().to_string();

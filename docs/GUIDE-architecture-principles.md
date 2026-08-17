@@ -23,9 +23,9 @@ Implications:
 
 This is **not** only “desktop talks to third-party APIs.” Replicate direct already lands local-only. **Parascene Blue direct** is the first-party counterpart: user Blue credentials → Blue HTTP (incl. `/api/files`) → local library import.
 
-**Lab is the first ship surface:** Desktop Lab’s **Parascene Blue methods** + unified **Predictions** (Replicate + Blue) are the in-app **direct-to-provider / no-Creation** path for Blue (Settings creds → Blue API → cache under `~/Movies/Parascene/Cache/blue/` → optional local library import). Editor product-lane gens via `server_id: 6` stay Creation-backed and must not be labeled “Blue.”
+**Lab is the first ship surface for method exploration:** Desktop Lab’s **Parascene Blue methods** + unified **Predictions** (Replicate + Blue) remain the capabilities explorer. **Generate** is intent-first (modality → server); **Direct to Blue** is the Generate server for Blue-direct (Settings creds → Blue API → local-only import). Editor **Parascene** server gens via `server_id: 6` stay Creation-backed and must not be labeled “Blue.”
 
-**Settled for Blue-direct Lab proof:** Blue-direct Lab jobs must not create Parascene Creations. The existing **Parascene** product path (credits / `server_id: 6` / Creation ingest) remains for web migrants and stays Creation-backed.
+**Settled for Blue-direct:** Blue-direct jobs (Lab + Generate Direct to Blue) must not create Parascene Creations. The existing **Parascene** product path (credits / `server_id: 6` / Creation ingest) remains for web migrants and stays Creation-backed.
 
 **Still open:**
 
@@ -40,5 +40,5 @@ This is **not** only “desktop talks to third-party APIs.” Replicate direct a
 | --- | --- |
 | Desktop reduces web/DB load via local catalog, files, and offline-capable work | **Yes — design goal** |
 | Not everything must be stored in Parascene cloud / DB | **Yes** |
-| Parascene Blue direct gens without a Creation row (local import) | **Yes — Lab lane shipped**; Editor/timeline clone still open |
+| Parascene Blue direct gens without a Creation row (local import) | **Yes — Lab + Generate Direct to Blue** |
 | Promote local gens → Parascene Creations | **Open** |

@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCreation, getCreations } from "../../library/catalogClient";
 import {
   clipThumbnailKey,
+  clipTimelineComposition,
   ensureClipThumbnail,
   getCachedClipThumbnail,
   type ClipThumbnailComposition,
@@ -212,13 +213,7 @@ function clipThumbnailComposition(
   clip: Pick<TimelineClip, "framing" | "zoom" | "centerX" | "centerY">,
   aspectRatio: ProjectAspectRatio,
 ): ClipThumbnailComposition {
-  return {
-    framing: normalizeFraming(clip.framing),
-    aspectRatio,
-    zoom: Math.min(4, Math.max(1, Number(clip.zoom) || 1)),
-    centerX: Math.min(50, Math.max(-50, Number(clip.centerX) || 0)),
-    centerY: Math.min(50, Math.max(-50, Number(clip.centerY) || 0)),
-  };
+  return clipTimelineComposition(clip, aspectRatio);
 }
 
 function newClipId(): string {

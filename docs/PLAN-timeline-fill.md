@@ -1,9 +1,9 @@
 # Plan — Timeline fill (continuity-first MV)
 
-**Status:** Proposed direction (replaces MV Build checklist approach)  
-**Date:** July 2026  
+**Status:** Core Editor Generate path **shipped** (placeholders, independent first/last sources, multi-server, Result | Form, Generate new with durable frame stamps). Marker/scene strip and batch flows remain open.  
+**Date:** July 2026 (status refreshed August 2026)  
 **Supersedes:** [mv-build-retrospective.md](./mv-build-retrospective.md) (abandoned path)  
-**Related:** [PLAN-song-to-video.md](./PLAN-song-to-video.md), [PLAN-mv-storyboard-lab.md](./PLAN-mv-storyboard-lab.md)
+**Related:** [PLAN-song-to-video.md](./PLAN-song-to-video.md), [PLAN-mv-storyboard-lab.md](./PLAN-mv-storyboard-lab.md), [PLAN-parascene-blue-direct.md](./PLAN-parascene-blue-direct.md)
 
 ---
 
@@ -31,16 +31,16 @@ This is the unit of work—not a row in MV Build.
 
 ### Continuity options (user-controlled)
 
-Per placeholder, the user chooses how this shot connects to what came before. Examples:
+Per placeholder, the user chooses how this shot connects to what came before:
 
-| Option | Meaning |
-|--------|---------|
-| **Use previous end frame** | Seed generation from the last frame of the clip immediately before this slot on V1 |
-| *(later)* **Use specific asset** | Pick any project still or clip frame |
-| *(later)* **Fresh still** | Text-to-image with no visual chain |
-| *(later)* **Same setup / match cut** | Semantic presets tied to storyboard notes |
+| Option | Meaning | Status |
+|--------|---------|--------|
+| **Previous / next timeline neighbor** | Seed from last frame of prior clip and/or first frame of next | **Shipped** |
+| **Project image (Assets)** | Pick any project still for first and/or last independently | **Shipped** |
+| **None** | Text-to-video (no input stills) | **Shipped** |
+| *(later)* **Same setup / match cut** | Semantic presets tied to storyboard notes | Open |
 
-**"Use previous end frame"** alone is enough for an MVP that fixes the main pain: each new shot can visually continue from the last one without a separate planning pass.
+First and last are **independent** (timeline neighbor, Assets image, or none) via the frame-source picker — not an all-or-nothing bridge.
 
 ### Lyrics and timing — app-assisted, not user-managed
 
@@ -67,9 +67,9 @@ Placeholder placement and marker alignment are the same coordinate system: secon
 
 1. **Align + storyboard** (Lab or Director) — lyrics timed, scenes proposed with time ranges. No bulk generation required.
 2. **Editor** — main audio on A1; user adds **fill placeholders** on V1 (from storyboard import, drag to create, or "add scene as placeholder").
-3. **Configure slot** — duration, continuity option (e.g. previous end frame), tweak auto-filled lyric/prompt text.
-4. **Generate** — one button per placeholder; replaces ghost with real asset when done; keeps timeline position.
-5. **Repeat** — next slot naturally follows the previous clip on the timeline; continuity option makes that explicit.
+3. **Configure slot** — duration, first/last sources, server + model, tweak auto-filled lyric/prompt text.
+4. **Generate** — one button per placeholder; Result | Form dual view while running; replaces ghost with real asset when done; keeps timeline position.
+5. **Review / Generate new** — finished gens show Result | Form; Form keeps stamped first/last stills; Generate new clones prompt + durable frame sources.
 
 Progress = **what's filled on the timeline**, not "47 of 53 checklist steps."
 
@@ -78,7 +78,7 @@ Progress = **what's filled on the timeline**, not "47 of 53 checklist steps."
 ## What this is not
 
 - Not a factory checklist (MV Build).
-- Not automatic continuity without user choice—the user picks "use previous end frame" (or other options later).
+- Not automatic continuity without user choice—the user picks first/last sources.
 - Not perfect on day one—good enough to direct shot-by-shot on the timeline.
 
 ---
@@ -90,13 +90,13 @@ Progress = **what's filled on the timeline**, not "47 of 53 checklist steps."
 | **Lyric align** | Supplies timed text for any `[start, end]` window |
 | **MV Scenes** | Proposes scenes + times → can **spawn placeholders** on timeline (import), not run generation |
 | **MV Build** | **Retired** — logic like pull_frame / a2v / file-to-group moves to per-placeholder Generate |
-| **Editor timeline** | Primary surface; needs unfilled clip type + fill UI |
+| **Editor timeline** | Primary surface; add-asset placeholders + Generate panel |
 | **AI Fill** (song-to-video plan) | Same spirit: ghost clip, generate, keep song audio — extend to continuity options |
-| **`TimelineGhostClip`** (today) | Drag preview only — **new type** needed for persistent unfilled slots |
+| **`TimelineGhostClip`** (today) | Drag preview only — **persistent** unfilled slots are add-asset placeholders |
 
 ---
 
-## MVP scope (suggested)
+## MVP scope
 
 ### Data model
 
@@ -106,20 +106,25 @@ Progress = **what's filled on the timeline**, not "47 of 53 checklist steps."
   - `generationSpec`: prompt, vocal slice ref, optional storyboard scene id
   - `assetId` when filled (null while empty)
 
+**Shipped shape (practical):** `isAddAssetPlaceholder` + `addAssetDraft` / `addAssetGeneration` (intent, server, first/last `AddAssetFrameSource`, preview URL stamps, remote job resume).
+
 ### Editor UI
 
-- [ ] Add placeholder clip to timeline (empty V1 slot with duration)
+- [x] Add placeholder clip to timeline (empty V1 slot with duration)
 - [ ] Snap / align to lyric or scene markers
 - [ ] Marker row or scene strip under timeline
-- [ ] Inspector: continuity dropdown, lyric-assisted prompt, **Generate**
-- [ ] Visual distinction: unfilled vs filled clips
+- [x] Inspector / Preview: continuity (first/last sources), lyric-assisted prompt, **Generate**
+- [x] Visual distinction: unfilled placeholders vs filled clips
+- [x] Result | Form dual view (sticky Form when browsing finished gens)
+- [x] Generate new from a finished generation (clones prompt + durable frame stamps)
 
 ### Generate pipeline (per clip)
 
-- [ ] Resolve continuity (e.g. extract last frame of previous V1 clip)
-- [ ] Resolve vocal slice + lyrics for clip time range
-- [ ] Run still / a2v (reuse Lab primitives: isolate, `ltx_a2v`, file to Videos group)
-- [ ] Swap placeholder → real clip; preserve `startSec` / duration
+- [x] Resolve continuity (neighbor extract and/or Assets stills; independent first/last)
+- [x] Resolve vocal slice + lyrics for clip time range (when audio intents need it)
+- [x] Run still / i2v / flf / a2v / t2v via Parascene, Direct to Blue, or Replicate
+- [x] Swap placeholder → real clip; preserve `startSec` / duration
+- [x] Stamp first/last preview URLs + durable image sources on success (Form / Generate new)
 
 ### Storyboard handoff
 
@@ -130,10 +135,10 @@ Progress = **what's filled on the timeline**, not "47 of 53 checklist steps."
 
 ## Later
 
-- [ ] More continuity modes (specific asset, style lock, character lock)
+- [ ] More continuity modes (style lock, character lock)
 - [ ] Batch generate all empty placeholders in timeline order
-- [ ] Regenerate in place (keep slot, new asset)
-- [ ] First–last frame bridge between two filled clips
+- [x] Regenerate / Generate new (keep creative inputs, new asset)
+- [x] First–last frame bridge between neighbors (and Assets picks)
 - [ ] Director as primary entry (Lab storyboard becomes optional depth)
 
 ---
@@ -142,13 +147,14 @@ Progress = **what's filled on the timeline**, not "47 of 53 checklist steps."
 
 1. **Placeholder duration** — user-drawn, fixed from scene `endSec - startSec`, or shrink-to-fit lyrics?
 2. **One V1 lane only** for MVP, or multiple video tracks?
-3. **Filled clip** — replace placeholder in place vs new clip + delete ghost?
+3. **Filled clip** — replace placeholder in place vs new clip + delete ghost? *(shipped: replace in place)*
 4. **Storyboard drift** — if user moves placeholder off scene time, is scene link advisory only?
 
 ---
 
 ## Success criteria
 
-- User can place an **empty** clip at 0:13–0:25, see **lyrics for that window**, choose **previous end frame**, hit **Generate**, and get a lip-sync clip **on the timeline** without using MV Build.
+- User can place an **empty** clip, choose **previous end frame** (or Assets stills / first+last), hit **Generate**, and get a clip **on the timeline** without using MV Build.
+- Finished gens keep **Form** review of the submitted prompt and first/last stills; **Generate new** does not depend on live neighbors alone.
 - Watching the timeline left-to-right matches the **story order** of the video.
 - Continuity is a **visible choice per slot**, not a hidden default in a plan resolver.

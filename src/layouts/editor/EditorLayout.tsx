@@ -55,6 +55,12 @@ import {
 import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import type { AddAssetIntent } from "./previewIntent";
 import {
+  makeAddAssetIntent,
+  normalizeGenerateServer,
+} from "./previewIntent";
+import { loadLastGenerateIntent } from "./generateIntentPrefs";
+import { isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import {
   clearAddAssetGenerationError,
   clearAddAssetGenerationIfClipMissing,
   retryAddAssetDownloadJob,
@@ -63,7 +69,10 @@ import {
 } from "./addAssetGenerationStore";
 import { findTimelineGenerationForAsset } from "./addAssetGenerate";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
-import { resolveEditorMainAudioCreationId } from "./addAssetStartFrame";
+import {
+  enrichDraftFramesFromTimelineAnchor,
+  resolveEditorMainAudioCreationId,
+} from "./addAssetStartFrame";
 import { replicatePredictionsList } from "../../replicate/replicateClient";
 import {
   removeClipsWithLinkedAudio,
@@ -239,8 +248,12 @@ export function EditorLayout() {
     null,
   );
   const [addAssetIntent, setAddAssetIntent] = useState<AddAssetIntent | null>(
-    null,
+    () => loadLastGenerateIntent(),
   );
+  const [libraryGenerateSeed, setLibraryGenerateSeed] = useState<{
+    prompt: string;
+    model?: string;
+  } | null>(null);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
   );
@@ -988,7 +1001,8 @@ export function EditorLayout() {
     setOpenProjectSelectedTimelineClipId(null);
     setOpenProjectTimelineMonitorActive(false);
     clearPendingStagedDraft();
-    setAddAssetIntent(null);
+    setLibraryGenerateSeed(null);
+    setAddAssetIntent(loadLastGenerateIntent());
     setAddAssetSlotActive(true);
   };
 
@@ -1681,11 +1695,33 @@ export function EditorLayout() {
       if (clip.assetId && selected.has(clip.assetId)) {
         used.add(clip.assetId);
       }
+      const generatedId = clip.addAssetGeneration?.creationId?.trim();
+      if (generatedId && selected.has(generatedId)) {
+        used.add(generatedId);
+      }
       for (const id of clip.slideshow?.imageAssetIds ?? []) {
         if (selected.has(id)) used.add(id);
       }
       const audioId = clip.slideshow?.audioAssetId;
       if (audioId && selected.has(audioId)) used.add(audioId);
+      const startFrame =
+        clip.addAssetGeneration?.startFrameAssetId?.trim() ||
+        clip.addAssetDraft?.startFrameAssetId?.trim() ||
+        (clip.addAssetGeneration?.firstFrameSource?.kind === "asset"
+          ? clip.addAssetGeneration.firstFrameSource.assetId
+          : "") ||
+        (clip.addAssetDraft?.firstFrameSource?.kind === "asset"
+          ? clip.addAssetDraft.firstFrameSource.assetId
+          : "");
+      if (startFrame && selected.has(startFrame)) used.add(startFrame);
+      const lastFrame =
+        (clip.addAssetGeneration?.lastFrameSource?.kind === "asset"
+          ? clip.addAssetGeneration.lastFrameSource.assetId
+          : "") ||
+        (clip.addAssetDraft?.lastFrameSource?.kind === "asset"
+          ? clip.addAssetDraft.lastFrameSource.assetId
+          : "");
+      if (lastFrame && selected.has(lastFrame)) used.add(lastFrame);
     }
     return used;
   };
@@ -1729,11 +1765,21 @@ export function EditorLayout() {
       cancelLabel: "Cancel",
     });
     if (!ok) return;
-    await removeCreationsFromOpenProject(assetIds);
-    if (selectedAssetId && assetIds.includes(selectedAssetId)) {
-      setSelectedAssetId(null);
-      setSelectedAssetIds([]);
-      setOpenProjectSelectedAssetId(null);
+    try {
+      await removeCreationsFromOpenProject(assetIds);
+      if (selectedAssetId && assetIds.includes(selectedAssetId)) {
+        setSelectedAssetId(null);
+        setSelectedAssetIds([]);
+        setOpenProjectSelectedAssetId(null);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await confirm({
+        title: "Could not remove asset",
+        message,
+        confirmLabel: "OK",
+        hideCancel: true,
+      });
     }
   };
 
@@ -2075,6 +2121,30 @@ export function EditorLayout() {
   };
 
   const duplicateGeneratedAsNewGenerate = (generation: AddAssetGeneration) => {
+    if (isTextToImageGeneration(generation)) {
+      const server =
+        normalizeGenerateServer(generation.server) ??
+        normalizeGenerateServer(generation.provider) ??
+        "blue_direct";
+      pauseTimelinePlayback();
+      setOpenCompositionId(null);
+      setSelectedClipId(null);
+      setSelectedClipIds([]);
+      setClipStagingSeed(null);
+      setSelectedAssetIds([]);
+      setSelectedAssetId(null);
+      setOpenProjectSelectedAssetId(null);
+      setOpenProjectSelectedTimelineClipId(null);
+      setOpenProjectTimelineMonitorActive(false);
+      clearPendingStagedDraft();
+      setLibraryGenerateSeed({
+        prompt: generation.prompt,
+        model: generation.model?.trim() || undefined,
+      });
+      setAddAssetIntent(makeAddAssetIntent("text_to_image", server, "assets"));
+      setAddAssetSlotActive(true);
+      return;
+    }
     const creationId = generation.creationId?.trim() || "";
     const matchedClip =
       (selectedTimelineClip?.addAssetGeneration?.creationId === creationId
@@ -2083,22 +2153,35 @@ export function EditorLayout() {
       findTimelineGenerationForAsset(displayTimeline, creationId)?.clip ??
       findTimelineGenerationForAsset(displayTimeline, selectedAssetId)?.clip ??
       null;
-    const draft = stagedDraftForDuplicateGenerate(
-      generation,
-      matchedClip
-        ? addAssetClipDurationSec(matchedClip)
-        : ADD_ASSET_TIMELINE_DURATION_SEC,
-    );
-    recordUiOpTrace({
-      type: "place_at_end_click",
-      kind: "image",
-      reason: "duplicate_generated_as_new_generate",
-    });
-    window.dispatchEvent(
-      new CustomEvent("parascene-staged-clip-place", {
-        detail: { draft },
-      }),
-    );
+    void (async () => {
+      let draft = stagedDraftForDuplicateGenerate(
+        generation,
+        matchedClip
+          ? addAssetClipDurationSec(matchedClip)
+          : ADD_ASSET_TIMELINE_DURATION_SEC,
+      );
+      if (matchedClip && draft.addAssetDraft) {
+        draft = {
+          ...draft,
+          addAssetDraft: await enrichDraftFramesFromTimelineAnchor({
+            draft: draft.addAssetDraft,
+            timeline: displayTimeline,
+            anchor: matchedClip,
+            aspectRatio: project.aspectRatio,
+          }),
+        };
+      }
+      recordUiOpTrace({
+        type: "place_at_end_click",
+        kind: "image",
+        reason: "duplicate_generated_as_new_generate",
+      });
+      window.dispatchEvent(
+        new CustomEvent("parascene-staged-clip-place", {
+          detail: { draft },
+        }),
+      );
+    })();
   };
 
   const selectedAddAssetGeneration = useMemo(() => {
@@ -2206,6 +2289,7 @@ export function EditorLayout() {
         addAssetSlotActive={addAssetSlotActive}
         addAssetIntent={addAssetIntent}
         onAddAssetIntentChange={setAddAssetIntent}
+        libraryFormSeed={libraryGenerateSeed}
         addAssetPlaceholderClip={generateTargetClip}
         addAssetGenerationSession={addAssetGenerationSession}
         lyricAlignment={project.lyricAlignment}
@@ -2234,9 +2318,11 @@ export function EditorLayout() {
         }}
         onAddAssetDraftChange={(draft) => {
           const clip = generateTargetClip;
-          if (!clip) return;
+          if (!clip || !isAddAssetPlaceholderClip(clip)) return;
           setOpenProjectTimeline((prev) => {
-            const found = prev.some((c) => c.id === clip.id);
+            const found = prev.some(
+              (c) => c.id === clip.id && isAddAssetPlaceholderClip(c),
+            );
             recordUiOpTrace({
               type: "add_asset_draft_patch",
               clipId: clip.id,
@@ -2245,7 +2331,9 @@ export function EditorLayout() {
             });
             if (!found) return prev;
             const next = prev.map((c) =>
-              c.id === clip.id ? { ...c, addAssetDraft: draft } : c,
+              c.id === clip.id && isAddAssetPlaceholderClip(c)
+                ? { ...c, addAssetDraft: draft }
+                : c,
             );
             timelineRef.current = next;
             return next;

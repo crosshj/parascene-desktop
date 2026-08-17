@@ -4,18 +4,25 @@ import { getCreations } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
 import type {
   AddAssetDraft,
+  AddAssetFrameSource,
   LyricAlignment,
   ProjectAsset,
   TimelineClip,
 } from "../../project/types";
+import {
+  continuityFromFrameSources,
+  frameSourceAssetId,
+  frameSourceIsSet,
+  frameSourcesEqual,
+  resolveFirstFrameSource,
+  resolveLastFrameSource,
+} from "../../project/addAssetFrameSource";
 import {
   PROJECT_ASPECT_OPTIONS,
   projectAspectCss,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
 import {
-  ADD_ASSET_IMAGES_NONE_AUDIO_NOTE,
-  ADD_ASSET_WAN_AUDIO_NOTE,
   addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
   resolveAddAssetAudioMode,
@@ -27,22 +34,23 @@ import {
 } from "./addAssetGenerate";
 import { resolveLyricsForTimeRange, matchingLyricAlignment } from "./addAssetLyrics";
 import {
-  resolveAddAssetBridgeFrames,
+  peekTimelineFrameSlot,
+  resolveAddAssetBridgeFramesFromSources,
   resolveAddAssetGenerationTiming,
+  resolveFrameSlot,
   resolveStartFrameForAddAsset,
   framePathBasename,
   startFrameIsReady,
   type BridgeFrames,
   type StartFramePreview,
 } from "./addAssetStartFrame";
+import { GenerateFrameSourcePicker } from "./GenerateFrameSourcePicker";
 import {
   ADD_ASSET_MAX_DURATION_SEC,
   ADD_ASSET_MIN_DURATION_SEC,
   addAssetClipDurationSec,
   clampAddAssetDurationSec,
-  normalizeFraming,
   withAddAssetDuration,
-  type StagedClipFraming,
 } from "./stagedClip";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import { recordUiOpTrace } from "./uiOpTrace";
@@ -59,6 +67,14 @@ import {
   replicateModelOptionDisabledReason,
   type ReplicateVideoModelOption,
 } from "./replicateVideoModels";
+import {
+  blueMethodForTimelineFill,
+  filterBlueVideoModels,
+  isWanFamilyBlueModel,
+  loadBlueVideoModels,
+  pickCompatibleBlueModel,
+  type BlueVideoModelOption,
+} from "./blueVideoModels";
 import { resolveMotionReferenceVideoPath } from "./addAssetReplicateGenerate";
 import {
   discoverReplicateTweakFields,
@@ -75,13 +91,15 @@ export type StartAddAssetGenerationRequest = {
   lyricsText: string;
   audioMode: AddAssetAudioMode;
   continuityMode: AddAssetContinuityMode;
-  /** Parascene Blue model when not generating via Replicate. */
+  /** Parascene / Blue model when not generating via Replicate. */
   blueModel?: AddAssetBlueModel;
   songRange: { startSec: number; endSec: number };
   startFrame: StartFramePreview;
   endFrame?: StartFramePreview | null;
   /** Present when generating via Replicate timeline fill. */
   replicate?: RunAddAssetGenerationOpts["replicate"];
+  /** Direct to Blue (local-only) timeline fill. */
+  blueDirect?: boolean;
 };
 
 type AddAssetGeneratePanelProps = {
@@ -102,8 +120,17 @@ type AddAssetGeneratePanelProps = {
   onRetryDownload?: () => void;
   /** Project image assets available as an explicit start frame. */
   imageAssets?: ProjectAsset[];
-  /** Return to provider selection for this existing placeholder. */
-  onBackToProvider?: () => void;
+  /** Omit Back/header when nested under the intent-first shell. */
+  embedded?: boolean;
+  /**
+   * When true, running/error progress lives on the Result pane — keep showing
+   * the literal form (locked while running) instead of replacing it.
+   */
+  progressHostedExternally?: boolean;
+  /** Force non-interactive form (e.g. finished generation review). */
+  formLocked?: boolean;
+  /** Replaces Generate when the form is locked for review. */
+  onGenerateNew?: () => void;
 };
 
 type PanelPhase = "form" | "running" | "error";
@@ -138,21 +165,23 @@ function draftFromClip(
       ? draft.continuityMode
       : null;
   const blueModel =
-    draft?.blueModel === "wan" || draft?.blueModel === "ltx"
-      ? draft.blueModel
+    typeof draft?.blueModel === "string" && draft.blueModel.trim()
+      ? draft.blueModel.trim()
       : continuity === "first_last"
-        ? "wan"
+        ? "wan_i2v"
         : continuity === "start_frame" || continuity === "none"
-          ? "ltx"
+          ? "ltx_i2v"
           : null;
   const audioMode: AddAssetAudioMode =
     draft?.audioMode === "vocals" ||
     draft?.audioMode === "full_mix" ||
     draft?.audioMode === "none"
       ? draft.audioMode
-      : blueModel === "wan" || continuity === "none"
+      : blueModel && isWanFamilyBlueModel(blueModel)
         ? "none"
-        : resolveAddAssetAudioMode(lyricsText);
+        : continuity === "none"
+          ? "none"
+          : resolveAddAssetAudioMode(lyricsText);
   return {
     prompt:
       typeof draft?.prompt === "string" ? draft.prompt : LAB_A2V_PROMPT,
@@ -180,6 +209,7 @@ function generationJobsEqual(
     a.startedAt === b.startedAt &&
     (a.replicatePredictionId ?? "") === (b.replicatePredictionId ?? "") &&
     (a.pendingCreationId ?? "") === (b.pendingCreationId ?? "") &&
+    (a.blueJobId ?? "") === (b.blueJobId ?? "") &&
     (a.model ?? "") === (b.model ?? "")
   );
 }
@@ -196,47 +226,90 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
     Boolean(a.useNearestDuration) === Boolean(b?.useNearestDuration) &&
     (a.lastError ?? "") === (b?.lastError ?? "") &&
     (a.replicatePredictionId ?? "") === (b?.replicatePredictionId ?? "") &&
+    (a.blueJobId ?? "") === (b?.blueJobId ?? "") &&
     generationJobsEqual(a.generationJob, b?.generationJob) &&
     replicateTweaksEqual(a.replicateTweaks, b?.replicateTweaks) &&
     (a.startFrameAssetId ?? "") === (b?.startFrameAssetId ?? "") &&
-    normalizeFraming(a.startFrameFraming) ===
-      normalizeFraming(b?.startFrameFraming)
+    frameSourcesEqual(a.firstFrameSource, b?.firstFrameSource) &&
+    frameSourcesEqual(a.lastFrameSource, b?.lastFrameSource) &&
+    (a.startFramePreviewUrl ?? "") === (b?.startFramePreviewUrl ?? "") &&
+    (a.endFramePreviewUrl ?? "") === (b?.endFramePreviewUrl ?? "")
   );
 }
 
+import {
+  resolveAddAssetIntent,
+  serverLabel,
+  intentLabel,
+  type GenerateIntentId,
+  type GenerateServerId,
+} from "./previewIntent";
+import { blueCredentialsStatus } from "../../blue/blueClient";
+import {
+  BLUE_CREDENTIALS_CHANGED_EVENT,
+  requestOpenSettings,
+} from "../../settings/events";
+
+function draftServer(clip: TimelineClip): GenerateServerId {
+  const resolved = resolveAddAssetIntent(clip.addAssetDraft ?? {});
+  return resolved?.server ?? "parascene_blue";
+}
+
+function draftIntentId(clip: TimelineClip): GenerateIntentId {
+  const resolved = resolveAddAssetIntent(clip.addAssetDraft ?? {});
+  return resolved?.intentId ?? "image_to_video";
+}
+
 function isReplicateTimelineFill(clip: TimelineClip): boolean {
-  const draft = clip.addAssetDraft;
-  return (
-    draft?.provider === "replicate" &&
-    (draft.methodId === "replicate_timeline_fill" || !draft.methodId)
-  );
+  return draftServer(clip) === "replicate";
+}
+
+function isBlueDirectTimelineFill(clip: TimelineClip): boolean {
+  return draftServer(clip) === "blue_direct";
 }
 
 function GenerateActions({
   onRefresh,
   onGenerate,
+  onGenerateNew,
   refreshDisabled,
   generateDisabled,
+  formLocked,
 }: {
   onRefresh: () => void;
   onGenerate: () => void;
+  onGenerateNew?: () => void;
   refreshDisabled: boolean;
   generateDisabled: boolean;
+  formLocked?: boolean;
 }) {
+  if (formLocked && onGenerateNew) {
+    return (
+      <div className="add-asset-generate-footer">
+        <button
+          type="button"
+          className="btn btn-primary editor-add-asset-generate"
+          onClick={onGenerateNew}
+        >
+          Generate new
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="add-asset-generate-footer">
       <button
         type="button"
         className="btn ghost"
         onClick={onRefresh}
-        disabled={refreshDisabled}
+        disabled={refreshDisabled || formLocked}
       >
         Refresh
       </button>
       <button
         type="button"
         className="btn btn-primary editor-add-asset-generate"
-        disabled={generateDisabled}
+        disabled={generateDisabled || formLocked}
         onClick={onGenerate}
       >
         Generate video
@@ -249,7 +322,22 @@ function timelineFingerprint(timeline: readonly TimelineClip[]): string {
   return timeline
     .map(
       (clip) =>
-        `${clip.id}:${clip.startSec.toFixed(3)}:${clip.endSec.toFixed(3)}:${clip.assetId ?? ""}:${clip.inSec ?? 0}:${clip.outSec ?? ""}:${clip.framing ?? "fit"}:${clip.reverse ? 1 : 0}`,
+        [
+          clip.id,
+          clip.startSec.toFixed(3),
+          clip.endSec.toFixed(3),
+          clip.assetId ?? "",
+          clip.inSec ?? 0,
+          clip.outSec ?? "",
+          clip.framing ?? "fit",
+          clip.reverse ? 1 : 0,
+          clip.extendPingPong === true ? 1 : 0,
+          clip.extendSourceSpanSec ?? "",
+          clip.speed ?? 1,
+          clip.zoom ?? 1,
+          clip.centerX ?? 0.5,
+          clip.centerY ?? 0.5,
+        ].join(":"),
     )
     .join("|");
 }
@@ -292,6 +380,27 @@ function AddAssetGenerationProgressBar({
   );
 }
 
+function frameSourceKey(source: AddAssetFrameSource): string {
+  if (source.kind === "asset") return `asset:${source.assetId}`;
+  return source.kind;
+}
+
+const TIMELINE_FRAME_SOURCE: AddAssetFrameSource = { kind: "timeline" };
+const NONE_FRAME_SOURCE: AddAssetFrameSource = { kind: "none" };
+
+function frameSourceCaption(
+  source: AddAssetFrameSource,
+  role: "first" | "last",
+  imageAssets: readonly ProjectAsset[],
+): string {
+  if (source.kind === "none") return "None";
+  if (source.kind === "asset") {
+    const name = imageAssets.find((a) => a.id === source.assetId)?.name?.trim();
+    return name || "Assets image";
+  }
+  return role === "last" ? "Next clip" : "Previous clip";
+}
+
 function FramePreview({
   aspectRatio,
   loading,
@@ -310,7 +419,6 @@ function FramePreview({
   const aspect = PROJECT_ASPECT_OPTIONS.find((o) => o.id === aspectRatio);
   const w = aspect?.w ?? 16;
   const h = aspect?.h ?? 9;
-  const hasUsableFrame = startFrameIsReady(preview);
   return (
     <div
       className={`add-asset-generate-frame-preview${loading ? " is-loading" : ""}`}
@@ -328,85 +436,11 @@ function FramePreview({
         <p className="muted add-asset-generate-field-placeholder">
           {loadingLabel}
         </p>
-      ) : hasUsableFrame && preview?.previewUrl ? (
-        <img src={preview.previewUrl} alt={alt} draggable={false} />
       ) : preview?.previewUrl ? (
-        <>
-          <img src={preview.previewUrl} alt={alt} draggable={false} />
-          <p className="muted add-asset-generate-field-placeholder">
-            Preview only — no local still file to send as start image.
-          </p>
-        </>
+        <img src={preview.previewUrl} alt={alt} draggable={false} />
       ) : (
         <p className="muted add-asset-generate-field-placeholder">{emptyLabel}</p>
       )}
-    </div>
-  );
-}
-
-function StartFrameAssetPicker({
-  assets,
-  selectedId,
-  previewsById,
-  disabled,
-  onSelect,
-  onClear,
-}: {
-  assets: ProjectAsset[];
-  selectedId: string | null;
-  previewsById: Record<string, string | null>;
-  disabled?: boolean;
-  onSelect: (assetId: string) => void;
-  onClear: () => void;
-}) {
-  if (assets.length === 0) return null;
-  return (
-    <div className="add-asset-start-frame-assets">
-      <div className="add-asset-start-frame-assets-header">
-        <span className="muted">Or choose from assets</span>
-        {selectedId ? (
-          <button
-            type="button"
-            className="btn ghost"
-            disabled={disabled}
-            onClick={onClear}
-          >
-            Use timeline clip
-          </button>
-        ) : null}
-      </div>
-      <div
-        className="add-asset-start-frame-assets-grid"
-        role="listbox"
-        aria-label="Project image assets"
-      >
-        {assets.map((asset) => {
-          const selected = asset.id === selectedId;
-          const thumb = previewsById[asset.id];
-          return (
-            <button
-              key={asset.id}
-              type="button"
-              role="option"
-              aria-selected={selected}
-              className={
-                selected
-                  ? "add-asset-start-frame-asset is-selected"
-                  : "add-asset-start-frame-asset"
-              }
-              title={asset.name}
-              disabled={disabled}
-              onClick={() => onSelect(asset.id)}
-            >
-              {thumb ? (
-                <img src={thumb} alt="" draggable={false} />
-              ) : (
-                <span className="muted">Image</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -424,7 +458,10 @@ export function AddAssetGeneratePanel({
   onClearError,
   onRetryDownload,
   imageAssets = [],
-  onBackToProvider,
+  embedded = false,
+  progressHostedExternally = false,
+  formLocked = false,
+  onGenerateNew,
 }: AddAssetGeneratePanelProps) {
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
   const [pullEpoch, setPullEpoch] = useState(0);
@@ -469,17 +506,37 @@ export function AddAssetGeneratePanel({
 
   const initial = draftFromClip(clip, lyricsText);
   const isReplicate = isReplicateTimelineFill(clip);
-  const startFrameAssetId =
-    clip.addAssetDraft?.startFrameAssetId?.trim() || null;
-  const startFrameFraming = normalizeFraming(
-    clip.addAssetDraft?.startFrameFraming,
+  const isBlueDirect = isBlueDirectTimelineFill(clip);
+  const currentIntentId = draftIntentId(clip);
+  const currentServer = draftServer(clip);
+  const draftFirstSource = clip.addAssetDraft?.firstFrameSource;
+  const draftStartFrameAssetId = clip.addAssetDraft?.startFrameAssetId;
+  const draftLastSource = clip.addAssetDraft?.lastFrameSource;
+  const draftContinuity = clip.addAssetDraft?.continuityMode;
+  const firstFrameSource: AddAssetFrameSource = useMemo(
+    () =>
+      resolveFirstFrameSource({
+        firstFrameSource: draftFirstSource,
+        startFrameAssetId: draftStartFrameAssetId,
+      }) ?? TIMELINE_FRAME_SOURCE,
+    [draftFirstSource, draftStartFrameAssetId],
   );
+  const lastFrameSource: AddAssetFrameSource = useMemo(() => {
+    const raw = resolveLastFrameSource({
+      lastFrameSource: draftLastSource,
+      continuityMode: draftContinuity,
+    });
+    if (raw.kind === "timeline") return TIMELINE_FRAME_SOURCE;
+    if (raw.kind === "none") return NONE_FRAME_SOURCE;
+    return raw;
+  }, [draftLastSource, draftContinuity]);
+  const startFrameAssetId = frameSourceAssetId(firstFrameSource);
   const [prompt, setPrompt] = useState(initial.prompt);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(
     initial.audioMode,
   );
-  /** null = auto (prefer first+last when both frames exist). */
+  /** null = auto from first/last slots; motion_match is explicit (Replicate). */
   const [continuityMode, setContinuityMode] =
     useState<AddAssetContinuityMode | null>(initial.continuityMode);
   /** null = auto from continuity / bridge (WAN when bridged, else LTX). */
@@ -501,10 +558,22 @@ export function AddAssetGeneratePanel({
   const [replicateModelsError, setReplicateModelsError] = useState<string | null>(
     null,
   );
+  const [blueModels, setBlueModels] = useState<BlueVideoModelOption[] | null>(
+    null,
+  );
+  const [blueModelsError, setBlueModelsError] = useState<string | null>(null);
   const [motionVideoPath, setMotionVideoPath] = useState<string | null>(null);
+  const [blueConfigured, setBlueConfigured] = useState<boolean | null>(null);
   const [assetPreviews, setAssetPreviews] = useState<Record<string, string | null>>(
     {},
   );
+  const [framePickerSlot, setFramePickerSlot] = useState<"first" | "last" | null>(
+    null,
+  );
+  const [pickerTimelinePreview, setPickerTimelinePreview] =
+    useState<StartFramePreview | null>(null);
+  const [pickerTimelineLoading, setPickerTimelineLoading] = useState(false);
+  const [pickerSlotSeen, setPickerSlotSeen] = useState(framePickerSlot);
 
   useLayoutEffect(() => {
     const el = promptRef.current;
@@ -525,96 +594,242 @@ export function AddAssetGeneratePanel({
     setLoadedFrames(null);
   }
 
-  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v5:${pullEpoch}:${startFrameAssetId ?? ""}:${startFrameFraming}`;
+  const framesKey = `${timelineKey}:${clip.id}:${aspectRatio}:frame-v9:${pullEpoch}:${frameSourceKey(firstFrameSource)}:${frameSourceKey(lastFrameSource)}`;
   const activeSession = session?.clipId === clip.id ? session : null;
   const draftError = clip.addAssetDraft?.lastError?.trim() || null;
   const phase: PanelPhase =
     activeSession?.phase ?? (draftError ? "error" : "form");
-  const framesReady = loadedFrames?.key === framesKey;
-  const startFrame = framesReady ? loadedFrames.start : null;
-  const bridge = framesReady ? loadedFrames.bridge : null;
-  const bridgeAvailable = Boolean(bridge);
-  const framesLoading = phase === "form" && !framesReady;
+  /** Form stays visible but non-interactive while running / reviewing. */
+  const fieldsInteractive = !formLocked && phase !== "running";
+
+  const stampedStartUrl =
+    clip.addAssetGeneration?.startFramePreviewUrl?.trim() ||
+    clip.addAssetDraft?.startFramePreviewUrl?.trim() ||
+    null;
+  const stampedEndUrl =
+    clip.addAssetGeneration?.endFramePreviewUrl?.trim() ||
+    clip.addAssetDraft?.endFramePreviewUrl?.trim() ||
+    null;
+  const stampedStart: StartFramePreview | null = stampedStartUrl
+    ? {
+        previewUrl: stampedStartUrl,
+        note: "",
+        framePath: null,
+        frameTimeSec: null,
+        sourceAssetId: startFrameAssetId,
+        sourceIsImage: Boolean(startFrameAssetId),
+      }
+    : null;
+  const stampedBridge: BridgeFrames | null =
+    stampedStart && stampedEndUrl
+      ? {
+          first: stampedStart,
+          last: {
+            previewUrl: stampedEndUrl,
+            note: "",
+            framePath: null,
+            frameTimeSec: null,
+          },
+        }
+      : stampedStart &&
+          (clip.addAssetGeneration?.mode === "start_frame" ||
+            clip.addAssetDraft?.continuityMode === "start_frame")
+        ? { first: stampedStart, last: stampedStart }
+        : null;
+  const stampedEmpty =
+    (formLocked && clip.addAssetGeneration?.mode === "none") ||
+    (formLocked &&
+      !startFrameAssetId &&
+      !stampedStartUrl &&
+      !frameSourceIsSet(firstFrameSource) &&
+      !frameSourceIsSet(lastFrameSource) &&
+      Boolean(clip.addAssetGeneration));
+  const stampedLoaded =
+    stampedBridge != null
+      ? { key: framesKey, start: stampedStart, bridge: stampedBridge }
+      : stampedEmpty
+        ? {
+            key: framesKey,
+            start: null as StartFramePreview | null,
+            bridge: null as BridgeFrames | null,
+          }
+        : null;
+
+  const stampedFramesReady = stampedLoaded != null;
+  const resolvedFrames =
+    loadedFrames?.key === framesKey ? loadedFrames : stampedLoaded;
+  const framesReady = resolvedFrames?.key === framesKey;
+  const startFrame = framesReady ? resolvedFrames.start : null;
+  const bridge = framesReady ? resolvedFrames.bridge : null;
+  const bridgeReady = Boolean(
+    bridge &&
+      startFrameIsReady(bridge.first) &&
+      startFrameIsReady(bridge.last),
+  );
+  const framesLoading = !framesReady;
 
   const hasLyrics = Boolean(lyricsText.trim());
   const hasMainAudio = Boolean(mainAudioCreationId?.trim());
 
-  const resolvedBlueModel: AddAssetBlueModel = (() => {
-    if (isReplicate) return "ltx";
-    if (blueModel === "wan" || blueModel === "ltx") return blueModel;
-    if (continuityMode === "first_last") return "wan";
-    if (continuityMode === "start_frame" || continuityMode === "none") {
-      return "ltx";
-    }
-    return bridgeAvailable ? "wan" : "ltx";
+  const resolvedContinuityMode: AddAssetContinuityMode = (() => {
+    if (isReplicate && continuityMode === "motion_match") return "motion_match";
+    if (!isReplicate && currentIntentId === "text_to_video") return "none";
+    return continuityFromFrameSources(firstFrameSource, lastFrameSource);
   })();
 
-  const resolvedContinuityMode: AddAssetContinuityMode = (() => {
-    if (isReplicate) {
-      if (continuityMode === "motion_match") return "motion_match";
-      if (bridgeAvailable) return continuityMode ?? "first_last";
-      if (continuityMode === "first_last") return "start_frame";
-      if (continuityMode === "none") return "start_frame";
-      return continuityMode ?? "start_frame";
+  const tentativeAudioMode: AddAssetAudioMode =
+    audioMode === "none" ||
+    resolvedContinuityMode === "none" ||
+    resolvedContinuityMode === "first_last" ||
+    !hasMainAudio
+      ? "none"
+      : !hasLyrics
+        ? "full_mix"
+        : audioMode === "full_mix"
+          ? "full_mix"
+          : "vocals";
+
+  const blueMethod = blueMethodForTimelineFill({
+    continuity: resolvedContinuityMode,
+    audioMode: isReplicate ? "none" : tentativeAudioMode,
+  });
+
+  const compatibleBlueModels = useMemo(() => {
+    if (isReplicate || !blueModels) return [];
+    return filterBlueVideoModels({
+      models: blueModels,
+      method: blueMethod,
+      continuity: resolvedContinuityMode,
+      blueDirect: isBlueDirect,
+    });
+  }, [
+    isReplicate,
+    blueModels,
+    blueMethod,
+    resolvedContinuityMode,
+    isBlueDirect,
+  ]);
+
+  const resolvedBlueModel: string = (() => {
+    if (isReplicate) return "ltx_i2v";
+    if (!blueModels?.length) {
+      return (
+        blueModel?.trim() ||
+        clip.addAssetDraft?.blueModel?.trim() ||
+        clip.addAssetGeneration?.model?.trim() ||
+        "ltx_i2v"
+      );
     }
-    // Images: None = text→video (WAN or LTX).
-    if (continuityMode === "none") return "none";
-    // LTX is start-frame only (or none, handled above).
-    if (resolvedBlueModel === "ltx") return "start_frame";
-    // WAN: first+last when bridged, else start frame.
-    if (continuityMode === "first_last" && bridgeAvailable) return "first_last";
-    return "start_frame";
+    const picked = pickCompatibleBlueModel({
+      models: blueModels,
+      method: blueMethod,
+      continuity: resolvedContinuityMode,
+      blueDirect: isBlueDirect,
+      preferredId: blueModel,
+    });
+    return picked?.id ?? blueModel ?? "ltx_i2v";
   })();
+
+  const hasA2vModels = useMemo(() => {
+    if (isReplicate || !blueModels) return false;
+    return filterBlueVideoModels({
+      models: blueModels,
+      method: "audio2video",
+      continuity: "start_frame",
+      blueDirect: isBlueDirect,
+    }).length > 0;
+  }, [isReplicate, blueModels, isBlueDirect]);
+
+  const hasFlfModels = useMemo(() => {
+    if (isReplicate || !blueModels) return false;
+    return filterBlueVideoModels({
+      models: blueModels,
+      method: "image2video",
+      continuity: "first_last",
+      blueDirect: isBlueDirect,
+    }).length > 0;
+  }, [isReplicate, blueModels, isBlueDirect]);
 
   const sourceAudioLocked =
     !isReplicate &&
-    (resolvedBlueModel === "wan" ||
-      resolvedContinuityMode === "none" ||
-      !hasMainAudio);
+    (resolvedContinuityMode === "none" ||
+      resolvedContinuityMode === "first_last" ||
+      !hasMainAudio ||
+      !hasA2vModels);
 
   const resolvedAudioMode: AddAssetAudioMode = (() => {
     if (isReplicate) {
       return hasLyrics ? (audioMode === "full_mix" ? "full_mix" : "vocals") : "full_mix";
     }
     if (sourceAudioLocked) return "none";
-    if (audioMode === "none") return "none";
-    if (!hasLyrics) return "full_mix";
-    return audioMode === "full_mix" ? "full_mix" : "vocals";
+    return tentativeAudioMode;
   })();
 
-  const selectBlueModel = (next: AddAssetBlueModel) => {
+  const selectBlueModel = (next: string) => {
     setBlueModel(next);
-    if (next === "wan") {
+    if (isWanFamilyBlueModel(next) || next.includes("_t2v")) {
       setAudioMode("none");
-      return;
     }
-    // LTX cannot use first+last; keep Images: None if selected.
-    if (continuityMode === "first_last") {
-      setContinuityMode("start_frame");
+    const opt = blueModels?.find((m) => m.id === next);
+    if (opt && !opt.flf && frameSourceIsSet(lastFrameSource)) {
+      setFrameSources({ last: { kind: "none" } });
     }
   };
 
-  const selectImagesMode = (next: AddAssetContinuityMode) => {
-    if (next === "none") {
-      setContinuityMode("none");
-      setAudioMode("none");
-      return;
-    }
+  const syncBlueModelForContinuity = (next: AddAssetContinuityMode) => {
+    if (isReplicate || !blueModels) return;
     if (next === "first_last") {
-      setBlueModel("wan");
+      const flf = pickCompatibleBlueModel({
+        models: blueModels,
+        method: "image2video",
+        continuity: "first_last",
+        blueDirect: isBlueDirect,
+        preferredId: blueModel,
+      });
+      if (flf) setBlueModel(flf.id);
       setAudioMode("none");
-      setContinuityMode("first_last");
       return;
     }
-    setContinuityMode("start_frame");
+    if (next === "start_frame") {
+      const i2v = pickCompatibleBlueModel({
+        models: blueModels,
+        method: blueMethodForTimelineFill({
+          continuity: "start_frame",
+          audioMode: audioMode === "none" ? "none" : audioMode,
+        }),
+        continuity: "start_frame",
+        blueDirect: isBlueDirect,
+        preferredId: blueModel,
+      });
+      if (i2v) setBlueModel(i2v.id);
+    }
   };
 
   const selectSourceAudio = (next: AddAssetAudioMode) => {
-    if (sourceAudioLocked) return;
+    if (sourceAudioLocked && next !== "none") return;
+    if (next !== "none") {
+      const a2v = pickCompatibleBlueModel({
+        models: blueModels ?? [],
+        method: "audio2video",
+        continuity: "start_frame",
+        blueDirect: isBlueDirect,
+        preferredId: blueModel,
+      });
+      if (a2v) setBlueModel(a2v.id);
+    } else if (blueMethod === "audio2video") {
+      const i2v = pickCompatibleBlueModel({
+        models: blueModels ?? [],
+        method: "image2video",
+        continuity: "start_frame",
+        blueDirect: isBlueDirect,
+        preferredId: blueModel,
+      });
+      if (i2v) setBlueModel(i2v.id);
+    }
     setAudioMode(next);
   };
 
-  // Keep draft audio locked to None for WAN, Images: None, or when no main audio.
+  // Keep draft audio locked to None for WAN, Text to Video, or when no main audio.
   useEffect(() => {
     if (!sourceAudioLocked) return;
     if (audioMode !== "none") {
@@ -623,9 +838,32 @@ export function AddAssetGeneratePanel({
     }
   }, [sourceAudioLocked, audioMode]);
 
+  useEffect(() => {
+    if (!isBlueDirect) return;
+    let cancelled = false;
+    const refresh = () => {
+      void blueCredentialsStatus()
+        .then((s) => {
+          if (!cancelled) setBlueConfigured(s.configured);
+        })
+        .catch(() => {
+          if (!cancelled) setBlueConfigured(false);
+        });
+    };
+    refresh();
+    window.addEventListener(BLUE_CREDENTIALS_CHANGED_EVENT, refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(BLUE_CREDENTIALS_CHANGED_EVENT, refresh);
+    };
+  }, [isBlueDirect, clip.id]);
+  if (!isBlueDirect && blueConfigured !== null) {
+    setBlueConfigured(null);
+  }
+
   // Load enabled Replicate video models once for this panel.
   useEffect(() => {
-    if (!isReplicate || phase !== "form") return;
+    if (!isReplicate || !fieldsInteractive) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -644,7 +882,55 @@ export function AddAssetGeneratePanel({
     return () => {
       cancelled = true;
     };
-  }, [isReplicate, phase, clip.id]);
+  }, [isReplicate, phase, clip.id, fieldsInteractive]);
+
+  // Load Blue method models (live capabilities with snapshot fallback).
+  useEffect(() => {
+    if (isReplicate || !fieldsInteractive) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const models = await loadBlueVideoModels();
+        if (cancelled) return;
+        setBlueModels(models);
+        setBlueModelsError(null);
+      } catch (error) {
+        if (cancelled) return;
+        setBlueModels([]);
+        setBlueModelsError(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isReplicate, phase, clip.id, fieldsInteractive]);
+
+  // Keep selected Blue model compatible with continuity / audio method.
+  useEffect(() => {
+    if (isReplicate || !blueModels || !fieldsInteractive) return;
+    const next = pickCompatibleBlueModel({
+      models: blueModels,
+      method: blueMethod,
+      continuity: resolvedContinuityMode,
+      blueDirect: isBlueDirect,
+      preferredId: blueModel,
+    });
+    if (next && next.id !== blueModel) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- align model to method
+      setBlueModel(next.id);
+    }
+  }, [
+    isReplicate,
+    blueModels,
+    blueMethod,
+    resolvedContinuityMode,
+    isBlueDirect,
+    blueModel,
+    phase,
+    fieldsInteractive,
+  ]);
 
   // Resolve motion-reference video path when needed.
   useEffect(() => {
@@ -667,7 +953,7 @@ export function AddAssetGeneratePanel({
   const hasStartFrame = startFrameIsReady(
     resolvedContinuityMode === "first_last" ? bridge?.first : startFrame,
   );
-  const hasEndFrame = Boolean(bridge?.last.framePath?.trim());
+  const hasEndFrame = startFrameIsReady(bridge?.last);
   const hasImageInput = hasStartFrame;
 
   const selectedReplicateModel = useMemo(() => {
@@ -718,7 +1004,7 @@ export function AddAssetGeneratePanel({
 
   // Keep selection on a compatible model when duration/aspect/continuity change.
   useEffect(() => {
-    if (!isReplicate || !replicateModels || phase !== "form") return;
+    if (!isReplicate || !replicateModels || !fieldsInteractive) return;
     const next = pickCompatibleReplicateModel({
       models: replicateModels,
       continuity: resolvedContinuityMode as ReplicateVideoContinuity,
@@ -741,6 +1027,7 @@ export function AddAssetGeneratePanel({
     hasImageInput,
     replicateModelId,
     phase,
+    fieldsInteractive,
   ]);
 
   const replicateValidation = useMemo(() => {
@@ -771,9 +1058,9 @@ export function AddAssetGeneratePanel({
     prompt,
   ]);
 
-  // Load thumbnails for the start-frame asset picker.
+  // Load thumbnails for the frame-source Assets picker (interactive form only).
   useEffect(() => {
-    if (isReplicate || imageAssets.length === 0) return;
+    if (!fieldsInteractive || imageAssets.length === 0) return;
     let cancelled = false;
     const ids = imageAssets.map((asset) => asset.id);
     void (async () => {
@@ -788,29 +1075,35 @@ export function AddAssetGeneratePanel({
     return () => {
       cancelled = true;
     };
-  }, [imageAssets, isReplicate]);
+  }, [imageAssets, fieldsInteractive]);
 
   // Persist form choices on the placeholder so they survive clip switches.
   // Skip while error/running — job lifecycle fields (lastError, generationJob)
   // are owned by the generation store; rewriting them here races "Try again".
   useEffect(() => {
-    if (phase !== "form") return;
+    if (!fieldsInteractive) return;
     const next: AddAssetDraft = {
       prompt,
       audioMode: resolvedAudioMode,
       continuityMode: resolvedContinuityMode,
       blueModel: isReplicate ? undefined : resolvedBlueModel,
-      provider: clip.addAssetDraft?.provider,
-      methodId: clip.addAssetDraft?.methodId,
+      intentId: currentIntentId,
+      server: currentServer,
+      provider: currentServer,
+      methodId: currentIntentId,
       replicateModel: replicateModelId ?? undefined,
       useNearestDuration: useNearestDuration || undefined,
       lastError: clip.addAssetDraft?.lastError,
       replicatePredictionId: clip.addAssetDraft?.replicatePredictionId,
+      blueJobId: clip.addAssetDraft?.blueJobId,
       generationJob: clip.addAssetDraft?.generationJob,
       replicateTweaks: isReplicate ? normalizedTweaks : undefined,
       startFrameAssetId: startFrameAssetId ?? undefined,
-      startFrameFraming:
-        startFrameFraming === "fit" ? undefined : startFrameFraming,
+      firstFrameSource,
+      lastFrameSource,
+      // Keep Generate-new stamps — rewriting without them blanks FIRST/LAST.
+      startFramePreviewUrl: clip.addAssetDraft?.startFramePreviewUrl,
+      endFramePreviewUrl: clip.addAssetDraft?.endFramePreviewUrl,
     };
     if (draftsEqual(next, clip.addAssetDraft)) return;
     onDraftChange?.(next);
@@ -826,71 +1119,130 @@ export function AddAssetGeneratePanel({
     isReplicate,
     clip.addAssetDraft,
     startFrameAssetId,
-    startFrameFraming,
+    firstFrameSource,
+    lastFrameSource,
     onDraftChange,
+    fieldsInteractive,
+    currentIntentId,
+    currentServer,
   ]);
 
   useEffect(() => {
-    if (phase !== "form") return;
     let cancelled = false;
+    // Stamped / locked-empty stills resolve synchronously via stampedLoaded.
+    if (stampedFramesReady) return;
+
     void (async () => {
-      const frameOpts = {
-        startFrameAssetId,
-        framing: startFrameFraming,
-      };
-      const [start, resolvedBridge] = await Promise.all([
-        resolveStartFrameForAddAsset(timeline, clip, aspectRatio, frameOpts),
-        resolveAddAssetBridgeFrames(timeline, clip, aspectRatio, {
-          framing: startFrameFraming,
+      const [start, last] = await Promise.all([
+        resolveFrameSlot({
+          role: "first",
+          source: firstFrameSource,
+          timeline,
+          placeholder: clip,
+          aspectRatio,
+        }),
+        resolveFrameSlot({
+          role: "last",
+          source: lastFrameSource,
+          timeline,
+          placeholder: clip,
+          aspectRatio,
         }),
       ]);
       if (cancelled) return;
       setLoadedFrames({
         key: framesKey,
-        start,
-        bridge: resolvedBridge,
+        start: stampedStart?.previewUrl ? stampedStart : start,
+        bridge: {
+          first: stampedStart?.previewUrl ? stampedStart : start,
+          last:
+            stampedEndUrl && stampedStart
+              ? {
+                  previewUrl: stampedEndUrl,
+                  note: "",
+                  framePath: null,
+                  frameTimeSec: null,
+                }
+              : last,
+        },
       });
-      // Bridge gone → can't keep first_last; WAN still works with start frame.
-      if (!resolvedBridge) {
-        setContinuityMode((prev) =>
-          prev === "first_last" ? "start_frame" : prev,
-        );
-      }
     })();
     return () => {
       cancelled = true;
     };
-    // framesKey covers clip geometry / neighbors; omit clip/timeline objects so
-    // drafting the prompt does not re-extract frames.
+    // framesKey covers clip geometry / neighbors / sources; omit clip/timeline
+    // objects so drafting the prompt does not re-extract frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
-  }, [framesKey, phase, aspectRatio]);
+  }, [framesKey, aspectRatio, fieldsInteractive, formLocked, stampedFramesReady]);
 
   const handleRefresh = () => {
-    if (phase !== "form" || framesLoading) return;
+    if (!fieldsInteractive || framesLoading) return;
     setLoadedFrames(null);
     setPullEpoch((epoch) => epoch + 1);
   };
 
-  const setStartFrameAssetId = (assetId: string | null) => {
-    onDraftChange?.({
-      ...(clip.addAssetDraft ?? {}),
-      startFrameAssetId: assetId ?? undefined,
-    });
+  const bumpFrames = () => {
     setLoadedFrames(null);
     setPullEpoch((epoch) => epoch + 1);
   };
 
-  const setStartFrameFraming = (framing: StagedClipFraming) => {
+  const setFrameSources = (opts: {
+    first?: AddAssetFrameSource;
+    last?: AddAssetFrameSource;
+  }) => {
+    const nextFirst = opts.first ?? firstFrameSource;
+    const nextLast = opts.last ?? lastFrameSource;
+    const nextAssetId = frameSourceAssetId(nextFirst);
+    const nextContinuity = continuityFromFrameSources(nextFirst, nextLast);
+    if (continuityMode === "motion_match") {
+      setContinuityMode(null);
+    }
+    syncBlueModelForContinuity(nextContinuity);
     onDraftChange?.({
       ...(clip.addAssetDraft ?? {}),
-      startFrameFraming: framing === "fit" ? undefined : framing,
+      firstFrameSource: nextFirst,
+      lastFrameSource: nextLast,
+      startFrameAssetId: nextAssetId ?? undefined,
+      continuityMode: nextContinuity,
+      // Source change invalidates cloned still stamps.
+      startFramePreviewUrl: undefined,
+      endFramePreviewUrl: undefined,
     });
-    setLoadedFrames(null);
-    setPullEpoch((epoch) => epoch + 1);
+    bumpFrames();
   };
+
+  useEffect(() => {
+    if (!framePickerSlot) return;
+    let cancelled = false;
+    void (async () => {
+      const preview = await peekTimelineFrameSlot({
+        role: framePickerSlot,
+        timeline,
+        placeholder: clip,
+        aspectRatio,
+      });
+      if (cancelled) return;
+      setPickerTimelinePreview(preview);
+      setPickerTimelineLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [framePickerSlot, framesKey, aspectRatio]);
+  if (framePickerSlot !== pickerSlotSeen) {
+    setPickerSlotSeen(framePickerSlot);
+    if (framePickerSlot) {
+      setPickerTimelinePreview(null);
+      setPickerTimelineLoading(true);
+    } else {
+      setPickerTimelinePreview(null);
+      setPickerTimelineLoading(false);
+    }
+  }
 
   const handleGenerate = () => {
-    if (phase !== "form" || !prompt.trim()) return;
+    if (!fieldsInteractive || !prompt.trim()) return;
 
     const abortGenerate = (reason: string, message: string) => {
       recordUiOpTrace({
@@ -945,27 +1297,33 @@ export function AddAssetGeneratePanel({
           return;
         }
 
+        const frameOpts = {
+          firstFrameSource,
+          lastFrameSource,
+          startFrameAssetId,
+        };
         const freshStart = await resolveStartFrameForAddAsset(
           timeline,
           clip,
           aspectRatio,
-          { startFrameAssetId, framing: startFrameFraming },
+          frameOpts,
         );
         let endFrame: StartFramePreview | null = null;
         if (resolvedContinuityMode === "first_last") {
-          const freshBridge = await resolveAddAssetBridgeFrames(
+          const freshBridge = await resolveAddAssetBridgeFramesFromSources(
             timeline,
             clip,
             aspectRatio,
-            { framing: startFrameFraming },
+            frameOpts,
           );
           if (
-            !freshBridge?.first.framePath?.trim() ||
-            !freshBridge.last.framePath?.trim()
+            !freshBridge ||
+            !startFrameIsReady(freshBridge.first) ||
+            !startFrameIsReady(freshBridge.last)
           ) {
             abortGenerate(
               "missing_bridge_frames",
-              "Could not resolve local first/last frame stills. Place image or video clips on both sides, ensure they are downloaded, then Refresh.",
+              "Could not resolve first/last frame stills. Choose timeline neighbors or Assets images, ensure they are available, then Refresh.",
             );
             return;
           }
@@ -1098,23 +1456,29 @@ export function AddAssetGeneratePanel({
             frameTimeSec: null,
           },
           endFrame: null,
+          blueDirect: isBlueDirect || undefined,
         });
         return;
       }
       if (useFirstLast) {
-        const freshBridge = await resolveAddAssetBridgeFrames(
+        const freshBridge = await resolveAddAssetBridgeFramesFromSources(
           timeline,
           clip,
           aspectRatio,
-          { framing: startFrameFraming },
+          {
+            firstFrameSource,
+            lastFrameSource,
+            startFrameAssetId,
+          },
         );
         if (
-          !freshBridge?.first.framePath?.trim() ||
-          !freshBridge.last.framePath?.trim()
+          !freshBridge ||
+          !startFrameIsReady(freshBridge.first) ||
+          !startFrameIsReady(freshBridge.last)
         ) {
           abortGenerate(
             "missing_bridge_frames",
-            "Could not resolve local first/last frame stills for generation.",
+            "Could not resolve first/last frame stills for generation. Choose timeline neighbors or Assets images, then Refresh.",
           );
           return;
         }
@@ -1124,10 +1488,11 @@ export function AddAssetGeneratePanel({
           lyricsText,
           audioMode: resolvedAudioMode,
           continuityMode: "first_last",
-          blueModel: "wan",
+          blueModel: resolvedBlueModel,
           songRange: timing.songRange,
           startFrame: freshBridge.first,
           endFrame: freshBridge.last,
+          blueDirect: isBlueDirect || undefined,
         });
         return;
       }
@@ -1136,7 +1501,10 @@ export function AddAssetGeneratePanel({
         timeline,
         clip,
         aspectRatio,
-        { startFrameAssetId, framing: startFrameFraming },
+        {
+          firstFrameSource,
+          startFrameAssetId,
+        },
       );
       if (!startFrameIsReady(freshStart)) {
         abortGenerate(
@@ -1157,25 +1525,26 @@ export function AddAssetGeneratePanel({
         songRange: timing.songRange,
         startFrame: freshStart,
         endFrame: null,
+        blueDirect: isBlueDirect || undefined,
       });
     })();
   };
 
   const canGenerateBlue =
-    phase === "form" &&
+    fieldsInteractive &&
     Boolean(prompt.trim()) &&
-    (resolvedContinuityMode === "none" ||
-      (!framesLoading &&
+    (!isBlueDirect || blueConfigured !== false) &&
+    (resolvedContinuityMode === "none"
+      ? currentIntentId === "text_to_video"
+      : !framesLoading &&
         (resolvedContinuityMode === "first_last"
-          ? Boolean(
-              bridge?.first.framePath?.trim() && bridge.last.framePath?.trim(),
-            )
-          : startFrameIsReady(startFrame)))) &&
+          ? bridgeReady
+          : startFrameIsReady(startFrame))) &&
     (resolvedAudioMode === "none" || hasMainAudio);
 
   const canGenerate =
     isReplicate
-      ? phase === "form" &&
+      ? fieldsInteractive &&
         !framesLoading &&
         Boolean(selectedReplicateModel) &&
         Boolean(replicateValidation?.ok)
@@ -1198,124 +1567,212 @@ export function AddAssetGeneratePanel({
         })()
       : null;
 
-  if (phase === "running" && activeSession) {
+  if (phase === "running" && activeSession && !progressHostedExternally) {
+    const running = (
+      <div className="add-asset-generate-body">
+        <AddAssetGenerationProgressBar
+          startedAtMs={activeSession.startedAtMs}
+          expectedMs={
+            activeSession.expectedMs ??
+            addAssetGenerationExpectedMs(clipDurationSec)
+          }
+        />
+        <p className="add-asset-generate-progress-note muted">
+          {activeSession.progressNote}
+        </p>
+        <ol className="add-asset-generate-steps add-asset-generate-running">
+          {activeSession.steps.map((step) => (
+            <li
+              key={step.id}
+              className={`add-asset-generate-step is-${step.status}`}
+            >
+              <span className="add-asset-generate-step-icon" aria-hidden>
+                {step.status === "done" ? (
+                  "✓"
+                ) : step.status === "active" ? (
+                  <span className="confirm-dialog-spinner" />
+                ) : (
+                  "○"
+                )}
+              </span>
+              <span>{step.label}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    );
+    if (embedded) {
+      return (
+        <div className="add-asset-generate-embedded" aria-busy aria-label="Generating video">
+          {running}
+        </div>
+      );
+    }
     return (
       <div
         className="add-asset-generate-pane"
         aria-busy
         aria-label="Generating video"
       >
-        <div className="add-asset-generate-body">
-          <AddAssetGenerationProgressBar
-            startedAtMs={activeSession.startedAtMs}
-            expectedMs={
-              activeSession.expectedMs ??
-              addAssetGenerationExpectedMs(clipDurationSec)
-            }
-          />
-          <p className="add-asset-generate-progress-note muted">
-            {activeSession.progressNote}
-          </p>
-          <ol className="add-asset-generate-steps add-asset-generate-running">
-            {activeSession.steps.map((step) => (
-              <li
-                key={step.id}
-                className={`add-asset-generate-step is-${step.status}`}
-              >
-                <span className="add-asset-generate-step-icon" aria-hidden>
-                  {step.status === "done" ? (
-                    "✓"
-                  ) : step.status === "active" ? (
-                    <span className="confirm-dialog-spinner" />
-                  ) : (
-                    "○"
-                  )}
-                </span>
-                <span>{step.label}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
+        {running}
       </div>
     );
   }
 
-  if (phase === "error" && (activeSession || draftError)) {
+  if (
+    phase === "error" &&
+    (activeSession || draftError) &&
+    !progressHostedExternally
+  ) {
     const errorText = activeSession?.errorMessage ?? draftError ?? "";
     const canRetryDownload =
       Boolean(clip.addAssetDraft?.replicatePredictionId?.trim()) ||
       isDownloadRetryableError(errorText);
-    return (
-      <div className="add-asset-generate-pane" role="alert">
-        <div className="add-asset-generate-body">
-          <p className="add-asset-generate-error">{errorText}</p>
-          {canRetryDownload ? (
-            <p className="muted" style={{ margin: "0 0 0.75rem" }}>
-              Replicate finished this run — retry the download without generating
-              again.
-            </p>
-          ) : null}
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "0.5rem",
+    const errorBody = (
+      <div className="add-asset-generate-body">
+        <p className="add-asset-generate-error">{errorText}</p>
+        {canRetryDownload ? (
+          <p className="muted" style={{ margin: "0 0 0.75rem" }}>
+            Replicate finished this run — retry the download without generating
+            again.
+          </p>
+        ) : null}
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "0.5rem",
+          }}
+        >
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => {
+              if (canRetryDownload) onRetryDownload?.();
+              else onClearError?.();
             }}
           >
+            {canRetryDownload ? "Retry download" : "Try again"}
+          </button>
+          {canRetryDownload ? (
             <button
               type="button"
-              className="btn btn-primary"
-              onClick={() => {
-                if (canRetryDownload) onRetryDownload?.();
-                else onClearError?.();
-              }}
+              className="btn"
+              onClick={() => onClearError?.()}
             >
-              {canRetryDownload ? "Retry download" : "Try again"}
+              Edit & regenerate
             </button>
-            {canRetryDownload ? (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => onClearError?.()}
-              >
-                Edit & regenerate
-              </button>
-            ) : null}
-          </div>
+          ) : null}
         </div>
+      </div>
+    );
+    if (embedded) {
+      return (
+        <div className="add-asset-generate-embedded" role="alert">
+          {errorBody}
+        </div>
+      );
+    }
+    return (
+      <div className="add-asset-generate-pane" role="alert">
+        {errorBody}
       </div>
     );
   }
 
-  const showFirstLast = resolvedContinuityMode === "first_last";
   const showMotionMatch = resolvedContinuityMode === "motion_match";
-  const showImagesNone = !isReplicate && resolvedContinuityMode === "none";
-  const firstPreview = showFirstLast ? bridge?.first ?? null : startFrame;
-  const lastPreview = showFirstLast ? bridge?.last ?? null : null;
+  const showImagesNone = !isReplicate && currentIntentId === "text_to_video";
+  const firstPreview = bridge?.first ?? startFrame;
+  const lastPreview = bridge?.last ?? null;
 
   return (
-    <div className="add-asset-generate-pane">
-      <header className="add-asset-generate-header">
-        <button
-          type="button"
-          className="add-asset-generate-back"
-          onClick={onBackToProvider}
-          aria-label="Choose generation provider"
-          title="Choose generation provider"
-        >
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
-            <path
-              fill="currentColor"
-              d="M9.8 2.2 4 8l5.8 5.8 1.1-1.1L6.2 8l4.7-4.7z"
-            />
-          </svg>
-        </button>
-        <div>
-          <h2>{isReplicate ? "Replicate" : "Parascene"}</h2>
-          <p>Timeline video fill</p>
-        </div>
-      </header>
-      <div className="add-asset-generate-body">
+    <div
+      className={
+        embedded ? "add-asset-generate-embedded" : "add-asset-generate-pane"
+      }
+    >
+      {embedded ? null : (
+        <header className="add-asset-generate-header">
+          <div>
+            <h2>{serverLabel(currentServer)}</h2>
+            <p>{intentLabel(currentIntentId)}</p>
+          </div>
+        </header>
+      )}
+      <div
+        className={
+          embedded ? "add-asset-generate-embedded-body" : "add-asset-generate-body"
+        }
+      >
+        {progressHostedExternally &&
+        phase === "error" &&
+        (activeSession || draftError) ? (
+          <section className="add-asset-generate-section" role="alert">
+            <p className="add-asset-generate-error">
+              {activeSession?.errorMessage ?? draftError}
+            </p>
+            {(() => {
+              const errorText =
+                activeSession?.errorMessage ?? draftError ?? "";
+              const canRetryDownload =
+                Boolean(clip.addAssetDraft?.replicatePredictionId?.trim()) ||
+                isDownloadRetryableError(errorText);
+              return (
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "0.5rem",
+                    marginTop: "0.5rem",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => {
+                      if (canRetryDownload) onRetryDownload?.();
+                      else onClearError?.();
+                    }}
+                  >
+                    {canRetryDownload ? "Retry download" : "Try again"}
+                  </button>
+                  {canRetryDownload ? (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => onClearError?.()}
+                    >
+                      Edit & regenerate
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })()}
+          </section>
+        ) : null}
+        {isBlueDirect ? (
+          <section className="add-asset-generate-section">
+            <div className="add-asset-generate-callout" role="note">
+              <p className="muted" style={{ margin: 0 }}>
+                Direct to Blue — outputs stay local-only (no Creation sync).
+                {blueConfigured === false ? (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      onClick={() => requestOpenSettings()}
+                    >
+                      Open Settings
+                    </button>{" "}
+                    to add Blue credentials.
+                  </>
+                ) : null}
+              </p>
+            </div>
+          </section>
+        ) : null}
+
         {isReplicate ? (
           <section className="add-asset-generate-section">
             <div className="add-asset-generate-callout" role="note">
@@ -1335,27 +1792,15 @@ export function AddAssetGeneratePanel({
               role="group"
               aria-label="Continuity mode"
             >
-              {bridgeAvailable ? (
-                <button
-                  type="button"
-                  className={
-                    resolvedContinuityMode === "first_last" ? "is-active" : ""
-                  }
-                  onClick={() => setContinuityMode("first_last")}
-                  aria-pressed={resolvedContinuityMode === "first_last"}
-                >
-                  First + last frame
-                </button>
-              ) : null}
               <button
                 type="button"
                 className={
-                  resolvedContinuityMode === "start_frame" ? "is-active" : ""
+                  resolvedContinuityMode !== "motion_match" ? "is-active" : ""
                 }
-                onClick={() => setContinuityMode("start_frame")}
-                aria-pressed={resolvedContinuityMode === "start_frame"}
+                onClick={() => setContinuityMode(null)}
+                aria-pressed={resolvedContinuityMode !== "motion_match"}
               >
-                Start frame
+                Frames
               </button>
               <button
                 type="button"
@@ -1374,158 +1819,61 @@ export function AddAssetGeneratePanel({
         {!isReplicate ? (
           <section className="add-asset-generate-section">
             <h3>Model</h3>
-            <div
-              className="add-asset-generate-audio-toggle"
-              role="group"
-              aria-label="Parascene model"
-            >
-              <button
-                type="button"
-                className={resolvedBlueModel === "wan" ? "is-active" : ""}
-                disabled={phase !== "form"}
-                onClick={() => selectBlueModel("wan")}
-                aria-pressed={resolvedBlueModel === "wan"}
-              >
-                WAN
-              </button>
-              <button
-                type="button"
-                className={resolvedBlueModel === "ltx" ? "is-active" : ""}
-                disabled={phase !== "form"}
-                onClick={() => selectBlueModel("ltx")}
-                aria-pressed={resolvedBlueModel === "ltx"}
-              >
-                LTX
-              </button>
-            </div>
-          </section>
-        ) : null}
-
-        {!isReplicate ? (
-          <section className="add-asset-generate-section">
-            <h3>Images</h3>
-            <div
-              className="add-asset-generate-audio-toggle"
-              role="group"
-              aria-label="Images mode"
-            >
-              <button
-                type="button"
-                className={resolvedContinuityMode === "none" ? "is-active" : ""}
-                disabled={phase !== "form"}
-                onClick={() => selectImagesMode("none")}
-                aria-pressed={resolvedContinuityMode === "none"}
-              >
-                None
-              </button>
-              <button
-                type="button"
-                className={
-                  resolvedContinuityMode === "start_frame" ? "is-active" : ""
-                }
-                disabled={phase !== "form"}
-                onClick={() => selectImagesMode("start_frame")}
-                aria-pressed={resolvedContinuityMode === "start_frame"}
-              >
-                Start frame
-              </button>
-              {resolvedBlueModel === "wan" && bridgeAvailable ? (
-                <button
-                  type="button"
-                  className={
-                    resolvedContinuityMode === "first_last" ? "is-active" : ""
-                  }
-                  disabled={phase !== "form"}
-                  onClick={() => selectImagesMode("first_last")}
-                  aria-pressed={resolvedContinuityMode === "first_last"}
+            {blueModelsError ? (
+              <p className="add-asset-generate-error">{blueModelsError}</p>
+            ) : null}
+            {!fieldsInteractive && blueModels == null ? (
+              <label className="add-asset-generate-field">
+                <span>Blue model</span>
+                <select
+                  className="control"
+                  value={resolvedBlueModel}
+                  disabled
                 >
-                  First + last frame
-                </button>
-              ) : null}
-            </div>
-            {resolvedContinuityMode === "none" ? (
-              <p className="muted add-asset-generate-note">
-                Text-to-video — no start image. Prompt only.
+                  <option value={resolvedBlueModel}>
+                    {resolvedBlueModel}
+                  </option>
+                </select>
+              </label>
+            ) : blueModels == null ? (
+              <p className="muted">Loading Blue models…</p>
+            ) : compatibleBlueModels.length === 0 ? (
+              <p className="muted">
+                No Blue models for this mode
+                {!isBlueDirect
+                  ? " (Parascene Creation supports Wan/LTX only — use Direct to Blue for MiniMax and more)."
+                  : "."}
               </p>
-            ) : null}
+            ) : (
+              <label className="add-asset-generate-field">
+                <span>Blue model</span>
+                <select
+                  className="control"
+                  value={resolvedBlueModel}
+                  disabled={!fieldsInteractive}
+                  onChange={(event) => {
+                    const next = event.target.value.trim();
+                    if (next) selectBlueModel(next);
+                  }}
+                >
+                  {compatibleBlueModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </section>
         ) : null}
 
-        {!isReplicate ? (
+        {!isReplicate && currentIntentId === "text_to_video" ? (
           <section className="add-asset-generate-section">
-            <h3>Source audio</h3>
-            <div
-              className="add-asset-generate-audio-toggle"
-              role="group"
-              aria-label="Source audio"
-            >
-              <button
-                type="button"
-                className={resolvedAudioMode === "none" ? "is-active" : ""}
-                disabled={phase !== "form"}
-                onClick={() => selectSourceAudio("none")}
-                aria-pressed={resolvedAudioMode === "none"}
-              >
-                None
-              </button>
-              <button
-                type="button"
-                className={
-                  resolvedAudioMode === "full_mix" ? "is-active" : ""
-                }
-                disabled={phase !== "form" || sourceAudioLocked}
-                onClick={() => selectSourceAudio("full_mix")}
-                aria-pressed={resolvedAudioMode === "full_mix"}
-                title={
-                  resolvedContinuityMode === "none"
-                    ? "Text-to-video has no audio processing"
-                    : resolvedBlueModel === "wan"
-                      ? "WAN has no audio processing"
-                      : !hasMainAudio
-                        ? "Add main audio to the timeline (or set it in Lab)"
-                        : undefined
-                }
-              >
-                Full track
-              </button>
-              <button
-                type="button"
-                className={resolvedAudioMode === "vocals" ? "is-active" : ""}
-                disabled={
-                  phase !== "form" || sourceAudioLocked || !hasLyrics
-                }
-                onClick={() => selectSourceAudio("vocals")}
-                aria-pressed={resolvedAudioMode === "vocals"}
-                title={
-                  resolvedContinuityMode === "none"
-                    ? "Text-to-video has no audio processing"
-                    : resolvedBlueModel === "wan"
-                      ? "WAN has no audio processing"
-                      : !hasMainAudio
-                        ? "Add main audio to the timeline (or set it in Lab)"
-                        : !hasLyrics
-                          ? "No lyrics in this section"
-                          : undefined
-                }
-              >
-                Lyrics track
-              </button>
+            <div className="add-asset-generate-callout" role="note">
+              <p className="muted" style={{ margin: 0 }}>
+                Text to Video — prompt only, no start image ({resolvedBlueModel}).
+              </p>
             </div>
-            {resolvedContinuityMode === "none" ? (
-              <p className="muted add-asset-generate-note">
-                {ADD_ASSET_IMAGES_NONE_AUDIO_NOTE}
-              </p>
-            ) : resolvedBlueModel === "wan" ? (
-              <p className="muted add-asset-generate-note">
-                {ADD_ASSET_WAN_AUDIO_NOTE}
-              </p>
-            ) : !hasMainAudio ? (
-              <p className="muted add-asset-generate-note">
-                No audio track — source audio is locked to None. Add main audio
-                to the timeline (or set it in Lab) to unlock Full or Lyrics
-                track.
-              </p>
-            ) : null}
           </section>
         ) : null}
 
@@ -1535,7 +1883,35 @@ export function AddAssetGeneratePanel({
             {replicateModelsError ? (
               <p className="add-asset-generate-error">{replicateModelsError}</p>
             ) : null}
-            {replicateModels == null ? (
+            {!fieldsInteractive && replicateModels == null ? (
+              <label className="add-asset-generate-field">
+                <span>Enabled model</span>
+                <select
+                  className="control"
+                  value={
+                    replicateModelId ??
+                    clip.addAssetDraft?.replicateModel ??
+                    clip.addAssetGeneration?.model ??
+                    ""
+                  }
+                  disabled
+                >
+                  <option
+                    value={
+                      replicateModelId ??
+                      clip.addAssetDraft?.replicateModel ??
+                      clip.addAssetGeneration?.model ??
+                      ""
+                    }
+                  >
+                    {replicateModelId ??
+                      clip.addAssetDraft?.replicateModel ??
+                      clip.addAssetGeneration?.model ??
+                      "—"}
+                  </option>
+                </select>
+              </label>
+            ) : replicateModels == null ? (
               <p className="muted">Loading enabled models…</p>
             ) : replicateModels.length === 0 ? (
               <p className="muted">
@@ -1548,7 +1924,7 @@ export function AddAssetGeneratePanel({
                 <select
                   className="control"
                   value={selectedReplicateModel?.id ?? ""}
-                  disabled={phase !== "form"}
+                  disabled={!fieldsInteractive}
                   onChange={(event) => {
                     setReplicateModelId(event.target.value || null);
                     setUseNearestDuration(false);
@@ -1589,7 +1965,7 @@ export function AddAssetGeneratePanel({
                   <select
                     className="control"
                     value={normalizedTweaks.resolution ?? ""}
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onChange={(event) =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1612,7 +1988,7 @@ export function AddAssetGeneratePanel({
                   <select
                     className="control"
                     value={normalizedTweaks.mode ?? ""}
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onChange={(event) =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1640,7 +2016,7 @@ export function AddAssetGeneratePanel({
                     className={
                       normalizedTweaks.generateAudio ? "" : "is-active"
                     }
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onClick={() =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1656,7 +2032,7 @@ export function AddAssetGeneratePanel({
                     className={
                       normalizedTweaks.generateAudio ? "is-active" : ""
                     }
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onClick={() =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1676,7 +2052,7 @@ export function AddAssetGeneratePanel({
                   <select
                     className="control"
                     value={normalizedTweaks.characterOrientation ?? ""}
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onChange={(event) =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1704,7 +2080,7 @@ export function AddAssetGeneratePanel({
                     className={
                       normalizedTweaks.keepOriginalSound ? "is-active" : ""
                     }
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onClick={() =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1720,7 +2096,7 @@ export function AddAssetGeneratePanel({
                     className={
                       normalizedTweaks.keepOriginalSound ? "" : "is-active"
                     }
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     onClick={() =>
                       setReplicateTweaks((prev) => ({
                         ...prev,
@@ -1743,7 +2119,7 @@ export function AddAssetGeneratePanel({
                     min={0}
                     step={1}
                     placeholder="Random"
-                    disabled={phase !== "form"}
+                    disabled={!fieldsInteractive}
                     value={
                       typeof normalizedTweaks.seed === "number"
                         ? String(normalizedTweaks.seed)
@@ -1780,7 +2156,7 @@ export function AddAssetGeneratePanel({
                   id="add-asset-negative-prompt"
                   className="control add-asset-generate-prompt"
                   rows={2}
-                  disabled={phase !== "form"}
+                  disabled={!fieldsInteractive}
                   value={normalizedTweaks.negativePrompt ?? ""}
                   onChange={(event) =>
                     setReplicateTweaks((prev) => ({
@@ -1807,41 +2183,13 @@ export function AddAssetGeneratePanel({
             <div className="add-asset-generate-callout" role="note">
               <p className="muted" style={{ margin: 0 }}>
                 No start image — generation uses your prompt only (
-                {resolvedBlueModel === "wan" ? "wan_t2v" : "ltx_t2v"}).
+                {resolvedBlueModel}).
               </p>
             </div>
           </section>
         ) : (
         <section className="add-asset-generate-section">
-          <h3>
-            {showMotionMatch
-              ? "Character & motion"
-              : showFirstLast
-                ? "First & last frames"
-                : "Start frame"}
-          </h3>
-          <label className="add-asset-generate-field">
-            <span>Framing</span>
-            <select
-              className="control"
-              value={startFrameFraming}
-              disabled={phase !== "form" || framesLoading}
-              onChange={(event) =>
-                setStartFrameFraming(
-                  normalizeFraming(event.target.value as StagedClipFraming),
-                )
-              }
-            >
-              <option value="fit">Fit — letterbox into project frame</option>
-              <option value="fill">Fill — cover and crop to project frame</option>
-              <option value="stretch">
-                Stretch — distort to fill project frame
-              </option>
-            </select>
-          </label>
-          <p className="muted add-asset-generate-note">
-            How the still is mapped into the project aspect before generation.
-          </p>
+          <h3>{showMotionMatch ? "Character & motion" : "Frames"}</h3>
           {showMotionMatch ? (
             <div className="add-asset-generate-frame-pair">
               <div className="add-asset-generate-field add-asset-generate-frame-field">
@@ -1870,64 +2218,163 @@ export function AddAssetGeneratePanel({
                 </div>
               </div>
             </div>
-          ) : showFirstLast ? (
+          ) : (
             <div className="add-asset-generate-frame-pair">
               <div className="add-asset-generate-field add-asset-generate-frame-field">
                 <span className="add-asset-generate-frame-caption">First</span>
                 <FramePreview
                   aspectRatio={aspectRatio}
-                  loading={framesLoading}
+                  loading={
+                    framesLoading && frameSourceIsSet(firstFrameSource)
+                  }
                   loadingLabel="Loading first frame…"
-                  preview={firstPreview}
-                  emptyLabel="No previous clip."
-                  alt="First frame from previous clip"
+                  preview={
+                    firstFrameSource.kind === "none" ? null : firstPreview
+                  }
+                  emptyLabel={
+                    firstFrameSource.kind === "none"
+                      ? "None"
+                      : firstFrameSource.kind === "asset"
+                        ? "Selected image is not available yet."
+                        : "No previous clip."
+                  }
+                  alt="First frame"
                 />
+                <div className="add-asset-generate-frame-slot-actions">
+                  <p className="muted add-asset-generate-frame-source-caption">
+                    {frameSourceCaption(firstFrameSource, "first", imageAssets)}
+                  </p>
+                  {fieldsInteractive ? (
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      disabled={framesLoading}
+                      onClick={() => setFramePickerSlot("first")}
+                    >
+                      Choose…
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div className="add-asset-generate-field add-asset-generate-frame-field">
                 <span className="add-asset-generate-frame-caption">Last</span>
                 <FramePreview
                   aspectRatio={aspectRatio}
-                  loading={framesLoading}
+                  loading={
+                    framesLoading && frameSourceIsSet(lastFrameSource)
+                  }
                   loadingLabel="Loading last frame…"
-                  preview={lastPreview}
-                  emptyLabel="No next clip."
-                  alt="Last frame from next clip"
+                  preview={
+                    lastFrameSource.kind === "none" ? null : lastPreview
+                  }
+                  emptyLabel={
+                    lastFrameSource.kind === "none"
+                      ? "None"
+                      : lastFrameSource.kind === "asset"
+                        ? "Selected image is not available yet."
+                        : "No next clip."
+                  }
+                  alt="Last frame"
                 />
+                <div className="add-asset-generate-frame-slot-actions">
+                  <p className="muted add-asset-generate-frame-source-caption">
+                    {frameSourceCaption(lastFrameSource, "last", imageAssets)}
+                  </p>
+                  {fieldsInteractive ? (
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      disabled={framesLoading}
+                      onClick={() => setFramePickerSlot("last")}
+                    >
+                      Choose…
+                    </button>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="add-asset-generate-field add-asset-generate-frame-field">
-              <FramePreview
-                aspectRatio={aspectRatio}
-                loading={framesLoading}
-                loadingLabel="Loading start frame…"
-                preview={startFrame}
-                emptyLabel={
-                  startFrameAssetId
-                    ? "Selected image is not available locally yet — sync or download it."
-                    : "No prior clip with a local still — choose an image below or place a clip before this gap."
-                }
-                alt="Start frame"
-              />
-              {!isReplicate && resolvedContinuityMode === "start_frame" ? (
-                <StartFrameAssetPicker
-                  assets={imageAssets}
-                  selectedId={startFrameAssetId}
-                  previewsById={assetPreviews}
-                  disabled={phase !== "form" || framesLoading}
-                  onSelect={setStartFrameAssetId}
-                  onClear={() => setStartFrameAssetId(null)}
-                />
-              ) : null}
-              {startFrame?.note ? (
-                <p className="muted" style={{ margin: 0, fontSize: "0.82rem" }}>
-                  {startFrame.note}
-                </p>
-              ) : null}
             </div>
           )}
         </section>
         )}
+
+        {!isReplicate &&
+        (currentIntentId === "image_to_video" ||
+          currentIntentId === "image_audio_to_video" ||
+          currentIntentId === "text_to_video") ? (
+          <section className="add-asset-generate-section">
+            <h3>Source audio</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Source audio"
+            >
+              <button
+                type="button"
+                className={resolvedAudioMode === "none" ? "is-active" : ""}
+                disabled={
+                  !fieldsInteractive ||
+                  currentIntentId === "text_to_video" ||
+                  currentIntentId === "image_audio_to_video"
+                }
+                onClick={() => selectSourceAudio("none")}
+                aria-pressed={resolvedAudioMode === "none"}
+              >
+                None
+              </button>
+              <button
+                type="button"
+                className={
+                  resolvedAudioMode === "full_mix" ? "is-active" : ""
+                }
+                disabled={
+                  !fieldsInteractive ||
+                  sourceAudioLocked ||
+                  currentIntentId === "text_to_video"
+                }
+                onClick={() => selectSourceAudio("full_mix")}
+                aria-pressed={resolvedAudioMode === "full_mix"}
+                title={
+                  currentIntentId === "text_to_video"
+                    ? "Text to Video has no audio processing"
+                    : !hasA2vModels
+                      ? "No audio-to-video models available"
+                      : !hasMainAudio
+                        ? "Add main audio to the timeline first"
+                        : undefined
+                }
+              >
+                Full mix
+              </button>
+              <button
+                type="button"
+                className={resolvedAudioMode === "vocals" ? "is-active" : ""}
+                disabled={
+                  !fieldsInteractive ||
+                  sourceAudioLocked ||
+                  currentIntentId === "text_to_video"
+                }
+                onClick={() => selectSourceAudio("vocals")}
+                aria-pressed={resolvedAudioMode === "vocals"}
+                title={
+                  currentIntentId === "text_to_video"
+                    ? "Text to Video has no audio processing"
+                    : !hasA2vModels
+                      ? "No audio-to-video models available"
+                      : !hasMainAudio
+                        ? "Add main audio to the timeline first"
+                        : undefined
+                }
+              >
+                Vocals
+              </button>
+            </div>
+            {currentIntentId === "image_audio_to_video" ? (
+              <p className="muted add-asset-generate-note">
+                Audio to Video requires source audio on the timeline.
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="add-asset-generate-section">
           <h3>Duration</h3>
@@ -1940,7 +2387,7 @@ export function AddAssetGeneratePanel({
               max={ADD_ASSET_MAX_DURATION_SEC}
               step={0.5}
               value={durationDraft}
-              disabled={phase !== "form"}
+              disabled={!fieldsInteractive}
               onChange={(event) => {
                 setDurationDraft(event.target.value);
                 setUseNearestDuration(false);
@@ -2017,6 +2464,7 @@ export function AddAssetGeneratePanel({
               className="add-asset-generate-prompt is-auto-size"
               rows={2}
               value={prompt}
+              disabled={!fieldsInteractive}
               onChange={(event) => setPrompt(event.target.value)}
               placeholder={`Describe what happens in these ${clipDurationSec.toFixed(1)} seconds…`}
             />
@@ -2027,9 +2475,41 @@ export function AddAssetGeneratePanel({
       <GenerateActions
         onRefresh={handleRefresh}
         onGenerate={handleGenerate}
-        refreshDisabled={framesLoading}
+        onGenerateNew={onGenerateNew}
+        refreshDisabled={framesLoading || !fieldsInteractive}
         generateDisabled={!canGenerate}
+        formLocked={formLocked}
       />
+
+      {framePickerSlot && fieldsInteractive ? (
+        <GenerateFrameSourcePicker
+          role={framePickerSlot}
+          current={
+            framePickerSlot === "last" ? lastFrameSource : firstFrameSource
+          }
+          timelinePreview={pickerTimelinePreview}
+          timelineLoading={pickerTimelineLoading}
+          assets={imageAssets}
+          assetPreviews={assetPreviews}
+          timelineAllowed={
+            framePickerSlot === "last" ? isReplicate || hasFlfModels : true
+          }
+          timelineDisallowReason={
+            framePickerSlot === "last" && !isReplicate && !hasFlfModels
+              ? "No first+last models available for this server."
+              : undefined
+          }
+          onCancel={() => setFramePickerSlot(null)}
+          onUse={(source) => {
+            if (framePickerSlot === "last") {
+              setFrameSources({ last: source });
+            } else {
+              setFrameSources({ first: source });
+            }
+            setFramePickerSlot(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

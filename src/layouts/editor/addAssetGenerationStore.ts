@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useSyncExternalStore } from "react";
 import type {
   AddAssetGenerationJob,
@@ -12,6 +13,7 @@ import {
   type AddAssetGenerationSession,
   type RunAddAssetGenerationOpts,
 } from "./addAssetGenerate";
+import type { StartFramePreview } from "./addAssetStartFrame";
 import {
   draftAudioMode,
   draftContinuityMode,
@@ -26,8 +28,48 @@ import {
   ReplicatePendingDownloadError,
   resumeReplicateAddAssetDownload,
 } from "./addAssetReplicateGenerate";
+import {
+  BlueDirectPendingDownloadError,
+  initialBlueDirectGenerationSteps,
+  resumeBlueDirectAddAssetWait,
+} from "./addAssetBlueDirectGenerate";
 import { addAssetClipDurationSec } from "./stagedClip";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
+import {
+  durableFrameSourceFromPreview,
+  frameSourceAssetId,
+  resolveFirstFrameSource,
+  resolveLastFrameSource,
+} from "../../project/addAssetFrameSource";
+import type { AddAssetFrameSource } from "../../project/types";
+import { importLocalPathsForProject } from "../../project/projectAssetLanding";
+
+/**
+ * Prefer an existing image asset; otherwise file the local still into the
+ * project so Generate new / Form review don't depend on live neighbors.
+ */
+async function ensureDurableFrameSource(
+  preview: StartFramePreview | null | undefined,
+  fallback: AddAssetFrameSource | undefined,
+  projectId: string,
+): Promise<AddAssetFrameSource | undefined> {
+  const fromPreview = durableFrameSourceFromPreview(preview, fallback);
+  if (fromPreview?.kind === "asset") return fromPreview;
+  if (fallback?.kind === "asset") return fallback;
+  const path = preview?.framePath?.trim();
+  if (!path || !projectId.trim()) return fallback;
+  try {
+    const imported = await importLocalPathsForProject({
+      paths: [path],
+      projectId,
+    });
+    const id = imported.creations[0]?.id?.trim();
+    if (id) return { kind: "asset", assetId: id };
+  } catch {
+    /* keep fallback */
+  }
+  return fallback;
+}
 
 /**
  * Module-level add-asset generation session.
@@ -53,7 +95,28 @@ export type AddAssetGenerationSuccess = {
   audioMode: AddAssetAudioMode;
   mode: AddAssetContinuityMode;
   model: string;
+  /** Preview of the start still that was sent (for locked Form review). */
+  startFramePreviewUrl?: string | null;
+  endFramePreviewUrl?: string | null;
+  /** Durable still sources captured from the frames actually sent. */
+  firstFrameSource?: AddAssetFrameSource | null;
+  lastFrameSource?: AddAssetFrameSource | null;
+  startFrameAssetId?: string | null;
 };
+
+function stampPreviewUrl(
+  frame: StartFramePreview | null | undefined,
+): string | undefined {
+  const url = frame?.previewUrl?.trim();
+  if (url) return url;
+  const path = frame?.framePath?.trim();
+  if (!path) return undefined;
+  try {
+    return convertFileSrc(path);
+  } catch {
+    return undefined;
+  }
+}
 
 export type AddAssetGenerationFailure = {
   projectId: string;
@@ -64,6 +127,8 @@ export type AddAssetGenerationFailure = {
    * Set when Replicate succeeded and only download/import needs retry.
    */
   replicatePredictionId?: string | null;
+  /** Same idea for Direct to Blue download retry. */
+  blueJobId?: string | null;
 };
 
 export type AddAssetGenerationInFlight = {
@@ -88,6 +153,44 @@ let applier: AddAssetGenerationApplier | null = null;
 const listeners = new Set<() => void>();
 /** Clip ids currently being resumed (avoid double-start). */
 const resumeAttempted = new Set<string>();
+/**
+ * Remote jobs that already produced a library import for this app session.
+ * Prevents reconcile from re-downloading/importing the same Blue/Replicate/
+ * Parascene job when it still sees a stale placeholder snapshot.
+ */
+const consumedRemoteJobs = new Set<string>();
+
+function remoteJobKey(job: {
+  replicatePredictionId?: string | null;
+  pendingCreationId?: string | null;
+  blueJobId?: string | null;
+}): string | null {
+  const blue = job.blueJobId?.trim();
+  if (blue) return `blue:${blue}`;
+  const pred = job.replicatePredictionId?.trim();
+  if (pred) return `replicate:${pred}`;
+  const pending = job.pendingCreationId?.trim();
+  if (pending) return `parascene:${pending}`;
+  return null;
+}
+
+function markRemoteJobConsumed(job: {
+  replicatePredictionId?: string | null;
+  pendingCreationId?: string | null;
+  blueJobId?: string | null;
+}): void {
+  const key = remoteJobKey(job);
+  if (key) consumedRemoteJobs.add(key);
+}
+
+function isRemoteJobConsumed(job: {
+  replicatePredictionId?: string | null;
+  pendingCreationId?: string | null;
+  blueJobId?: string | null;
+}): boolean {
+  const key = remoteJobKey(job);
+  return Boolean(key && consumedRemoteJobs.has(key));
+}
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -162,8 +265,10 @@ export function clearAddAssetGenerationIfClipMissing(
       ? timelineClipIds
       : new Set(timelineClipIds);
   if (!ids.has(session.clipId)) {
-    inflight = false;
     setSession(null);
+    // Do not clear `inflight` here. The running promise's `finally` owns that
+    // flag — clearing early lets reconcile start a second download/import of
+    // the same remote job (asset duplication storm).
   }
 }
 
@@ -192,6 +297,8 @@ function applyJobFailure(
       error instanceof ReplicatePendingDownloadError
         ? error.predictionId
         : null,
+    blueJobId:
+      error instanceof BlueDirectPendingDownloadError ? error.blueJobId : null,
   });
   if (session?.clipId === clipId) {
     patchSession(clipId, {
@@ -253,6 +360,11 @@ export function startAddAssetGenerationJob(
     baseSession.steps = initialReplicateGenerationSteps(
       continuityMode as ReplicateVideoContinuity,
     );
+  } else if (request.blueDirect) {
+    baseSession.steps = initialBlueDirectGenerationSteps(
+      continuityMode,
+      request.audioMode,
+    );
   }
   setSession({
     ...baseSession,
@@ -261,13 +373,18 @@ export function startAddAssetGenerationJob(
 
   const provider: AddAssetGenerationJob["provider"] = request.replicate
     ? "replicate"
-    : "parascene_blue";
+    : request.blueDirect
+      ? "blue_direct"
+      : "parascene_blue";
   const startedAt = new Date().toISOString();
   const modelHint = request.replicate
     ? `${request.replicate.owner}/${request.replicate.name}`
-    : request.blueModel === "wan"
-      ? "wan"
-      : "ltx";
+    : request.blueModel?.trim() || "blue";
+  let activeRemote: {
+    replicatePredictionId?: string;
+    pendingCreationId?: string;
+    blueJobId?: string;
+  } = {};
   // applyInFlight clears lastError / stale prediction ids — avoid racing clearFailure.
   persistInFlight(projectId, clipId, {
     status: "starting",
@@ -287,6 +404,7 @@ export function startAddAssetGenerationJob(
     startFrame: request.startFrame,
     endFrame: request.endFrame,
     replicate: request.replicate,
+    blueDirect: request.blueDirect,
     onSteps: (steps) => {
       patchSession(clipId, { steps });
     },
@@ -294,22 +412,58 @@ export function startAddAssetGenerationJob(
       patchSession(clipId, { progressNote });
     },
     onRemoteJob: (remote) => {
+      activeRemote = {
+        replicatePredictionId: remote.replicatePredictionId,
+        pendingCreationId: remote.pendingCreationId,
+        blueJobId: remote.blueJobId,
+      };
       persistInFlight(projectId, clipId, {
         status: "waiting",
         provider: remote.provider,
         startedAt,
         replicatePredictionId: remote.replicatePredictionId,
         pendingCreationId: remote.pendingCreationId,
+        blueJobId: remote.blueJobId,
         model: remote.model ?? modelHint,
       });
     },
   })
     .then(async (result) => {
+      const draftFirst =
+        resolveFirstFrameSource({
+          firstFrameSource: request.clip.addAssetDraft?.firstFrameSource,
+          startFrameAssetId: request.clip.addAssetDraft?.startFrameAssetId,
+        }) ??
+        (continuityMode === "none" ? { kind: "none" as const } : { kind: "timeline" as const });
+      const draftLast = resolveLastFrameSource({
+        lastFrameSource: request.clip.addAssetDraft?.lastFrameSource,
+        continuityMode,
+      });
+      const firstFrameSource: AddAssetFrameSource =
+        (await ensureDurableFrameSource(
+          request.startFrame,
+          draftFirst,
+          projectId,
+        )) ?? draftFirst;
+      const lastFrameSource: AddAssetFrameSource =
+        continuityMode === "first_last"
+          ? (await ensureDurableFrameSource(
+              request.endFrame,
+              draftLast,
+              projectId,
+            )) ?? draftLast
+          : { kind: "none" };
+      const stillIds = [
+        frameSourceAssetId(firstFrameSource),
+        frameSourceAssetId(lastFrameSource),
+      ].filter((id): id is string => Boolean(id));
       const success: AddAssetGenerationSuccess = {
         projectId,
         clipId,
         creationId: result.creationId,
-        projectCreationIds: result.projectCreationIds,
+        projectCreationIds: [
+          ...new Set([...result.projectCreationIds, ...stillIds]),
+        ],
         videosGroupId: result.videosGroupId,
         imagesGroupId: result.imagesGroupId,
         prompt: request.prompt,
@@ -317,7 +471,13 @@ export function startAddAssetGenerationJob(
         audioMode: request.audioMode,
         mode: result.mode,
         model: result.model,
+        startFramePreviewUrl: stampPreviewUrl(request.startFrame),
+        endFramePreviewUrl: stampPreviewUrl(request.endFrame),
+        firstFrameSource,
+        lastFrameSource,
+        startFrameAssetId: frameSourceAssetId(firstFrameSource),
       };
+      markRemoteJobConsumed(activeRemote);
       await applier?.applySuccess(success);
       // Only clear if this job is still the active session.
       if (session?.clipId === clipId) {
@@ -422,6 +582,7 @@ export function retryAddAssetDownloadJob(
         mode: result.mode,
         model: result.model,
       };
+      markRemoteJobConsumed({ replicatePredictionId: predictionId });
       await applier?.applySuccess(success);
       if (session?.clipId === clipId) {
         setSession(null);
@@ -462,7 +623,15 @@ export function reconcileAddAssetGenerations(
 ): boolean {
   if (inflight || !applier) return false;
   const candidates = findResumableAddAssetPlaceholders(opts.timeline).filter(
-    (c) => !resumeAttempted.has(c.clip.id),
+    (c) =>
+      !resumeAttempted.has(c.clip.id) &&
+      !isRemoteJobConsumed({
+        replicatePredictionId:
+          c.job.replicatePredictionId ??
+          c.clip.addAssetDraft?.replicatePredictionId,
+        pendingCreationId: c.job.pendingCreationId,
+        blueJobId: c.job.blueJobId ?? c.clip.addAssetDraft?.blueJobId,
+      }),
   );
   if (candidates.length === 0) return false;
 
@@ -471,7 +640,8 @@ export function reconcileAddAssetGenerations(
     candidates.find(
       (c) =>
         Boolean(c.job.replicatePredictionId?.trim()) ||
-        Boolean(c.job.pendingCreationId?.trim()),
+        Boolean(c.job.pendingCreationId?.trim()) ||
+        Boolean(c.job.blueJobId?.trim()),
     ) ?? candidates[0];
   if (!withRemote) return false;
 
@@ -488,8 +658,15 @@ export function reconcileAddAssetGenerations(
     draft?.replicatePredictionId?.trim() ||
     "";
   const pendingCreationId = job.pendingCreationId?.trim() || "";
+  const blueJobId =
+    job.blueJobId?.trim() || draft?.blueJobId?.trim() || "";
 
-  if (job.status === "starting" && !predictionId && !pendingCreationId) {
+  if (
+    job.status === "starting" &&
+    !predictionId &&
+    !pendingCreationId &&
+    !blueJobId
+  ) {
     resumeAttempted.add(clipId);
     applyJobFailure(
       opts.projectId,
@@ -535,22 +712,33 @@ export function reconcileAddAssetGenerations(
           onProgress: (progressNote) =>
             patchSession(clipId, { progressNote }),
         })
-      : pendingCreationId
-        ? resumeParasceneAddAssetGeneration({
-            pendingCreationId,
+      : job.provider === "blue_direct" && blueJobId
+        ? resumeBlueDirectAddAssetWait({
+            blueJobId,
             projectId: opts.projectId,
-            projectTitle: opts.projectTitle,
             imagesGroupId: opts.imagesGroupId,
-            videosGroupId: opts.videosGroupId,
             continuityMode,
-            model: job.model?.trim() || "parascene_blue",
+            model: job.model?.trim() || "blue_direct",
             onSteps: (steps) => patchSession(clipId, { steps }),
             onProgress: (progressNote) =>
               patchSession(clipId, { progressNote }),
           })
-        : Promise.reject(
-            new Error("No remote job id available to resume generation."),
-          );
+        : pendingCreationId
+          ? resumeParasceneAddAssetGeneration({
+              pendingCreationId,
+              projectId: opts.projectId,
+              projectTitle: opts.projectTitle,
+              imagesGroupId: opts.imagesGroupId,
+              videosGroupId: opts.videosGroupId,
+              continuityMode,
+              model: job.model?.trim() || "parascene_blue",
+              onSteps: (steps) => patchSession(clipId, { steps }),
+              onProgress: (progressNote) =>
+                patchSession(clipId, { progressNote }),
+            })
+          : Promise.reject(
+              new Error("No remote job id available to resume generation."),
+            );
 
   void run
     .then(async (result) => {
@@ -567,6 +755,11 @@ export function reconcileAddAssetGenerations(
         mode: result.mode,
         model: result.model,
       };
+      markRemoteJobConsumed({
+        replicatePredictionId: predictionId || null,
+        pendingCreationId: pendingCreationId || null,
+        blueJobId: blueJobId || null,
+      });
       await applier?.applySuccess(success);
       if (session?.clipId === clipId) {
         setSession(null);
@@ -585,8 +778,10 @@ export function reconcileAddAssetGenerations(
     .finally(() => {
       inflight = false;
       resumeAttempted.delete(clipId);
-      // Kick another pending placeholder if present.
-      reconcileAddAssetGenerations(opts);
+      // Do not re-enter with this stale `opts.timeline` snapshot — it still
+      // contains the placeholder we just filled, which re-imports the same
+      // remote output in a loop. ShellProvider's resume effect re-runs when
+      // the live timeline fingerprint changes and picks up any remaining jobs.
     });
 
   return true;
@@ -611,4 +806,5 @@ export function __resetAddAssetGenerationStoreForTests(): void {
   applier = null;
   listeners.clear();
   resumeAttempted.clear();
+  consumedRemoteJobs.clear();
 }

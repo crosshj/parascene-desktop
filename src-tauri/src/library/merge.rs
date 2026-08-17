@@ -278,6 +278,7 @@ fn run_merge(app: &AppHandle, clips: Vec<MergeTimelineClipInput>) -> Result<Crea
             None,
             None,
             None,
+            None,
         )?;
     }
 

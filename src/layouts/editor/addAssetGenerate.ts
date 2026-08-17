@@ -32,6 +32,8 @@ import {
 import { resolveAddAssetGenerationTiming } from "./addAssetStartFrame";
 import type { StartFramePreview } from "./addAssetStartFrame";
 import { runReplicateAddAssetGeneration } from "./addAssetReplicateGenerate";
+import { runBlueDirectAddAssetGeneration } from "./addAssetBlueDirectGenerate";
+import { isWanFamilyBlueModel } from "./blueVideoModels";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 
 export type AddAssetGenerationStepId =
@@ -310,6 +312,23 @@ export type ReplaceAddAssetPlaceholderMeta = {
   addAssetGeneration: AddAssetGeneration;
 };
 
+/**
+ * Sync-to-timeline only when generation consumed timeline song audio
+ * (vocals / full mix). Start-frame / bridge continuity alone does not lock.
+ */
+export function generatedClipShouldSyncToTimeline(
+  generation: AddAssetGeneration | null | undefined,
+): boolean {
+  if (!generation) return false;
+  const server =
+    generation.server?.trim() || generation.provider?.trim() || "";
+  // Replicate fills do not use the timeline song as generation audio.
+  if (server === "replicate") return false;
+  return (
+    generation.audioMode === "vocals" || generation.audioMode === "full_mix"
+  );
+}
+
 /** Swap a placeholder for a generated video without disturbing other timeline edits. */
 export function replaceAddAssetPlaceholderWithVideo(
   timeline: readonly TimelineClip[],
@@ -320,6 +339,9 @@ export function replaceAddAssetPlaceholderWithVideo(
   return timeline.map((clip) => {
     if (clip.id !== clipId) return clip;
     const duration = addAssetClipDurationSec(clip);
+    const syncToTimeline = generatedClipShouldSyncToTimeline(
+      meta?.addAssetGeneration,
+    );
     return {
       ...clip,
       assetId: creationId,
@@ -330,7 +352,7 @@ export function replaceAddAssetPlaceholderWithVideo(
       endSec: clip.startSec + duration,
       includeAudio: false,
       isAddAssetPlaceholder: undefined,
-      timelineLocked: true,
+      timelineLocked: syncToTimeline ? true : undefined,
       addAssetDraft: undefined,
       addAssetGeneration: meta?.addAssetGeneration,
       thumbUrl: null,
@@ -389,13 +411,16 @@ export type RunAddAssetGenerationOpts = {
     characterFrame?: StartFramePreview | null;
     tweaks?: import("./replicateVideoTweaks").ReplicateVideoTweaks;
   };
+  /** When true, run via Direct to Blue (local-only import). */
+  blueDirect?: boolean;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
   /** Persist remote job ids for app-restart resume. */
   onRemoteJob?: (job: {
-    provider: "replicate" | "parascene_blue";
+    provider: "replicate" | "parascene_blue" | "blue_direct";
     replicatePredictionId?: string;
     pendingCreationId?: string;
+    blueJobId?: string;
     model?: string;
   }) => void;
 };
@@ -444,6 +469,34 @@ export async function runAddAssetGeneration(
       },
     });
   }
+  if (opts.blueDirect) {
+    return runBlueDirectAddAssetGeneration({
+      placeholder: opts.placeholder,
+      timeline: opts.timeline,
+      aspectRatio: opts.aspectRatio,
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+      mainAudioCreationId: opts.mainAudioCreationId,
+      lyricAlignment: opts.lyricAlignment ?? null,
+      prompt: opts.prompt,
+      audioMode: opts.audioMode,
+      continuityMode: opts.continuityMode ?? "start_frame",
+      blueModel: opts.blueModel,
+      startFrame: opts.startFrame,
+      endFrame: opts.endFrame,
+      onSteps: opts.onSteps,
+      onProgress: opts.onProgress,
+      onBlueJobId: (jobId) => {
+        opts.onRemoteJob?.({
+          provider: "blue_direct",
+          blueJobId: jobId,
+          model: opts.blueModel?.trim() || "blue",
+        });
+      },
+    });
+  }
   const continuityMode = opts.continuityMode ?? "start_frame";
   if (continuityMode === "motion_match") {
     throw new Error("Motion match requires a Replicate model.");
@@ -486,7 +539,9 @@ async function runTextToVideoAddAssetGeneration(
   );
 
   const model =
-    opts.blueModel === "wan" ? WAN_T2V_MODEL : LTX_T2V_MODEL;
+    isWanFamilyBlueModel(opts.blueModel ?? "")
+      ? WAN_T2V_MODEL
+      : LTX_T2V_MODEL;
 
   pushSteps(advanceStep(steps, "generate"));
   const { creationId } = await runBlueT2vGeneration({
@@ -743,7 +798,7 @@ async function runStartFrameAddAssetGeneration(
       framing: opts.startFrame.framing,
       aspectRatio: opts.aspectRatio,
       filenamePrefix:
-        opts.blueModel === "wan"
+        opts.blueModel === "wan" || opts.blueModel === "wan_i2v"
           ? "editor-wan-i2v-start"
           : audioMode === "none"
             ? "editor-ltx-i2v-start"
@@ -762,7 +817,7 @@ async function runStartFrameAddAssetGeneration(
   }
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
-  const useWan = opts.blueModel === "wan";
+  const useWan = isWanFamilyBlueModel(opts.blueModel ?? "");
 
   pushSteps(advanceStep(steps, "generate"));
   let creationId: string;

@@ -14,7 +14,9 @@ Generation should accept (or clearly document):
 - A **last frame** (image / keyframe)
 - Prompt + other params as today
 
-Desktop use cases: guided continuity between scenes, Director/Editor “bridge” clips, controlled motion between two stills. Confirm current Parascene API support; if absent, track as **platform work** before depending on it in the app.
+**Desktop (shipped):** Editor Generate supports independent first/last sources (timeline neighbor, Assets still, or none) across Parascene, Direct to Blue, and Replicate where the model allows FLF. Provenance stamps preview URLs + durable image sources for Form review and Generate new.
+
+Desktop use cases: guided continuity between scenes, “bridge” clips, controlled motion between two stills. Remaining platform work is mostly deeper Blue methods (v2v / r2v) — see [PLAN-parascene-blue-direct.md](./PLAN-parascene-blue-direct.md).
 
 ### 2. Explicit duration (prefer under 9 seconds)
 
@@ -34,8 +36,8 @@ Clarify with Parascene product/API what “relay” means in practice (session o
 
 | Concern | Likely owner |
 | --- | --- |
-| First–last frames on generate | Parascene platform / API (+ desktop client once stable) |
-| Duration control (&lt; ~9s) | Parascene platform / API |
+| First–last frames on generate | **Desktop shipped** for timeline Generate; platform/API depth for new Blue methods |
+| Duration control (&lt; ~9s) | Parascene platform / API (+ desktop passes through) |
 | Prompt relay contract | Parascene platform + desktop assistant wiring |
 | Local library of results | Desktop — [PLAN-library-sync.md](./PLAN-library-sync.md) |
 | Local media tools | Desktop — [PLAN-ffmpeg.md](./PLAN-ffmpeg.md) |
@@ -44,7 +46,7 @@ Clarify with Parascene product/API what “relay” means in practice (session o
 
 Generation results and intermediates should not automatically imply “store everything in Parascene.” Desktop aims to take load off the web app/DB ([GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md)).
 
-**Parascene** product path stays Creation-backed (credits-first). **Parascene Blue direct** Lab lane ships first-party gen → local import without Creation rows. Replicate direct already follows the local-import pattern (Lab + Editor). Promoting local gens into Creations remains open.
+**Parascene** product path stays Creation-backed (credits-first). **Direct to Blue** (Lab + Generate) ships first-party gen → local import without Creation rows. Replicate direct already follows the local-import pattern (Lab + Editor). Promoting local gens into Creations remains open.
 
 ## Desktop stance until ready
 

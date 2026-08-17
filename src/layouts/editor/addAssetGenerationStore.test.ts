@@ -1,14 +1,4 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import {
-  __resetAddAssetGenerationStoreForTests,
-  bindAddAssetGenerationApplier,
-  clearAddAssetGenerationError,
-  clearAddAssetGenerationIfClipMissing,
-  getAddAssetGenerationSession,
-  isAddAssetGenerationInflight,
-  startAddAssetGenerationJob,
-  subscribeAddAssetGeneration,
-} from "./addAssetGenerationStore";
 import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 
 vi.mock("./addAssetGenerate", async () => {
@@ -21,9 +11,33 @@ vi.mock("./addAssetGenerate", async () => {
   };
 });
 
+vi.mock("./addAssetBlueDirectGenerate", async () => {
+  const actual =
+    await vi.importActual<typeof import("./addAssetBlueDirectGenerate")>(
+      "./addAssetBlueDirectGenerate",
+    );
+  return {
+    ...actual,
+    resumeBlueDirectAddAssetWait: vi.fn(),
+  };
+});
+
 import { runAddAssetGeneration } from "./addAssetGenerate";
+import { resumeBlueDirectAddAssetWait } from "./addAssetBlueDirectGenerate";
+import {
+  __resetAddAssetGenerationStoreForTests,
+  bindAddAssetGenerationApplier,
+  clearAddAssetGenerationError,
+  clearAddAssetGenerationIfClipMissing,
+  getAddAssetGenerationSession,
+  isAddAssetGenerationInflight,
+  reconcileAddAssetGenerations,
+  startAddAssetGenerationJob,
+  subscribeAddAssetGeneration,
+} from "./addAssetGenerationStore";
 
 const runMock = vi.mocked(runAddAssetGeneration);
+const resumeBlueMock = vi.mocked(resumeBlueDirectAddAssetWait);
 
 function makeRequest(): StartAddAssetGenerationRequest {
   return {
@@ -60,6 +74,7 @@ describe("addAssetGenerationStore", () => {
   beforeEach(() => {
     __resetAddAssetGenerationStoreForTests();
     runMock.mockReset();
+    resumeBlueMock.mockReset();
   });
 
   it("keeps the session after start so remounts can resume UI", async () => {
@@ -180,7 +195,7 @@ describe("addAssetGenerationStore", () => {
     unsubscribe();
   });
 
-  it("clears when the placeholder clip is missing", () => {
+  it("clears session UI when the placeholder clip is missing without releasing inflight", () => {
     runMock.mockReturnValue(new Promise(() => {}));
     startAddAssetGenerationJob({
       projectId: "proj-1",
@@ -197,7 +212,9 @@ describe("addAssetGenerationStore", () => {
     });
     clearAddAssetGenerationIfClipMissing(["other"]);
     expect(getAddAssetGenerationSession()).toBeNull();
-    expect(isAddAssetGenerationInflight()).toBe(false);
+    // Inflight stays true until the job promise settles — otherwise reconcile
+    // can start a second import of the same remote job.
+    expect(isAddAssetGenerationInflight()).toBe(true);
   });
 
   it("keeps error sessions until cleared and persists via applier", async () => {
@@ -235,6 +252,7 @@ describe("addAssetGenerationStore", () => {
       clipId: "ph-1",
       errorMessage: "boom",
       replicatePredictionId: null,
+      blueJobId: null,
     });
     clearAddAssetGenerationError();
     expect(getAddAssetGenerationSession()).toBeNull();
@@ -332,5 +350,71 @@ describe("addAssetGenerationStore", () => {
         }),
       }),
     );
+  });
+
+  it("does not re-import the same Blue job when reconcile sees a stale placeholder", async () => {
+    const applySuccess = vi.fn().mockResolvedValue(undefined);
+    bindAddAssetGenerationApplier({
+      applySuccess,
+      applyFailure: vi.fn(),
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+
+    let importCount = 0;
+    resumeBlueMock.mockImplementation(async () => {
+      importCount += 1;
+      return {
+        creationId: `vid-${importCount}`,
+        projectCreationIds: [`vid-${importCount}`],
+        videosGroupId: null,
+        imagesGroupId: null,
+        mode: "start_frame" as const,
+        model: "ltx_i2v",
+      };
+    });
+
+    const staleTimeline = [
+      {
+        id: "ph-1",
+        label: "0:04",
+        startSec: 0,
+        endSec: 4,
+        lane: "video" as const,
+        kind: "video" as const,
+        isAddAssetPlaceholder: true,
+        addAssetDraft: {
+          prompt: "glow",
+          continuityMode: "start_frame" as const,
+          provider: "blue_direct" as const,
+          generationJob: {
+            status: "waiting" as const,
+            provider: "blue_direct" as const,
+            startedAt: new Date().toISOString(),
+            blueJobId: "blue-job-1",
+            model: "ltx_i2v",
+          },
+        },
+      },
+    ];
+
+    const opts = {
+      projectId: "proj-1",
+      projectTitle: "Demo",
+      timeline: staleTimeline,
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+
+    expect(reconcileAddAssetGenerations(opts)).toBe(true);
+    await vi.waitFor(() => {
+      expect(applySuccess).toHaveBeenCalledTimes(1);
+      expect(isAddAssetGenerationInflight()).toBe(false);
+    });
+
+    // Stale snapshot still has the placeholder — must not import again.
+    expect(reconcileAddAssetGenerations(opts)).toBe(false);
+    expect(importCount).toBe(1);
+    expect(applySuccess).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,7 +4,7 @@ mod clip_thumb;
 mod crt_gpu;
 mod diag;
 mod download;
-mod ffmpeg;
+pub(crate) mod ffmpeg;
 mod folders;
 mod import_local;
 mod jobs;

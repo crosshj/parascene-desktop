@@ -20,6 +20,7 @@ import {
   initialReplicateGenerationSteps,
   resumeReplicateAddAssetWait,
 } from "./addAssetReplicateGenerate";
+import { initialBlueDirectGenerationSteps } from "./addAssetBlueDirectGenerate";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 import { addAssetClipDurationSec } from "./stagedClip";
 
@@ -39,7 +40,8 @@ export function findResumableAddAssetPlaceholders(
     if (!job) continue;
     const hasRemote =
       Boolean(job.replicatePredictionId?.trim()) ||
-      Boolean(job.pendingCreationId?.trim());
+      Boolean(job.pendingCreationId?.trim()) ||
+      Boolean(job.blueJobId?.trim());
     // "starting" without a remote id cannot be resumed — surface as failure later.
     if (!hasRemote && job.status !== "starting") continue;
     out.push({ clip, job });
@@ -155,7 +157,7 @@ export async function resumeReplicateWaitForPlaceholder(
 }
 
 export function initialResumeSessionSteps(
-  provider: "replicate" | "parascene_blue",
+  provider: "replicate" | "parascene_blue" | "blue_direct",
   continuityMode: AddAssetContinuityMode,
   audioMode: AddAssetAudioMode,
   durationSec: number,
@@ -170,6 +172,8 @@ export function initialResumeSessionSteps(
     base.steps = initialReplicateGenerationSteps(
       continuityMode as ReplicateVideoContinuity,
     );
+  } else if (provider === "blue_direct") {
+    base.steps = initialBlueDirectGenerationSteps(continuityMode, audioMode);
   }
   base.progressNote = "Resuming generation…";
   return base;

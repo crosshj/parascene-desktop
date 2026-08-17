@@ -22,6 +22,7 @@ import {
   slideshowRecipesEqual,
   stagedClipDuration,
   stagedDraftForDuplicateGenerate,
+  reviewPlaceholderClipFromGeneration,
   targetLaneForDraft,
   timelineClipToStagedDraft,
   videoStretchStyle,
@@ -863,7 +864,9 @@ describe("stagedClip", () => {
       prompt: "creature walks",
       continuityMode: "start_frame",
       provider: "replicate",
-      methodId: "replicate_timeline_fill",
+      intentId: "image_to_video",
+      server: "replicate",
+      methodId: "image_to_video",
       replicateModel: "vidu/q3-turbo",
       audioMode: "full_mix",
       startFrameAssetId: "img-1",
@@ -884,8 +887,55 @@ describe("stagedClip", () => {
     expect(staged.isAddAssetPlaceholder).toBe(true);
     expect(staged.outSec).toBe(4);
     expect(staged.addAssetDraft?.provider).toBe("replicate");
-    expect(staged.addAssetDraft?.methodId).toBe("replicate_timeline_fill");
+    expect(staged.addAssetDraft?.intentId).toBe("image_to_video");
     expect(staged.addAssetDraft?.replicateModel).toBe("owner/name");
+  });
+
+  it("copies stamped frame previews and durable sources on Generate new", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "morph",
+      generatedAt: "2026-08-17T00:00:00.000Z",
+      creationId: "c-morph",
+      mode: "first_last",
+      model: "ks_style_transition",
+      server: "blue_direct",
+      firstFrameSource: { kind: "asset", assetId: "ball" },
+      lastFrameSource: { kind: "asset", assetId: "face" },
+      startFramePreviewUrl: "asset://ball.jpg",
+      endFramePreviewUrl: "asset://face.jpg",
+    });
+    expect(draft).toMatchObject({
+      firstFrameSource: { kind: "asset", assetId: "ball" },
+      lastFrameSource: { kind: "asset", assetId: "face" },
+      startFramePreviewUrl: "asset://ball.jpg",
+      endFramePreviewUrl: "asset://face.jpg",
+      startFrameAssetId: "ball",
+    });
+  });
+
+  it("anchors review placeholders to the real timeline clip when provided", () => {
+    const gen = {
+      prompt: "morph",
+      generatedAt: "2026-08-17T00:00:00.000Z",
+      creationId: "c-morph",
+      mode: "first_last" as const,
+    };
+    const anchor = {
+      id: "clip-1",
+      label: "Flicker",
+      lane: "video" as const,
+      kind: "video" as const,
+      startSec: 12,
+      endSec: 15,
+      assetId: "c-morph",
+      addAssetGeneration: gen,
+    };
+    const review = reviewPlaceholderClipFromGeneration(gen, 3, anchor);
+    expect(review.startSec).toBe(12);
+    expect(review.endSec).toBe(15);
+    expect(review.id).toBe("clip-1");
+    expect(review.isAddAssetPlaceholder).toBe(true);
+    expect(review.addAssetDraft?.prompt).toBe("morph");
   });
 
   it("seeds Blue WAN drafts with source audio locked to none", () => {
@@ -899,7 +949,7 @@ describe("stagedClip", () => {
       methodId: "blue_timeline_fill",
     });
     expect(draft).toMatchObject({
-      blueModel: "wan",
+      blueModel: "wan_i2v",
       audioMode: "none",
       continuityMode: "first_last",
       provider: "parascene_blue",
@@ -917,7 +967,7 @@ describe("stagedClip", () => {
       methodId: "blue_timeline_fill",
     });
     expect(draft).toMatchObject({
-      blueModel: "ltx",
+      blueModel: "ltx_i2v",
       audioMode: "none",
       continuityMode: "start_frame",
     });
@@ -934,7 +984,7 @@ describe("stagedClip", () => {
       methodId: "blue_timeline_fill",
     });
     expect(draft).toMatchObject({
-      blueModel: "wan",
+      blueModel: "wan_t2v",
       audioMode: "none",
       continuityMode: "none",
       provider: "parascene_blue",
@@ -952,7 +1002,7 @@ describe("stagedClip", () => {
       methodId: "blue_timeline_fill",
     });
     expect(draft).toMatchObject({
-      blueModel: "ltx",
+      blueModel: "ltx_t2v",
       audioMode: "none",
       continuityMode: "none",
     });

@@ -3,10 +3,13 @@
 use crate::blue::client::{self, BlueHttpResponse};
 use crate::blue::credentials;
 use crate::blue::history::{self, JobRecord};
+use crate::library::ffmpeg;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
@@ -72,6 +75,95 @@ fn method_from_name(name: &str) -> String {
     name.trim().to_string()
 }
 
+fn field_expects_image(field: &str) -> bool {
+    let f = field.to_ascii_lowercase();
+    f.contains("image") || f.ends_with("_images")
+}
+
+/// Re-encode stills to a baseline JPEG ComfyUI/PIL can open reliably.
+/// Asset picks often land as PNG/HEIC/WebP; timeline frames already go through
+/// the clip-thumb JPEG path — keep Blue uploads consistent either way.
+fn prepare_local_path_for_blue(path: &Path, field: &str) -> Result<PathBuf, String> {
+    if !path.is_file() {
+        return Err(format!(
+            "Local file missing for Blue upload ({field}): {}",
+            path.display()
+        ));
+    }
+    let len = std::fs::metadata(path)
+        .map(|m| m.len())
+        .map_err(|e| format!("Stat failed for Blue upload ({field}): {e}"))?;
+    if len == 0 {
+        return Err(format!(
+            "Local file is empty for Blue upload ({field}): {}",
+            path.display()
+        ));
+    }
+    if !field_expects_image(field) {
+        return Ok(path.to_path_buf());
+    }
+
+    let ffmpeg_bin = ffmpeg::resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required to prepare stills for Blue. Install with: brew install ffmpeg"
+            .to_string()
+    })?;
+    let dir = env::temp_dir().join("parascene-blue-uploads");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Blue upload cache dir: {e}"))?;
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("still");
+    let safe: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dest = dir.join(format!("{safe}-{stamp}.jpg"));
+    let dest_arg = dest.to_string_lossy().to_string();
+    let src_arg = path.to_string_lossy().to_string();
+    let output = ffmpeg::command(&ffmpeg_bin)
+        .args([
+            "-y",
+            "-i",
+            &src_arg,
+            "-an",
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+            "-q:v",
+            "2",
+            "-update",
+            "1",
+            &dest_arg,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Could not prepare still for Blue: {e}"))?;
+    if !output.status.success()
+        || !dest.is_file()
+        || dest.metadata().map(|m| m.len() == 0).unwrap_or(true)
+    {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let tail: String = err.chars().rev().take(400).collect::<String>().chars().rev().collect();
+        return Err(format!(
+            "Could not prepare still for Blue upload ({field}). {tail}"
+        ));
+    }
+    Ok(dest)
+}
+
 async fn resolve_local_files_into_args(
     creds: &credentials::BlueCredentials,
     args: &mut Value,
@@ -102,7 +194,8 @@ async fn resolve_local_files_into_args(
                         done: false,
                     },
                 );
-                let url = client::upload_file(creds, Path::new(path)).await?;
+                let prepared = prepare_local_path_for_blue(Path::new(path), field)?;
+                let url = client::upload_file(creds, prepared.as_path()).await?;
                 obj.insert(field.clone(), Value::String(url));
             }
             Value::Array(items) => {
@@ -127,8 +220,9 @@ async fn resolve_local_files_into_args(
                             done: false,
                         },
                     );
+                    let prepared = prepare_local_path_for_blue(Path::new(path), field)?;
                     urls.push(Value::String(
-                        client::upload_file(creds, Path::new(path)).await?,
+                        client::upload_file(creds, prepared.as_path()).await?,
                     ));
                 }
                 if !urls.is_empty() {
@@ -354,6 +448,12 @@ pub async fn run_method(
     }
     if create_resp.status != 202 && !(200..300).contains(&create_resp.status) {
         let text = String::from_utf8_lossy(&create_resp.bytes).to_string();
+        if text.contains("open '") || text.contains("open \"") {
+            return Err(format!(
+                "Blue create HTTP {}: {text}\n\nBlue/Comfy could not open the uploaded start still. Try again (uploads are now re-encoded to a clean JPEG), or switch model to LTX / Wan to isolate a MiniMax-specific issue.",
+                create_resp.status
+            ));
+        }
         return Err(format!("Blue create HTTP {}: {text}", create_resp.status));
     }
 

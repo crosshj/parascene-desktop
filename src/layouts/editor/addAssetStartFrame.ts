@@ -1,16 +1,29 @@
 import { applyImageFraming, extractVideoFrame } from "../../lab/audioTools";
 import {
   downloadIds,
+  ensureClipThumb,
   ensureReversed,
   getCreations,
 } from "../../library/catalogClient";
-import { ensureClipThumbnail } from "../../library/clipThumbnail";
+import { clipTimelineComposition } from "../../library/clipThumbnail";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   creationDetailUrl,
   creationPreviewUrl,
 } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
-import type { LyricAlignment, TimelineClip } from "../../project/types";
+import type {
+  AddAssetDraft,
+  AddAssetFrameSource,
+  LyricAlignment,
+  TimelineClip,
+} from "../../project/types";
+import {
+  durableFrameSourceFromPreview,
+  frameSourceAssetId,
+  resolveFirstFrameSource,
+  resolveLastFrameSource,
+} from "../../project/addAssetFrameSource";
 import {
   clipInSec,
   clipSourceSec,
@@ -31,6 +44,8 @@ export type StartFramePreview = {
   framing?: StagedClipFraming;
   /** Project image asset id when the start frame came from the asset picker. */
   sourceAssetId?: string | null;
+  /** True when sourceAssetId points at an image (safe to re-use as Assets source). */
+  sourceIsImage?: boolean;
   /**
    * Existing Parascene image URL — generation can use this directly instead of
    * uploading a derived still when the asset is already on the cloud.
@@ -47,29 +62,26 @@ export function startFrameIsReady(
   return Boolean(preview.framePath?.trim());
 }
 
-/** Source media time within the visible timeline span of a clip. */
+/**
+ * Source media time at a timeline instant — same mapping as the program
+ * monitor (`clipSourceSec`: trim, speed, loop, ping-pong).
+ */
 export function clipVisibleSourceSec(
   clip: TimelineClip,
   timelineSec: number,
 ): number {
-  const inSec = clipInSec(clip);
-  const visibleDur = Math.max(0.1, clip.endSec - clip.startSec);
-  const local = Math.max(
-    0,
-    Math.min(timelineSec - clip.startSec, visibleDur),
-  );
-  return inSec + local;
+  return clipSourceSec(clip, timelineSec);
 }
 
 /** Source media time of the last visible frame in a timeline clip. */
 export function lastFrameSourceSec(clip: TimelineClip): number {
   const endTimelineSec = Math.max(clip.startSec, clip.endSec - 0.05);
-  return clipVisibleSourceSec(clip, endTimelineSec);
+  return clipSourceSec(clip, endTimelineSec);
 }
 
 /** Source media time of the first visible frame in a timeline clip. */
 export function firstFrameSourceSec(clip: TimelineClip): number {
-  return clipVisibleSourceSec(clip, clip.startSec);
+  return clipSourceSec(clip, clip.startSec);
 }
 
 function isVisualTimelineClip(clip: TimelineClip): boolean {
@@ -95,7 +107,8 @@ export function visualLayerBeforePlaceholder(
     if (visual.clip.id === placeholder.id) continue;
     return {
       clip: visual.clip,
-      sourceSec: lastFrameSourceSec(visual.clip),
+      // Prefer the composed source time at the cut (loop / ping-pong / speed).
+      sourceSec: visual.sourceSec,
     };
   }
   return null;
@@ -118,7 +131,7 @@ export function visualLayerAfterPlaceholder(
     if (visual.clip.id === placeholder.id) continue;
     return {
       clip: visual.clip,
-      sourceSec: firstFrameSourceSec(visual.clip),
+      sourceSec: visual.sourceSec,
     };
   }
   return null;
@@ -304,16 +317,10 @@ function framingLabel(framing: StagedClipFraming): string {
   return framing === "fill" ? "Fill" : framing === "stretch" ? "Stretch" : "Fit";
 }
 
-function framingNote(
-  framing: StagedClipFraming,
-  fromImage: boolean,
-  role: FrameRole,
-): string {
-  const neighbor = role === "start" ? "previous" : "next";
-  const source =
-    fromImage ? "image" : role === "start" ? "last frame" : "first frame";
-  const which = role === "start" ? "start" : "end";
-  return `The ${which} frame is the ${neighbor} clip’s ${source} with ${framingLabel(framing)} framing.`;
+function timelineFrameNote(role: FrameRole): string {
+  return role === "start"
+    ? "The start frame matches the previous clip as shown on the timeline."
+    : "The end frame matches the next clip as shown on the timeline.";
 }
 
 function assetFramingNote(framing: StagedClipFraming): string {
@@ -334,7 +341,8 @@ function framingFallbackNote(
     : "The end frame is the first frame of the next video clip.";
 }
 
-async function applyNeighborFraming(opts: {
+/** Fit/fill/stretch only — used when the composed timeline thumb path fails. */
+async function applyNeighborFramingFallback(opts: {
   sourcePath: string;
   framing: StagedClipFraming;
   aspectRatio: string;
@@ -351,7 +359,7 @@ async function applyNeighborFraming(opts: {
     });
     return {
       previewUrl: framed.mediaUrl,
-      note: framingNote(opts.framing, opts.fromImage, opts.role),
+      note: timelineFrameNote(opts.role),
       framePath: framed.path,
       frameTimeSec: opts.frameTimeSec,
       framing: opts.framing,
@@ -367,6 +375,11 @@ async function applyNeighborFraming(opts: {
   }
 }
 
+/**
+ * Neighbor start/end frames use the clip’s timeline composition (framing +
+ * zoom + center) — the same still the program monitor / timeline thumb shows.
+ * Optional generate-form framing is not applied here.
+ */
 async function resolveFrameFromNeighborClip(opts: {
   neighbor: TimelineClip;
   frameTimeSec: number | null;
@@ -374,11 +387,10 @@ async function resolveFrameFromNeighborClip(opts: {
   role: FrameRole;
   missingLocalNote: string;
   extractFailedNote: string;
-  /** When set, overrides the neighbor clip’s own framing. */
-  framing?: StagedClipFraming;
 }): Promise<StartFramePreview> {
   const { neighbor, aspectRatio, role } = opts;
-  const framing = normalizeFraming(opts.framing ?? neighbor.framing);
+  const composition = clipTimelineComposition(neighbor, aspectRatio);
+  const framing = composition.framing;
   const assetId = neighbor.assetId!.trim();
   let [creation] = await getCreations([assetId]);
   let sourcePath = creation?.localPath?.trim() || null;
@@ -425,8 +437,58 @@ async function resolveFrameFromNeighborClip(opts: {
     };
   }
 
-  if (creation && isImagePriorClip(neighbor, creation)) {
-    const framed = await applyNeighborFraming({
+  const fromImage = Boolean(creation && isImagePriorClip(neighbor, creation));
+  const frameTimeSec = fromImage
+    ? 0
+    : (opts.frameTimeSec ??
+      (role === "start"
+        ? lastFrameSourceSec(neighbor)
+        : firstFrameSourceSec(neighbor)));
+  const reverse = Boolean(neighbor.reverse);
+  const kind = neighbor.kind ?? "video";
+
+  if (!fromImage && reverse && (kind === "video" || kind === "slideshow")) {
+    try {
+      const reversed = await ensureReversed(assetId);
+      if (reversed.path) {
+        sourcePath = reversed.path;
+      }
+    } catch {
+      /* fall back to forward source */
+    }
+  }
+
+  // Prefer the same composed still the timeline uses (includes zoom / pan).
+  try {
+    const composedPath = await ensureClipThumb(
+      assetId,
+      reverse,
+      frameTimeSec,
+      composition,
+    );
+    const previewUrl = convertFileSrc(composedPath);
+    recordUiOpTrace({
+      type: "add_asset_frame_resolved",
+      clipId: neighbor.id,
+      kind: fromImage ? "image" : "video",
+      ids: assetId,
+      reason: `${role}:timeline_compose path=${framePathBasename(composedPath) || "none"} t=${fromImage ? "—" : frameTimeSec.toFixed(2)} framing=${framing} zoom=${composition.zoom}`,
+    });
+    return {
+      previewUrl,
+      note: timelineFrameNote(role),
+      framePath: composedPath,
+      frameTimeSec: fromImage ? null : frameTimeSec,
+      framing,
+      sourceAssetId: assetId,
+      sourceIsImage: fromImage,
+    };
+  } catch {
+    /* fall through to extract + fit/fill/stretch */
+  }
+
+  if (fromImage) {
+    const framed = await applyNeighborFramingFallback({
       sourcePath,
       framing,
       aspectRatio,
@@ -441,35 +503,24 @@ async function resolveFrameFromNeighborClip(opts: {
       clipId: neighbor.id,
       kind: "image",
       ids: assetId,
-      reason: `${role}:image path=${framePathBasename(framed.framePath) || "none"} framing=${framed.framing ?? framing}`,
+      reason: `${role}:image_fallback path=${framePathBasename(framed.framePath) || "none"} framing=${framed.framing ?? framing}`,
     });
-    return framed;
-  }
-
-  const frameTimeSec =
-    opts.frameTimeSec ??
-    (role === "start"
-      ? lastFrameSourceSec(neighbor)
-      : firstFrameSourceSec(neighbor));
-  const reverse = Boolean(neighbor.reverse);
-  const kind = neighbor.kind ?? "video";
-
-  if (reverse && (kind === "video" || kind === "slideshow")) {
-    try {
-      const reversed = await ensureReversed(assetId);
-      if (reversed.path) {
-        sourcePath = reversed.path;
-      }
-    } catch {
-      /* fall back to forward source */
-    }
+    return { ...framed, sourceAssetId: assetId, sourceIsImage: true };
   }
 
   let previewUrl: string | null = null;
+  let thumbPath: string | null = null;
   try {
-    previewUrl = await ensureClipThumbnail(assetId, reverse, frameTimeSec);
+    thumbPath = await ensureClipThumb(assetId, reverse, frameTimeSec, composition);
+    previewUrl = convertFileSrc(thumbPath);
   } catch {
-    previewUrl = null;
+    try {
+      thumbPath = await ensureClipThumb(assetId, reverse, frameTimeSec);
+      previewUrl = convertFileSrc(thumbPath);
+    } catch {
+      thumbPath = null;
+      previewUrl = null;
+    }
   }
 
   try {
@@ -477,7 +528,7 @@ async function resolveFrameFromNeighborClip(opts: {
       sourcePath,
       timeSec: frameTimeSec,
     });
-    const framed = await applyNeighborFraming({
+    const framed = await applyNeighborFramingFallback({
       sourcePath: frame.path,
       framing,
       aspectRatio,
@@ -493,7 +544,7 @@ async function resolveFrameFromNeighborClip(opts: {
       ids: assetId,
       reason: `${role}:video path=${framePathBasename(framed.framePath) || "none"} t=${frameTimeSec?.toFixed(2) ?? "?"}`,
     });
-    return framed;
+    return { ...framed, sourceAssetId: assetId, sourceIsImage: false };
   } catch (extractError) {
     // Stills mis-typed as video fail Duration probe; frame as image instead.
     if (
@@ -511,7 +562,7 @@ async function resolveFrameFromNeighborClip(opts: {
           180,
         ),
       });
-      const framed = await applyNeighborFraming({
+      const framed = await applyNeighborFramingFallback({
         sourcePath,
         framing,
         aspectRatio,
@@ -531,25 +582,51 @@ async function resolveFrameFromNeighborClip(opts: {
         ids: assetId,
         reason: `${role}:image_fallback path=${framePathBasename(framed.framePath) || "none"}`,
       });
-      return framed;
+      return { ...framed, sourceAssetId: assetId, sourceIsImage: true };
     }
-    // Thumb-only is NOT a usable start_image — never claim success in the note.
+    // Full-res extract failed, but the clip-thumb pipeline already produced a
+    // local still at the same source time — use that for generation.
+    if (thumbPath?.trim()) {
+      recordUiOpTrace({
+        type: "add_asset_frame_thumb_fallback",
+        clipId: neighbor.id,
+        kind: neighbor.kind ?? creation?.mediaType ?? "video",
+        ids: assetId,
+        reason: `${role}:extract_failed→thumb ${extractError instanceof Error ? extractError.message : String(extractError)}`.slice(
+          0,
+          180,
+        ),
+      });
+      return {
+        previewUrl,
+        note: timelineFrameNote(role),
+        framePath: thumbPath,
+        frameTimeSec,
+        framing,
+        sourceAssetId: assetId,
+        sourceIsImage: false,
+      };
+    }
     recordUiOpTrace({
       type: "add_asset_frame_extract_fail",
       clipId: neighbor.id,
       kind: neighbor.kind ?? creation?.mediaType ?? "video",
       ids: assetId,
-      reason: `${role}:${extractError instanceof Error ? extractError.message : String(extractError)}`.slice(
+      reason: `${role}:t=${frameTimeSec?.toFixed(2) ?? "?"} ${extractError instanceof Error ? extractError.message : String(extractError)}`.slice(
         0,
-        180,
+        220,
       ),
     });
+    const detail =
+      extractError instanceof Error ? extractError.message : String(extractError);
     return {
       previewUrl,
-      note: opts.extractFailedNote,
+      note: `${opts.extractFailedNote} (${detail})`,
       framePath: null,
-      frameTimeSec: null,
+      frameTimeSec,
       framing,
+      sourceAssetId: assetId,
+      sourceIsImage: false,
     };
   }
 }
@@ -558,7 +635,6 @@ export async function resolveAddAssetStartFrame(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
-  opts?: { framing?: StagedClipFraming },
 ): Promise<StartFramePreview> {
   const layer = visualLayerBeforePlaceholder(timeline, placeholder);
   const prior = layer?.clip ?? priorVideoClipBefore(
@@ -582,7 +658,6 @@ export async function resolveAddAssetStartFrame(
     role: "start",
     missingLocalNote: "Previous clip is not available locally yet.",
     extractFailedNote: "Could not extract the last frame from the previous clip.",
-    framing: opts?.framing,
   });
 }
 
@@ -647,6 +722,7 @@ export async function resolveAddAssetStartFrameFromAsset(
 
   if (!sourcePath) {
     // No local file to bake framing into — last-resort remote URL (unframed).
+    // Direct to Blue cannot use remote-only stills; Parascene Creation may.
     if (remoteImageUrl) {
       recordUiOpTrace({
         type: "add_asset_frame_resolved",
@@ -662,6 +738,7 @@ export async function resolveAddAssetStartFrameFromAsset(
         frameTimeSec: null,
         framing: resolvedFraming,
         sourceAssetId: id,
+        sourceIsImage: true,
         remoteImageUrl,
       };
     }
@@ -689,29 +766,90 @@ export async function resolveAddAssetStartFrameFromAsset(
     };
   }
 
-  const framed = await applyNeighborFraming({
-    sourcePath,
-    framing: resolvedFraming,
+  // Same JPEG pipeline as timeline neighbor frames (works for Blue/Comfy).
+  // Do not fall back to the raw asset file — Blue T2I imports are often PNG,
+  // and a silent raw fallback is what made asset picks fail while video frames
+  // succeeded.
+  const composition = clipTimelineComposition(
+    { framing: resolvedFraming, zoom: 1, centerX: 0, centerY: 0 },
     aspectRatio,
-    fromImage: true,
-    role: "start",
-    frameTimeSec: null,
-    fallbackPreviewUrl: previewUrl,
-  });
-  recordUiOpTrace({
-    type: "add_asset_frame_resolved",
-    clipId: "",
-    kind: "image",
-    ids: id,
-    reason: `start:asset path=${framePathBasename(framed.framePath) || "none"} framing=${resolvedFraming}`,
-  });
-  return {
-    ...framed,
-    // Prefer the framed local still for upload — never skip bake via remote URL.
-    note: assetFramingNote(resolvedFraming),
-    sourceAssetId: id,
-    remoteImageUrl: undefined,
-  };
+  );
+  try {
+    const composedPath = await ensureClipThumb(id, false, 0, composition);
+    recordUiOpTrace({
+      type: "add_asset_frame_resolved",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: `start:asset:clip_thumb path=${framePathBasename(composedPath) || "none"} framing=${resolvedFraming}`,
+    });
+    return {
+      previewUrl: convertFileSrc(composedPath),
+      note: assetFramingNote(resolvedFraming),
+      framePath: composedPath,
+      frameTimeSec: null,
+      framing: resolvedFraming,
+      sourceAssetId: id,
+      sourceIsImage: true,
+      remoteImageUrl: undefined,
+    };
+  } catch (thumbError) {
+    recordUiOpTrace({
+      type: "add_asset_frame_image_fallback",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: `start:asset:clip_thumb_failed ${thumbError instanceof Error ? thumbError.message : String(thumbError)}`.slice(
+        0,
+        180,
+      ),
+    });
+  }
+
+  try {
+    const framed = await applyImageFraming({
+      sourcePath,
+      framing: resolvedFraming,
+      aspectRatio,
+    });
+    recordUiOpTrace({
+      type: "add_asset_frame_resolved",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: `start:asset:framed path=${framePathBasename(framed.path) || "none"} framing=${resolvedFraming}`,
+    });
+    return {
+      previewUrl: framed.mediaUrl,
+      note: assetFramingNote(resolvedFraming),
+      framePath: framed.path,
+      frameTimeSec: null,
+      framing: resolvedFraming,
+      sourceAssetId: id,
+      sourceIsImage: true,
+      remoteImageUrl: undefined,
+    };
+  } catch (frameError) {
+    recordUiOpTrace({
+      type: "add_asset_frame_extract_fail",
+      clipId: "",
+      kind: "image",
+      ids: id,
+      reason: `start:asset:frame_failed ${frameError instanceof Error ? frameError.message : String(frameError)}`.slice(
+        0,
+        220,
+      ),
+    });
+    return {
+      previewUrl,
+      note: "Could not prepare a JPEG start still from this asset. Re-download it or pick another image.",
+      framePath: null,
+      frameTimeSec: null,
+      framing: resolvedFraming,
+      sourceAssetId: id,
+      sourceIsImage: true,
+    };
+  }
 }
 
 /** Timeline neighbor first; optional project image asset overrides when set. */
@@ -722,15 +860,22 @@ export async function resolveStartFrameForAddAsset(
   opts?: {
     startFrameAssetId?: string | null;
     framing?: StagedClipFraming;
+    firstFrameSource?: AddAssetFrameSource | null;
   },
 ): Promise<StartFramePreview> {
-  const assetId = opts?.startFrameAssetId?.trim();
-  const framing = normalizeFraming(opts?.framing);
-  if (assetId) {
-    return resolveAddAssetStartFrameFromAsset(assetId, aspectRatio, framing);
-  }
-  return resolveAddAssetStartFrame(timeline, placeholder, aspectRatio, {
-    framing,
+  const source =
+    opts?.firstFrameSource ??
+    resolveFirstFrameSource({
+      startFrameAssetId: opts?.startFrameAssetId,
+    }) ??
+    ({ kind: "timeline" } as const);
+  return resolveFrameSlot({
+    role: "first",
+    source,
+    timeline,
+    placeholder,
+    aspectRatio,
+    framing: opts?.framing,
   });
 }
 
@@ -738,34 +883,13 @@ export async function resolveAddAssetEndFrame(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
-  opts?: { framing?: StagedClipFraming },
 ): Promise<StartFramePreview> {
-  const durationSec = addAssetClipDurationSec(placeholder);
-  const placeholderSpan = {
-    ...placeholder,
-    endSec: placeholder.startSec + durationSec,
-  };
-  const layer = visualLayerAfterPlaceholder(timeline, placeholderSpan);
-  const next =
-    layer?.clip ??
-    nextVideoClipAfter(timeline, placeholderSpan.endSec, placeholder.id);
-  if (!next) {
-    return {
-      previewUrl: null,
-      note: "No next clip on the timeline.",
-      framePath: null,
-      frameTimeSec: null,
-    };
-  }
-
-  return resolveFrameFromNeighborClip({
-    neighbor: next,
-    frameTimeSec: layer?.sourceSec ?? null,
+  return resolveFrameSlot({
+    role: "last",
+    source: { kind: "timeline" },
+    timeline,
+    placeholder,
     aspectRatio,
-    role: "end",
-    missingLocalNote: "Next clip is not available locally yet.",
-    extractFailedNote: "Could not extract the first frame from the next clip.",
-    framing: opts?.framing,
   });
 }
 
@@ -774,23 +898,152 @@ export type BridgeFrames = {
   last: StartFramePreview;
 };
 
+export type FrameSlotRole = "first" | "last";
+
+/** Resolve one still slot from an explicit timeline or Assets source. */
+export async function resolveFrameSlot(opts: {
+  role: FrameSlotRole;
+  source: AddAssetFrameSource;
+  timeline: readonly TimelineClip[];
+  placeholder: TimelineClip;
+  aspectRatio?: string;
+  framing?: StagedClipFraming;
+}): Promise<StartFramePreview> {
+  const aspectRatio = opts.aspectRatio ?? "16:9";
+  const framing = normalizeFraming(opts.framing);
+  if (opts.source.kind === "none") {
+    return {
+      previewUrl: null,
+      note: "No frame.",
+      framePath: null,
+      frameTimeSec: null,
+    };
+  }
+  if (opts.source.kind === "asset") {
+    return resolveAddAssetStartFrameFromAsset(
+      opts.source.assetId,
+      aspectRatio,
+      framing,
+    );
+  }
+  if (opts.role === "last") {
+    const durationSec = addAssetClipDurationSec(opts.placeholder);
+    const placeholderSpan = {
+      ...opts.placeholder,
+      endSec: opts.placeholder.startSec + durationSec,
+    };
+    const layer = visualLayerAfterPlaceholder(opts.timeline, placeholderSpan);
+    const next =
+      layer?.clip ??
+      nextVideoClipAfter(
+        opts.timeline,
+        placeholderSpan.endSec,
+        opts.placeholder.id,
+      );
+    if (!next) {
+      return {
+        previewUrl: null,
+        note: "No next clip on the timeline.",
+        framePath: null,
+        frameTimeSec: null,
+      };
+    }
+    return resolveFrameFromNeighborClip({
+      neighbor: next,
+      frameTimeSec: layer?.sourceSec ?? null,
+      aspectRatio,
+      role: "end",
+      missingLocalNote: "Next clip is not available locally yet.",
+      extractFailedNote: "Could not extract the first frame from the next clip.",
+    });
+  }
+  return resolveAddAssetStartFrame(
+    opts.timeline,
+    opts.placeholder,
+    aspectRatio,
+  );
+}
+
+/** Quick check whether a timeline neighbor still is available for the picker. */
+export async function peekTimelineFrameSlot(opts: {
+  role: FrameSlotRole;
+  timeline: readonly TimelineClip[];
+  placeholder: TimelineClip;
+  aspectRatio?: string;
+}): Promise<StartFramePreview> {
+  return resolveFrameSlot({
+    role: opts.role,
+    source: { kind: "timeline" },
+    timeline: opts.timeline,
+    placeholder: opts.placeholder,
+    aspectRatio: opts.aspectRatio,
+  });
+}
+
+/**
+ * Resolve first + last from independent sources.
+ * Ready when both slots have a usable local path or remote URL.
+ */
+export async function resolveAddAssetBridgeFramesFromSources(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
+  opts?: {
+    firstFrameSource?: AddAssetFrameSource | null;
+    lastFrameSource?: AddAssetFrameSource | null;
+    startFrameAssetId?: string | null;
+    framing?: StagedClipFraming;
+  },
+): Promise<BridgeFrames | null> {
+  const firstSource =
+    opts?.firstFrameSource ??
+    resolveFirstFrameSource({
+      startFrameAssetId: opts?.startFrameAssetId,
+    }) ??
+    ({ kind: "timeline" } as const);
+  const lastSource = opts?.lastFrameSource ?? { kind: "timeline" as const };
+  const framing = normalizeFraming(opts?.framing);
+  const [first, last] = await Promise.all([
+    resolveFrameSlot({
+      role: "first",
+      source: firstSource,
+      timeline,
+      placeholder,
+      aspectRatio,
+      framing: firstSource.kind === "asset" ? framing : undefined,
+    }),
+    resolveFrameSlot({
+      role: "last",
+      source: lastSource,
+      timeline,
+      placeholder,
+      aspectRatio,
+      framing: lastSource.kind === "asset" ? framing : undefined,
+    }),
+  ]);
+  if (!startFrameIsReady(first) || !startFrameIsReady(last)) return null;
+  return { first, last };
+}
+
 /**
  * First = last frame of prior clip; last = first frame of next clip.
  * Returns null unless both frames have a usable local path.
+ * @deprecated Prefer {@link resolveAddAssetBridgeFramesFromSources}.
  */
 export async function resolveAddAssetBridgeFrames(
   timeline: readonly TimelineClip[],
   placeholder: TimelineClip,
   aspectRatio: string = "16:9",
-  opts?: { framing?: StagedClipFraming },
 ): Promise<BridgeFrames | null> {
-  const framing = opts?.framing;
-  const [first, last] = await Promise.all([
-    resolveAddAssetStartFrame(timeline, placeholder, aspectRatio, { framing }),
-    resolveAddAssetEndFrame(timeline, placeholder, aspectRatio, { framing }),
-  ]);
-  if (!first.framePath?.trim() || !last.framePath?.trim()) return null;
-  return { first, last };
+  return resolveAddAssetBridgeFramesFromSources(
+    timeline,
+    placeholder,
+    aspectRatio,
+    {
+      firstFrameSource: { kind: "timeline" },
+      lastFrameSource: { kind: "timeline" },
+    },
+  );
 }
 
 export function clipSongTimeRangeFromTimeline(
@@ -840,4 +1093,80 @@ export function resolveAddAssetGenerationTiming(
     alignment,
   );
   return { durationSec, songRange };
+}
+
+/**
+ * Re-resolve first/last stills against the original generated clip's timeline
+ * position and stamp preview URLs + durable image sources onto a Generate-new
+ * draft. Timeline-only sources on a new end-of-timeline placeholder otherwise
+ * show “No previous/next clip.”
+ */
+export async function enrichDraftFramesFromTimelineAnchor(opts: {
+  draft: AddAssetDraft;
+  timeline: readonly TimelineClip[];
+  anchor: TimelineClip;
+  aspectRatio?: string;
+}): Promise<AddAssetDraft> {
+  const draft = { ...opts.draft };
+  const aspectRatio = opts.aspectRatio ?? "16:9";
+  const firstSource =
+    resolveFirstFrameSource({
+      firstFrameSource: draft.firstFrameSource,
+      startFrameAssetId: draft.startFrameAssetId,
+    }) ??
+    (draft.continuityMode === "none"
+      ? ({ kind: "none" } as const)
+      : ({ kind: "timeline" } as const));
+  const lastSource = resolveLastFrameSource({
+    lastFrameSource: draft.lastFrameSource,
+    continuityMode: draft.continuityMode,
+  });
+
+  const needsFirst =
+    firstSource.kind !== "none" &&
+    (!draft.startFramePreviewUrl?.trim() || firstSource.kind === "timeline");
+  const needsLast =
+    lastSource.kind !== "none" &&
+    (!draft.endFramePreviewUrl?.trim() || lastSource.kind === "timeline");
+  if (!needsFirst && !needsLast) {
+    return draft;
+  }
+
+  const [first, last] = await Promise.all([
+    resolveFrameSlot({
+      role: "first",
+      source: firstSource,
+      timeline: opts.timeline,
+      placeholder: opts.anchor,
+      aspectRatio,
+    }),
+    resolveFrameSlot({
+      role: "last",
+      source: lastSource,
+      timeline: opts.timeline,
+      placeholder: opts.anchor,
+      aspectRatio,
+    }),
+  ]);
+
+  const firstPreview = first.previewUrl?.trim() || null;
+  const lastPreview = last.previewUrl?.trim() || null;
+  if (firstPreview && !draft.startFramePreviewUrl?.trim()) {
+    draft.startFramePreviewUrl = firstPreview;
+  }
+  if (lastPreview && !draft.endFramePreviewUrl?.trim()) {
+    draft.endFramePreviewUrl = lastPreview;
+  }
+
+  const durableFirst = durableFrameSourceFromPreview(first, firstSource);
+  const durableLast = durableFrameSourceFromPreview(last, lastSource);
+  if (durableFirst) {
+    draft.firstFrameSource = durableFirst;
+    const assetId = frameSourceAssetId(durableFirst);
+    if (assetId) draft.startFrameAssetId = assetId;
+  }
+  if (durableLast) {
+    draft.lastFrameSource = durableLast;
+  }
+  return draft;
 }

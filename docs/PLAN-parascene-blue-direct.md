@@ -4,7 +4,7 @@ Prove **Parascene Blue** as a first-class desktop generation lane: talk to `http
 
 **Capabilities snapshot:** [parascene-blue-api-capabilities.json](./parascene-blue-api-capabilities.json).
 
-**Status:** Lab proof lane is **shipped** (Settings creds → Blue HTTP → Lab methods + unified Predictions → local import). Editor timeline-fill / product path still uses Creations (`server_id: 6`). Phase B+ below remain open.
+**Status:** Lab proof lane is **shipped**. Generate is **intent-first** (modality recipe → server). **Direct to Blue** is a Generate server under wired intents (T2V / I2V / Image+Audio→Video / T2I) with **local-only** outputs. Parascene Creation path remains the credits server. Video to Video / Reference to Video / Image to Image show in the catalog as Coming soon until substrate (Phases C–F).
 
 ## Why (short)
 
@@ -30,7 +30,7 @@ flowchart LR
 | Lane | UI label | Today | Target |
 | --- | --- | --- | --- |
 | Product | **Parascene** | OAuth → `sdk.create` `server_id: 6` → Creation → ingest | Stay credits-first; label must say Parascene, not Blue |
-| Blue direct | **Parascene Blue** | Settings creds → Lab methods + Predictions → local import | Phase B: Editor / timeline-fill clone; then C–F growth |
+| Blue direct | **Direct to Blue** | Settings creds → Lab methods + Generate server (local-only) | Phases C–F: v2v / r2v substrate |
 | Replicate | **Replicate** | Settings token + Lab / Editor local import | Peer pattern for Blue-direct gating |
 
 Stable code ids (e.g. `parascene_blue` on the product path) may stay legacy until renamed; **user-facing copy** must not call the Creation path “Blue.”
@@ -109,9 +109,9 @@ Minimum Blue HTTP surface for the Lab proof:
 | Provider catalog | Split Parascene vs Parascene Blue labels/lanes | [x] Lab | Rename legacy ids if needed |
 | Settings | Blue creds UI + storage + status events | [x] | Cookie rotation helpers |
 | Blue HTTP client | Upload + create + poll + download | [x] | Broader Editor mapping |
-| Jobs / status | Lab local history + wait | [x] Lab | Editor job kinds, cancel, resume |
+| Jobs / status | Lab local history + wait | [x] Lab | Editor add-asset resume [x] |
 | Library | Local import without Creation id | [x] Lab | Optional promote-to-Creation |
-| Generate UI | Lab methods gated + form | [x] Lab | Timeline fill parity, then new intents |
+| Generate UI | Lab methods gated + form | [x] Lab | Timeline fill / intent Generate [x] |
 
 ## Parity clone vs product growth
 
@@ -152,7 +152,7 @@ Today’s product path is mostly one composed workflow — **timeline fill** —
 
 **Key files (product path):** [`AddAssetGeneratePanel.tsx`](../src/layouts/editor/AddAssetGeneratePanel.tsx), [`addAssetGenerate.ts`](../src/layouts/editor/addAssetGenerate.ts), [`previewIntent.ts`](../src/layouts/editor/previewIntent.ts), runners under [`src/lab/`](../src/lab/) (`blueT2vGeneration.ts`, `flf2vGeneration.ts`, `ltxI2vGeneration.ts`, `a2vGeneration.ts`), [`ingestCreation.ts`](../src/lab/ingestCreation.ts).
 
-**Not used on this path:** Blue `/api/files`, `prompt_magic`, MiniMax family, `ltx_style_transition`, `ltx_id_lora`, `video2video`, `reference2video`, Blue `text2image` / `image2image`.
+**Not used on this path historically:** Blue `/api/files`, `prompt_magic`, MiniMax family, `video2video`, `reference2video`. **Direct to Blue Generate** now uses `/api/files` + local import for wired intents; style-transition FLF models are available where selected.
 
 Product mental model today: **blank clip → continuity + optional song audio → one video out.** That is what parity clone reuses.
 
@@ -170,10 +170,12 @@ DIRECT: local still/audio → Blue /api/files → Blue job → download → loca
 | Add Asset form (prompt / WAN\|LTX / Images / Source audio / duration / framing) | Settings Blue creds + gate |
 | Lab a2v / i2v shapes | Upload target → Blue `/api/files` |
 | Timeline placeholder + resume UX | Submit / poll client (no Creation) |
-| Badge field shape | Provider label **Parascene Blue**; Blue job id instead of Creation id |
+| Badge field shape | Provider / server label (**Parascene** vs **Direct to Blue**); Blue job id instead of Creation id |
 
 - **A.** [x] Creds + thin client + Lab methods/Predictions → pipe proved in Lab.
-- **B.** [ ] Clone the full timeline-fill matrix (and Lab a2v/i2v) onto Blue-direct → insider parity without Creations.
+- **B.** [x] Generate intent-first IA + Direct to Blue adapter for timeline video intents (and T2I) → local-only; Parascene Creation path unchanged.
+
+**Editor Generate notes (shipped with B):** independent first/last frame sources (timeline neighbor / Assets / none), Result | Form dual view, Generate new with durable frame stamps, style-transition-capable FLF models on Direct to Blue where the method allows.
 
 ### Gap that parity does not close
 
@@ -197,7 +199,7 @@ Do **not** bolt every Blue field onto “Images: None | Start | First+last.” T
 | Restyle / control from video | `video2video` (`ltx_ic_lora`, `wan_animate`, `bernini_r_v2v`, `wan_scail*`) | Pick timeline clip or library video + optional ref still |
 | Generate from references | `reference2video` (`minimax_r2v`, `ltx_ingredients`) | Reference tray; tagged prompt (`<Picture 1>`, …) |
 | Identity talk | `audio2video` + `ltx_id_lora` | Extends a2v (start face required); does not replace `ltx_a2v` |
-| Style morph | `image2video` + `ltx_style_transition` | First/last already half-there; unlock LTX + end frame |
+| Style morph | `image2video` + `ltx_style_transition` / `ks_style_transition` | **Partial:** first/last + style models on Generate; deepen via Phase F |
 
 **Shared substrate** (real product investment; unlocks C–F):
 
@@ -242,9 +244,9 @@ Sequencing:
 2. [x] Rust thin Blue client: auth headers, files upload, job submit/poll, download
 3. [x] Lab: Parascene Blue methods + unified Predictions (capabilities form + local history; creds gate; delete / batch delete)
 4. [x] Local import + provenance for Blue-direct Lab output
-5. [ ] Manual proof against live Blue; refresh capabilities snapshot if contract drifted
-6. [ ] Phase B: clone full timeline-fill / Lab a2v matrix onto Blue-direct
+5. [x] Manual proof against live Blue; refresh capabilities snapshot if contract drifted — still recommended when contracting drifts
+6. [x] Phase B: Generate intent-first + Direct to Blue on core video/T2I intents (local-only)
 7. [ ] Phases C–F: media ref picker, then v2v / r2v / enrichments (see above)
-8. [ ] Doc status: mark Editor proof complete when Phase B lands; move open growth items to backlog as needed
+8. [x] Doc status: Generate intent-first + Direct to Blue server; growth items remain backlog
 
 **Lab notes:** Base URL is hardcoded to `https://blue.parascene.com`. Credentials live in Settings (keychain JSON: `token`, `cfAccessClientId`, `cfAccessClientSecret`) with optional `PARASCENE_BLUE_*` env fallback. Do not use Settings for base URL. Lab **Predictions** merges Replicate + Blue local history after the method modules.

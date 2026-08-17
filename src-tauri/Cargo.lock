@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "parascene-desktop"
-version = "1.1.40"
+version = "1.1.41"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -3065,6 +3065,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",

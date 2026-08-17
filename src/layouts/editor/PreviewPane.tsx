@@ -110,10 +110,7 @@ import {
 import { pendingDraftMatchesSelection } from "./editorSelection";
 import { TimelineMonitorHost } from "../../playback/TimelineMonitorHost";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
-import {
-  AddAssetGeneratePanel,
-  type StartAddAssetGenerationRequest,
-} from "./AddAssetGeneratePanel";
+import { type StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import { AddAssetIntentPanel } from "./AddAssetIntentPanel";
 import {
   SelectionIntentPanel,
@@ -122,12 +119,36 @@ import {
 import { CompositePlatePanel } from "./CompositePlatePanel";
 import { UnsupportedSelectionPanel } from "./UnsupportedSelectionPanel";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
-import { isAddAssetPlaceholderClip } from "./stagedClip";
+import { findTimelineGenerationForAsset } from "./addAssetGenerate";
+import {
+  isAddAssetPlaceholderClip,
+  reviewPlaceholderClipFromGeneration,
+} from "./stagedClip";
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
-import { GeneratedClipBadge } from "./GeneratedClipBadge";
+import { GenerateResultPane } from "./GenerateResultPane";
+import {
+  defaultGenerateDualView,
+  resolveGenerateDualPhase,
+  selectionSupportsGenerateDualView,
+  shouldPreserveGenerateDualView,
+  type GenerateDualViewId,
+  type LibraryGenerateUiState,
+} from "./generateDualView";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import type { AddAssetIntent, SelectionIntentModeId } from "./previewIntent";
-import { addAssetGenerationFromCreation } from "../../project/desktopAddAssetGeneration";
+import {
+  addAssetIntentAllowsLibraryGeneration,
+  audioModeForIntent,
+  continuityModeForIntent,
+  makeAddAssetIntent,
+  normalizeGenerateServer,
+  resolveAddAssetIntent,
+} from "./previewIntent";
+import { loadLastGenerateIntent } from "./generateIntentPrefs";
+import {
+  addAssetGenerationFromCreation,
+  isTextToImageGeneration,
+} from "../../project/desktopAddAssetGeneration";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -138,6 +159,8 @@ type PreviewPaneProps = {
   /** Pre-drop generation intent while the + slot is active. */
   addAssetIntent?: AddAssetIntent | null;
   onAddAssetIntentChange?: (intent: AddAssetIntent) => void;
+  /** Seed T2I form when opening + from Generate new. */
+  libraryFormSeed?: { prompt: string; model?: string } | null;
   /** Placeholder clip on the timeline for add-asset generation. */
   addAssetPlaceholderClip?: TimelineClip | null;
   addAssetGenerationSession?: AddAssetGenerationSession | null;
@@ -345,6 +368,7 @@ export function PreviewPane({
   addAssetSlotActive = false,
   addAssetIntent = null,
   onAddAssetIntentChange,
+  libraryFormSeed = null,
   addAssetPlaceholderClip = null,
   addAssetGenerationSession = null,
   lyricAlignment = null,
@@ -394,6 +418,21 @@ export function PreviewPane({
     upsertOpenStillWorkstream,
   } = useShell();
   const [creation, setCreation] = useState<Creation | null>(null);
+  const [generateDualView, setGenerateDualView] =
+    useState<GenerateDualViewId>("form");
+  const [generateDualHostKey, setGenerateDualHostKey] = useState<string | null>(
+    null,
+  );
+  const [generateDualPhaseSeen, setGenerateDualPhaseSeen] = useState<
+    string | null
+  >(null);
+  const [generateDualNowMs, setGenerateDualNowMs] = useState(() => Date.now());
+  const [libraryGenerateState, setLibraryGenerateState] =
+    useState<LibraryGenerateUiState>({
+      phase: "pre_gen",
+      progressNote: "",
+    });
+  const [libraryFormEpoch, setLibraryFormEpoch] = useState(0);
   const [selectionClass, setSelectionClass] =
     useState<MultiSelectionClass | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(false);
@@ -403,9 +442,6 @@ export function PreviewPane({
   const [currentSec, setCurrentSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [volumeLocal, setVolumeLocal] = useState(80);
-  const [providerChoiceClipId, setProviderChoiceClipId] = useState<
-    string | null
-  >(null);
   const volume = volumeProp ?? volumeLocal;
   const setVolume = (next: number) => {
     if (onVolumeChange) onVolumeChange(next);
@@ -758,6 +794,20 @@ export function PreviewPane({
     : null;
   const resolvedAddAssetGeneration =
     selectedClipAddAssetGeneration ?? catalogAddAssetGeneration;
+  const reviewGenerationAnchorClip =
+    resolvedAddAssetGeneration?.creationId?.trim()
+      ? (findTimelineGenerationForAsset(
+          timelineClips,
+          resolvedAddAssetGeneration.creationId,
+        )?.clip ?? null)
+      : null;
+  const reviewPlacedClip = resolvedAddAssetGeneration
+    ? reviewPlaceholderClipFromGeneration(
+        resolvedAddAssetGeneration,
+        undefined,
+        reviewGenerationAnchorClip,
+      )
+    : null;
   const detail = creationMatchesAsset ? creationDetailUrl(creation!) : null;
   const catalogThumb = creationMatchesAsset
     ? creationPreviewUrl(creation!)
@@ -1314,10 +1364,61 @@ export function PreviewPane({
     !addAssetSlotActive &&
     addAssetPlaceholderClip != null &&
     isAddAssetPlaceholderClip(addAssetPlaceholderClip);
-  const showAddAssetProviderChoice =
-    showAddAssetGenerate &&
-    providerChoiceClipId === addAssetPlaceholderClip?.id;
   const showAddAssetIntent = addAssetMode && addAssetSlotActive;
+  const resolvedLibraryIntent = showAddAssetIntent
+    ? resolveAddAssetIntent(addAssetIntent ?? {})
+    : null;
+  const showLibraryGenerateDual =
+    showAddAssetIntent &&
+    addAssetIntentAllowsLibraryGeneration(resolvedLibraryIntent) &&
+    (resolvedLibraryIntent?.server === "blue_direct" ||
+      resolvedLibraryIntent?.server === "replicate");
+  const showDoneGenerateDual =
+    !addAssetMode &&
+    !addAssetSlotActive &&
+    monitorMode === "source" &&
+    Boolean(resolvedAddAssetGeneration) &&
+    selectionSupportsGenerateDualView({
+      isPlaceholder: false,
+      generation: resolvedAddAssetGeneration,
+    });
+  const showGenerateDual =
+    showAddAssetGenerate || showDoneGenerateDual || showLibraryGenerateDual;
+  const generateDualPhase = showLibraryGenerateDual
+    ? libraryGenerateState.phase
+    : resolveGenerateDualPhase({
+        placeholder: showAddAssetGenerate ? addAssetPlaceholderClip : null,
+        session: addAssetGenerationSession,
+        generation: resolvedAddAssetGeneration,
+      });
+  const nextGenerateDualHostKey = showAddAssetGenerate
+    ? `ph:${addAssetPlaceholderClip?.id ?? ""}`
+    : showLibraryGenerateDual
+      ? `lib:${resolvedLibraryIntent?.intentId ?? ""}:${resolvedLibraryIntent?.server ?? ""}`
+      : showDoneGenerateDual
+        ? `gen:${resolvedAddAssetGeneration?.creationId ?? resolvedAddAssetGeneration?.generatedAt ?? "done"}`
+        : null;
+  if (showGenerateDual && nextGenerateDualHostKey !== generateDualHostKey) {
+    const preserveView = shouldPreserveGenerateDualView({
+      prevHostKey: generateDualHostKey,
+      nextHostKey: nextGenerateDualHostKey,
+    });
+    setGenerateDualHostKey(nextGenerateDualHostKey);
+    if (!preserveView) {
+      setGenerateDualView(defaultGenerateDualView(generateDualPhase));
+    }
+    setGenerateDualPhaseSeen(generateDualPhase);
+  } else if (
+    showGenerateDual &&
+    generateDualPhase !== generateDualPhaseSeen
+  ) {
+    setGenerateDualPhaseSeen(generateDualPhase);
+    if (generateDualPhase === "running" || generateDualPhase === "done") {
+      setGenerateDualView("result");
+    } else if (generateDualPhase === "error" || generateDualPhase === "pre_gen") {
+      setGenerateDualView("form");
+    }
+  }
   const showSelectionIntent =
     !addAssetMode &&
     !editingClip &&
@@ -1336,10 +1437,32 @@ export function PreviewPane({
     unsupportedSelection != null;
   const fillPreviewSurface =
     showAddAssetGenerate ||
-    showAddAssetIntent ||
+    showLibraryGenerateDual ||
+    (showDoneGenerateDual && generateDualView === "form") ||
+    (showAddAssetIntent && !showLibraryGenerateDual) ||
     showSelectionIntent ||
     showCompositionWorkspace ||
     showUnsupportedSelection;
+  useEffect(() => {
+    if (!showGenerateDual || generateDualPhase !== "running") return;
+    const id = window.setInterval(() => {
+      setGenerateDualNowMs(Date.now());
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [showGenerateDual, generateDualPhase]);
+
+  const libraryHostKey = showLibraryGenerateDual
+    ? `lib:${resolvedLibraryIntent?.intentId ?? ""}:${resolvedLibraryIntent?.server ?? ""}`
+    : null;
+  const [libraryHostSeen, setLibraryHostSeen] = useState(libraryHostKey);
+  if (libraryHostKey !== libraryHostSeen) {
+    setLibraryHostSeen(libraryHostKey);
+    if (libraryHostKey) {
+      setLibraryGenerateState({ phase: "pre_gen", progressNote: "" });
+      setLibraryFormEpoch((n) => n + 1);
+    }
+  }
+
   const compositeImageIds =
     selectionClass?.type === "compositeImages"
       ? selectionClass.imageAssetIds
@@ -2006,10 +2129,7 @@ export function PreviewPane({
     if (modeId === "generate_from_selection") {
       setStagedDraft(null);
       if (!selectionGenerateIntent) {
-        setSelectionGenerateIntent({
-          provider: "parascene_blue",
-          methodId: "blue_timeline_fill",
-        });
+        setSelectionGenerateIntent(loadLastGenerateIntent());
       }
       return;
     }
@@ -2104,10 +2224,8 @@ export function PreviewPane({
             ? "asset"
             : null;
   const sourceLabelText = addAssetMode
-    ? showAddAssetProviderChoice
-      ? "Choose provider"
-      : showAddAssetGenerate
-        ? "Generate video"
+    ? showAddAssetGenerate
+      ? "Generate"
       : showAddAssetIntent
         ? "New asset"
         : null
@@ -2530,13 +2648,237 @@ export function PreviewPane({
 
       <div className="editor-preview-stage">
         <div ref={frameRef} className="editor-preview-frame">
+          {showGenerateDual ? (
+            <div className="generate-dual-view-chrome">
+              <div
+                className="add-asset-generate-audio-toggle generate-dual-view-toggle"
+                role="group"
+                aria-label="Preview view"
+              >
+                <button
+                  type="button"
+                  className={generateDualView === "result" ? "is-active" : ""}
+                  aria-pressed={generateDualView === "result"}
+                  onClick={() => setGenerateDualView("result")}
+                >
+                  Result
+                </button>
+                <button
+                  type="button"
+                  className={generateDualView === "form" ? "is-active" : ""}
+                  aria-pressed={generateDualView === "form"}
+                  onClick={() => setGenerateDualView("form")}
+                >
+                  Form
+                </button>
+              </div>
+              {generateDualPhase === "running" ? (
+                <p className="muted generate-dual-view-status">Generating…</p>
+              ) : generateDualPhase === "error" ? (
+                <p className="muted generate-dual-view-status">
+                  Generation error — check Form
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <div
             className={`editor-preview-surface${
               fillPreviewSurface ? " is-add-asset-generate" : ""
-            }`}
+            }${showGenerateDual ? " is-generate-dual" : ""}`}
             style={surfaceStyle}
           >
-            {monitorMode === "timeline" ? (
+            {showAddAssetGenerate && addAssetPlaceholderClip ? (
+              <>
+                <div
+                  className="generate-dual-pane"
+                  hidden={generateDualView !== "form"}
+                >
+                  <AddAssetIntentPanel
+                    intent={
+                      resolveAddAssetIntent(
+                        addAssetPlaceholderClip.addAssetDraft ?? {},
+                      ) ?? {
+                        intentId: "image_to_video",
+                        server: "parascene_blue",
+                        provider: "parascene_blue",
+                        methodId: "image_to_video",
+                        destination: "timeline",
+                      }
+                    }
+                    onIntentChange={(next) => {
+                      const resolved = resolveAddAssetIntent(next) ?? next;
+                      onAddAssetDraftChange?.({
+                        ...(addAssetPlaceholderClip.addAssetDraft ?? {}),
+                        intentId: resolved.intentId,
+                        server: resolved.server,
+                        provider: resolved.server,
+                        methodId: resolved.intentId,
+                        continuityMode: continuityModeForIntent(
+                          resolved.intentId,
+                          addAssetPlaceholderClip.addAssetDraft?.continuityMode,
+                        ),
+                        audioMode: audioModeForIntent(
+                          resolved.intentId,
+                          addAssetPlaceholderClip.addAssetDraft?.audioMode,
+                        ),
+                        lastError: undefined,
+                        replicatePredictionId: undefined,
+                        blueJobId: undefined,
+                        generationJob: undefined,
+                      });
+                    }}
+                    placedClip={addAssetPlaceholderClip}
+                    aspectRatio={aspectRatio}
+                    timeline={timelineClips}
+                    lyricAlignment={lyricAlignment}
+                    mainAudioCreationId={mainAudioCreationId}
+                    session={addAssetGenerationSession}
+                    onStartGeneration={(request) =>
+                      onStartAddAssetGeneration?.(request)
+                    }
+                    onDurationChange={onAddAssetDurationChange}
+                    onDraftChange={onAddAssetDraftChange}
+                    onClearError={onClearAddAssetGenerationError}
+                    onRetryDownload={onRetryAddAssetDownload}
+                    imageAssets={imageAssets}
+                    progressHostedExternally
+                    locked={
+                      generateDualPhase === "running" ||
+                      generateDualPhase === "done"
+                    }
+                  />
+                </div>
+                <div
+                  className="generate-dual-pane"
+                  hidden={generateDualView !== "result"}
+                >
+                  <GenerateResultPane
+                    phase={generateDualPhase}
+                    session={
+                      addAssetGenerationSession?.clipId ===
+                      addAssetPlaceholderClip.id
+                        ? addAssetGenerationSession
+                        : null
+                    }
+                    nowMs={generateDualNowMs}
+                  />
+                </div>
+              </>
+            ) : showLibraryGenerateDual && showAddAssetIntent ? (
+              <>
+                <div
+                  className="generate-dual-pane"
+                  hidden={generateDualView !== "form"}
+                >
+                  <AddAssetIntentPanel
+                    key={`lib-t2i-${libraryFormEpoch}`}
+                    intent={addAssetIntent}
+                    onIntentChange={(next) => onAddAssetIntentChange?.(next)}
+                    locked={
+                      libraryGenerateState.phase === "running" ||
+                      libraryGenerateState.phase === "done"
+                    }
+                    hideLibraryInlineProgress
+                    onLibraryGenerateStateChange={setLibraryGenerateState}
+                    libraryFormSeed={libraryFormSeed}
+                    onGenerateNew={() => {
+                      setLibraryGenerateState({
+                        phase: "pre_gen",
+                        progressNote: "",
+                      });
+                      setLibraryFormEpoch((n) => n + 1);
+                    }}
+                  />
+                </div>
+                <div
+                  className="generate-dual-pane"
+                  hidden={generateDualView !== "result"}
+                >
+                  <GenerateResultPane
+                    phase={generateDualPhase}
+                    nowMs={generateDualNowMs}
+                    progressNote={libraryGenerateState.progressNote}
+                    startedAtMs={libraryGenerateState.startedAtMs}
+                    errorMessage={libraryGenerateState.errorMessage}
+                    doneMessage={libraryGenerateState.progressNote}
+                    onGenerateNew={() => {
+                      setLibraryGenerateState({
+                        phase: "pre_gen",
+                        progressNote: "",
+                      });
+                      setLibraryFormEpoch((n) => n + 1);
+                      setGenerateDualView("form");
+                    }}
+                  />
+                </div>
+              </>
+            ) : showDoneGenerateDual &&
+              resolvedAddAssetGeneration &&
+              generateDualView === "form" ? (
+              isTextToImageGeneration(resolvedAddAssetGeneration) ? (
+                <AddAssetIntentPanel
+                  intent={makeAddAssetIntent(
+                    "text_to_image",
+                    normalizeGenerateServer(
+                      resolvedAddAssetGeneration.server,
+                    ) ??
+                      normalizeGenerateServer(
+                        resolvedAddAssetGeneration.provider,
+                      ) ??
+                      "blue_direct",
+                    "assets",
+                  )}
+                  onIntentChange={() => {}}
+                  locked
+                  reviewGeneration={resolvedAddAssetGeneration}
+                  onGenerateNew={
+                    onDuplicateGeneratedAsNewGenerate
+                      ? () =>
+                          onDuplicateGeneratedAsNewGenerate(
+                            resolvedAddAssetGeneration,
+                          )
+                      : undefined
+                  }
+                />
+              ) : (
+                <AddAssetIntentPanel
+                  intent={
+                    resolveAddAssetIntent(
+                      reviewPlacedClip?.addAssetDraft ?? {},
+                    ) ?? {
+                      intentId: "image_to_video",
+                      server: "parascene_blue",
+                      provider: "parascene_blue",
+                      methodId: "image_to_video",
+                      destination: "timeline",
+                    }
+                  }
+                  onIntentChange={() => {}}
+                  placedClip={
+                    reviewPlacedClip ??
+                    reviewPlaceholderClipFromGeneration(
+                      resolvedAddAssetGeneration,
+                    )
+                  }
+                  aspectRatio={aspectRatio}
+                  timeline={timelineClips}
+                  lyricAlignment={lyricAlignment}
+                  mainAudioCreationId={mainAudioCreationId}
+                  imageAssets={imageAssets}
+                  locked
+                  progressHostedExternally
+                  onStartGeneration={() => {}}
+                  onGenerateNew={
+                    onDuplicateGeneratedAsNewGenerate
+                      ? () =>
+                          onDuplicateGeneratedAsNewGenerate(
+                            resolvedAddAssetGeneration,
+                          )
+                      : undefined
+                  }
+                />
+              )
+            ) : monitorMode === "timeline" ? (
               <TimelineMonitorHost
                 clips={timelineClips}
                 playheadSec={timelinePlayheadSec}
@@ -2555,58 +2897,11 @@ export function PreviewPane({
                 classification={unsupportedSelection}
                 selectionCount={sourceSelectionIds.length}
               />
-            ) : showAddAssetProviderChoice && addAssetPlaceholderClip ? (
-              <AddAssetIntentPanel
-                providerOnly
-                intent={{
-                  provider:
-                    addAssetPlaceholderClip.addAssetDraft?.provider ===
-                    "replicate"
-                      ? "replicate"
-                      : "parascene_blue",
-                  methodId:
-                    addAssetPlaceholderClip.addAssetDraft?.provider ===
-                    "replicate"
-                      ? "replicate_timeline_fill"
-                      : "blue_timeline_fill",
-                }}
-                onIntentChange={(next) => {
-                  onAddAssetDraftChange?.({
-                    ...(addAssetPlaceholderClip.addAssetDraft ?? {}),
-                    provider: next.provider,
-                    methodId: next.methodId,
-                    lastError: undefined,
-                    replicatePredictionId: undefined,
-                    generationJob: undefined,
-                  });
-                  setProviderChoiceClipId(null);
-                }}
-              />
             ) : showAddAssetIntent ? (
               <AddAssetIntentPanel
                 intent={addAssetIntent}
                 onIntentChange={(next) => onAddAssetIntentChange?.(next)}
-              />
-            ) : showAddAssetGenerate ? (
-              <AddAssetGeneratePanel
-                key={addAssetPlaceholderClip.id}
-                clip={addAssetPlaceholderClip}
-                aspectRatio={aspectRatio}
-                timeline={timelineClips}
-                lyricAlignment={lyricAlignment}
-                mainAudioCreationId={mainAudioCreationId}
-                session={addAssetGenerationSession}
-                onStartGeneration={(request) =>
-                  onStartAddAssetGeneration?.(request)
-                }
-                onDurationChange={onAddAssetDurationChange}
-                onDraftChange={onAddAssetDraftChange}
-                onClearError={onClearAddAssetGenerationError}
-                onRetryDownload={onRetryAddAssetDownload}
-                imageAssets={imageAssets}
-                onBackToProvider={() =>
-                  setProviderChoiceClipId(addAssetPlaceholderClip.id)
-                }
+                libraryFormSeed={libraryFormSeed}
               />
             ) : showCompositionWorkspace && activeWorkstream ? (
               <div
@@ -2840,39 +3135,24 @@ export function PreviewPane({
             ) : null}
           </div>
 
-          {sourceLabelText || resolvedAddAssetGeneration ? (
+          {sourceLabelText ? (
             <div className="editor-preview-source-row">
-              {sourceLabelText ? (
-                <div
-                  className="editor-preview-source-label"
-                  data-source={
-                    sourceKind ??
-                    (showAddAssetGenerate
-                      ? "generate"
-                      : showAddAssetIntent ||
-                          showSelectionIntent ||
-                          showUnsupportedSelection
-                        ? "asset"
-                        : undefined)
-                  }
-                >
-                  <SourceLabelIcon kind={sourceKind} />
-                  <span>{sourceLabelText}</span>
-                </div>
-              ) : null}
-              {resolvedAddAssetGeneration ? (
-                <GeneratedClipBadge
-                  generation={resolvedAddAssetGeneration}
-                  onDuplicateAsNewGenerate={
-                    onDuplicateGeneratedAsNewGenerate
-                      ? () =>
-                          onDuplicateGeneratedAsNewGenerate(
-                            resolvedAddAssetGeneration,
-                          )
-                      : undefined
-                  }
-                />
-              ) : null}
+              <div
+                className="editor-preview-source-label"
+                data-source={
+                  sourceKind ??
+                  (showAddAssetGenerate
+                    ? "generate"
+                    : showAddAssetIntent ||
+                        showSelectionIntent ||
+                        showUnsupportedSelection
+                      ? "asset"
+                      : undefined)
+                }
+              >
+                <SourceLabelIcon kind={sourceKind} />
+                <span>{sourceLabelText}</span>
+              </div>
             </div>
           ) : null}
         </div>

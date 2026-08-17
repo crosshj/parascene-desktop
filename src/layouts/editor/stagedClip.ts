@@ -5,9 +5,20 @@ import {
   type AddAssetGeneration,
   type SlideshowMode,
   type SlideshowRecipe,
+  type TimelineClip,
 } from "../../project/types";
 import { mergeExtendBakeFields } from "./clipExtendBake";
-import type { AddAssetIntent } from "./previewIntent";
+import type {
+  AddAssetIntent,
+  GenerateServerId,
+} from "./previewIntent";
+import {
+  audioModeForIntent,
+  continuityModeForIntent,
+  makeAddAssetIntent,
+  resolveAddAssetIntent,
+} from "./previewIntent";
+import { isWanFamilyBlueModel } from "./blueVideoModels";
 
 export const STAGED_CLIP_MIME = "application/x-parascene-staged-clip";
 
@@ -93,15 +104,25 @@ export function addAssetDragDraftFromIntent(
     thumbUrl?: string | null;
   },
 ): StagedClipDraft {
-  if (!intent) return ADD_ASSET_DRAG_DRAFT;
+  const resolved = intent ? resolveAddAssetIntent(intent) : null;
+  if (!resolved) return ADD_ASSET_DRAG_DRAFT;
   const startFrameAssetId = opts?.startFrameAssetId?.trim() || undefined;
   return {
     ...ADD_ASSET_DRAG_DRAFT,
     thumbUrl: opts?.thumbUrl ?? null,
     addAssetDraft: {
-      provider: intent.provider,
-      methodId: intent.methodId,
-      ...(startFrameAssetId ? { startFrameAssetId } : {}),
+      intentId: resolved.intentId,
+      server: resolved.server,
+      provider: resolved.server,
+      methodId: resolved.intentId,
+      continuityMode: continuityModeForIntent(resolved.intentId),
+      audioMode: audioModeForIntent(resolved.intentId),
+      ...(startFrameAssetId
+        ? {
+            startFrameAssetId,
+            firstFrameSource: { kind: "asset" as const, assetId: startFrameAssetId },
+          }
+        : {}),
     },
   };
 }
@@ -115,19 +136,36 @@ export function addAssetDraftFromGeneration(
 ): AddAssetDraft {
   const model = generation.model?.trim() || undefined;
   const looksReplicate = Boolean(model && model.includes("/"));
-  const provider =
-    generation.provider?.trim() ||
-    (looksReplicate ? "replicate" : "parascene_blue");
-  const methodId =
-    generation.methodId?.trim() ||
-    (provider === "replicate"
-      ? "replicate_timeline_fill"
-      : "blue_timeline_fill");
+  const inferredServer: GenerateServerId = looksReplicate
+    ? "replicate"
+    : ((generation.server?.trim() ||
+        generation.provider?.trim() ||
+        "parascene_blue") as GenerateServerId);
+  const resolved =
+    resolveAddAssetIntent({
+      intentId: generation.intentId,
+      server: generation.server ?? generation.provider ?? inferredServer,
+      provider: generation.provider ?? inferredServer,
+      methodId: generation.methodId,
+      continuityMode: generation.mode,
+      audioMode: generation.audioMode,
+    }) ??
+    makeAddAssetIntent(
+      generation.mode === "none" ? "text_to_video" : "image_to_video",
+      inferredServer,
+    );
+  const provider = resolved.server;
+  const intentId = resolved.intentId;
   const draft: AddAssetDraft = {
     prompt: generation.prompt,
-    continuityMode: generation.mode ?? "start_frame",
+    continuityMode: continuityModeForIntent(
+      intentId,
+      generation.mode,
+    ),
+    intentId,
+    server: provider,
     provider,
-    methodId,
+    methodId: intentId,
   };
   if (
     generation.audioMode === "full_mix" ||
@@ -135,31 +173,33 @@ export function addAssetDraftFromGeneration(
     generation.audioMode === "none"
   ) {
     draft.audioMode = generation.audioMode;
+  } else {
+    draft.audioMode = audioModeForIntent(intentId, generation.audioMode);
   }
-  if (provider === "parascene_blue") {
+  if (provider === "parascene_blue" || provider === "blue_direct") {
+    if (model?.trim()) {
+      draft.blueModel = model.trim();
+    } else if (generation.mode === "first_last") {
+      draft.blueModel = "wan_i2v";
+    } else if (generation.mode === "none") {
+      draft.blueModel = "ltx_t2v";
+    } else {
+      draft.blueModel = "ltx_i2v";
+    }
     if (
-      model === "wan_i2v" ||
-      model === "wan_t2v" ||
-      generation.mode === "first_last"
+      isWanFamilyBlueModel(draft.blueModel) &&
+      intentId !== "image_audio_to_video"
     ) {
-      draft.blueModel = "wan";
       draft.audioMode = "none";
     } else if (
-      model === "ltx_i2v" ||
-      model === "ltx_t2v" ||
-      model === "ltx_a2v" ||
-      generation.mode === "start_frame" ||
-      generation.mode === "none"
+      (draft.blueModel === "ltx_i2v" ||
+        draft.blueModel === "ltx_t2v" ||
+        generation.mode === "none") &&
+      !draft.audioMode
     ) {
-      draft.blueModel = "ltx";
-      if (
-        (model === "ltx_i2v" || model === "ltx_t2v" || generation.mode === "none") &&
-        !draft.audioMode
-      ) {
-        draft.audioMode = "none";
-      }
+      draft.audioMode = "none";
     }
-    if (generation.mode === "none") {
+    if (intentId === "text_to_video" || generation.mode === "none") {
       draft.continuityMode = "none";
       draft.audioMode = "none";
     }
@@ -169,6 +209,32 @@ export function addAssetDraftFromGeneration(
   }
   if (generation.startFrameAssetId?.trim()) {
     draft.startFrameAssetId = generation.startFrameAssetId.trim();
+  }
+  if (
+    generation.firstFrameSource?.kind === "timeline" ||
+    generation.firstFrameSource?.kind === "asset" ||
+    generation.firstFrameSource?.kind === "none"
+  ) {
+    draft.firstFrameSource = generation.firstFrameSource;
+  } else if (draft.startFrameAssetId) {
+    draft.firstFrameSource = {
+      kind: "asset",
+      assetId: draft.startFrameAssetId,
+    };
+  }
+  if (
+    !draft.startFrameAssetId &&
+    draft.firstFrameSource?.kind === "asset" &&
+    draft.firstFrameSource.assetId.trim()
+  ) {
+    draft.startFrameAssetId = draft.firstFrameSource.assetId.trim();
+  }
+  if (
+    generation.lastFrameSource?.kind === "timeline" ||
+    generation.lastFrameSource?.kind === "asset" ||
+    generation.lastFrameSource?.kind === "none"
+  ) {
+    draft.lastFrameSource = generation.lastFrameSource;
   }
   if (
     generation.startFrameFraming === "fill" ||
@@ -183,6 +249,12 @@ export function addAssetDraftFromGeneration(
   if (generation.replicateTweaks) {
     draft.replicateTweaks = generation.replicateTweaks;
   }
+  if (generation.startFramePreviewUrl?.trim()) {
+    draft.startFramePreviewUrl = generation.startFramePreviewUrl.trim();
+  }
+  if (generation.endFramePreviewUrl?.trim()) {
+    draft.endFramePreviewUrl = generation.endFramePreviewUrl.trim();
+  }
   return draft;
 }
 
@@ -195,6 +267,40 @@ export function stagedDraftForDuplicateGenerate(
     ...ADD_ASSET_DRAG_DRAFT,
     outSec: clampAddAssetDurationSec(durationSec),
     addAssetDraft: addAssetDraftFromGeneration(generation),
+  };
+}
+
+/**
+ * Synthetic placeholder used to render the locked Form view for a finished
+ * generation (literal submitted fields, non-interactive).
+ * When `anchor` is the real timeline clip, neighbor frame lookup uses its
+ * position so FIRST/LAST stills resolve without stamped preview URLs.
+ */
+export function reviewPlaceholderClipFromGeneration(
+  generation: AddAssetGeneration,
+  durationSec: number = ADD_ASSET_TIMELINE_DURATION_SEC,
+  anchor?: TimelineClip | null,
+): TimelineClip {
+  const endSec = clampAddAssetDurationSec(durationSec);
+  const draft = addAssetDraftFromGeneration(generation);
+  if (anchor) {
+    return {
+      ...anchor,
+      isAddAssetPlaceholder: true,
+      addAssetDraft: draft,
+      addAssetGeneration: generation,
+    };
+  }
+  return {
+    id: `review-gen-${generation.creationId?.trim() || generation.generatedAt || "x"}`,
+    label: "Generated",
+    lane: "video",
+    kind: "video",
+    startSec: 0,
+    endSec,
+    isAddAssetPlaceholder: true,
+    addAssetDraft: draft,
+    addAssetGeneration: generation,
   };
 }
 

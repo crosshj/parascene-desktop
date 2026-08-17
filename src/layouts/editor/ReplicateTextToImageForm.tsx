@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import {
   useReplicateTextToImageForm,
   type ReplicateTextToImageFormParts,
+  type UseReplicateTextToImageFormOpts,
 } from "./useReplicateTextToImageForm";
 
 export type { ReplicateTextToImageFormParts };
@@ -16,22 +17,47 @@ export type { ReplicateTextToImageFormParts };
  */
 export function ReplicateTextToImageFormLayout({
   idPrefix = "replicate-t2i",
+  locked,
+  hideInlineProgress,
+  onGenerateStateChange,
+  onGenerateNew,
+  initialPrompt,
+  initialModelId,
   children,
-}: {
-  idPrefix?: string;
+}: UseReplicateTextToImageFormOpts & {
   children: (parts: ReplicateTextToImageFormParts) => ReactNode;
 }) {
-  const parts = useReplicateTextToImageForm(idPrefix);
+  const parts = useReplicateTextToImageForm({
+    idPrefix,
+    locked,
+    hideInlineProgress,
+    onGenerateStateChange,
+    onGenerateNew,
+    initialPrompt,
+    initialModelId,
+  });
   return <>{children(parts)}</>;
 }
 
 /** Fields + footer for hosts that keep both inside the scroll body. */
 export function ReplicateTextToImageForm({
   idPrefix = "replicate-t2i",
-}: {
-  idPrefix?: string;
-}) {
-  const { fields, footer } = useReplicateTextToImageForm(idPrefix);
+  locked,
+  hideInlineProgress,
+  onGenerateStateChange,
+  onGenerateNew,
+  initialPrompt,
+  initialModelId,
+}: UseReplicateTextToImageFormOpts) {
+  const { fields, footer } = useReplicateTextToImageForm({
+    idPrefix,
+    locked,
+    hideInlineProgress,
+    onGenerateStateChange,
+    onGenerateNew,
+    initialPrompt,
+    initialModelId,
+  });
   return (
     <>
       {fields}

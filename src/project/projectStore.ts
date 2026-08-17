@@ -28,6 +28,10 @@ import {
 } from "./aspectRatios";
 import { normalizeAddAssetGeneration } from "./desktopAddAssetGeneration";
 import {
+  resolveFirstFrameSource,
+  resolveLastFrameSource,
+} from "./addAssetFrameSource";
+import {
   compositionInternalCreationIds,
   normalizeStillWorkstream,
   normalizeStillWorkstreams,
@@ -411,7 +415,15 @@ function strictReferenceIds(value: StoredProject): Set<string> {
       const draft = object(clip.addAssetDraft);
       const generation = object(clip.addAssetGeneration);
       add(draft?.startFrameAssetId);
+      const draftFirst = object(draft?.firstFrameSource);
+      if (draftFirst?.kind === "asset") add(draftFirst.assetId);
+      const draftLast = object(draft?.lastFrameSource);
+      if (draftLast?.kind === "asset") add(draftLast.assetId);
       add(generation?.startFrameAssetId);
+      const genFirst = object(generation?.firstFrameSource);
+      if (genFirst?.kind === "asset") add(genFirst.assetId);
+      const genLast = object(generation?.lastFrameSource);
+      if (genLast?.kind === "asset") add(genLast.assetId);
       add(generation?.creationId);
     }
   }
@@ -675,8 +687,8 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
             ? "none"
             : undefined;
   const blueModel =
-    row.blueModel === "wan" || row.blueModel === "ltx"
-      ? row.blueModel
+    typeof row.blueModel === "string" && row.blueModel.trim()
+      ? row.blueModel.trim()
       : undefined;
   const provider =
     typeof row.provider === "string" && row.provider.trim()
@@ -685,6 +697,14 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
   const methodId =
     typeof row.methodId === "string" && row.methodId.trim()
       ? row.methodId.trim()
+      : undefined;
+  const intentId =
+    typeof row.intentId === "string" && row.intentId.trim()
+      ? row.intentId.trim()
+      : undefined;
+  const server =
+    typeof row.server === "string" && row.server.trim()
+      ? row.server.trim()
       : undefined;
   const replicateModel =
     typeof row.replicateModel === "string" && row.replicateModel.trim()
@@ -700,6 +720,10 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     row.replicatePredictionId.trim()
       ? row.replicatePredictionId.trim()
       : undefined;
+  const blueJobId =
+    typeof row.blueJobId === "string" && row.blueJobId.trim()
+      ? row.blueJobId.trim()
+      : undefined;
   const generationJob = parseAddAssetGenerationJob(row.generationJob);
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
   const startFrameAssetId =
@@ -712,6 +736,17 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
       : row.startFrameFraming === "fit"
         ? "fit"
         : undefined;
+  const firstFrameSource = resolveFirstFrameSource({
+    firstFrameSource: row.firstFrameSource,
+    startFrameAssetId,
+  });
+  const lastFrameSource = resolveLastFrameSource({
+    lastFrameSource: row.lastFrameSource,
+    continuityMode,
+  });
+  const legacyStartFrameAssetId =
+    startFrameAssetId ??
+    (firstFrameSource?.kind === "asset" ? firstFrameSource.assetId : undefined);
   if (
     prompt === undefined &&
     audioMode === undefined &&
@@ -719,14 +754,19 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     blueModel === undefined &&
     provider === undefined &&
     methodId === undefined &&
+    intentId === undefined &&
+    server === undefined &&
     replicateModel === undefined &&
     useNearestDuration === undefined &&
     lastError === undefined &&
     replicatePredictionId === undefined &&
+    blueJobId === undefined &&
     generationJob === undefined &&
     replicateTweaks === undefined &&
-    startFrameAssetId === undefined &&
-    startFrameFraming === undefined
+    legacyStartFrameAssetId === undefined &&
+    startFrameFraming === undefined &&
+    firstFrameSource === undefined &&
+    lastFrameSource === undefined
   ) {
     return undefined;
   }
@@ -735,16 +775,21 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     audioMode,
     continuityMode,
     blueModel,
+    intentId,
+    server,
     provider,
     methodId,
     replicateModel,
     useNearestDuration,
     lastError,
     replicatePredictionId,
+    blueJobId,
     generationJob,
     replicateTweaks,
-    startFrameAssetId,
+    startFrameAssetId: legacyStartFrameAssetId,
     startFrameFraming,
+    firstFrameSource,
+    lastFrameSource,
   };
 }
 
@@ -761,7 +806,9 @@ function parseAddAssetGenerationJob(
       ? row.status
       : null;
   const provider =
-    row.provider === "replicate" || row.provider === "parascene_blue"
+    row.provider === "replicate" ||
+    row.provider === "parascene_blue" ||
+    row.provider === "blue_direct"
       ? row.provider
       : null;
   const startedAt =
@@ -778,6 +825,10 @@ function parseAddAssetGenerationJob(
     typeof row.pendingCreationId === "string" && row.pendingCreationId.trim()
       ? row.pendingCreationId.trim()
       : undefined;
+  const blueJobId =
+    typeof row.blueJobId === "string" && row.blueJobId.trim()
+      ? row.blueJobId.trim()
+      : undefined;
   const model =
     typeof row.model === "string" && row.model.trim()
       ? row.model.trim()
@@ -788,6 +839,7 @@ function parseAddAssetGenerationJob(
     startedAt,
     replicatePredictionId,
     pendingCreationId,
+    blueJobId,
     model,
   };
 }

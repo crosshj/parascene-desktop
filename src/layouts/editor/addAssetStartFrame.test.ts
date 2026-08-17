@@ -254,7 +254,7 @@ describe("bridge neighbor availability", () => {
 });
 
 describe("lastFrameSourceSec", () => {
-  it("uses timeline duration when outSec extends past the visible clip", () => {
+  it("uses timeline local time when the trim covers the whole clip", () => {
     const prior = clip({
       id: "v",
       startSec: 93.5,
@@ -263,10 +263,11 @@ describe("lastFrameSourceSec", () => {
       outSec: 10,
       kind: "video",
     });
+    // Timeline span 7.5s < source trim 10s → no loop; last ≈ in + 7.45.
     expect(lastFrameSourceSec(prior)).toBeCloseTo(7.45, 2);
   });
 
-  it("uses timeline duration when outSec is shorter than the visible clip", () => {
+  it("maps looped extend (repeat) to the visible source time", () => {
     const prior = clip({
       id: "v",
       startSec: 93.4,
@@ -274,7 +275,40 @@ describe("lastFrameSourceSec", () => {
       inSec: 0,
       outSec: 3.2,
       kind: "video",
+      extendPingPong: false,
     });
+    // Timeline 7.6s over 3.2s trim → loop; last visible ≈ 1.15 into trim.
+    expect(lastFrameSourceSec(prior)).toBeCloseTo(1.15, 2);
+  });
+
+  it("maps ping-pong extend to the visible source time", () => {
+    const prior = clip({
+      id: "v",
+      startSec: 0,
+      endSec: 8,
+      inSec: 0,
+      outSec: 3,
+      kind: "video",
+      extendPingPong: true,
+    });
+    // local 7.95 → mediaLocal 7.95; after first 3s, extend 4.95 → segment 1 phase 1.95 → forward 1.95
+    expect(lastFrameSourceSec(prior)).toBeCloseTo(1.95, 2);
+  });
+
+  it("uses extendSourceSpanSec when a short source is stretched on the timeline", () => {
+    // Real case: 9s mp4 placed as ~16.6s with frozen source span (loop).
+    const prior = clip({
+      id: "v",
+      startSec: 0,
+      endSec: 16.6,
+      inSec: 0,
+      outSec: 9,
+      kind: "video",
+      extendSourceSpanSec: 9,
+      extendPingPong: false,
+    });
+    // Must NOT seek to ~16.55 (past EOF of a 9s file).
+    expect(lastFrameSourceSec(prior)).toBeLessThan(9);
     expect(lastFrameSourceSec(prior)).toBeCloseTo(7.55, 2);
   });
 });
@@ -297,7 +331,15 @@ describe("visualLayerBeforePlaceholder", () => {
   it("resolves the clip visible at the cut, not an earlier one", () => {
     const timeline = [
       clip({ id: "early", startSec: 0, endSec: 3.2, assetId: "a" }),
-      clip({ id: "prior", startSec: 93.4, endSec: 101, assetId: "b" }),
+      clip({
+        id: "prior",
+        startSec: 93.4,
+        endSec: 101,
+        assetId: "b",
+        inSec: 0,
+        outSec: 3.2,
+        extendPingPong: false,
+      }),
       clip({
         id: "placeholder",
         startSec: 101,
@@ -308,8 +350,14 @@ describe("visualLayerBeforePlaceholder", () => {
     ];
     const layer = visualLayerBeforePlaceholder(timeline, timeline[2]!);
     expect(layer?.clip.id).toBe("prior");
-    expect(layer?.sourceSec).toBeCloseTo(7.55, 2);
-    expect(resolveTimelineFrame(timeline, 100.999).visual?.clip.id).toBe("prior");
+    // Cut − ε uses the composed source time (not clip.end − 0.05).
+    expect(layer?.sourceSec).toBeCloseTo(
+      resolveTimelineFrame(timeline, 100.999).visual?.sourceSec ?? -1,
+      5,
+    );
+    expect(resolveTimelineFrame(timeline, 100.999).visual?.clip.id).toBe(
+      "prior",
+    );
   });
 
   it("resolves an image clip before the placeholder", () => {

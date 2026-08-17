@@ -134,7 +134,7 @@ fn composition_filter(composition: &Composition) -> String {
         let dx = composition.center_x.clamp(-50.0, 50.0) / 100.0 * stage_w as f64;
         let dy = composition.center_y.clamp(-50.0, 50.0) / 100.0 * stage_h as f64;
         return format!(
-            "scale={stage_w}:{stage_h}:force_original_aspect_ratio=decrease,pad={stage_w}:{stage_h}:(ow-iw)/2:(oh-ih)/2:black,scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{stage_w}:ih+{stage_h}:{stage_w}/2:{stage_h}/2:black,crop={stage_w}:{stage_h}:(iw-{stage_w})/2-{dx:.3}:(ih-{stage_h})/2-{dy:.3},crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,format=yuvj420p"
+                    "scale={stage_w}:{stage_h}:force_original_aspect_ratio=decrease,pad={stage_w}:{stage_h}:(ow-iw)/2:(oh-ih)/2:black,scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{stage_w}:ih+{stage_h}:{stage_w}/2:{stage_h}/2:black,crop={stage_w}:{stage_h}:(iw-{stage_w})/2-{dx:.3}:(ih-{stage_h})/2-{dy:.3},crop={w}:{h}:(iw-{w})/2:(ih-{h})/2,format=yuv420p"
         );
     }
     let base = match composition.framing.as_str() {
@@ -144,7 +144,7 @@ fn composition_filter(composition: &Composition) -> String {
     let dx = composition.center_x.clamp(-50.0, 50.0) / 100.0 * w as f64;
     let dy = composition.center_y.clamp(-50.0, 50.0) / 100.0 * h as f64;
     format!(
-        "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{w}:ih+{h}:{w}/2:{h}/2:black,crop={w}:{h}:(iw-{w})/2-{dx:.3}:(ih-{h})/2-{dy:.3},format=yuvj420p"
+        "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{w}:ih+{h}:{w}/2:{h}/2:black,crop={w}:{h}:(iw-{w})/2-{dx:.3}:(ih-{h})/2-{dy:.3},format=yuv420p"
     )
 }
 
@@ -239,6 +239,27 @@ mod tests {
     }
 }
 
+fn probe_duration_sec(ffmpeg: &std::path::Path, source: &Path) -> Option<f64> {
+    let output = ffmpeg::command(ffmpeg)
+        .args(["-hide_banner", "-i", source.to_str()?])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let idx = stderr.find("Duration:")?;
+    let slice = &stderr[idx + "Duration:".len()..];
+    let time = slice.split(',').next()?.trim();
+    let parts: Vec<&str> = time.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f64 = parts[0].parse().ok()?;
+    let m: f64 = parts[1].parse().ok()?;
+    let s: f64 = parts[2].parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
 fn extract_frame(
     source: &Path,
     time_sec: f64,
@@ -249,13 +270,21 @@ fn extract_frame(
         "FFmpeg is required to create clip thumbnails. Install with: brew install ffmpeg"
             .to_string()
     })?;
+    // Seeking past EOF yields an empty JPEG — clamp like library_extract_video_frame.
+    let duration = probe_duration_sec(&ffmpeg, source).unwrap_or(0.0);
+    let max_t = if duration > 0.05 {
+        (duration - 0.05).max(0.0)
+    } else {
+        0.0
+    };
+    let t = time_sec.max(0.0).min(max_t);
     let output = ffmpeg::command(ffmpeg)
         .args([
             "-y",
             "-i",
             &source.display().to_string(),
             "-ss",
-            &format!("{:.3}", time_sec.max(0.0)),
+            &format!("{t:.3}"),
             "-an",
             "-map",
             "0:v:0",
@@ -264,7 +293,10 @@ fn extract_frame(
             "-vf",
             &composition
                 .map(composition_filter)
-                .unwrap_or_else(|| "scale=720:720:force_original_aspect_ratio=decrease,format=yuvj420p".into()),
+                .unwrap_or_else(|| {
+                    "scale=720:720:force_original_aspect_ratio=decrease,format=yuv420p"
+                        .into()
+                }),
             "-q:v",
             "2",
             "-update",

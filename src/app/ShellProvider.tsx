@@ -102,6 +102,11 @@ import {
 } from "../library/catalogClient";
 import { creationUpsertWithAddAssetGeneration } from "../project/desktopAddAssetGeneration";
 import {
+  frameSourceAssetId,
+  resolveFirstFrameSource,
+  resolveLastFrameSource,
+} from "../project/addAssetFrameSource";
+import {
   loadShellSession,
   saveShellSession,
   type LibrarySurface,
@@ -562,6 +567,16 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         await updateStoredProjects((prev) =>
           prev.map((project) => {
             if (project.id !== result.projectId) return project;
+            const timeline = storedProjectToUi(project).timeline;
+            const placeholder = timeline.find(
+              (clip) =>
+                clip.id === result.clipId && clip.isAddAssetPlaceholder,
+            );
+            // Duplicate success (e.g. stale resume) — do not merge another
+            // creation id into Assets or re-write a finished clip.
+            if (!placeholder) {
+              return project;
+            }
             let next = mergeCreationIds(project, result.projectCreationIds);
             if (result.videosGroupId || result.imagesGroupId) {
               next = setStoredProjectGroupIds(next, {
@@ -573,37 +588,63 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                   : {}),
               });
             }
-            const timeline = storedProjectToUi(next).timeline;
-            const placeholder = timeline.find(
-              (clip) => clip.id === result.clipId,
-            );
-            if (!placeholder) {
-              return next;
-            }
             const draft = placeholder.addAssetDraft;
+            const server =
+              draft?.server ?? draft?.provider ?? undefined;
+            const firstFrameSource =
+              result.firstFrameSource ??
+              resolveFirstFrameSource({
+                firstFrameSource: draft?.firstFrameSource,
+                startFrameAssetId: draft?.startFrameAssetId,
+              });
+            const lastFrameSource =
+              result.lastFrameSource ??
+              resolveLastFrameSource({
+                lastFrameSource: draft?.lastFrameSource,
+                continuityMode: result.mode,
+              });
+            const startFrameAssetId =
+              result.startFrameAssetId?.trim() ||
+              frameSourceAssetId(firstFrameSource) ||
+              draft?.startFrameAssetId?.trim() ||
+              undefined;
             const addAssetGeneration = {
               prompt: result.prompt,
               audioMode:
                 result.mode === "first_last" ||
                 result.mode === "motion_match" ||
-                result.mode === "none"
+                result.mode === "none" ||
+                result.audioMode === "none" ||
+                server === "replicate"
                   ? undefined
                   : result.audioMode,
               lyricsText:
                 result.mode === "first_last" ||
                 result.mode === "motion_match" ||
                 result.mode === "none" ||
-                result.audioMode === "none"
+                result.audioMode === "none" ||
+                server === "replicate"
                   ? undefined
                   : result.lyricsText.trim() || undefined,
               generatedAt: new Date().toISOString(),
               creationId: result.creationId,
               mode: result.mode,
               model: result.model,
-              provider: draft?.provider,
-              methodId: draft?.methodId,
-              startFrameAssetId: draft?.startFrameAssetId,
-              startFrameFraming: draft?.startFrameFraming,
+              intentId: draft?.intentId,
+              server,
+              provider: draft?.provider ?? draft?.server,
+              methodId: draft?.methodId ?? draft?.intentId,
+              startFrameAssetId,
+              firstFrameSource: firstFrameSource ?? undefined,
+              lastFrameSource,
+              startFramePreviewUrl:
+                result.startFramePreviewUrl?.trim() ||
+                draft?.startFramePreviewUrl?.trim() ||
+                undefined,
+              endFramePreviewUrl:
+                result.endFramePreviewUrl?.trim() ||
+                draft?.endFramePreviewUrl?.trim() ||
+                undefined,
               useNearestDuration: draft?.useNearestDuration,
               replicateTweaks: draft?.replicateTweaks,
             };
@@ -652,6 +693,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                   delete draft.replicatePredictionId;
                 }
               }
+              if (result.blueJobId !== undefined) {
+                if (result.blueJobId?.trim()) {
+                  draft.blueJobId = result.blueJobId.trim();
+                } else {
+                  delete draft.blueJobId;
+                }
+              }
               const keys = Object.keys(draft).filter(
                 (k) => draft[k as keyof typeof draft] !== undefined,
               );
@@ -677,6 +725,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                 clip.id !== clipId ||
                 (!clip.addAssetDraft?.lastError &&
                   !clip.addAssetDraft?.replicatePredictionId &&
+                  !clip.addAssetDraft?.blueJobId &&
                   !clip.addAssetDraft?.generationJob)
               ) {
                 return clip;
@@ -685,6 +734,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               const rest = { ...clip.addAssetDraft };
               delete rest.lastError;
               delete rest.replicatePredictionId;
+              delete rest.blueJobId;
               delete rest.generationJob;
               return {
                 ...clip,
@@ -706,11 +756,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             const timeline = storedProjectToUi(project).timeline;
             const nextTimeline = timeline.map((clip) => {
               if (clip.id !== result.clipId) return clip;
+              // Late progress after applySuccess must not resurrect a job on a
+              // finished video clip (that re-arms resume/import).
+              if (!clip.isAddAssetPlaceholder) return clip;
               const draft = { ...clip.addAssetDraft, generationJob: result.job };
               delete draft.lastError;
               const pred = result.job.replicatePredictionId?.trim();
               if (pred) draft.replicatePredictionId = pred;
               else delete draft.replicatePredictionId;
+              const blueId = result.job.blueJobId?.trim();
+              if (blueId) draft.blueJobId = blueId;
+              else delete draft.blueJobId;
               const keys = Object.keys(draft).filter(
                 (k) => draft[k as keyof typeof draft] !== undefined,
               );
@@ -746,6 +802,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           j.status,
           j.replicatePredictionId ?? "",
           j.pendingCreationId ?? "",
+          j.blueJobId ?? "",
         ].join(":");
       })
       .join("|");

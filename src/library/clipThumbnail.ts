@@ -12,6 +12,27 @@ export type ClipThumbnailComposition = {
   centerY: number;
 };
 
+/** Same composition the timeline / program monitor uses for a clip instance. */
+export function clipTimelineComposition(
+  clip: {
+    framing?: string | null;
+    zoom?: number | null;
+    centerX?: number | null;
+    centerY?: number | null;
+  },
+  aspectRatio: string,
+): ClipThumbnailComposition {
+  const framing =
+    clip.framing === "fill" || clip.framing === "stretch" ? clip.framing : "fit";
+  return {
+    framing,
+    aspectRatio,
+    zoom: Math.min(4, Math.max(1, Number(clip.zoom) || 1)),
+    centerX: Math.min(50, Math.max(-50, Number(clip.centerX) || 0)),
+    centerY: Math.min(50, Math.max(-50, Number(clip.centerY) || 0)),
+  };
+}
+
 export function clipThumbnailKey(
   assetId: string,
   reverse: boolean,

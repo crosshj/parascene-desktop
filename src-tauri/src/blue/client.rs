@@ -187,17 +187,30 @@ pub async fn upload_file(
     creds: &BlueCredentials,
     path: &Path,
 ) -> Result<String, String> {
+    if !path.is_file() {
+        return Err(format!(
+            "Blue upload source missing: {}",
+            path.display()
+        ));
+    }
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| format!("Read file failed: {e}"))?;
+    if bytes.is_empty() {
+        return Err(format!(
+            "Blue upload source is empty (0 bytes): {}",
+            path.display()
+        ));
+    }
     let filename = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("upload.bin")
         .to_string();
+    let mime = mime_for_upload_path(path, &bytes);
     let part = multipart::Part::bytes(bytes)
         .file_name(filename.clone())
-        .mime_str("application/octet-stream")
+        .mime_str(mime)
         .map_err(|e| format!("multipart: {e}"))?;
     let form = multipart::Form::new().part("content", part);
     let url = absolute_url("/api/files");
@@ -233,6 +246,47 @@ pub async fn upload_file(
         return Ok(format!("/api/files/{}", urlencoding_simple(name)));
     }
     Err("Upload succeeded but no file URL was returned.".into())
+}
+
+fn mime_for_upload_path(path: &Path, bytes: &[u8]) -> &'static str {
+    // Prefer magic bytes so a mislabeled extension does not confuse Blue/Comfy.
+    if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
+        return "image/jpeg";
+    }
+    if bytes.len() >= 8 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
+        return "image/png";
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return "image/webp";
+    }
+    if bytes.len() >= 4 && &bytes[0..4] == b"fLaC" {
+        return "audio/flac";
+    }
+    if bytes.len() >= 4 && &bytes[0..4] == b"OggS" {
+        return "audio/ogg";
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return "audio/wav";
+    }
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
+    }
 }
 
 fn urlencoding_simple(s: &str) -> String {
