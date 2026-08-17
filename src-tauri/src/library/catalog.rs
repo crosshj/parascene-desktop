@@ -2,6 +2,7 @@ use super::paths::{default_root, ensure_directories, resolve_paths, ParascenePat
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -1450,6 +1451,68 @@ pub(crate) fn heal_audio_cover_local_paths(conn: &Connection) -> Result<u32, Str
     Ok(changed)
 }
 
+/// Drop usage/index rows for a project that is no longer native-owned.
+pub(crate) fn clear_native_project_index(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<(), String> {
+    for sql in [
+        "DELETE FROM project_asset_usage WHERE project_id = ?1",
+        "DELETE FROM project_usage_revisions WHERE project_id = ?1",
+        "DELETE FROM project_assets WHERE project_id = ?1",
+        "DELETE FROM project_membership_revisions WHERE project_id = ?1",
+        "DELETE FROM project_library_bindings WHERE project_id = ?1",
+    ] {
+        conn.execute(sql, params![project_id])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn project_has_live_folder(conn: &Connection, project_id: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM folders WHERE kind = 'project' AND project_id = ?1)",
+        params![project_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Ghost usage from a deleted project (no project folder, and/or not in the
+/// current stored-project set) must not block Library deletes.
+pub(crate) fn prune_stale_creation_usage(
+    conn: &Connection,
+    creation_id: &str,
+    audited_project_ids: Option<&[String]>,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT project_id FROM project_asset_usage WHERE creation_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let cited: Vec<String> = stmt
+        .query_map(params![creation_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+    let audited: Option<BTreeSet<&str>> = audited_project_ids.map(|ids| {
+        ids.iter()
+            .map(|id| id.as_str())
+            .filter(|id| !id.is_empty())
+            .collect()
+    });
+    for project_id in cited {
+        let live_folder = project_has_live_folder(conn, &project_id)?;
+        let in_store = audited
+            .as_ref()
+            .map(|set| set.contains(project_id.as_str()))
+            .unwrap_or(true);
+        if !live_folder || !in_store {
+            clear_native_project_index(conn, &project_id)?;
+        }
+    }
+    Ok(())
+}
+
 /// Delete a creation from the local catalog and remove its media/thumb files.
 /// Only removes files under Library/media or Library/thumbs. Does not touch Parascene cloud.
 ///
@@ -1461,9 +1524,15 @@ pub(crate) fn delete_creation_local(
     paths: &ParascenePaths,
     id: &str,
 ) -> Result<(), String> {
+    prune_stale_creation_usage(conn, id, None)?;
     let uses: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM project_asset_usage WHERE creation_id = ?1",
+            "SELECT COUNT(*) FROM project_asset_usage u
+             WHERE u.creation_id = ?1
+               AND EXISTS (
+                 SELECT 1 FROM folders f
+                 WHERE f.kind = 'project' AND f.project_id = u.project_id
+               )",
             params![id],
             |row| row.get(0),
         )
@@ -2356,6 +2425,127 @@ mod tests {
             "unexpected error: {member_err}"
         );
         assert!(get_creation_by_id(&conn, "member-1").expect("get").is_some());
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    fn test_image_upsert(id: &str) -> CreationUpsert {
+        CreationUpsert {
+            id: id.into(),
+            title: id.into(),
+            media_type: "image".into(),
+            remote_url: Some(format!("https://cdn.example/{id}.png")),
+            thumbnail_url: None,
+            fit_thumbnail_url: None,
+            video_url: None,
+            published: true,
+            published_at: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            download_state: "remote".into(),
+            prompt: None,
+            filename: Some(format!("{id}.png")),
+            description: None,
+            color: None,
+            status: None,
+            width: Some(10),
+            height: Some(10),
+            aspect_ratio: Some("1:1".into()),
+            nsfw: false,
+            is_moderated_error: false,
+            remote_json: "{}".into(),
+        }
+    }
+
+    #[test]
+    fn delete_creation_local_ignores_usage_from_deleted_project() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(&conn, &[test_image_upsert("cover-1")]).expect("apply");
+        conn.execute(
+            "INSERT INTO project_asset_usage(
+               project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label, document_revision
+             ) VALUES ('597877a3-d251-4287-8414-d62ad83fe63a', 'cover-1', 'cabinet', 'images', 'Project Images', 'rev1')",
+            [],
+        )
+        .expect("ghost usage");
+        conn.execute(
+            "INSERT INTO project_usage_revisions(project_id, document_revision, state, indexed_at)
+             VALUES ('597877a3-d251-4287-8414-d62ad83fe63a', 'rev1', 'ready', 't')",
+            [],
+        )
+        .expect("ghost revision");
+
+        delete_creation_local(&conn, &paths, "cover-1").expect("delete");
+        assert!(get_creation_by_id(&conn, "cover-1").expect("get").is_none());
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_asset_usage WHERE project_id = '597877a3-d251-4287-8414-d62ad83fe63a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(leftover, 0);
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn delete_creation_local_still_blocks_live_project_usage() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(&conn, &[test_image_upsert("cover-2")]).expect("apply");
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+             VALUES ('pf', 'Images', '', 't', 't', 'project', 'live-project')",
+            [],
+        )
+        .expect("folder");
+        conn.execute(
+            "INSERT INTO project_asset_usage(
+               project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label, document_revision
+             ) VALUES ('live-project', 'cover-2', 'cabinet', 'images', 'Project Images', 'rev1')",
+            [],
+        )
+        .expect("usage");
+
+        let err = delete_creation_local(&conn, &paths, "cover-2").expect_err("blocked");
+        assert!(
+            err.contains("used by a project"),
+            "unexpected error: {err}"
+        );
+        assert!(get_creation_by_id(&conn, "cover-2").expect("get").is_some());
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn prune_stale_creation_usage_drops_projects_missing_from_store() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(&conn, &[test_image_upsert("cover-3")]).expect("apply");
+        conn.execute(
+            "INSERT INTO folders(id, title, description, created_at, updated_at, kind, project_id)
+             VALUES ('pf', 'Images', '', 't', 't', 'project', 'gone-from-store')",
+            [],
+        )
+        .expect("folder");
+        conn.execute(
+            "INSERT INTO project_asset_usage(
+               project_id, creation_id, usage_kind, usage_owner_id, usage_owner_label, document_revision
+             ) VALUES ('gone-from-store', 'cover-3', 'cabinet', 'images', 'Project Images', 'rev1')",
+            [],
+        )
+        .expect("usage");
+
+        prune_stale_creation_usage(&conn, "cover-3", Some(&["other-project".into()]))
+            .expect("prune");
+        let leftover: i64 = conn
+            .query_row("SELECT COUNT(*) FROM project_asset_usage", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(leftover, 0);
+        delete_creation_local(&conn, &paths, "cover-3").expect("delete");
 
         let _ = fs::remove_dir_all(&paths.root);
     }

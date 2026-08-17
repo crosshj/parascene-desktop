@@ -101,6 +101,13 @@ export async function deleteFolder(id: string): Promise<void> {
   return invoke("library_delete_folder", { id });
 }
 
+/** Regular Library folders with no members — safe to remove from the board. */
+export function isEmptyRegularFolder(
+  folder: Pick<LibraryFolder, "kind" | "memberCount">,
+): boolean {
+  return folder.kind === "regular" && folder.memberCount === 0;
+}
+
 export async function getFolderSyncState(): Promise<FolderSyncState> {
   return invoke<FolderSyncState>("library_folder_sync_state");
 }
