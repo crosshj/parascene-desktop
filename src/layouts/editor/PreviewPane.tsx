@@ -1463,6 +1463,42 @@ export function PreviewPane({
     }
   }
 
+  // If done state has a creation id but no preview URL yet, resolve once.
+  useEffect(() => {
+    const id = libraryGenerateState.resultCreationId?.trim();
+    if (
+      !showLibraryGenerateDual ||
+      libraryGenerateState.phase !== "done" ||
+      !id ||
+      libraryGenerateState.resultPreviewUrl?.trim()
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void getCreation(id)
+      .then((row) => {
+        if (cancelled || !row) return;
+        const url = creationDetailUrl(row) ?? creationPreviewUrl(row);
+        if (!url) return;
+        setLibraryGenerateState((prev) =>
+          prev.resultCreationId === id && !prev.resultPreviewUrl?.trim()
+            ? { ...prev, resultPreviewUrl: url }
+            : prev,
+        );
+      })
+      .catch(() => {
+        /* preview optional */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showLibraryGenerateDual,
+    libraryGenerateState.phase,
+    libraryGenerateState.resultCreationId,
+    libraryGenerateState.resultPreviewUrl,
+  ]);
+
   const compositeImageIds =
     selectionClass?.type === "compositeImages"
       ? selectionClass.imageAssetIds
@@ -2801,6 +2837,8 @@ export function PreviewPane({
                     startedAtMs={libraryGenerateState.startedAtMs}
                     errorMessage={libraryGenerateState.errorMessage}
                     doneMessage={libraryGenerateState.progressNote}
+                    resultPreviewUrl={libraryGenerateState.resultPreviewUrl}
+                    resultMediaKind="image"
                     onGenerateNew={() => {
                       setLibraryGenerateState({
                         phase: "pre_gen",

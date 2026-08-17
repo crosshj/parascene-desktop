@@ -19,6 +19,9 @@ type GenerateResultPaneProps = {
   expectedMs?: number;
   errorMessage?: string | null;
   doneMessage?: string | null;
+  /** Finished still/video preview for Result (library generates). */
+  resultPreviewUrl?: string | null;
+  resultMediaKind?: "image" | "video" | null;
 };
 
 function providerLabel(generation: AddAssetGeneration): string {
@@ -29,7 +32,7 @@ function providerLabel(generation: AddAssetGeneration): string {
   return server || "Generate";
 }
 
-/** Result side of dual view — staging, progress, or success note. */
+/** Result side of dual view — staging, progress, or success with media. */
 export function GenerateResultPane({
   phase,
   session = null,
@@ -42,6 +45,8 @@ export function GenerateResultPane({
   expectedMs = 60_000,
   errorMessage = null,
   doneMessage = null,
+  resultPreviewUrl = null,
+  resultMediaKind = "image",
 }: GenerateResultPaneProps) {
   const tickMs = nowMs ?? 0;
   if (phase === "running") {
@@ -99,15 +104,37 @@ export function GenerateResultPane({
     if (mediaHostedByParent) {
       return null;
     }
-    if (generation) {
-      return (
-        <div className="generate-result-pane">
+    const previewUrl = resultPreviewUrl?.trim() || null;
+    const note =
+      doneMessage?.trim() ||
+      progressNote?.trim() ||
+      (generation
+        ? `${providerLabel(generation)}${
+            generation.model?.trim() ? ` · ${generation.model.trim()}` : ""
+          }`
+        : "Added to Assets.");
+    return (
+      <div
+        className={`generate-result-pane${previewUrl ? " has-media" : ""}`}
+      >
+        {previewUrl ? (
+          resultMediaKind === "video" ? (
+            <video
+              className="generate-result-media"
+              src={previewUrl}
+              controls
+              playsInline
+              preload="metadata"
+            />
+          ) : (
+            <img className="generate-result-media" src={previewUrl} alt="" />
+          )
+        ) : (
           <h3 className="generate-result-title">Generated</h3>
-          <p className="muted generate-result-note">
-            {providerLabel(generation)}
-            {generation.model?.trim() ? ` · ${generation.model.trim()}` : ""}
-          </p>
-          {generation.prompt.trim() ? (
+        )}
+        <div className="generate-result-footer">
+          <p className="muted generate-result-note">{note}</p>
+          {generation?.prompt.trim() && !previewUrl ? (
             <p className="generate-result-prompt">{generation.prompt.trim()}</p>
           ) : null}
           {onGenerateNew ? (
@@ -116,21 +143,6 @@ export function GenerateResultPane({
             </button>
           ) : null}
         </div>
-      );
-    }
-    return (
-      <div className="generate-result-pane">
-        <h3 className="generate-result-title">Generated</h3>
-        <p className="muted generate-result-note">
-          {doneMessage?.trim() ||
-            progressNote?.trim() ||
-            "Added to Assets."}
-        </p>
-        {onGenerateNew ? (
-          <button type="button" className="btn" onClick={onGenerateNew}>
-            Generate new
-          </button>
-        ) : null}
       </div>
     );
   }
@@ -139,8 +151,7 @@ export function GenerateResultPane({
     <div className="generate-result-pane">
       <h3 className="generate-result-title">Result</h3>
       <p className="muted generate-result-note">
-        Generated media will show here. Stay on Form to set prompt, model, and
-        frames, then Generate.
+        Generated media will show here after you run Generate.
       </p>
     </div>
   );

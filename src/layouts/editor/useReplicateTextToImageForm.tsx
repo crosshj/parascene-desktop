@@ -13,6 +13,10 @@ import {
   applyManifest,
   getCreation,
 } from "../../library/catalogClient";
+import {
+  creationDetailUrl,
+  creationPreviewUrl,
+} from "../../library/previewUrl";
 import { DEFAULT_PROJECT_ASPECT_RATIO } from "../../project/aspectRatios";
 import {
   creationUpsertWithAddAssetGeneration,
@@ -154,8 +158,11 @@ export function useReplicateTextToImageForm(
         },
       });
       await addCreationsToOpenProject([result.creationId]);
+      let previewUrl: string | null = null;
       try {
         const creation = await getCreation(result.creationId);
+        previewUrl =
+          creationDetailUrl(creation) ?? creationPreviewUrl(creation) ?? null;
         await applyManifest([
           creationUpsertWithAddAssetGeneration(
             creation,
@@ -169,6 +176,15 @@ export function useReplicateTextToImageForm(
         ]);
       } catch {
         // Provenance stamp is best-effort.
+        try {
+          const creation = await getCreation(result.creationId);
+          previewUrl =
+            creationDetailUrl(creation) ??
+            creationPreviewUrl(creation) ??
+            null;
+        } catch {
+          /* preview optional */
+        }
       }
       setStatus(null);
       setSuccessNote("Added image to Assets.");
@@ -177,6 +193,8 @@ export function useReplicateTextToImageForm(
         phase: "done",
         progressNote: "Added image to Assets.",
         startedAtMs: started,
+        resultCreationId: result.creationId,
+        resultPreviewUrl: previewUrl,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

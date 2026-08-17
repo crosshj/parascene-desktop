@@ -18,6 +18,10 @@ export type LibraryGenerateUiState = {
   progressNote: string;
   errorMessage?: string | null;
   startedAtMs?: number;
+  /** Creation id of the finished still/video for Result preview. */
+  resultCreationId?: string | null;
+  /** Preview / detail URL when already known (avoids a second catalog hop). */
+  resultPreviewUrl?: string | null;
 };
 
 export function defaultGenerateDualView(
