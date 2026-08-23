@@ -5,6 +5,7 @@ import {
   hasLocalMedia,
   isParasceneUnavailable,
   isPlayableLocalPath,
+  parascenePublicImageUrl,
   withPreviewCacheBust,
 } from "./previewUrl";
 import type { Creation } from "./types";
@@ -123,6 +124,60 @@ describe("creationDetailUrl", () => {
         }),
       ),
     ).toMatch(/^media:\/\//);
+  });
+});
+
+describe("parascenePublicImageUrl", () => {
+  it("returns remote HTTPS URLs for images and rejects local-only previews", () => {
+    expect(
+      parascenePublicImageUrl(
+        base({
+          mediaType: "image",
+          remoteUrl: "https://www.parascene.com/api/images/created/x.png",
+        }),
+      ),
+    ).toBe("https://www.parascene.com/api/images/created/x.png");
+
+    expect(
+      parascenePublicImageUrl(
+        base({
+          mediaType: "image",
+          localPath: "/Movies/Parascene/Library/media/1.png",
+          remoteUrl: null,
+        }),
+      ),
+    ).toBeNull();
+
+    expect(
+      parascenePublicImageUrl(
+        base({
+          mediaType: "image",
+          remoteUrl: "asset://localhost/1.png",
+        }),
+      ),
+    ).toBeNull();
+
+    expect(
+      parascenePublicImageUrl(
+        base({
+          mediaType: "video",
+          remoteUrl: "https://cdn.example/a.mp4",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("reads url from remoteJson when remoteUrl is missing", () => {
+    expect(
+      parascenePublicImageUrl(
+        base({
+          mediaType: "image",
+          remoteJson: JSON.stringify({
+            url: "https://www.parascene.com/api/images/created/from-json.png",
+          }),
+        }),
+      ),
+    ).toBe("https://www.parascene.com/api/images/created/from-json.png");
   });
 });
 

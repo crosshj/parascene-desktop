@@ -1,11 +1,5 @@
-import { useEffect, useState } from "react";
-import { blueCredentialsStatus } from "../../blue/blueClient";
-import {
-  BLUE_CREDENTIALS_CHANGED_EVENT,
-  REPLICATE_TOKEN_CHANGED_EVENT,
-  requestOpenSettings,
-} from "../../settings/events";
-import { replicateTokenStatus } from "../../replicate/replicateClient";
+import { useCallback, useEffect, useMemo } from "react";
+import { requestOpenSettings } from "../../settings/events";
 import type {
   AddAssetDraft,
   AddAssetGeneration,
@@ -14,7 +8,7 @@ import type {
   TimelineClip,
 } from "../../project/types";
 import type { ProjectAspectRatio } from "../../project/aspectRatios";
-import { isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import {
   GENERATE_INTENTS,
@@ -40,13 +34,36 @@ import { GenerateIntentIcon } from "./GenerateIntentIcon";
 import { GenerateServerIcon } from "./GenerateServerIcon";
 import { saveLastGenerateIntent } from "./generateIntentPrefs";
 import { addAssetDragDraftFromIntent } from "./stagedClip";
-import { ClipDragHandle, ClipPlaceHandle } from "./PreviewStaging";
+import {
+  AddAssetIntentFooter,
+  AssetsGenerateButton,
+  DiscardButton,
+  TryAgainButton,
+} from "./AddAssetIntentFooter";
+import {
+  resolveAddAssetTimelinePlacement,
+} from "./addAssetTimelinePlacement";
+
 import { ReplicateTextToImageFormLayout } from "./ReplicateTextToImageForm";
 import { BlueDirectTextToImageForm } from "./BlueDirectTextToImageForm";
+import {
+  ParasceneTextToImageFormLayout,
+} from "./ParasceneTextToImageForm";
+import {
+  ParasceneImageToImageFormLayout,
+} from "./ParasceneImageToImageForm";
 import {
   AddAssetGeneratePanel,
   type StartAddAssetGenerationRequest,
 } from "./AddAssetGeneratePanel";
+import {
+  firstVisibleGenerateServer,
+  isGenerateServerCapVisible,
+  libraryServerFormReady,
+  serverChoiceDescription,
+  serverNeedsCredentials,
+  useGenerateServerCredentials,
+} from "./generateServerCredentials";
 
 type AddAssetIntentPanelProps = {
   intent: AddAssetIntent | null;
@@ -64,18 +81,31 @@ type AddAssetIntentPanelProps = {
   onClearError?: () => void;
   onRetryDownload?: () => void;
   imageAssets?: ProjectAsset[];
-  /** Lock intent/server choices (and nested generate fields when placed). */
+  /** Lock intent when placed on timeline; lock server only when `locked`. */
   locked?: boolean;
   /** Progress UI lives on Result — keep form visible while generating. */
   progressHostedExternally?: boolean;
   onGenerateNew?: () => void;
+  /** Exit + slot once a library placeholder asset is reserved. */
+  onLibraryAssetGenerationStarted?: (assetId: string) => void;
   /** Library T2I: report phase so PreviewPane can host Result | Form. */
   onLibraryGenerateStateChange?: (state: LibraryGenerateUiState) => void;
   hideLibraryInlineProgress?: boolean;
   /** Finished generation — seed locked T2I form (Assets Result | Form). */
   reviewGeneration?: AddAssetGeneration | null;
   /** Seed prompt/model when forking Generate new into the + slot. */
-  libraryFormSeed?: { prompt: string; model?: string } | null;
+  libraryFormSeed?: {
+    prompt: string;
+    model?: string;
+    startFrameAssetId?: string;
+  } | null;
+  /** Reuse an existing Generate → Assets placeholder instead of reserving a new id. */
+  libraryPlaceholderId?: string | null;
+  /** Dual-view failure recovery — footer actions while the form stays locked. */
+  errorRecovery?: {
+    onDiscard?: () => void;
+    onRetry?: () => void;
+  };
 };
 
 export function AddAssetIntentPanel({
@@ -96,12 +126,16 @@ export function AddAssetIntentPanel({
   locked = false,
   progressHostedExternally = false,
   onGenerateNew,
+  onLibraryAssetGenerationStarted,
   onLibraryGenerateStateChange,
   hideLibraryInlineProgress = false,
   reviewGeneration = null,
   libraryFormSeed = null,
+  libraryPlaceholderId = null,
+  errorRecovery,
 }: AddAssetIntentPanelProps) {
   const placed = Boolean(placedClip);
+  const intentLocked = locked || placed;
   const resolved = intent ? resolveAddAssetIntent(intent) : null;
   const intentId = resolved?.intentId ?? null;
   const server = resolved?.server ?? null;
@@ -125,15 +159,33 @@ export function AddAssetIntentPanel({
     !placed &&
     isTextToImageGeneration(reviewGeneration) &&
     intentId === "text_to_image" &&
-    (server === "blue_direct" || server === "replicate");
+    (server === "blue_direct" ||
+      server === "replicate" ||
+      server === "parascene_blue");
+  const reviewI2i =
+    locked &&
+    !placed &&
+    isImageToImageGeneration(reviewGeneration) &&
+    intentId === "image_to_image" &&
+    server === "parascene_blue";
   const showLibraryT2i =
     (canLibraryGenerate || reviewT2i) &&
     intentId === "text_to_image" &&
-    (server === "blue_direct" || server === "replicate");
+    (server === "blue_direct" ||
+      server === "replicate" ||
+      server === "parascene_blue");
+  const showLibraryI2i =
+    (canLibraryGenerate || reviewI2i) &&
+    intentId === "image_to_image" &&
+    server === "parascene_blue";
   const t2iPrompt = reviewGeneration?.prompt ?? libraryFormSeed?.prompt ?? "";
   const t2iModelId =
     reviewGeneration?.model?.trim() ||
     libraryFormSeed?.model?.trim() ||
+    undefined;
+  const i2iSourceAssetId =
+    reviewGeneration?.startFrameAssetId?.trim() ||
+    libraryFormSeed?.startFrameAssetId?.trim() ||
     undefined;
   const comingSoon = capability?.status === "coming_soon";
   const offersAssets =
@@ -144,65 +196,53 @@ export function AddAssetIntentPanel({
     !comingSoon &&
     Boolean(intentId && server && isIntentServerWired(intentId, server));
   const dragDraft = addAssetDragDraftFromIntent(resolved);
+  const creds = useGenerateServerCredentials();
 
-  const [blueConfigured, setBlueConfigured] = useState<boolean | null>(null);
-  const [replicateConfigured, setReplicateConfigured] = useState<
-    boolean | null
-  >(null);
+  const serverNeedsCreds = (id: GenerateServerId): boolean =>
+    serverNeedsCredentials(id, creds);
+
+  const serverCapIsVisible = (cap: {
+    server: GenerateServerId;
+    status: "wired" | "coming_soon";
+  }): boolean => isGenerateServerCapVisible(cap, creds);
+
+  const firstSelectableServer = (
+    intent: GenerateIntentId,
+    prefer?: GenerateServerId | null,
+  ): GenerateServerId => firstVisibleGenerateServer(intent, creds, prefer);
+
+  const libraryFormReady = libraryServerFormReady(capability, creds);
+
+  const commitIntent = useCallback(
+    (next: AddAssetIntent) => {
+      saveLastGenerateIntent(next);
+      onIntentChange(next);
+    },
+    [onIntentChange],
+  );
 
   useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      void blueCredentialsStatus()
-        .then((s) => {
-          if (!cancelled) setBlueConfigured(s.configured);
-        })
-        .catch(() => {
-          if (!cancelled) setBlueConfigured(false);
-        });
-      void replicateTokenStatus()
-        .then((s) => {
-          if (!cancelled) setReplicateConfigured(s.configured);
-        })
-        .catch(() => {
-          if (!cancelled) setReplicateConfigured(false);
-        });
-    };
-    refresh();
-    window.addEventListener(BLUE_CREDENTIALS_CHANGED_EVENT, refresh);
-    window.addEventListener(REPLICATE_TOKEN_CHANGED_EVENT, refresh);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(BLUE_CREDENTIALS_CHANGED_EVENT, refresh);
-      window.removeEventListener(REPLICATE_TOKEN_CHANGED_EVENT, refresh);
-    };
-  }, []);
-
-  const serverNeedsCreds = (id: GenerateServerId): boolean => {
-    if (id === "blue_direct") return blueConfigured === false;
-    if (id === "replicate") return replicateConfigured === false;
-    return false;
-  };
-
-  const commitIntent = (next: AddAssetIntent) => {
-    saveLastGenerateIntent(next);
-    onIntentChange(next);
-  };
+    if (locked || !intentId || !server) return;
+    const cap = intentServerCapability(intentId, server);
+    if (cap && isGenerateServerCapVisible(cap, creds)) return;
+    const nextServer = firstVisibleGenerateServer(intentId, creds, server);
+    if (nextServer === server) return;
+    commitIntent(
+      makeAddAssetIntent(
+        intentId,
+        nextServer,
+        placed ? "timeline" : destination,
+      ),
+    );
+  }, [locked, intentId, server, creds, placed, destination, commitIntent]);
 
   const selectIntent = (next: GenerateIntentId) => {
-    if (locked) return;
-    const caps = serversForIntent(next);
-    const preferred =
-      (server && caps.find((c) => c.server === server)?.server) ||
-      caps.find((c) => c.status === "wired")?.server ||
-      caps[0]?.server ||
-      "parascene_blue";
-    commitIntent(makeAddAssetIntent(next, preferred));
+    if (intentLocked) return;
+    commitIntent(makeAddAssetIntent(next, firstSelectableServer(next, server)));
   };
 
   const selectServer = (next: GenerateServerId) => {
     if (locked || !intentId) return;
-    // Placed clips are timeline; otherwise keep last destination preference.
     commitIntent(
       makeAddAssetIntent(
         intentId,
@@ -213,6 +253,101 @@ export function AddAssetIntentPanel({
   };
 
   const needsCreds = server ? serverNeedsCreds(server) : false;
+
+  const libraryStatusNote =
+    !placed && intentId && server ? (
+      comingSoon ? (
+        <section className="add-asset-generate-section">
+          <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
+            Coming soon
+            {selectedIntent ? ` — ${selectedIntent.label}` : ""}
+            {` on ${
+              GENERATE_SERVERS.find((s) => s.id === server)?.label ??
+              "this server"
+            }`}
+            .
+          </p>
+        </section>
+      ) : needsCreds ? (
+        <section className="add-asset-generate-section">
+          <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
+            {server === "blue_direct"
+              ? "Add Blue credentials in Settings to use Direct to Blue."
+              : "Add a Replicate token and enable at least one model in Settings to use Replicate."}{" "}
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => requestOpenSettings()}
+            >
+              Open Settings
+            </button>
+          </p>
+        </section>
+      ) : null
+    ) : null;
+
+  const timelinePlacement = useMemo(
+    () =>
+      resolveAddAssetTimelinePlacement({
+        placed,
+        intentId,
+        server,
+        draft: dragDraft,
+        comingSoon,
+        needsCreds,
+        canPlace,
+        timelineSoon,
+      }),
+    [
+      placed,
+      intentId,
+      server,
+      dragDraft,
+      comingSoon,
+      needsCreds,
+      canPlace,
+      timelineSoon,
+    ],
+  );
+
+  const assetsSoonGenerateAction =
+    !placed && assetsSoon && !comingSoon && !needsCreds ? (
+      <AssetsGenerateButton disabled unavailableTitle="Coming soon" />
+    ) : null;
+
+  const intentFooter = (parts?: {
+    generate?: React.ReactNode;
+    clone?: React.ReactNode;
+  }) => {
+    const recoveryActive = Boolean(
+      locked &&
+        errorRecovery &&
+        (errorRecovery.onDiscard || errorRecovery.onRetry),
+    );
+    return (
+      <AddAssetIntentFooter
+        retry={
+          recoveryActive && errorRecovery?.onRetry ? (
+            <TryAgainButton onClick={errorRecovery.onRetry} />
+          ) : undefined
+        }
+        discard={
+          recoveryActive && errorRecovery?.onDiscard ? (
+            <DiscardButton onClick={errorRecovery.onDiscard} />
+          ) : undefined
+        }
+        generate={
+          recoveryActive
+            ? undefined
+            : locked
+              ? undefined
+              : (parts?.generate ?? assetsSoonGenerateAction ?? undefined)
+        }
+        clone={recoveryActive ? undefined : parts?.clone}
+        timeline={locked || placed ? { mode: "hidden" } : timelinePlacement}
+      />
+    );
+  };
 
   const choices = (
     <>
@@ -232,7 +367,7 @@ export function AddAssetIntentPanel({
                   intentId === item.id ? " is-selected" : ""
                 }${!anyWired ? " is-soon" : ""}`}
                 aria-pressed={intentId === item.id}
-                disabled={locked}
+                disabled={intentLocked}
                 onClick={() => selectIntent(item.id)}
               >
                 <span className="preview-intent-choice-icon">
@@ -256,10 +391,11 @@ export function AddAssetIntentPanel({
         <section className="add-asset-generate-section">
           <h3>Server</h3>
           <div className="preview-intent-choice-grid" role="list">
-            {serversForIntent(intentId).map((cap) => {
+            {serversForIntent(intentId)
+              .filter((cap) => serverCapIsVisible(cap))
+              .map((cap) => {
               const def = GENERATE_SERVERS.find((s) => s.id === cap.server);
               if (!def) return null;
-              const needs = serverNeedsCreds(cap.server);
               const soon = cap.status === "coming_soon";
               return (
                 <button
@@ -281,9 +417,7 @@ export function AddAssetIntentPanel({
                       {def.label}
                     </span>
                     <span className="muted preview-intent-choice-desc">
-                      {needs
-                        ? "Needs Settings credentials"
-                        : def.description}
+                      {serverChoiceDescription(cap, creds, def.description)}
                     </span>
                   </span>
                 </button>
@@ -302,105 +436,6 @@ export function AddAssetIntentPanel({
       ) : null}
     </>
   );
-
-  const statusCallouts = (
-    <>
-      {!placed && comingSoon ? (
-        <section className="add-asset-generate-section">
-          <div className="add-asset-generate-callout">
-            <p className="muted" style={{ margin: 0 }}>
-              Coming soon
-              {selectedIntent ? ` — ${selectedIntent.label}` : ""}
-              {server
-                ? ` on ${
-                    GENERATE_SERVERS.find((s) => s.id === server)?.label ??
-                    "this server"
-                  }`
-                : ""}
-              . Pick a ready path to generate today.
-            </p>
-          </div>
-        </section>
-      ) : null}
-
-      {!placed && needsCreds && server ? (
-        <section className="add-asset-generate-section">
-          <div className="add-asset-generate-callout">
-            <p className="muted" style={{ margin: 0 }}>
-              {server === "blue_direct"
-                ? "Add Blue credentials in Settings to use Direct to Blue."
-                : "Add a Replicate token in Settings to use Replicate."}{" "}
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => requestOpenSettings()}
-              >
-                Open Settings
-              </button>
-            </p>
-          </div>
-        </section>
-      ) : null}
-
-      {assetsSoon && !comingSoon && !needsCreds ? (
-        <section className="add-asset-generate-section">
-          <div className="add-asset-generate-callout">
-            <p className="muted" style={{ margin: 0 }}>
-              Generate to Assets for this intent is coming soon
-              {canPlace || timelineSoon
-                ? " — use Place or Drag for the timeline"
-                : ""}
-              {selectedIntent?.id === "image_to_video"
-                ? " (or seed a start frame from a project still after placing)."
-                : "."}
-            </p>
-          </div>
-        </section>
-      ) : null}
-
-      {timelineSoon && !comingSoon && !needsCreds ? (
-        <section className="add-asset-generate-section">
-          <div className="add-asset-generate-callout">
-            <p className="muted" style={{ margin: 0 }}>
-              Place on timeline is coming soon for stills. Generate into Assets
-              for now, then add the image to the timeline later.
-            </p>
-          </div>
-        </section>
-      ) : null}
-
-      {canPlace && !comingSoon && !needsCreds ? (
-        <section className="add-asset-generate-section">
-          <div className="add-asset-generate-callout">
-            <p className="muted" style={{ margin: 0 }}>
-              Place or drag onto the timeline to continue generating.
-            </p>
-          </div>
-        </section>
-      ) : null}
-    </>
-  );
-
-  const timelineFooter =
-    canPlace && !comingSoon && !needsCreds ? (
-      <div className="add-asset-generate-footer preview-intent-footer">
-        <ClipPlaceHandle draft={dragDraft} />
-        <ClipDragHandle draft={dragDraft} />
-      </div>
-    ) : timelineSoon && !comingSoon && !needsCreds ? (
-      <div className="add-asset-generate-footer preview-intent-footer">
-        <button
-          type="button"
-          className="editor-cartridge-grip is-soon"
-          disabled
-          title="Place on timeline coming soon for stills"
-        >
-          <span className="editor-cartridge-grip-label">
-            Place · Soon
-          </span>
-        </button>
-      </div>
-    ) : null;
 
   const placedForm =
     placed &&
@@ -426,46 +461,107 @@ export function AddAssetIntentPanel({
         imageAssets={imageAssets}
         progressHostedExternally={progressHostedExternally}
         formLocked={locked}
+        errorRecovery={errorRecovery}
         onGenerateNew={onGenerateNew}
       />
     ) : placed && comingSoon ? (
       <section className="add-asset-generate-section">
-        <div className="add-asset-generate-callout">
-          <p className="muted" style={{ margin: 0 }}>
-            Coming soon
-            {selectedIntent ? ` — ${selectedIntent.label}` : ""}
-            {server
-              ? ` on ${
-                  GENERATE_SERVERS.find((s) => s.id === server)?.label ??
-                  "this server"
-                }`
-              : ""}
-            . Pick a ready path to generate on this clip.
-          </p>
-        </div>
+        <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
+          Coming soon
+          {selectedIntent ? ` — ${selectedIntent.label}` : ""}
+          {server
+            ? ` on ${
+                GENERATE_SERVERS.find((s) => s.id === server)?.label ??
+                "this server"
+              }`
+            : ""}
+          .
+        </p>
       </section>
     ) : placed && needsCreds && server ? (
       <section className="add-asset-generate-section">
-        <div className="add-asset-generate-callout">
-          <p className="muted" style={{ margin: 0 }}>
-            {server === "blue_direct"
-              ? "Add Blue credentials in Settings to use Direct to Blue."
-              : "Add a Replicate token in Settings to use Replicate."}{" "}
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => requestOpenSettings()}
-            >
-              Open Settings
-            </button>
-          </p>
-        </div>
+        <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
+          {server === "blue_direct"
+            ? "Add Blue credentials in Settings to use Direct to Blue."
+            : "Add a Replicate token in Settings to use Replicate."}{" "}
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => requestOpenSettings()}
+          >
+            Open Settings
+          </button>
+        </p>
       </section>
     ) : null;
 
   if (
     showLibraryT2i &&
-    server === "replicate"
+    server === "parascene_blue" &&
+    libraryFormReady
+  ) {
+    return (
+      <ParasceneTextToImageFormLayout
+        idPrefix="add-asset-parascene-t2i"
+        locked={locked}
+        hideInlineProgress={hideLibraryInlineProgress}
+        onGenerateStateChange={onLibraryGenerateStateChange}
+        onGenerateNew={onGenerateNew}
+        onLibraryAssetGenerationStarted={onLibraryAssetGenerationStarted}
+        placeholderId={libraryPlaceholderId ?? undefined}
+        initialPrompt={t2iPrompt}
+        initialModelId={t2iModelId}
+      >
+        {({ fields, generateAction, cloneAction }) => (
+          <div
+            className="add-asset-generate-pane preview-intent-pane"
+            aria-label="Choose generation method"
+          >
+            <div className="add-asset-generate-body">
+              {choices}
+              {fields}
+            </div>
+            {intentFooter({ generate: generateAction, clone: cloneAction })}
+          </div>
+        )}
+      </ParasceneTextToImageFormLayout>
+    );
+  }
+
+  if (showLibraryI2i && libraryFormReady) {
+    return (
+      <ParasceneImageToImageFormLayout
+        locked={locked}
+        hideInlineProgress={hideLibraryInlineProgress}
+        imageAssets={imageAssets}
+        onGenerateStateChange={onLibraryGenerateStateChange}
+        onGenerateNew={onGenerateNew}
+        onLibraryAssetGenerationStarted={onLibraryAssetGenerationStarted}
+        placeholderId={libraryPlaceholderId ?? undefined}
+        initialPrompt={libraryFormSeed?.prompt ?? reviewGeneration?.prompt ?? ""}
+        initialModelId={libraryFormSeed?.model ?? reviewGeneration?.model}
+        initialSourceAssetId={i2iSourceAssetId}
+      >
+        {({ fields, generateAction, cloneAction }) => (
+          <div
+            className="add-asset-generate-pane preview-intent-pane"
+            aria-label="Choose generation method"
+          >
+            <div className="add-asset-generate-body">
+              {choices}
+              {fields}
+            </div>
+            {intentFooter({ generate: generateAction, clone: cloneAction })}
+          </div>
+        )}
+      </ParasceneImageToImageFormLayout>
+    );
+  }
+
+  if (
+    showLibraryT2i &&
+    server === "replicate" &&
+    libraryFormReady
   ) {
     return (
       <ReplicateTextToImageFormLayout
@@ -477,7 +573,7 @@ export function AddAssetIntentPanel({
         initialPrompt={t2iPrompt}
         initialModelId={t2iModelId}
       >
-        {({ fields, footer }) => (
+        {({ fields, generateAction, cloneAction }) => (
           <div
             className="add-asset-generate-pane preview-intent-pane"
             aria-label="Choose generation method"
@@ -485,10 +581,8 @@ export function AddAssetIntentPanel({
             <div className="add-asset-generate-body">
               {choices}
               {fields}
-              {!locked ? statusCallouts : null}
             </div>
-            {footer}
-            {!locked ? timelineFooter : null}
+            {intentFooter({ generate: generateAction, clone: cloneAction })}
           </div>
         )}
       </ReplicateTextToImageFormLayout>
@@ -497,7 +591,8 @@ export function AddAssetIntentPanel({
 
   if (
     showLibraryT2i &&
-    server === "blue_direct"
+    server === "blue_direct" &&
+    libraryFormReady
   ) {
     return (
       <div
@@ -513,10 +608,14 @@ export function AddAssetIntentPanel({
             onGenerateNew={onGenerateNew}
             initialPrompt={t2iPrompt}
             initialModelId={t2iModelId}
+            renderFooter={(parts) =>
+              intentFooter({
+                generate: parts.generateAction,
+                clone: parts.cloneAction,
+              })
+            }
           />
-          {!locked ? statusCallouts : null}
         </div>
-        {!locked ? timelineFooter : null}
       </div>
     );
   }
@@ -528,10 +627,10 @@ export function AddAssetIntentPanel({
     >
       <div className="add-asset-generate-body">
         {choices}
+        {libraryStatusNote}
         {placedForm}
-        {!placed ? statusCallouts : null}
       </div>
-      {!placed ? timelineFooter : null}
+      {!placed ? intentFooter() : null}
     </div>
   );
 }

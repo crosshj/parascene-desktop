@@ -46,6 +46,7 @@ import {
   type EditorLayoutPrefs,
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
+import { useProjectImagePickerAssets } from "./projectImagePickerAssets";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import { pasteAppendStartSec } from "./timelineAppend";
 import {
@@ -59,7 +60,7 @@ import {
   normalizeGenerateServer,
 } from "./previewIntent";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
-import { isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
 import {
   clearAddAssetGenerationError,
   clearAddAssetGenerationIfClipMissing,
@@ -130,6 +131,11 @@ import {
   removeMembersFromProjectGroup,
   type ProjectGroupKind,
 } from "../../lab/projectGroups";
+import {
+  isActiveLibraryAssetPlaceholder,
+  libraryAssetPlaceholderIdsInList,
+} from "../../project/libraryAssetPlaceholder";
+import { retryLibraryAssetPlaceholder } from "./libraryAssetGenerationStore";
 
 const NARROW_MQ = "(max-width: 1100px)";
 
@@ -196,6 +202,7 @@ export function EditorLayout() {
     addCreationsToOpenProject,
     removeCreationsFromOpenProject,
     deleteLibraryCreation,
+    clearLibraryAssetPlaceholder,
     setOpenProjectGroupIds,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
@@ -253,6 +260,7 @@ export function EditorLayout() {
   const [libraryGenerateSeed, setLibraryGenerateSeed] = useState<{
     prompt: string;
     model?: string;
+    startFrameAssetId?: string;
   } | null>(null);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
@@ -483,13 +491,25 @@ export function EditorLayout() {
     project.videosGroupId,
   ]);
 
-  const pauseTimelinePlayback = () => {
+  const projectCabinets = useMemo(
+    () => ({
+      imagesGroupId: project.imagesGroupId,
+      videosGroupId: project.videosGroupId,
+    }),
+    [project.imagesGroupId, project.videosGroupId],
+  );
+  const imageAssets = useProjectImagePickerAssets(
+    project.assets,
+    projectCabinets,
+  );
+
+  const pauseTimelinePlayback = useCallback(() => {
     if (!timelinePlaying) return;
     setTimelinePlaying(false);
     // Persist now so displayPlayheadSec (project playhead when paused) does not
     // jump backward. Engine layout pause may refine via onTimeUpdate afterward.
     setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
-  };
+  }, [timelinePlaying, setTimelinePlaying, setOpenProjectTimelinePlayheadSec]);
 
   // Persist playhead after the engine emits its final time on pause.
   useEffect(() => {
@@ -988,6 +1008,53 @@ export function EditorLayout() {
       clearPendingStagedDraft();
     }
   };
+
+  const onLibraryAssetGenerationStarted = useCallback((assetId: string) => {
+    pauseTimelinePlayback();
+    setOpenCompositionId(null);
+    setAddAssetSlotActive(false);
+    setAddAssetIntent(null);
+    setLibraryGenerateSeed(null);
+    setSelectedClipId(null);
+    setSelectedClipIds([]);
+    setClipStagingSeed(null);
+    setSelectedAssetIds([assetId]);
+    setSelectedAssetId(assetId);
+    setOpenProjectSelectedAssetId(assetId);
+  }, [pauseTimelinePlayback, setOpenProjectSelectedAssetId]);
+
+  useEffect(() => {
+    const onSelected = (event: Event) => {
+      const assetId = (
+        event as CustomEvent<{ assetId?: string }>
+      ).detail?.assetId?.trim();
+      if (!assetId) return;
+      onLibraryAssetGenerationStarted(assetId);
+    };
+    const onCompleted = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ placeholderId?: string; creationId?: string }>
+      ).detail;
+      const placeholderId = detail?.placeholderId?.trim();
+      const creationId = detail?.creationId?.trim();
+      if (!placeholderId || !creationId) return;
+      setSelectedAssetIds((ids) =>
+        ids.map((id) => (id === placeholderId ? creationId : id)),
+      );
+      setSelectedAssetId((current) =>
+        current === placeholderId ? creationId : current,
+      );
+    };
+    window.addEventListener("parascene-library-asset-selected", onSelected);
+    window.addEventListener("parascene-library-asset-completed", onCompleted);
+    return () => {
+      window.removeEventListener("parascene-library-asset-selected", onSelected);
+      window.removeEventListener(
+        "parascene-library-asset-completed",
+        onCompleted,
+      );
+    };
+  }, [onLibraryAssetGenerationStarted]);
 
   const selectAddAssetSlot = () => {
     pauseTimelinePlayback();
@@ -1754,19 +1821,42 @@ export function EditorLayout() {
       });
       return;
     }
+    const placeholders = project.libraryAssetPlaceholders ?? {};
+    const placeholderIds = libraryAssetPlaceholderIdsInList(
+      placeholders,
+      assetIds,
+    );
+    const creationIds = assetIds.filter((id) => !placeholders[id]);
     const count = assetIds.length;
+    const onlyPlaceholders =
+      placeholderIds.length > 0 && creationIds.length === 0;
     const ok = await confirm({
-      title: count === 1 ? "Remove from project?" : `Remove ${count} assets?`,
-      message:
-        count === 1
+      title: onlyPlaceholders
+        ? count === 1
+          ? "Discard failed generation?"
+          : `Discard ${count} generations?`
+        : count === 1
+          ? "Remove from project?"
+          : `Remove ${count} assets?`,
+      message: onlyPlaceholders
+        ? count === 1
+          ? "Removes this placeholder from Assets. Nothing was saved to the library."
+          : `Removes these ${count} placeholders from Assets. Nothing was saved to the library.`
+        : count === 1
           ? "Do you want to remove this asset from the project?"
           : `Do you want to remove these ${count} assets from the project?`,
-      confirmLabel: "Remove",
+      confirmLabel: onlyPlaceholders ? "Discard" : "Remove",
       cancelLabel: "Cancel",
+      danger: onlyPlaceholders,
     });
     if (!ok) return;
     try {
-      await removeCreationsFromOpenProject(assetIds);
+      for (const id of placeholderIds) {
+        clearLibraryAssetPlaceholder(id);
+      }
+      if (creationIds.length > 0) {
+        await removeCreationsFromOpenProject(creationIds);
+      }
       if (selectedAssetId && assetIds.includes(selectedAssetId)) {
         setSelectedAssetId(null);
         setSelectedAssetIds([]);
@@ -1780,6 +1870,35 @@ export function EditorLayout() {
         confirmLabel: "OK",
         hideCancel: true,
       });
+    }
+  };
+
+  const discardLibraryAssetPlaceholders = async (assetIds: string[]) => {
+    const placeholders = project.libraryAssetPlaceholders ?? {};
+    const ids = assetIds.filter((id) =>
+      isActiveLibraryAssetPlaceholder(placeholders[id]),
+    );
+    if (ids.length === 0) return;
+    const count = ids.length;
+    const ok = await confirm({
+      title:
+        count === 1 ? "Discard failed generation?" : `Discard ${count} generations?`,
+      message:
+        count === 1
+          ? "Removes this placeholder from Assets. Nothing was saved to the library."
+          : `Removes these ${count} placeholders from Assets. Nothing was saved to the library.`,
+      confirmLabel: "Discard",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+    for (const id of ids) {
+      clearLibraryAssetPlaceholder(id);
+    }
+    if (selectedAssetId && ids.includes(selectedAssetId)) {
+      setSelectedAssetId(null);
+      setSelectedAssetIds([]);
+      setOpenProjectSelectedAssetId(null);
     }
   };
 
@@ -1967,6 +2086,7 @@ export function EditorLayout() {
     });
   };
 
+
   // Source monitor: assets panel selection, or the selected clip's source asset.
   // Timeline monitor owns the pane when active (no source asset loaded).
   const clipDraftAssetId = clipStagingSeed?.draft.assetId?.trim() || null;
@@ -2125,7 +2245,7 @@ export function EditorLayout() {
       const server =
         normalizeGenerateServer(generation.server) ??
         normalizeGenerateServer(generation.provider) ??
-        "blue_direct";
+        "parascene_blue";
       pauseTimelinePlayback();
       setOpenCompositionId(null);
       setSelectedClipId(null);
@@ -2142,6 +2262,29 @@ export function EditorLayout() {
         model: generation.model?.trim() || undefined,
       });
       setAddAssetIntent(makeAddAssetIntent("text_to_image", server, "assets"));
+      setAddAssetSlotActive(true);
+      return;
+    }
+    if (isImageToImageGeneration(generation)) {
+      pauseTimelinePlayback();
+      setOpenCompositionId(null);
+      setSelectedClipId(null);
+      setSelectedClipIds([]);
+      setClipStagingSeed(null);
+      setSelectedAssetIds([]);
+      setSelectedAssetId(null);
+      setOpenProjectSelectedAssetId(null);
+      setOpenProjectSelectedTimelineClipId(null);
+      setOpenProjectTimelineMonitorActive(false);
+      clearPendingStagedDraft();
+      setLibraryGenerateSeed({
+        prompt: generation.prompt,
+        model: generation.model?.trim() || undefined,
+        startFrameAssetId: generation.startFrameAssetId?.trim() || undefined,
+      });
+      setAddAssetIntent(
+        makeAddAssetIntent("image_to_image", "parascene_blue", "assets"),
+      );
       setAddAssetSlotActive(true);
       return;
     }
@@ -2239,6 +2382,7 @@ export function EditorLayout() {
             Boolean(selectedAssetId || addAssetSlotActive)
           }
           aspectRatio={project.aspectRatio}
+          libraryAssetPlaceholders={project.libraryAssetPlaceholders ?? {}}
           addSlotSelected={addAssetSlotActive}
           onAddSlotSelect={selectAddAssetSlot}
           onDeleteAssets={(ids) => {
@@ -2246,6 +2390,9 @@ export function EditorLayout() {
           }}
           onRemoveAssets={(ids) => {
             void removeAssetsFromProject(ids);
+          }}
+          onDiscardLibraryAssetPlaceholders={(ids) => {
+            void discardLibraryAssetPlaceholders(ids);
           }}
           onDeleteFromGroup={(target) => {
             void deleteMembersFromProjectGroup(target);
@@ -2290,6 +2437,25 @@ export function EditorLayout() {
         addAssetIntent={addAssetIntent}
         onAddAssetIntentChange={setAddAssetIntent}
         libraryFormSeed={libraryGenerateSeed}
+        onLibraryAssetGenerationStarted={onLibraryAssetGenerationStarted}
+        onDiscardLibraryAssetPlaceholder={() => {
+          const id = selectedAssetId?.trim();
+          if (!id) return;
+          void discardLibraryAssetPlaceholders([id]);
+        }}
+        onRetryLibraryAssetPlaceholder={() => {
+          const id = selectedAssetId?.trim();
+          if (!id) return;
+          const placeholder = project.libraryAssetPlaceholders?.[id];
+          if (!placeholder) return;
+          retryLibraryAssetPlaceholder({
+            placeholder,
+            projectId: project.id,
+            projectTitle: project.title,
+            imagesGroupId: project.imagesGroupId,
+            videosGroupId: project.videosGroupId,
+          });
+        }}
         addAssetPlaceholderClip={generateTargetClip}
         addAssetGenerationSession={addAssetGenerationSession}
         lyricAlignment={project.lyricAlignment}
@@ -2366,7 +2532,7 @@ export function EditorLayout() {
           });
         }}
         onRetryAddAssetDownload={retryAddAssetDownload}
-        imageAssets={project.assets.filter((asset) => asset.kind === "image")}
+        imageAssets={imageAssets}
         selectedAssetIds={
           monitorMode === "source" && !clipStagingSeed
             ? selectedAssetIds

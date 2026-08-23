@@ -4,6 +4,7 @@ import {
   type AddAssetGenerationSession,
 } from "./addAssetGenerate";
 import type { GenerateDualPhase } from "./generateDualView";
+import { GenerationErrorStatus } from "./GenerationErrorAlert";
 
 type GenerateResultPaneProps = {
   phase: GenerateDualPhase;
@@ -11,12 +12,17 @@ type GenerateResultPaneProps = {
   generation?: AddAssetGeneration | null;
   /** When done and media is shown by the parent, keep this pane minimal. */
   mediaHostedByParent?: boolean;
-  onGenerateNew?: () => void;
   nowMs?: number;
   /** Library / lightweight progress when no timeline session exists. */
   progressNote?: string | null;
   startedAtMs?: number | null;
   expectedMs?: number;
+  /** Persisted library-placeholder steps (Assets generate). */
+  progressSteps?: Array<{
+    id: string;
+    label: string;
+    status: "pending" | "active" | "done";
+  }> | null;
   errorMessage?: string | null;
   doneMessage?: string | null;
   /** Finished still/video preview for Result (library generates). */
@@ -38,11 +44,11 @@ export function GenerateResultPane({
   session = null,
   generation = null,
   mediaHostedByParent = false,
-  onGenerateNew,
   nowMs,
   progressNote = null,
   startedAtMs = null,
   expectedMs = 60_000,
+  progressSteps = null,
   errorMessage = null,
   doneMessage = null,
   resultPreviewUrl = null,
@@ -82,6 +88,14 @@ export function GenerateResultPane({
               </li>
             ))}
           </ul>
+        ) : progressSteps?.length ? (
+          <ul className="generate-result-steps">
+            {progressSteps.map((step) => (
+              <li key={step.id} data-status={step.status}>
+                {step.label}
+              </li>
+            ))}
+          </ul>
         ) : null}
       </div>
     );
@@ -91,11 +105,27 @@ export function GenerateResultPane({
     const message =
       session?.errorMessage?.trim() ||
       errorMessage?.trim() ||
-      "Generation failed. Switch to Form to edit and try again.";
+      "Generation failed.";
     return (
-      <div className="generate-result-pane" role="alert">
-        <h3 className="generate-result-title">Generation error</h3>
-        <p className="add-asset-generate-error">{message}</p>
+      <div className="generate-result-pane generate-result-pane--error">
+        <GenerationErrorStatus message={message} />
+        {session?.steps?.length ? (
+          <ul className="generate-result-steps">
+            {session.steps.map((step) => (
+              <li key={step.id} data-status={step.status}>
+                {step.label}
+              </li>
+            ))}
+          </ul>
+        ) : progressSteps?.length ? (
+          <ul className="generate-result-steps">
+            {progressSteps.map((step) => (
+              <li key={step.id} data-status={step.status}>
+                {step.label}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     );
   }
@@ -136,11 +166,6 @@ export function GenerateResultPane({
           <p className="muted generate-result-note">{note}</p>
           {generation?.prompt.trim() && !previewUrl ? (
             <p className="generate-result-prompt">{generation.prompt.trim()}</p>
-          ) : null}
-          {onGenerateNew ? (
-            <button type="button" className="btn" onClick={onGenerateNew}>
-              Generate new
-            </button>
           ) : null}
         </div>
       </div>

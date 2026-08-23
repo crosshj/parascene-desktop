@@ -34,7 +34,17 @@ export type ConfirmOptions = {
 
 type ConfirmFn = (options: ConfirmOptions) => Promise<boolean>;
 
-const ConfirmContext = createContext<ConfirmFn | null>(null);
+const CONFIRM_CONTEXT_KEY = "__parasceneConfirmContext";
+
+type ConfirmContextGlobal = typeof globalThis & {
+  [CONFIRM_CONTEXT_KEY]?: ReturnType<typeof createContext<ConfirmFn | null>>;
+};
+
+/** Survive Vite HMR so Provider and useConfirm keep the same Context identity. */
+const ConfirmContext =
+  (globalThis as ConfirmContextGlobal)[CONFIRM_CONTEXT_KEY] ??
+  createContext<ConfirmFn | null>(null);
+(globalThis as ConfirmContextGlobal)[CONFIRM_CONTEXT_KEY] = ConfirmContext;
 
 type Pending = ConfirmOptions & {
   resolve: (value: boolean) => void;

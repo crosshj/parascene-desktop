@@ -3,6 +3,7 @@ import {
   createParasceneSdk,
   absolutizeAssetUrl,
   deriveFitThumbnailUrl,
+  formatParasceneCreationFailure,
   isAccessTokenExpiredOrNear,
   LibraryFoldersConflictError,
   LibraryFoldersUnavailableError,
@@ -270,6 +271,35 @@ describe("ParasceneSdk", () => {
     await expect(sdk.getLibraryFolders()).rejects.toBeInstanceOf(
       LibraryFoldersUnavailableError,
     );
+  });
+});
+
+describe("formatParasceneCreationFailure", () => {
+  it("surfaces provider errors and local-only input hints", () => {
+    const message = formatParasceneCreationFailure(
+      {
+        id: 25752,
+        status: "failed",
+        meta: {
+          error: "fetch failed",
+          error_code: "provider_error",
+          provider_error: {
+            status: 500,
+            body: { error: "fetch failed" },
+          },
+          args: {
+            input_images: [
+              "asset://localhost/Users/me/Library/25658.png",
+            ],
+          },
+        },
+      },
+      "Image-to-image",
+    );
+    expect(message).toContain("fetch failed");
+    expect(message).toContain("provider_error");
+    expect(message).toContain("local-only");
+    expect(message).toContain("(creation 25752)");
   });
 });
 

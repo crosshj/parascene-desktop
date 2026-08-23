@@ -287,7 +287,7 @@ export function makeTextToImageGeneration(opts: {
   prompt: string;
   creationId: string;
   model: string;
-  server: "blue_direct" | "replicate";
+  server: "blue_direct" | "replicate" | "parascene_blue";
 }): AddAssetGeneration {
   const server = opts.server;
   return {
@@ -303,6 +303,28 @@ export function makeTextToImageGeneration(opts: {
   };
 }
 
+/** Provenance stamp for library Image → Image generates. */
+export function makeImageToImageGeneration(opts: {
+  prompt: string;
+  creationId: string;
+  model: string;
+  server: "parascene_blue";
+  sourceCreationId: string;
+}): AddAssetGeneration {
+  return {
+    prompt: opts.prompt.trim(),
+    generatedAt: new Date().toISOString(),
+    creationId: opts.creationId.trim(),
+    mode: "start_frame",
+    model: opts.model.trim(),
+    intentId: "image_to_image",
+    server: opts.server,
+    provider: opts.server,
+    methodId: "image_to_image",
+    startFrameAssetId: opts.sourceCreationId.trim(),
+  };
+}
+
 export function isTextToImageGeneration(
   generation: AddAssetGeneration | null | undefined,
 ): boolean {
@@ -310,5 +332,15 @@ export function isTextToImageGeneration(
   if (generation.intentId === "text_to_image") return true;
   if (generation.methodId === "text_to_image") return true;
   if (generation.methodId === "replicate_text_to_image") return true;
+  return false;
+}
+
+export function isImageToImageGeneration(
+  generation: AddAssetGeneration | null | undefined,
+): boolean {
+  if (!generation) return false;
+  if (generation.intentId === "image_to_image") return true;
+  if (generation.methodId === "image_to_image") return true;
+  if (generation.methodId === "replicate_image_to_image") return true;
   return false;
 }

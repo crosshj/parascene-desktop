@@ -599,6 +599,11 @@ export type Project = {
    * is selected. Opaque JSON — normalized by the editor staging helpers.
    */
   pendingStagedDraft?: unknown | null;
+  /** Generate → Assets placeholders keyed by provisional asset id. */
+  libraryAssetPlaceholders?: Record<
+    string,
+    import("./libraryAssetPlaceholder").LibraryAssetPlaceholder
+  >;
   /** Timeline zoom multiplier (0.5–3). */
   timelineZoom: number;
   /** Preview follows the timeline (program monitor). */

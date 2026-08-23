@@ -11,6 +11,7 @@ import { LabLayout } from "./layouts/lab/LabLayout";
 import { LibraryView } from "./library/LibraryView";
 import { ProjectWelcome } from "./project/ProjectWelcome";
 import { AppErrorBoundary } from "./ui/AppErrorBoundary";
+import { Wordmark } from "./ui/Wordmark";
 import "./styles.css";
 
 function LayoutRouter() {
@@ -69,7 +70,10 @@ function Root() {
   if (status === "reconnecting") {
     return (
       <div className="login-screen">
-        <p className="muted">Starting…</p>
+        <div className="login-card">
+          <Wordmark />
+          <p className="login-copy">Starting Parascene…</p>
+        </div>
       </div>
     );
   }

@@ -1007,4 +1007,24 @@ describe("stagedClip", () => {
       continuityMode: "none",
     });
   });
+
+  it("keeps library image-to-image drafts on still models, not Blue video models", () => {
+    const draft = addAssetDraftFromGeneration({
+      prompt: "make it blue",
+      generatedAt: "2026-08-07T00:00:00.000Z",
+      creationId: "out-1",
+      mode: "start_frame",
+      model: "grok-imagine",
+      provider: "parascene_blue",
+      intentId: "image_to_image",
+      methodId: "image_to_image",
+      startFrameAssetId: "src-1",
+    });
+    expect(draft).toMatchObject({
+      intentId: "image_to_image",
+      replicateModel: "grok-imagine",
+      startFrameAssetId: "src-1",
+    });
+    expect(draft.blueModel).toBeUndefined();
+  });
 });

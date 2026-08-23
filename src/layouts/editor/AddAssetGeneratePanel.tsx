@@ -1,3 +1,9 @@
+import {
+  CloneButton,
+  DiscardButton,
+  GenerateTargetButton,
+  TryAgainButton,
+} from "./AddAssetIntentFooter";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
 import { getCreations } from "../../library/catalogClient";
@@ -75,6 +81,7 @@ import {
   pickCompatibleBlueModel,
   type BlueVideoModelOption,
 } from "./blueVideoModels";
+import { parasceneVideoModelsForIntent } from "./parasceneProductCaps";
 import { resolveMotionReferenceVideoPath } from "./addAssetReplicateGenerate";
 import {
   discoverReplicateTweakFields,
@@ -131,6 +138,11 @@ type AddAssetGeneratePanelProps = {
   formLocked?: boolean;
   /** Replaces Generate when the form is locked for review. */
   onGenerateNew?: () => void;
+  /** Dual-view failure recovery in the footer while the form stays visible. */
+  errorRecovery?: {
+    onDiscard?: () => void;
+    onRetry?: () => void;
+  };
 };
 
 type PanelPhase = "form" | "running" | "error";
@@ -269,51 +281,51 @@ function isBlueDirectTimelineFill(clip: TimelineClip): boolean {
 }
 
 function GenerateActions({
-  onRefresh,
   onGenerate,
   onGenerateNew,
-  refreshDisabled,
   generateDisabled,
   formLocked,
+  errorRecovery,
 }: {
-  onRefresh: () => void;
   onGenerate: () => void;
   onGenerateNew?: () => void;
-  refreshDisabled: boolean;
   generateDisabled: boolean;
   formLocked?: boolean;
+  errorRecovery?: {
+    onDiscard?: () => void;
+    onRetry?: () => void;
+  };
 }) {
+  if (
+    formLocked &&
+    errorRecovery &&
+    (errorRecovery.onDiscard || errorRecovery.onRetry)
+  ) {
+    return (
+      <div className="add-asset-generate-footer preview-intent-footer">
+        {errorRecovery.onRetry ? (
+          <TryAgainButton onClick={errorRecovery.onRetry} />
+        ) : null}
+        {errorRecovery.onDiscard ? (
+          <DiscardButton onClick={errorRecovery.onDiscard} />
+        ) : null}
+      </div>
+    );
+  }
   if (formLocked && onGenerateNew) {
     return (
-      <div className="add-asset-generate-footer">
-        <button
-          type="button"
-          className="btn btn-primary editor-add-asset-generate"
-          onClick={onGenerateNew}
-        >
-          Generate new
-        </button>
+      <div className="add-asset-generate-footer preview-intent-footer">
+        <CloneButton onClick={onGenerateNew} />
       </div>
     );
   }
   return (
-    <div className="add-asset-generate-footer">
-      <button
-        type="button"
-        className="btn ghost"
-        onClick={onRefresh}
-        disabled={refreshDisabled || formLocked}
-      >
-        Refresh
-      </button>
-      <button
-        type="button"
-        className="btn btn-primary editor-add-asset-generate"
+    <div className="add-asset-generate-footer preview-intent-footer">
+      <GenerateTargetButton
+        target="Video"
         disabled={generateDisabled || formLocked}
         onClick={onGenerate}
-      >
-        Generate video
-      </button>
+      />
     </div>
   );
 }
@@ -462,6 +474,7 @@ export function AddAssetGeneratePanel({
   progressHostedExternally = false,
   formLocked = false,
   onGenerateNew,
+  errorRecovery,
 }: AddAssetGeneratePanelProps) {
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
   const [pullEpoch, setPullEpoch] = useState(0);
@@ -694,7 +707,26 @@ export function AddAssetGeneratePanel({
     audioMode: isReplicate ? "none" : tentativeAudioMode,
   });
 
+  const isParasceneProductAdvanced =
+    !isReplicate &&
+    !isBlueDirect &&
+    (currentIntentId === "video_to_video" ||
+      currentIntentId === "reference_to_video");
+
+  const parasceneCapsModels = useMemo((): BlueVideoModelOption[] => {
+    if (!isParasceneProductAdvanced) return [];
+    return parasceneVideoModelsForIntent(currentIntentId).map((m) => ({
+      id: m.id,
+      label: m.label,
+      method: m.method as BlueVideoModelOption["method"],
+      flf: m.flf,
+      nativeAudio: m.nativeAudio,
+      hint: m.hint,
+    }));
+  }, [isParasceneProductAdvanced, currentIntentId]);
+
   const compatibleBlueModels = useMemo(() => {
+    if (isParasceneProductAdvanced) return parasceneCapsModels;
     if (isReplicate || !blueModels) return [];
     return filterBlueVideoModels({
       models: blueModels,
@@ -703,6 +735,8 @@ export function AddAssetGeneratePanel({
       blueDirect: isBlueDirect,
     });
   }, [
+    isParasceneProductAdvanced,
+    parasceneCapsModels,
     isReplicate,
     blueModels,
     blueMethod,
@@ -712,6 +746,16 @@ export function AddAssetGeneratePanel({
 
   const resolvedBlueModel: string = (() => {
     if (isReplicate) return "ltx_i2v";
+    if (isParasceneProductAdvanced && parasceneCapsModels.length > 0) {
+      const preferred =
+        blueModel?.trim() ||
+        clip.addAssetDraft?.blueModel?.trim() ||
+        clip.addAssetGeneration?.model?.trim();
+      if (preferred && parasceneCapsModels.some((m) => m.id === preferred)) {
+        return preferred;
+      }
+      return parasceneCapsModels[0]?.id ?? preferred ?? "wan_animate";
+    }
     if (!blueModels?.length) {
       return (
         blueModel?.trim() ||
@@ -1175,12 +1219,6 @@ export function AddAssetGeneratePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
   }, [framesKey, aspectRatio, fieldsInteractive, formLocked, stampedFramesReady]);
 
-  const handleRefresh = () => {
-    if (!fieldsInteractive || framesLoading) return;
-    setLoadedFrames(null);
-    setPullEpoch((epoch) => epoch + 1);
-  };
-
   const bumpFrames = () => {
     setLoadedFrames(null);
     setPullEpoch((epoch) => epoch + 1);
@@ -1266,6 +1304,39 @@ export function AddAssetGeneratePanel({
       );
       const clipWithDuration = withAddAssetDuration(clip, timing.durationSec);
 
+      if (isParasceneProductAdvanced) {
+        const freshStart = await resolveStartFrameForAddAsset(
+          timeline,
+          clip,
+          aspectRatio,
+          {
+            firstFrameSource,
+            startFrameAssetId,
+          },
+        );
+        if (!startFrameIsReady(freshStart)) {
+          abortGenerate(
+            "missing_source_media",
+            currentIntentId === "video_to_video"
+              ? "Choose a source video (timeline neighbor or Assets video)."
+              : "Choose at least one reference image from Assets.",
+          );
+          return;
+        }
+        onStartGeneration({
+          clip: clipWithDuration,
+          prompt,
+          lyricsText,
+          audioMode: "none",
+          continuityMode: "start_frame",
+          blueModel: resolvedBlueModel,
+          songRange: timing.songRange,
+          startFrame: freshStart,
+          endFrame: null,
+        });
+        return;
+      }
+
       if (isReplicate) {
         if (!selectedReplicateModel || !replicateValidation?.ok) {
           abortGenerate(
@@ -1323,7 +1394,7 @@ export function AddAssetGeneratePanel({
           ) {
             abortGenerate(
               "missing_bridge_frames",
-              "Could not resolve first/last frame stills. Choose timeline neighbors or Assets images, ensure they are available, then Refresh.",
+              "Could not resolve first/last frame stills. Choose timeline neighbors or Assets images and ensure they are available.",
             );
             return;
           }
@@ -1398,8 +1469,8 @@ export function AddAssetGeneratePanel({
           abortGenerate(
             "missing_start_frame",
             startFrameAssetId
-              ? "Could not resolve the selected image on Parascene. Sync the asset, then Refresh."
-              : "Could not resolve a local start-frame still from the previous clip. Download the clip, use an image or video prior, then Refresh.",
+              ? "Could not resolve the selected image on Parascene. Sync the asset, then try Generate again."
+              : "Could not resolve a local start-frame still from the previous clip. Download the clip, use an image or video prior, then try Generate again.",
           );
           return;
         }
@@ -1478,7 +1549,7 @@ export function AddAssetGeneratePanel({
         ) {
           abortGenerate(
             "missing_bridge_frames",
-            "Could not resolve first/last frame stills for generation. Choose timeline neighbors or Assets images, then Refresh.",
+            "Could not resolve first/last frame stills for generation. Choose timeline neighbors or Assets images and ensure they are available.",
           );
           return;
         }
@@ -1510,7 +1581,7 @@ export function AddAssetGeneratePanel({
         abortGenerate(
           "missing_start_frame",
           startFrameAssetId
-            ? "Could not resolve the selected image on Parascene. Sync the asset, then Refresh."
+            ? "Could not resolve the selected image on Parascene. Sync the asset, then try Generate again."
             : "Could not resolve a local start-frame still from the previous clip.",
         );
         return;
@@ -1534,7 +1605,9 @@ export function AddAssetGeneratePanel({
     fieldsInteractive &&
     Boolean(prompt.trim()) &&
     (!isBlueDirect || blueConfigured !== false) &&
-    (resolvedContinuityMode === "none"
+    (isParasceneProductAdvanced
+      ? Boolean(resolvedBlueModel) && !framesLoading && startFrameIsReady(startFrame)
+      : resolvedContinuityMode === "none"
       ? currentIntentId === "text_to_video"
       : !framesLoading &&
         (resolvedContinuityMode === "first_last"
@@ -1704,52 +1777,6 @@ export function AddAssetGeneratePanel({
           embedded ? "add-asset-generate-embedded-body" : "add-asset-generate-body"
         }
       >
-        {progressHostedExternally &&
-        phase === "error" &&
-        (activeSession || draftError) ? (
-          <section className="add-asset-generate-section" role="alert">
-            <p className="add-asset-generate-error">
-              {activeSession?.errorMessage ?? draftError}
-            </p>
-            {(() => {
-              const errorText =
-                activeSession?.errorMessage ?? draftError ?? "";
-              const canRetryDownload =
-                Boolean(clip.addAssetDraft?.replicatePredictionId?.trim()) ||
-                isDownloadRetryableError(errorText);
-              return (
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "0.5rem",
-                    marginTop: "0.5rem",
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => {
-                      if (canRetryDownload) onRetryDownload?.();
-                      else onClearError?.();
-                    }}
-                  >
-                    {canRetryDownload ? "Retry download" : "Try again"}
-                  </button>
-                  {canRetryDownload ? (
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => onClearError?.()}
-                    >
-                      Edit & regenerate
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })()}
-          </section>
-        ) : null}
         {isBlueDirect ? (
           <section className="add-asset-generate-section">
             <div className="add-asset-generate-callout" role="note">
@@ -2473,12 +2500,11 @@ export function AddAssetGeneratePanel({
       </div>
 
       <GenerateActions
-        onRefresh={handleRefresh}
         onGenerate={handleGenerate}
         onGenerateNew={onGenerateNew}
-        refreshDisabled={framesLoading || !fieldsInteractive}
         generateDisabled={!canGenerate}
         formLocked={formLocked}
+        errorRecovery={errorRecovery}
       />
 
       {framePickerSlot && fieldsInteractive ? (

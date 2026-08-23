@@ -25,6 +25,7 @@ import CompositionCard from "../../library/CompositionCard";
 import type { LibraryFolder } from "../../library/folderClient";
 import {
   canFetchLocal,
+  creationDetailUrl,
   creationPreviewUrl,
 } from "../../library/previewUrl";
 import type { Creation, MediaType } from "../../library/types";
@@ -36,6 +37,8 @@ import {
   projectAspectCss,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
+import type { LibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
+import { isActiveLibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
 import type { ProjectAsset } from "../../project/types";
 import {
   compositionInternalCreationIds,
@@ -43,7 +46,6 @@ import {
   type StillWorkstream,
 } from "../../project/stillWorkstream";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
-
 export type AssetKindFilter = "all" | MediaType;
 
 const FILTERS: { id: AssetKindFilter; label: string }[] = [
@@ -72,11 +74,14 @@ type AssetBrowserPaneProps = {
   previewActive?: boolean;
   /** Project creative frame — used for the add-asset slot card. */
   aspectRatio: ProjectAspectRatio;
+  /** In-flight Generate → Assets placeholders keyed by asset id. */
+  libraryAssetPlaceholders?: Record<string, LibraryAssetPlaceholder>;
   /** True when the add-asset slot owns the preview. */
   addSlotSelected?: boolean;
   onAddSlotSelect?: () => void;
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
+  onDiscardLibraryAssetPlaceholders?: (ids: string[]) => void;
   onDeleteFromGroup?: (opts: {
     groupId: string;
     kind: "images" | "videos";
@@ -173,6 +178,67 @@ function AddAssetSlotCard({
   );
 }
 
+/** Generating library asset — project aspect outline while media is pending. */
+function PlaceholderAssetTile({
+  placeholder,
+  previewCreation = null,
+  selected,
+  onSelect,
+  onContextMenu,
+}: {
+  placeholder: LibraryAssetPlaceholder;
+  previewCreation?: Creation | null;
+  selected: boolean;
+  onSelect: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+}) {
+  const label =
+    placeholder.addAssetDraft.prompt?.trim().slice(0, 48) || "Generating…";
+  const previewUrl = previewCreation
+    ? (creationPreviewUrl(previewCreation) ?? creationDetailUrl(previewCreation))
+    : null;
+  const generating =
+    placeholder.status === "generating" && !previewUrl;
+  return (
+    <div className="editor-add-asset-card">
+      <button
+        type="button"
+        className={
+          selected
+            ? "editor-add-asset-card-hit is-selected"
+            : "editor-add-asset-card-hit"
+        }
+        onClick={onSelect}
+        onContextMenu={onContextMenu}
+        title={label}
+        aria-label={label}
+      >
+        <span
+          className={
+            generating
+              ? "editor-add-asset-card-clip is-generating"
+              : "editor-add-asset-card-clip"
+          }
+          style={{ aspectRatio: projectAspectCss(placeholder.aspectRatio) }}
+          aria-hidden
+        >
+          {previewUrl ? (
+            <img
+              className="editor-add-asset-card-thumb"
+              src={previewUrl}
+              alt=""
+            />
+          ) : (
+            <span className="editor-add-asset-card-generating-label">
+              {placeholder.status === "error" ? "Error" : "Generating…"}
+            </span>
+          )}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 /** Fallback when the id is not in the local catalog yet. */
 function StubAssetTile({
   asset,
@@ -226,10 +292,12 @@ export function AssetBrowserPane({
   drawer = false,
   previewActive = false,
   aspectRatio,
+  libraryAssetPlaceholders = {},
   addSlotSelected = false,
   onAddSlotSelect,
   onDeleteAssets,
   onRemoveAssets,
+  onDiscardLibraryAssetPlaceholders,
   onDeleteFromGroup,
   timelineUsedAssetIds,
   compositions = [],
@@ -245,6 +313,8 @@ export function AssetBrowserPane({
   const [contextMenu, setContextMenu] = useState<AssetContextMenu | null>(null);
   const [folderViewId, setFolderViewId] = useState<string | null>(null);
   const selectionAnchorRef = useRef<string | null>(null);
+  const assetScrollRef = useRef<HTMLDivElement>(null);
+  const lastScrolledAssetIdRef = useRef<string | null>(null);
 
   const projectCabinets = useMemo<ProjectCabinetIds>(
     () => ({ imagesGroupId, videosGroupId }),
@@ -316,10 +386,24 @@ export function AssetBrowserPane({
     return ids;
   }, [compositions, outsideIdSet, rootAssets]);
 
+  const placeholderPendingIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const placeholder of Object.values(libraryAssetPlaceholders)) {
+      const pending =
+        placeholder.addAssetDraft.generationJob?.pendingCreationId?.trim();
+      if (pending && !ids.includes(pending)) ids.push(pending);
+    }
+    return ids;
+  }, [libraryAssetPlaceholders]);
+
   const assetIdsKey = useMemo(
     () =>
-      [...rootAssets.map((a) => a.id), ...extraOutsideIds].join("\0"),
-    [extraOutsideIds, rootAssets],
+      [
+        ...rootAssets.map((a) => a.id),
+        ...extraOutsideIds,
+        ...placeholderPendingIds,
+      ].join("\0"),
+    [extraOutsideIds, placeholderPendingIds, rootAssets],
   );
 
   useEffect(() => {
@@ -499,6 +583,32 @@ export function AssetBrowserPane({
     return true;
   });
 
+  const selectedAssetVisibleKey = useMemo(() => {
+    const id = selectedId?.trim();
+    if (!id) return null;
+    const inGrid =
+      visible.some((asset) => asset.id === id) ||
+      visibleOutsideIds.includes(id);
+    return inGrid ? id : `pending:${id}`;
+  }, [selectedId, visible, visibleOutsideIds]);
+
+  useEffect(() => {
+    const key = selectedAssetVisibleKey;
+    if (!key || key.startsWith("pending:") || key === lastScrolledAssetIdRef.current) {
+      return;
+    }
+    lastScrolledAssetIdRef.current = key;
+    const frame = requestAnimationFrame(() => {
+      const root = assetScrollRef.current;
+      if (!root) return;
+      const tile = root.querySelector<HTMLElement>(
+        `[data-asset-id="${CSS.escape(key)}"]`,
+      );
+      tile?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selectedAssetVisibleKey]);
+
   const visibleFolders = useMemo(() => {
     if (folderView || folders.length === 0) return [];
     if (filter === "all") return folders;
@@ -608,6 +718,20 @@ export function AssetBrowserPane({
     contextMenu?.kind === "assets" &&
     contextMenu.assetIds.some((id) => groupMembershipByMemberId.has(id));
 
+  const contextMenuDiscardablePlaceholderIds = useMemo(() => {
+    if (contextMenu?.kind !== "assets") return [];
+    return contextMenu.assetIds.filter((id) =>
+      isActiveLibraryAssetPlaceholder(libraryAssetPlaceholders[id]),
+    );
+  }, [contextMenu, libraryAssetPlaceholders]);
+
+  const contextMenuRemovableAssetIds = useMemo(() => {
+    if (contextMenu?.kind !== "assets") return [];
+    return contextMenu.assetIds.filter(
+      (id) => !isActiveLibraryAssetPlaceholder(libraryAssetPlaceholders[id]),
+    );
+  }, [contextMenu, libraryAssetPlaceholders]);
+
   const openContextMenu = (
     assetId: string,
     event: ReactMouseEvent,
@@ -616,6 +740,7 @@ export function AssetBrowserPane({
     if (
       !onDeleteAssets &&
       !onRemoveAssets &&
+      !onDiscardLibraryAssetPlaceholders &&
       !(onDeleteFromGroup && isGroupMember)
     ) {
       return;
@@ -758,7 +883,7 @@ export function AssetBrowserPane({
         ))}
       </div>
 
-      <div className="editor-asset-scroll">
+      <div className="editor-asset-scroll" ref={assetScrollRef}>
         {visible.length === 0 &&
         visibleOutsideIds.length === 0 &&
         !showRootFolders &&
@@ -826,10 +951,26 @@ export function AssetBrowserPane({
               : null}
             {visible.map((asset) => {
               const creation = creationsById[asset.id];
+              const placeholder = libraryAssetPlaceholders[asset.id] ?? null;
+              const pendingCreationId =
+                placeholder?.addAssetDraft.generationJob?.pendingCreationId?.trim();
+              const pendingCreation = pendingCreationId
+                ? creationsById[pendingCreationId]
+                : null;
               const selected = selectedIds.includes(asset.id);
               return (
-                <li key={asset.id}>
-                  {creation ? (
+                <li key={asset.id} data-asset-id={asset.id}>
+                  {placeholder && placeholder.status !== "done" ? (
+                    <PlaceholderAssetTile
+                      placeholder={placeholder}
+                      previewCreation={pendingCreation}
+                      selected={selected}
+                      onSelect={(event) => selectAsset(asset.id, event)}
+                      onContextMenu={(event) =>
+                        openContextMenu(asset.id, event)
+                      }
+                    />
+                  ) : creation ? (
                     <CreationCard
                       creation={creation}
                       aspectCss={creationAspectCss(creation)}
@@ -860,7 +1001,7 @@ export function AssetBrowserPane({
               const creation = creationsById[id];
               const selected = selectedIds.includes(id);
               return (
-                <li key={`outside:${id}`}>
+                <li key={`outside:${id}`} data-asset-id={id}>
                   {creation ? (
                     <CreationCard
                       creation={creation}
@@ -967,19 +1108,42 @@ export function AssetBrowserPane({
                 </button>
               ) : null}
               {contextMenu.kind === "assets" &&
+              onDiscardLibraryAssetPlaceholders &&
+              contextMenuDiscardablePlaceholderIds.length > 0 ? (
+                <button
+                  type="button"
+                  className="editor-asset-context-item is-danger"
+                  role="menuitem"
+                  onClick={() => {
+                    const ids = contextMenuDiscardablePlaceholderIds;
+                    setContextMenu(null);
+                    onDiscardLibraryAssetPlaceholders(ids);
+                  }}
+                >
+                  Discard
+                  {contextMenuDiscardablePlaceholderIds.length > 1
+                    ? ` (${contextMenuDiscardablePlaceholderIds.length})`
+                    : ""}
+                </button>
+              ) : null}
+              {contextMenu.kind === "assets" &&
               onRemoveAssets &&
-              !contextMenuHasGroupMembers ? (
+              !contextMenuHasGroupMembers &&
+              contextMenuRemovableAssetIds.length > 0 ? (
                 <button
                   type="button"
                   className="editor-asset-context-item"
                   role="menuitem"
                   onClick={() => {
-                    const ids = contextMenu.assetIds;
+                    const ids = contextMenuRemovableAssetIds;
                     setContextMenu(null);
                     onRemoveAssets(ids);
                   }}
                 >
-                  Remove{contextMenu.assetIds.length > 1 ? ` (${contextMenu.assetIds.length})` : ""}
+                  Remove
+                  {contextMenuRemovableAssetIds.length > 1
+                    ? ` (${contextMenuRemovableAssetIds.length})`
+                    : ""}
                 </button>
               ) : null}
               {contextMenu.kind === "assets" &&

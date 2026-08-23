@@ -3,6 +3,9 @@ import type { Creation, CreationUpsert } from "../library/types";
 import {
   addAssetGenerationFromCreation,
   creationUpsertWithAddAssetGeneration,
+  isImageToImageGeneration,
+  isTextToImageGeneration,
+  makeImageToImageGeneration,
   mergeAddAssetGenerationIntoRemoteJson,
   preserveDesktopAddAssetGeneration,
 } from "./desktopAddAssetGeneration";
@@ -109,5 +112,17 @@ describe("desktopAddAssetGeneration", () => {
     expect(parsed.meta.desktop.addAssetGeneration).toMatchObject({
       prompt: "creature walks",
     });
+  });
+
+  it("detects image-to-image library generations", () => {
+    const i2i = makeImageToImageGeneration({
+      prompt: "blue sky",
+      creationId: "out-1",
+      model: "grok-imagine",
+      server: "parascene_blue",
+      sourceCreationId: "src-1",
+    });
+    expect(isImageToImageGeneration(i2i)).toBe(true);
+    expect(isTextToImageGeneration(i2i)).toBe(false);
   });
 });

@@ -197,11 +197,11 @@ export const GENERATE_SERVERS: readonly GenerateServerDef[] = [
 
 /** Intent × server matrix for this ship. */
 export const INTENT_SERVER_CAPABILITIES: readonly IntentServerCapability[] = [
-  { intentId: "text_to_image", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "text_to_image", server: "parascene_blue", status: "wired" },
   { intentId: "text_to_image", server: "blue_direct", status: "wired" },
   { intentId: "text_to_image", server: "replicate", status: "wired" },
 
-  { intentId: "image_to_image", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "image_to_image", server: "parascene_blue", status: "wired" },
   { intentId: "image_to_image", server: "blue_direct", status: "coming_soon" },
   { intentId: "image_to_image", server: "replicate", status: "coming_soon" },
 
@@ -225,7 +225,7 @@ export const INTENT_SERVER_CAPABILITIES: readonly IntentServerCapability[] = [
     status: "coming_soon",
   },
 
-  { intentId: "video_to_video", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "video_to_video", server: "parascene_blue", status: "wired" },
   { intentId: "video_to_video", server: "blue_direct", status: "coming_soon" },
   { intentId: "video_to_video", server: "replicate", status: "coming_soon" },
 
@@ -519,6 +519,9 @@ export function continuityModeForIntent(
 ): "none" | "start_frame" | "first_last" | "motion_match" {
   if (intentId === "text_to_video") return "none";
   if (intentId === "image_audio_to_video") return "start_frame";
+  if (intentId === "video_to_video" || intentId === "reference_to_video") {
+    return "start_frame";
+  }
   if (intentId === "image_to_video") {
     if (existing === "first_last" || existing === "motion_match") {
       return existing;
@@ -564,8 +567,13 @@ export function addAssetIntentAllowsLibraryGeneration(
   if (!resolved?.intentId) return false;
   if (!isIntentServerWired(resolved.intentId, resolved.server)) return false;
   if (!intentOffersAssetsDestination(resolved.intentId)) return false;
-  // Only T2I is wired for Assets generate today.
-  return resolved.intentId === "text_to_image";
+  if (
+    resolved.intentId === "text_to_image" ||
+    resolved.intentId === "image_to_image"
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function findSelectionIntentMode(

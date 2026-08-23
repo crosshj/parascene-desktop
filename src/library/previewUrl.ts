@@ -203,3 +203,30 @@ export function creationDetailUrl(c: Creation): string | null {
   }
   return null;
 }
+
+function isPublicHttpUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (/^asset:\/\//i.test(trimmed)) return false;
+  return /^https?:\/\//i.test(trimmed);
+}
+
+/** Public Parascene/cloud URL for generation API inputs — never local asset:// previews. */
+export function parascenePublicImageUrl(c: Creation): string | null {
+  const mediaType = String(c.mediaType ?? "")
+    .trim()
+    .toLowerCase();
+  if (mediaType !== "image") return null;
+  const remote = c.remoteUrl?.trim();
+  if (remote && isPublicHttpUrl(remote)) return remote;
+  if (c.remoteJson) {
+    try {
+      const raw = JSON.parse(c.remoteJson) as { url?: string | null };
+      const url = raw.url?.trim();
+      if (url && isPublicHttpUrl(url)) return url;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}

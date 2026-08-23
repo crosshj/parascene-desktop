@@ -264,6 +264,9 @@ export function CreationsSidebar({
   onNewProject,
   onNewFolder,
   onAddToFolder,
+  onAddToGroup,
+  addToGroupLabel,
+  addToGroupTitle,
   onRemoveFromFolder,
   onDeleteFolders,
   onClearSelection,
@@ -284,6 +287,9 @@ export function CreationsSidebar({
   onNewProject?: () => void;
   onNewFolder?: () => void;
   onAddToFolder?: () => void;
+  onAddToGroup?: () => void;
+  addToGroupLabel?: string | null;
+  addToGroupTitle?: string | null;
   onRemoveFromFolder?: () => void;
   onDeleteFolders?: () => void;
   onClearSelection?: () => void;
@@ -396,6 +402,16 @@ export function CreationsSidebar({
                   onClick={onAddToFolder}
                 >
                   Add to folder…
+                </button>
+              ) : null}
+              {onAddToGroup && addToGroupLabel ? (
+                <button
+                  type="button"
+                  className="creations-sidebar-action-btn"
+                  onClick={onAddToGroup}
+                  title={addToGroupTitle ?? undefined}
+                >
+                  {addToGroupLabel}
                 </button>
               ) : null}
               {inFolderView ? (

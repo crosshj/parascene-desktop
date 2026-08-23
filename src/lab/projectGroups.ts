@@ -893,6 +893,69 @@ export async function fileCreationIntoProjectGroup(opts: {
   };
 }
 
+/** Append loose assets to an existing project Images/Videos cabinet. */
+export async function addMembersToProjectGroup(opts: {
+  projectId: string;
+  projectTitle: string;
+  kind: ProjectGroupKind;
+  groupId: string;
+  memberIds: string[];
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  onProgress?: (note: string) => void;
+}): Promise<{
+  groupId: string;
+  message: string;
+  projectCreationIds: string[];
+  addedMemberIds: string[];
+}> {
+  const memberIds = [
+    ...new Set(opts.memberIds.map((id) => id.trim()).filter(Boolean)),
+  ];
+  if (memberIds.length === 0) {
+    throw new Error("Choose at least one asset to add to the group.");
+  }
+  const onProgress = opts.onProgress ?? (() => {});
+  const sdk = createAuthedSdk();
+  const existing = await resolveProjectCabinetId({
+    sdk,
+    kind: opts.kind,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    storedGroupId: opts.groupId,
+  });
+  if (!existing) {
+    throw new Error("Project group cover is missing — repair cabinets first.");
+  }
+  onProgress(
+    `Adding ${memberIds.length} file(s) to the ${
+      opts.kind === "images" ? "Images" : "Videos"
+    } group…`,
+  );
+  const groupId = await groupMembers({
+    sdk,
+    kind: opts.kind,
+    existingGroupId: existing,
+    memberIds,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+  });
+  await addProjectAssets(opts.projectId, [groupId]);
+  onProgress("Updating project folder…");
+  await collapseCabinetMembersFromProjectFolder({
+    projectId: opts.projectId,
+    imagesGroupId: opts.kind === "images" ? groupId : opts.imagesGroupId,
+    videosGroupId: opts.kind === "videos" ? groupId : opts.videosGroupId,
+    onProgress,
+  });
+  return {
+    groupId,
+    addedMemberIds: memberIds,
+    message: `Added ${memberIds.length} file(s) to ${opts.kind} group ${groupId}.`,
+    projectCreationIds: [groupId],
+  };
+}
+
 export type RepairCabinetFolderResult = {
   messages: string[];
   groupedIds: string[];

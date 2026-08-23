@@ -53,7 +53,7 @@ Three lanes. Labels in the UI must match the lane, not legacy internal ids.
 | Blue direct | **Direct to Blue** | `https://blue.parascene.com` (upload, generate, poll) | User-supplied Blue credentials; gated like Replicate | Local library import only (no Creation required) |
 | Replicate direct | **Replicate** | Replicate API | User API token in Settings (keychain) | Local library import |
 
-**Generate IA:** Intent first (Text to Image, Image to Video, …), then server under that intent. Lab may still say “Parascene Blue” for the method explorer; Generate uses **Direct to Blue**. Timeline Generate: independent first/last frame sources, Result | Form dual view (Form sticky when browsing finished gens), Generate new with durable frame stamps — [PLAN-timeline-fill.md](./PLAN-timeline-fill.md).
+**Generate IA:** Intent first (Text to Image, Image to Video, …), then server under that intent. Lab may still say “Parascene Blue” for the method explorer; Generate uses **Direct to Blue**. Timeline Generate: independent first/last frame sources, Result | Form dual view (Form sticky when browsing finished gens), Generate new with durable frame stamps — [PLAN-timeline-fill.md](./PLAN-timeline-fill.md). Live vs WIP checklist per intent/server — [STATUS-new-asset.md](./STATUS-new-asset.md).
 
 **Settled naming:** Do **not** call the product/Creation path “Parascene Blue” or “Direct to Blue.” Stable code ids (e.g. `parascene_blue`) may remain legacy until renamed; user-facing copy must be honest.
 

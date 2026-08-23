@@ -1,3 +1,5 @@
+import { useEffect, useMemo } from "react";
+import { requestOpenSettings } from "../../settings/events";
 import type { BakeInfo } from "../../library/slideshowMedia";
 import {
   GENERATE_INTENTS,
@@ -5,9 +7,11 @@ import {
   SELECTION_INTENT_MODES,
   addAssetIntentAllowsLibraryGeneration,
   addAssetIntentAllowsTimelinePlacement,
-  findGenerateIntent,
   findSelectionIntentMode,
+  intentOffersTimelineDestination,
   intentServerCapability,
+  intentTimelinePlacementComingSoon,
+  isIntentServerWired,
   makeAddAssetIntent,
   resolveAddAssetIntent,
   selectionModeAllowsTimelinePlacement,
@@ -17,8 +21,15 @@ import {
   type GenerateServerId,
   type SelectionIntentModeId,
 } from "./previewIntent";
-import { ClipDragHandle, ClipPlaceHandle, StagingFields } from "./PreviewStaging";
+import { StagingFields } from "./PreviewStaging";
 import { addAssetDragDraftFromIntent, type StagedClipDraft } from "./stagedClip";
+import {
+  AddAssetIntentFooter,
+} from "./AddAssetIntentFooter";
+import {
+  type TimelinePlacementState,
+} from "./addAssetTimelinePlacement";
+
 import {
   CompositePlatePanel,
   type CompositePlatePanelProps,
@@ -28,6 +39,14 @@ import { BlueDirectTextToImageForm } from "./BlueDirectTextToImageForm";
 import { GenerateIntentIcon } from "./GenerateIntentIcon";
 import { GenerateServerIcon } from "./GenerateServerIcon";
 import { saveLastGenerateIntent } from "./generateIntentPrefs";
+import {
+  firstVisibleGenerateServer,
+  isGenerateServerCapVisible,
+  libraryServerFormReady,
+  serverChoiceDescription,
+  serverNeedsCredentials,
+  useGenerateServerCredentials,
+} from "./generateServerCredentials";
 
 export type SelectionImageItem = {
   id: string;
@@ -89,8 +108,6 @@ export function SelectionIntentPanel({
     : null;
   const intentId = resolvedGenerate?.intentId ?? null;
   const server = resolvedGenerate?.server ?? null;
-  const capability =
-    intentId && server ? intentServerCapability(intentId, server) : null;
   const canPlaceSlideshow =
     modeId === "slideshow" &&
     selectionModeAllowsTimelinePlacement(modeId) &&
@@ -103,12 +120,68 @@ export function SelectionIntentPanel({
   const canLibraryGenerate =
     showGenerate && addAssetIntentAllowsLibraryGeneration(resolvedGenerate);
   const firstPicked = items.find((item) => item.id === pickedIds[0]);
-  const generateDraft = canPlaceGenerate
-    ? addAssetDragDraftFromIntent(resolvedGenerate, {
-        startFrameAssetId: pickedIds[0] ?? null,
-        thumbUrl: firstPicked?.thumbUrl ?? null,
-      })
-    : null;
+  const generateDraft = addAssetDragDraftFromIntent(resolvedGenerate, {
+    startFrameAssetId: pickedIds[0] ?? null,
+    thumbUrl: firstPicked?.thumbUrl ?? null,
+  });
+  const creds = useGenerateServerCredentials();
+  const capability =
+    intentId && server ? intentServerCapability(intentId, server) : null;
+  const comingSoon = capability?.status === "coming_soon";
+  const needsCreds = server ? serverNeedsCredentials(server, creds) : false;
+  const libraryFormReady = libraryServerFormReady(capability, creds);
+
+  const serverCapIsVisible = (cap: {
+    server: GenerateServerId;
+    status: "wired" | "coming_soon";
+  }) => isGenerateServerCapVisible(cap, creds);
+
+  useEffect(() => {
+    if (!showGenerate || !intentId || !server || !generateIntent) return;
+    const cap = intentServerCapability(intentId, server);
+    if (cap && isGenerateServerCapVisible(cap, creds)) return;
+    const nextServer = firstVisibleGenerateServer(intentId, creds, server);
+    if (nextServer === server) return;
+    const intent = makeAddAssetIntent(intentId, nextServer);
+    saveLastGenerateIntent(intent);
+    onGenerateIntentChange(intent);
+  }, [
+    showGenerate,
+    intentId,
+    server,
+    generateIntent,
+    creds,
+    onGenerateIntentChange,
+  ]);
+
+  const timelinePlacement = useMemo((): TimelinePlacementState => {
+    if (canPlaceSlideshow && draft) {
+      return { mode: "active", draft };
+    }
+    if (canPlaceGenerate && generateDraft) {
+      return { mode: "active", draft: generateDraft };
+    }
+    if (
+      showGenerate &&
+      intentId &&
+      server &&
+      generateDraft &&
+      intentOffersTimelineDestination(intentId) &&
+      isIntentServerWired(intentId, server) &&
+      intentTimelinePlacementComingSoon(intentId)
+    ) {
+      return { mode: "disabled", draft: generateDraft, title: "Coming soon" };
+    }
+    return { mode: "hidden" };
+  }, [
+    canPlaceGenerate,
+    canPlaceSlideshow,
+    draft,
+    generateDraft,
+    intentId,
+    server,
+    showGenerate,
+  ]);
 
   const toggleItem = (id: string) => {
     const next = new Set(pickedSet);
@@ -118,12 +191,7 @@ export function SelectionIntentPanel({
   };
 
   const selectIntent = (next: GenerateIntentId) => {
-    const caps = serversForIntent(next);
-    const preferred =
-      (server && caps.find((c) => c.server === server)?.server) ||
-      caps.find((c) => c.status === "wired")?.server ||
-      caps[0]?.server ||
-      "parascene_blue";
+    const preferred = firstVisibleGenerateServer(next, creds, server);
     const intent = makeAddAssetIntent(next, preferred);
     saveLastGenerateIntent(intent);
     onGenerateIntentChange(intent);
@@ -135,6 +203,37 @@ export function SelectionIntentPanel({
     saveLastGenerateIntent(intent);
     onGenerateIntentChange(intent);
   };
+
+  const generateStatusNote =
+    showGenerate && intentId && server ? (
+      comingSoon ? (
+        <section className="add-asset-generate-section">
+          <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
+            Coming soon
+            {` on ${
+              GENERATE_SERVERS.find((s) => s.id === server)?.label ??
+              "this server"
+            }`}
+            .
+          </p>
+        </section>
+      ) : needsCreds ? (
+        <section className="add-asset-generate-section">
+          <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
+            {server === "blue_direct"
+              ? "Add Blue credentials in Settings to use Direct to Blue."
+              : "Add a Replicate token and enable at least one model in Settings to use Replicate."}{" "}
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => requestOpenSettings()}
+            >
+              Open Settings
+            </button>
+          </p>
+        </section>
+      ) : null
+    ) : null;
 
   const title =
     pickedCount === totalCount
@@ -245,17 +344,6 @@ export function SelectionIntentPanel({
         </div>
       </section>
 
-      {selected && !selected.wired ? (
-        <section className="add-asset-generate-section">
-          <div className="add-asset-generate-callout">
-            <p className="muted" style={{ margin: 0 }}>
-              Coming soon — pick Slideshow to place images on the timeline, or
-              Generate from selection to use them with Parascene or Replicate.
-            </p>
-          </div>
-        </section>
-      ) : null}
-
       {showComposite && composite ? (
         <CompositePlatePanel {...composite} />
       ) : null}
@@ -301,7 +389,9 @@ export function SelectionIntentPanel({
             <section className="add-asset-generate-section">
               <h3>Server</h3>
               <div className="preview-intent-choice-grid" role="list">
-                {serversForIntent(intentId).map((cap) => {
+                {serversForIntent(intentId)
+                  .filter((cap) => serverCapIsVisible(cap))
+                  .map((cap) => {
                   const def = GENERATE_SERVERS.find((s) => s.id === cap.server);
                   if (!def) return null;
                   const soon = cap.status === "coming_soon";
@@ -324,49 +414,12 @@ export function SelectionIntentPanel({
                           {def.label}
                         </span>
                         <span className="muted preview-intent-choice-desc">
-                          {def.description}
+                          {serverChoiceDescription(cap, creds, def.description)}
                         </span>
                       </span>
                     </button>
                   );
                 })}
-              </div>
-            </section>
-          ) : null}
-
-          {capability?.status === "coming_soon" ? (
-            <section className="add-asset-generate-section">
-              <div className="add-asset-generate-callout">
-                <p className="muted" style={{ margin: 0 }}>
-                  Coming soon
-                  {intentId
-                    ? ` — ${findGenerateIntent(intentId)?.label ?? ""}`
-                    : ""}
-                  {server
-                    ? ` on ${
-                        GENERATE_SERVERS.find((s) => s.id === server)?.label ??
-                        "this server"
-                      }`
-                    : ""}
-                  . Pick a ready path to place a blank clip; the first picked
-                  image seeds the start frame.
-                </p>
-              </div>
-            </section>
-          ) : null}
-
-          {canPlaceGenerate ? (
-            <section className="add-asset-generate-section">
-              <div className="add-asset-generate-callout">
-                <p className="muted" style={{ margin: 0 }}>
-                  Place or drag the clip onto the timeline
-                  {intentId && server
-                    ? ` (${findGenerateIntent(intentId)?.label} · ${
-                        GENERATE_SERVERS.find((s) => s.id === server)?.label
-                      })`
-                    : ""}
-                  . The first picked image is used as the start frame.
-                </p>
               </div>
             </section>
           ) : null}
@@ -391,10 +444,14 @@ export function SelectionIntentPanel({
     </>
   );
 
-  if (canLibraryGenerate && server === "replicate") {
+  if (
+    canLibraryGenerate &&
+    server === "replicate" &&
+    libraryFormReady
+  ) {
     return (
       <ReplicateTextToImageFormLayout idPrefix="selection-t2i">
-        {({ fields, footer }) => (
+        {({ fields, generateAction }) => (
           <div
             className="add-asset-generate-pane preview-intent-pane"
             aria-label="Choose what to do with selection"
@@ -403,14 +460,21 @@ export function SelectionIntentPanel({
               {body}
               {fields}
             </div>
-            {footer}
+            <AddAssetIntentFooter
+              generate={generateAction}
+              timeline={timelinePlacement}
+            />
           </div>
         )}
       </ReplicateTextToImageFormLayout>
     );
   }
 
-  if (canLibraryGenerate && server === "blue_direct") {
+  if (
+    canLibraryGenerate &&
+    server === "blue_direct" &&
+    libraryFormReady
+  ) {
     return (
       <div
         className="add-asset-generate-pane preview-intent-pane"
@@ -418,7 +482,14 @@ export function SelectionIntentPanel({
       >
         <div className="add-asset-generate-body">
           {body}
-          <BlueDirectTextToImageForm />
+          <BlueDirectTextToImageForm
+            renderFooter={(parts) => (
+              <AddAssetIntentFooter
+                generate={parts.generateAction}
+                timeline={timelinePlacement}
+              />
+            )}
+          />
         </div>
       </div>
     );
@@ -429,21 +500,11 @@ export function SelectionIntentPanel({
       className="add-asset-generate-pane preview-intent-pane"
       aria-label="Choose what to do with selection"
     >
-      <div className="add-asset-generate-body">{body}</div>
-
-      {canPlaceSlideshow && draft ? (
-        <div className="add-asset-generate-footer preview-intent-footer">
-          <ClipPlaceHandle draft={draft} />
-          <ClipDragHandle draft={draft} />
-        </div>
-      ) : null}
-
-      {canPlaceGenerate && generateDraft ? (
-        <div className="add-asset-generate-footer preview-intent-footer">
-          <ClipPlaceHandle draft={generateDraft} />
-          <ClipDragHandle draft={generateDraft} />
-        </div>
-      ) : null}
+      <div className="add-asset-generate-body">
+        {body}
+        {generateStatusNote}
+      </div>
+      <AddAssetIntentFooter timeline={timelinePlacement} />
     </div>
   );
 }

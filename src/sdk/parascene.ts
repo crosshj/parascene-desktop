@@ -1,6 +1,9 @@
 /** Parascene HTTP SDK — all product API interaction goes through here. */
 
 import { invoke } from "@tauri-apps/api/core";
+import productServerCaps from "../../docs/parascene-product-server-caps.json";
+
+export type ParasceneProductServerCaps = typeof productServerCaps;
 
 export type ParasceneUserInfo = {
   sub: string;
@@ -50,6 +53,76 @@ export type RemoteCreateImage = {
   meta?: Record<string, unknown> | null;
   [key: string]: unknown;
 };
+
+/** Human-readable failure from a completed-but-failed Parascene creation row. */
+export function formatParasceneCreationFailure(
+  row: RemoteCreateImage,
+  label = "Generation",
+): string {
+  const id = row.id;
+  const meta =
+    row.meta && typeof row.meta === "object"
+      ? (row.meta as Record<string, unknown>)
+      : null;
+  const parts: string[] = [];
+
+  if (row.is_moderated_error) {
+    parts.push("Blocked by content moderation");
+  }
+
+  const error =
+    typeof meta?.error === "string" ? meta.error.trim() : "";
+  const errorCode =
+    typeof meta?.error_code === "string" ? meta.error_code.trim() : "";
+  const description =
+    typeof row.description === "string" ? row.description.trim() : "";
+
+  if (error) parts.push(error);
+  else if (description) parts.push(description);
+
+  if (errorCode && errorCode !== error) parts.push(errorCode);
+
+  const providerError = meta?.provider_error;
+  if (providerError && typeof providerError === "object") {
+    const pe = providerError as Record<string, unknown>;
+    const body = pe.body;
+    if (body && typeof body === "object") {
+      const bodyRow = body as Record<string, unknown>;
+      const providerMessage =
+        (typeof bodyRow.message === "string" && bodyRow.message.trim()) ||
+        (typeof bodyRow.error === "string" && bodyRow.error.trim()) ||
+        "";
+      if (providerMessage && providerMessage !== error) {
+        parts.push(providerMessage);
+      }
+    }
+    if (typeof pe.status === "number" && Number.isFinite(pe.status)) {
+      parts.push(`HTTP ${pe.status}`);
+    }
+  }
+
+  const args = meta?.args;
+  if (args && typeof args === "object") {
+    const inputImages = (args as Record<string, unknown>).input_images;
+    if (Array.isArray(inputImages)) {
+      for (const url of inputImages) {
+        if (
+          typeof url === "string" &&
+          (/^asset:\/\//i.test(url) ||
+            /localhost|127\.0\.0\.1/i.test(url))
+        ) {
+          parts.push(
+            "Source image URL was local-only — Parascene could not fetch it. Pick a synced image with a public URL.",
+          );
+          break;
+        }
+      }
+    }
+  }
+
+  const summary = parts.filter(Boolean).join(" · ") || `${label} failed`;
+  return `${summary} (creation ${id})`;
+}
 
 export type ListCreateImagesResult = {
   images: RemoteCreateImage[];
@@ -493,6 +566,14 @@ export class ParasceneSdk {
       ...raw,
       picture: absolutizeAssetUrl(raw.picture, this.baseUrl),
     };
+  }
+
+  /**
+   * Product create servers (1 + 6) from the checked-in capabilities snapshot.
+   * Refresh via `scripts/probe-parascene-servers.mts` when the API contract changes.
+   */
+  listCreateServers(): ParasceneProductServerCaps {
+    return productServerCaps;
   }
 
   /**

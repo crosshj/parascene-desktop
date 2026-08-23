@@ -29,6 +29,8 @@ import {
   setStoredProjectLyricAlignment,
   normalizeLyricAlignment,
   normalizeTimelineClip,
+  upsertStoredLibraryAssetPlaceholder,
+  completeStoredLibraryAssetPlaceholder,
 } from "./projectStore";
 
 describe("projectStore", () => {
@@ -875,5 +877,155 @@ describe("projectStore", () => {
     expect(loadStoredProjects()[0].lyricAlignment?.transcript?.fullText).toBe(
       "hello",
     );
+  });
+
+  it("keeps library asset placeholders out of creationIds but visible in Assets UI", () => {
+    const project = createStoredProject("Demo", ["c1"]);
+    const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: {
+        prompt: "sunset over mountains",
+        intentId: "text_to_image",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "text_to_image",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const selected = setStoredProjectSelectedAssetId(
+      withPlaceholder,
+      "placeholder-1",
+    );
+
+    expect(selected.creationIds).toEqual(["c1"]);
+    expect(selected.libraryAssetPlaceholders?.["placeholder-1"]?.id).toBe(
+      "placeholder-1",
+    );
+    expect(selected.selectedAssetId).toBe("placeholder-1");
+
+    const ui = storedProjectToUi(selected);
+    expect(ui.assets.map((asset) => asset.id)).toEqual([
+      "placeholder-1",
+      "c1",
+    ]);
+    expect(ui.selectedAssetId).toBe("placeholder-1");
+  });
+
+  it("pins active placeholders before creations and hides pending remote rows", () => {
+    const project = createStoredProject("Demo", ["c1", "remote-42"]);
+    const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: {
+        prompt: "sunset",
+        intentId: "text_to_image",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "text_to_image",
+        generationJob: {
+          status: "waiting",
+          provider: "parascene_blue",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          pendingCreationId: "remote-42",
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    });
+
+    expect(storedProjectToUi(withPlaceholder).assets.map((asset) => asset.id)).toEqual(
+      ["placeholder-1", "c1"],
+    );
+  });
+
+  it("completes a placeholder without changing selection when another asset is selected", () => {
+    const project = createStoredProject("Demo", ["c1"]);
+    const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: {
+        prompt: "sunset",
+        intentId: "text_to_image",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "text_to_image",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const otherSelected = setStoredProjectSelectedAssetId(withPlaceholder, "c1");
+    const completed = completeStoredLibraryAssetPlaceholder(
+      otherSelected,
+      "placeholder-1",
+      "creation-99",
+    );
+
+    expect(completed.creationIds).toEqual(["c1", "creation-99"]);
+    expect(completed.libraryAssetPlaceholders?.["placeholder-1"]).toBeUndefined();
+    expect(completed.selectedAssetId).toBe("c1");
+  });
+
+  it("migrates selection when the generating placeholder was still selected", () => {
+    const project = createStoredProject("Demo", ["c1"]);
+    const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: {
+        prompt: "sunset",
+        intentId: "text_to_image",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "text_to_image",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const selected = setStoredProjectSelectedAssetId(
+      withPlaceholder,
+      "placeholder-1",
+    );
+    const completed = completeStoredLibraryAssetPlaceholder(
+      selected,
+      "placeholder-1",
+      "creation-99",
+    );
+
+    expect(completed.selectedAssetId).toBe("creation-99");
+    expect(storedProjectToUi(completed).assets.map((asset) => asset.id)).toEqual(
+      ["c1", "creation-99"],
+    );
+  });
+
+  it("removes library asset placeholders without creation ids", () => {
+    let project = createStoredProject("Demo", ["c1"]);
+    project = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "error",
+      addAssetDraft: { prompt: "fail", lastError: "boom" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    project = setStoredProjectSelectedAssetId(project, "placeholder-1");
+
+    const next = removeCreationIds(project, ["placeholder-1"]);
+
+    expect(next.creationIds).toEqual(["c1"]);
+    expect(next.libraryAssetPlaceholders?.["placeholder-1"]).toBeUndefined();
+    expect(next.selectedAssetId).toBeNull();
+    expect(
+      storedProjectToUi(next).assets.map((asset) => asset.id),
+    ).toEqual(["c1"]);
   });
 });

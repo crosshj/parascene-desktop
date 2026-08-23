@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { LayoutMode, LyricAlignment, Project, StoryboardGenerationPlan, StoryboardProposal, TimelineClip } from "../project/types";
+import type { AddAssetDraft, LayoutMode, LyricAlignment, Project, StoryboardGenerationPlan, StoryboardProposal, TimelineClip } from "../project/types";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import type { ProjectLookId } from "../project/looks";
 import { ConfirmProvider } from "../ui/ConfirmDialog";
@@ -44,6 +44,11 @@ import {
   setStoredProjectStoryboardProposal,
   patchStoredProjectStoryboardGenerationPlan,
   setStoredProjectLabStoryboardDirection,
+  upsertStoredLibraryAssetPlaceholder,
+  patchStoredLibraryAssetPlaceholder,
+  clearStoredLibraryAssetPlaceholder,
+  completeStoredLibraryAssetPlaceholder,
+  replaceStoredLibraryAssetPlaceholderId,
   storedProjectToUi,
   type CorruptStoredProject,
   type StoredProject,
@@ -94,6 +99,7 @@ import {
   reconcileAddAssetGenerations,
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
+import { bindLibraryAssetGenerationApplier } from "../layouts/editor/libraryAssetGenerationStore";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
 import {
   applyManifest,
@@ -208,6 +214,24 @@ type ShellState = {
   setOpenProjectLabStoryboardDirection: (direction: string | null) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => Promise<void>;
+  /** Reserve a Generate → Assets placeholder and select it on the open project. */
+  beginLibraryAssetPlaceholder: (opts: {
+    id: string;
+    aspectRatio: ProjectAspectRatio;
+    draft: AddAssetDraft;
+  }) => void;
+  /** Patch in-flight placeholder draft / status on the open project. */
+  patchLibraryAssetPlaceholder: (
+    id: string,
+    patch: {
+      status?: "generating" | "done" | "error";
+      addAssetDraft?: Partial<AddAssetDraft>;
+    },
+  ) => void;
+  /** Clear placeholder metadata once the catalog row is authoritative. */
+  clearLibraryAssetPlaceholder: (id: string) => void;
+  /** Swap provisional local id for a remote creation id. */
+  replaceLibraryAssetPlaceholderId: (fromId: string, toId: string) => void;
   /** Add Library creations to any locally available project. */
   addCreationsToProject: (
     projectId: string,
@@ -1548,6 +1572,124 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [addCreationsToProject, openProjectId],
   );
 
+  useEffect(() => {
+    bindLibraryAssetGenerationApplier({
+      beginPlaceholder: (opts) => {
+        patchOpenProject((project) => {
+          const existing = project.libraryAssetPlaceholders?.[opts.id];
+          const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+            id: opts.id,
+            kind: "image",
+            aspectRatio: opts.aspectRatio,
+            status: "generating",
+            addAssetDraft: opts.draft,
+            createdAt: existing?.createdAt ?? new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            progressNote: undefined,
+            addAssetGeneration: undefined,
+          });
+          return setStoredProjectSelectedAssetId(withPlaceholder, opts.id);
+        });
+      },
+      onGenerationStarted: (placeholderId) => {
+        window.dispatchEvent(
+          new CustomEvent("parascene-library-asset-selected", {
+            detail: { assetId: placeholderId },
+          }),
+        );
+      },
+      patchPlaceholder: (id, patch) => {
+        patchOpenProject((project) =>
+          patchStoredLibraryAssetPlaceholder(project, id, patch),
+        );
+      },
+      completePlaceholder: ({ placeholderId, creationId }) => {
+        let wasSelected = false;
+        patchOpenProject((project) => {
+          wasSelected = project.selectedAssetId === placeholderId;
+          return completeStoredLibraryAssetPlaceholder(
+            project,
+            placeholderId,
+            creationId,
+          );
+        });
+        if (wasSelected) {
+          window.dispatchEvent(
+            new CustomEvent("parascene-library-asset-completed", {
+              detail: { placeholderId, creationId },
+            }),
+          );
+        }
+      },
+      addCreations: async (creationIds) => {
+        if (!openProjectId) return;
+        await addCreationsToProject(openProjectId, creationIds);
+      },
+      setImagesGroupId: (imagesGroupId) => {
+        patchOpenProject((project) =>
+          setStoredProjectGroupIds(project, { imagesGroupId }),
+        );
+      },
+    });
+    return () => bindLibraryAssetGenerationApplier(null);
+  }, [addCreationsToProject, openProjectId, patchOpenProject]);
+
+  const beginLibraryAssetPlaceholder = useCallback(
+    (opts: {
+      id: string;
+      aspectRatio: ProjectAspectRatio;
+      draft: AddAssetDraft;
+    }) => {
+      patchOpenProject((project) => {
+        const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+          id: opts.id,
+          kind: "image",
+          aspectRatio: opts.aspectRatio,
+          status: "generating",
+          addAssetDraft: opts.draft,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        return setStoredProjectSelectedAssetId(withPlaceholder, opts.id);
+      });
+    },
+    [patchOpenProject],
+  );
+
+  const patchLibraryAssetPlaceholder = useCallback(
+    (
+      id: string,
+      patch: {
+        status?: "generating" | "done" | "error";
+        progressNote?: string;
+        addAssetDraft?: Partial<AddAssetDraft>;
+      },
+    ) => {
+      patchOpenProject((project) =>
+        patchStoredLibraryAssetPlaceholder(project, id, patch),
+      );
+    },
+    [patchOpenProject],
+  );
+
+  const clearLibraryAssetPlaceholder = useCallback(
+    (id: string) => {
+      patchOpenProject((project) =>
+        clearStoredLibraryAssetPlaceholder(project, id),
+      );
+    },
+    [patchOpenProject],
+  );
+
+  const replaceLibraryAssetPlaceholderId = useCallback(
+    (fromId: string, toId: string) => {
+      patchOpenProject((project) =>
+        replaceStoredLibraryAssetPlaceholderId(project, fromId, toId),
+      );
+    },
+    [patchOpenProject],
+  );
+
   const reconcileProjectsAfterLibrarySync = useCallback(
     async (opts?: { refreshCoversFromList?: boolean }) => {
       const current = loadStoredProjects();
@@ -1909,6 +2051,10 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
+      beginLibraryAssetPlaceholder,
+      patchLibraryAssetPlaceholder,
+      clearLibraryAssetPlaceholder,
+      replaceLibraryAssetPlaceholderId,
       addCreationsToProject,
       reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
@@ -1965,6 +2111,10 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
       addCreationsToOpenProject,
+      beginLibraryAssetPlaceholder,
+      patchLibraryAssetPlaceholder,
+      clearLibraryAssetPlaceholder,
+      replaceLibraryAssetPlaceholderId,
       addCreationsToProject,
       reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,

@@ -19,7 +19,8 @@ import {
   type BlueStillModelOption,
 } from "./blueStillModels";
 import type { LibraryGenerateUiState } from "./generateDualView";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AddAssetIntentFooter, CloneButton, GenerateTargetButton } from "./AddAssetIntentFooter";
 
 type BlueDirectTextToImageFormProps = {
   locked?: boolean;
@@ -29,6 +30,10 @@ type BlueDirectTextToImageFormProps = {
   /** Seed values for review / Generate new fork. */
   initialPrompt?: string;
   initialModelId?: string;
+  renderFooter?: (parts: {
+    generateAction?: ReactNode;
+    cloneAction?: ReactNode;
+  }) => ReactNode;
 };
 
 export function BlueDirectTextToImageForm({
@@ -38,6 +43,7 @@ export function BlueDirectTextToImageForm({
   onGenerateNew,
   initialPrompt = "",
   initialModelId,
+  renderFooter,
 }: BlueDirectTextToImageFormProps) {
   const { project, addCreationsToOpenProject } = useShell();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
@@ -189,6 +195,23 @@ export function BlueDirectTextToImageForm({
     }
   };
 
+  const cloneAction =
+    onGenerateNew && (doneLocked || locked) ? (
+      <CloneButton
+        onClick={doneLocked ? handleGenerateNew : () => onGenerateNew?.()}
+      />
+    ) : null;
+
+  const generateAction =
+    !doneLocked && !(locked && onGenerateNew) ? (
+      <GenerateTargetButton
+        target="Assets"
+        disabled={!canGenerate}
+        running={running}
+        onClick={() => void handleGenerate()}
+      />
+    ) : null;
+
   return (
     <>
       <section className="add-asset-generate-section">
@@ -260,34 +283,15 @@ export function BlueDirectTextToImageForm({
           {error}
         </p>
       ) : null}
-      <div className="add-asset-generate-footer preview-intent-footer">
-        {doneLocked && onGenerateNew ? (
-          <button
-            type="button"
-            className="btn primary"
-            onClick={handleGenerateNew}
-          >
-            Generate new
-          </button>
-        ) : locked && onGenerateNew ? (
-          <button
-            type="button"
-            className="btn primary"
-            onClick={onGenerateNew}
-          >
-            Generate new
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="btn primary"
-            disabled={!canGenerate}
-            onClick={() => void handleGenerate()}
-          >
-            {running ? "Generating…" : "Generate"}
-          </button>
-        )}
-      </div>
+      {renderFooter ? (
+        renderFooter({ generateAction, cloneAction })
+      ) : (
+        <AddAssetIntentFooter
+          generate={generateAction ?? undefined}
+          clone={cloneAction ?? undefined}
+          timeline={{ mode: "hidden" }}
+        />
+      )}
     </>
   );
 }

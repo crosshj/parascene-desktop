@@ -8,6 +8,7 @@ import {
   type ReplicateTextToImageFormParts,
   type UseReplicateTextToImageFormOpts,
 } from "./useReplicateTextToImageForm";
+import { AddAssetIntentFooter } from "./AddAssetIntentFooter";
 
 export type { ReplicateTextToImageFormParts };
 
@@ -49,7 +50,7 @@ export function ReplicateTextToImageForm({
   initialPrompt,
   initialModelId,
 }: UseReplicateTextToImageFormOpts) {
-  const { fields, footer } = useReplicateTextToImageForm({
+  const { fields, generateAction, cloneAction } = useReplicateTextToImageForm({
     idPrefix,
     locked,
     hideInlineProgress,
@@ -61,7 +62,11 @@ export function ReplicateTextToImageForm({
   return (
     <>
       {fields}
-      {footer}
+      <AddAssetIntentFooter
+        generate={generateAction ?? undefined}
+        clone={cloneAction ?? undefined}
+        timeline={{ mode: "hidden" }}
+      />
     </>
   );
 }

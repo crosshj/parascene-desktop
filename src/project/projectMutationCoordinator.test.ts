@@ -25,6 +25,8 @@ import {
   loadStoredProjectsStrict,
   partitionStoredProjects,
   saveStoredProjects,
+  setStoredProjectSelectedAssetId,
+  upsertStoredLibraryAssetPlaceholder,
 } from "./projectStore";
 import {
   mirrorStoredProjectsAfterNativeMembership,
@@ -277,5 +279,45 @@ describe("projectMutationCoordinator", () => {
     expect(repaired.timeline?.[0].id).toBe("good-clip");
     expect(loadStoredProjectsStrict()).toHaveLength(1);
     expect(partitionStoredProjects().corrupt).toHaveLength(0);
+  });
+
+  it("persists in-flight library placeholders without requiring a catalog row", async () => {
+    const project = {
+      ...createStoredProject("Demo", ["c1"]),
+      lifecycle: "ready" as const,
+    };
+    saveStoredProjects([project]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => {
+        if (row.id !== project.id) return row;
+        const withPlaceholder = upsertStoredLibraryAssetPlaceholder(row, {
+          id: "placeholder-1",
+          kind: "image",
+          aspectRatio: "16:9",
+          status: "generating",
+          addAssetDraft: {
+            prompt: "sunset",
+            intentId: "text_to_image",
+            server: "parascene_blue",
+            provider: "parascene_blue",
+            methodId: "text_to_image",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        });
+        return setStoredProjectSelectedAssetId(
+          withPlaceholder,
+          "placeholder-1",
+        );
+      }),
+    );
+
+    expect(next[0].creationIds).toEqual(["c1"]);
+    expect(next[0].libraryAssetPlaceholders?.["placeholder-1"]?.id).toBe(
+      "placeholder-1",
+    );
+    expect(next[0].selectedAssetId).toBe("placeholder-1");
+    expect(native.existingCreationIds).not.toHaveBeenCalled();
   });
 });

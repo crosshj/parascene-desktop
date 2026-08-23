@@ -5,6 +5,7 @@ import {
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
   shouldPreserveGenerateDualView,
+  shouldShowGenerateDualChrome,
 } from "./generateDualView";
 
 function placeholder(partial?: Partial<TimelineClip>): TimelineClip {
@@ -26,6 +27,13 @@ describe("generateDualView", () => {
     expect(defaultGenerateDualView("error")).toBe("form");
     expect(defaultGenerateDualView("running")).toBe("result");
     expect(defaultGenerateDualView("done")).toBe("result");
+  });
+
+  it("hides Result | Form chrome before generate starts", () => {
+    expect(shouldShowGenerateDualChrome("pre_gen")).toBe(false);
+    expect(shouldShowGenerateDualChrome("running")).toBe(true);
+    expect(shouldShowGenerateDualChrome("done")).toBe(true);
+    expect(shouldShowGenerateDualChrome("error")).toBe(true);
   });
 
   it("keeps Result | Form sticky across finished generation hosts", () => {

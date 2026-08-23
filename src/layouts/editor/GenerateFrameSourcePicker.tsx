@@ -23,6 +23,7 @@ export function GenerateFrameSourcePicker({
   timelineLoading,
   assets,
   assetPreviews,
+  mode = "full",
   timelineAllowed = true,
   timelineDisallowReason,
   onCancel,
@@ -34,19 +35,30 @@ export function GenerateFrameSourcePicker({
   timelineLoading: boolean;
   assets: ProjectAsset[];
   assetPreviews: Record<string, string | null>;
+  /** Assets grid only — for library I2I source selection. */
+  mode?: "full" | "assets-only";
   /** When false, timeline neighbor cannot be chosen (e.g. no FLF model). */
   timelineAllowed?: boolean;
   timelineDisallowReason?: string;
   onCancel: () => void;
   onUse: (source: AddAssetFrameSource) => void;
 }) {
-  const [draft, setDraft] = useState<AddAssetFrameSource>(current);
+  const assetsOnly = mode === "assets-only";
+  const [draft, setDraft] = useState<AddAssetFrameSource>(() =>
+    assetsOnly && current.kind !== "asset"
+      ? { kind: "asset", assetId: "" }
+      : current,
+  );
   const currentKey =
     current.kind === "asset" ? `asset:${current.assetId}` : current.kind;
   const [draftKey, setDraftKey] = useState(currentKey);
   if (draftKey !== currentKey) {
     setDraftKey(currentKey);
-    setDraft(current);
+    setDraft(
+      assetsOnly && current.kind !== "asset"
+        ? { kind: "asset", assetId: "" }
+        : current,
+    );
   }
 
   const timelineReady = Boolean(
@@ -68,14 +80,22 @@ export function GenerateFrameSourcePicker({
   const assetsDisallowReason =
     "First + last is not available for the current models.";
 
-  const canUse =
-    draft.kind === "none"
+  const canUse = assetsOnly
+    ? draft.kind === "asset" &&
+      Boolean(draft.assetId.trim()) &&
+      assets.some((a) => a.id === draft.assetId)
+    : draft.kind === "none"
       ? true
       : draft.kind === "timeline"
         ? timelineAllowed && timelineReady
         : assetsAllowed &&
           Boolean(draft.assetId.trim()) &&
           assets.some((a) => a.id === draft.assetId);
+
+  const title = assetsOnly ? "Source image" : titleForRole(role);
+  const description = assetsOnly
+    ? "Pick a still from this project's Assets."
+    : "Choose a timeline neighbor, a project image, or none.";
 
   return (
     <div
@@ -84,18 +104,22 @@ export function GenerateFrameSourcePicker({
       onClick={onCancel}
     >
       <div
-        className="confirm-dialog generate-frame-source-picker"
+        className={
+          assetsOnly
+            ? "confirm-dialog generate-frame-source-picker is-assets-only"
+            : "confirm-dialog generate-frame-source-picker"
+        }
         role="dialog"
         aria-modal="true"
         aria-labelledby="generate-frame-source-picker-title"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 id="generate-frame-source-picker-title">{titleForRole(role)}</h2>
-        <p className="muted">
-          Choose a timeline neighbor, a project image, or none.
-        </p>
+        <h2 id="generate-frame-source-picker-title">{title}</h2>
+        <p className="muted">{description}</p>
 
         <div className="generate-frame-source-picker-body">
+          {!assetsOnly ? (
+            <>
           <button
             type="button"
             className={
@@ -169,6 +193,8 @@ export function GenerateFrameSourcePicker({
               ) : null}
             </button>
           </div>
+            </>
+          ) : null}
 
           <div className="generate-frame-source-assets">
             <span className="generate-frame-source-section-label">Assets</span>

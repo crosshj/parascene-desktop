@@ -10,6 +10,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   creationDetailUrl,
   creationPreviewUrl,
+  parascenePublicImageUrl,
 } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import type {
@@ -60,6 +61,30 @@ export function startFrameIsReady(
   if (!preview) return false;
   if (preview.remoteImageUrl?.trim()) return true;
   return Boolean(preview.framePath?.trim());
+}
+
+/** Public Parascene URL for a library image creation, when one exists. */
+export function parasceneImageUrlFromCreation(
+  creation: Creation | null | undefined,
+): string | null {
+  if (!creation) return null;
+  return parascenePublicImageUrl(creation);
+}
+
+/**
+ * When framing is fit, return an existing Parascene image URL so generation
+ * can reference the asset directly instead of cloning a still.
+ */
+export async function resolveParasceneStartFrameImageUrl(
+  preview: StartFramePreview,
+): Promise<string | null> {
+  if (normalizeFraming(preview.framing) !== "fit") return null;
+  const cached = preview.remoteImageUrl?.trim();
+  if (cached) return cached;
+  const assetId = preview.sourceAssetId?.trim();
+  if (!assetId) return null;
+  const [creation] = await getCreations([assetId]);
+  return parasceneImageUrlFromCreation(creation);
 }
 
 /**
@@ -679,9 +704,11 @@ export async function resolveAddAssetStartFrameFromAsset(
   }
 
   let [creation] = await getCreations([id]);
+  const passthroughUrl =
+    resolvedFraming === "fit" ? parasceneImageUrlFromCreation(creation) : null;
   let sourcePath = creation?.localPath?.trim() || null;
-  if (!sourcePath && creation?.remoteUrl?.trim()) {
-    // Pull the picked image so framing bakes locally instead of sending a raw URL.
+  if (!sourcePath && creation?.remoteUrl?.trim() && resolvedFraming !== "fit") {
+    // Non-fit framing must bake locally — pull the picked image first.
     recordUiOpTrace({
       type: "add_asset_frame_fetch_media",
       clipId: "",
@@ -791,7 +818,7 @@ export async function resolveAddAssetStartFrameFromAsset(
       framing: resolvedFraming,
       sourceAssetId: id,
       sourceIsImage: true,
-      remoteImageUrl: undefined,
+      remoteImageUrl: passthroughUrl ?? undefined,
     };
   } catch (thumbError) {
     recordUiOpTrace({
@@ -827,7 +854,7 @@ export async function resolveAddAssetStartFrameFromAsset(
       framing: resolvedFraming,
       sourceAssetId: id,
       sourceIsImage: true,
-      remoteImageUrl: undefined,
+      remoteImageUrl: passthroughUrl ?? undefined,
     };
   } catch (frameError) {
     recordUiOpTrace({

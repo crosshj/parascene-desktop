@@ -30,9 +30,15 @@ import {
   clampAddAssetDurationSec,
 } from "./stagedClip";
 import { resolveAddAssetGenerationTiming } from "./addAssetStartFrame";
-import type { StartFramePreview } from "./addAssetStartFrame";
+import {
+  resolveParasceneStartFrameImageUrl,
+  startFrameIsReady,
+  type StartFramePreview,
+} from "./addAssetStartFrame";
 import { runReplicateAddAssetGeneration } from "./addAssetReplicateGenerate";
 import { runBlueDirectAddAssetGeneration } from "./addAssetBlueDirectGenerate";
+import { runParasceneProductVideoGeneration } from "./runParasceneProductVideo";
+import { resolveAddAssetIntent, type GenerateIntentId } from "./previewIntent";
 import { isWanFamilyBlueModel } from "./blueVideoModels";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 
@@ -308,6 +314,55 @@ async function uploadFramedStill(opts: {
   };
 }
 
+async function prepareParasceneGenerationStill(opts: {
+  frame: StartFramePreview;
+  aspectRatio: string;
+  filenamePrefix: string;
+  progressLabel: string;
+  onProgress: (note: string) => void;
+  projectId: string;
+  projectTitle: string;
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+}): Promise<{
+  imageUrl: string;
+  projectCreationIds: string[];
+  groupId: string | null;
+}> {
+  const passthrough = await resolveParasceneStartFrameImageUrl(opts.frame);
+  if (passthrough) {
+    opts.onProgress(`Using ${opts.progressLabel} on Parascene…`);
+    return {
+      imageUrl: passthrough,
+      projectCreationIds: [],
+      groupId: null,
+    };
+  }
+  if (!opts.frame.framePath?.trim()) {
+    throw new Error(
+      `Missing ${opts.progressLabel} — choose an image from Assets or place the clip next to timeline media.`,
+    );
+  }
+  opts.onProgress(`Preparing framed ${opts.progressLabel}…`);
+  const still = await uploadFramedStill({
+    framePath: opts.frame.framePath,
+    framing: opts.frame.framing,
+    aspectRatio: opts.aspectRatio,
+    filenamePrefix: opts.filenamePrefix,
+    progressLabel: opts.progressLabel,
+    onProgress: opts.onProgress,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+  });
+  return {
+    imageUrl: still.imageUrl,
+    projectCreationIds: still.projectCreationIds,
+    groupId: still.groupId,
+  };
+}
+
 export type ReplaceAddAssetPlaceholderMeta = {
   addAssetGeneration: AddAssetGeneration;
 };
@@ -435,6 +490,20 @@ export async function runAddAssetGeneration(
   mode: AddAssetContinuityMode;
   model: string;
 }> {
+  const resolvedIntent =
+    resolveAddAssetIntent(opts.placeholder.addAssetDraft ?? {})?.intentId ??
+    "image_to_video";
+  if (
+    !opts.replicate &&
+    !opts.blueDirect &&
+    (resolvedIntent === "video_to_video" ||
+      resolvedIntent === "reference_to_video")
+  ) {
+    return runParasceneProductVideoIntent({
+      ...opts,
+      intentId: resolvedIntent,
+    });
+  }
   if (opts.replicate) {
     const continuityMode = (opts.continuityMode ??
       "start_frame") as ReplicateVideoContinuity;
@@ -508,6 +577,66 @@ export async function runAddAssetGeneration(
     return runFirstLastAddAssetGeneration(opts);
   }
   return runStartFrameAddAssetGeneration(opts);
+}
+
+async function runParasceneProductVideoIntent(
+  opts: RunAddAssetGenerationOpts & {
+    intentId: Extract<GenerateIntentId, "video_to_video" | "reference_to_video">;
+  },
+): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: AddAssetContinuityMode;
+  model: string;
+}> {
+  const model = opts.blueModel?.trim();
+  if (!model) {
+    throw new Error("Choose a Parascene video model.");
+  }
+  const result = await runParasceneProductVideoGeneration({
+    intentId: opts.intentId,
+    placeholder: opts.placeholder,
+    timeline: opts.timeline,
+    aspectRatio: opts.aspectRatio,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+    mainAudioCreationId: opts.mainAudioCreationId,
+    lyricAlignment: opts.lyricAlignment,
+    prompt: opts.prompt,
+    model,
+    startFrame: opts.startFrame,
+    inputVideoCreationId:
+      opts.intentId === "video_to_video"
+        ? opts.startFrame.sourceAssetId ??
+          opts.placeholder.addAssetDraft?.startFrameAssetId
+        : undefined,
+    referenceCreationIds:
+      opts.intentId === "reference_to_video" && opts.startFrame.sourceAssetId
+        ? [opts.startFrame.sourceAssetId]
+        : undefined,
+    onProgress: opts.onProgress,
+    onPendingCreation: (id) => {
+      if (id) {
+        opts.onRemoteJob?.({
+          provider: "parascene_blue",
+          pendingCreationId: id,
+          model,
+        });
+      }
+    },
+  });
+  return {
+    creationId: result.creationId,
+    projectCreationIds: result.projectCreationIds,
+    videosGroupId: result.videosGroupId,
+    imagesGroupId: result.imagesGroupId,
+    mode: "start_frame",
+    model: result.model,
+  };
 }
 
 async function runTextToVideoAddAssetGeneration(
@@ -606,22 +735,20 @@ async function runFirstLastAddAssetGeneration(
     opts.lyricAlignment,
   );
 
-  if (!opts.startFrame.framePath?.trim()) {
+  if (!startFrameIsReady(opts.startFrame)) {
     throw new Error(
-      "Place this clip after another clip on the timeline.",
+      "Place this clip after another clip on the timeline, or choose an image from assets.",
     );
   }
-  if (!opts.endFrame?.framePath?.trim()) {
+  if (!opts.endFrame || !startFrameIsReady(opts.endFrame)) {
     throw new Error(
       "Place this clip before another clip on the timeline for first–last generation.",
     );
   }
 
   pushSteps(advanceStep(steps, "still"));
-  opts.onProgress("Preparing framed first still…");
-  const firstStill = await uploadFramedStill({
-    framePath: opts.startFrame.framePath,
-    framing: opts.startFrame.framing,
+  const firstStill = await prepareParasceneGenerationStill({
+    frame: opts.startFrame,
     aspectRatio: opts.aspectRatio,
     filenamePrefix: "editor-flf2v-first",
     progressLabel: "first frame",
@@ -634,10 +761,8 @@ async function runFirstLastAddAssetGeneration(
   pushSteps(completeStep(steps, "still"));
 
   pushSteps(advanceStep(steps, "end-still"));
-  opts.onProgress("Preparing framed last still…");
-  const lastStill = await uploadFramedStill({
-    framePath: opts.endFrame.framePath,
-    framing: opts.endFrame.framing,
+  const lastStill = await prepareParasceneGenerationStill({
+    frame: opts.endFrame,
     aspectRatio: opts.aspectRatio,
     filenamePrefix: "editor-flf2v-last",
     progressLabel: "last frame",
@@ -776,45 +901,29 @@ async function runStartFrameAddAssetGeneration(
   }
 
   pushSteps(advanceStep(steps, "still"));
-  const existingImageUrl = opts.startFrame.remoteImageUrl?.trim();
-  const sourceAssetId = opts.startFrame.sourceAssetId?.trim();
-  let imageUrl: string;
   let stillProjectCreationIds: string[] = [];
   let imagesGroupId = opts.imagesGroupId;
 
-  if (existingImageUrl && sourceAssetId) {
-    opts.onProgress("Using project image on Parascene…");
-    imageUrl = existingImageUrl;
-    pushSteps(completeStep(steps, "still"));
-  } else {
-    opts.onProgress("Preparing framed start still…");
-    if (!opts.startFrame.framePath?.trim()) {
-      throw new Error(
-        "Place this clip after another clip on the timeline, or choose an image from assets.",
-      );
-    }
-    const startStill = await uploadFramedStill({
-      framePath: opts.startFrame.framePath,
-      framing: opts.startFrame.framing,
-      aspectRatio: opts.aspectRatio,
-      filenamePrefix:
-        opts.blueModel === "wan" || opts.blueModel === "wan_i2v"
-          ? "editor-wan-i2v-start"
-          : audioMode === "none"
-            ? "editor-ltx-i2v-start"
-            : "editor-a2v-start",
-      progressLabel: "start image",
-      onProgress: opts.onProgress,
-      projectId: opts.projectId,
-      projectTitle: opts.projectTitle,
-      imagesGroupId: opts.imagesGroupId,
-      videosGroupId: opts.videosGroupId,
-    });
-    imageUrl = startStill.imageUrl;
-    stillProjectCreationIds = startStill.projectCreationIds;
-    imagesGroupId = startStill.groupId ?? opts.imagesGroupId;
-    pushSteps(completeStep(steps, "still"));
-  }
+  const startStill = await prepareParasceneGenerationStill({
+    frame: opts.startFrame,
+    aspectRatio: opts.aspectRatio,
+    filenamePrefix:
+      opts.blueModel === "wan" || opts.blueModel === "wan_i2v"
+        ? "editor-wan-i2v-start"
+        : audioMode === "none"
+          ? "editor-ltx-i2v-start"
+          : "editor-a2v-start",
+    progressLabel: "start image",
+    onProgress: opts.onProgress,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+  });
+  const imageUrl = startStill.imageUrl;
+  stillProjectCreationIds = startStill.projectCreationIds;
+  imagesGroupId = startStill.groupId ?? opts.imagesGroupId;
+  pushSteps(completeStep(steps, "still"));
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
   const useWan = isWanFamilyBlueModel(opts.blueModel ?? "");

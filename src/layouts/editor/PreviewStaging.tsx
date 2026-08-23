@@ -76,10 +76,14 @@ type StagingFieldsProps = {
 
 type ClipDragHandleProps = {
   draft: StagedClipDraft;
+  disabled?: boolean;
+  unavailableTitle?: string;
 };
 
 type ClipPlaceHandleProps = {
   draft: StagedClipDraft;
+  disabled?: boolean;
+  unavailableTitle?: string;
 };
 
 type SlideshowRenderHandleProps = {
@@ -602,27 +606,39 @@ export function SlideshowRenderHandle({
 const DRAG_THRESHOLD_PX = 4;
 
 /** Place at end of track (no overlap) — no pointer hit-testing. */
-export function ClipPlaceHandle({ draft }: ClipPlaceHandleProps) {
+export function ClipPlaceHandle({
+  draft,
+  disabled = false,
+  unavailableTitle,
+}: ClipPlaceHandleProps) {
   const lane = targetLaneForDraft(draft);
   const laneLabel = lane === "audio" ? "A1" : "V1";
+  const title = disabled
+    ? (unavailableTitle ?? "Not available")
+    : `Place on ${laneLabel} after the last clip (no overlap)`;
   return (
     <button
       type="button"
-      className="editor-cartridge-grip is-action"
-      title={`Place on ${laneLabel} after the last clip (no overlap)`}
+      className={`editor-cartridge-grip is-action${disabled ? " is-soon" : ""}`}
+      title={title}
       aria-label={`Place prepared clip on ${laneLabel} at end of track`}
-      onClick={() => {
-        recordUiOpTrace({
-          type: "place_at_end_click",
-          kind: draft.kind,
-          reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
-        });
-        window.dispatchEvent(
-          new CustomEvent("parascene-staged-clip-place", {
-            detail: { draft },
-          }),
-        );
-      }}
+      disabled={disabled}
+      onClick={
+        disabled
+          ? undefined
+          : () => {
+              recordUiOpTrace({
+                type: "place_at_end_click",
+                kind: draft.kind,
+                reason: draft.isAddAssetPlaceholder ? "add_asset" : "staged",
+              });
+              window.dispatchEvent(
+                new CustomEvent("parascene-staged-clip-place", {
+                  detail: { draft },
+                }),
+              );
+            }
+      }
     >
       <span className="editor-cartridge-grip-label">Place</span>
       <span className="editor-cartridge-lane">{laneLabel}</span>
@@ -630,7 +646,11 @@ export function ClipPlaceHandle({ draft }: ClipPlaceHandleProps) {
   );
 }
 
-export function ClipDragHandle({ draft }: ClipDragHandleProps) {
+export function ClipDragHandle({
+  draft,
+  disabled = false,
+  unavailableTitle,
+}: ClipDragHandleProps) {
   const lane = targetLaneForDraft(draft);
   const laneLabel = lane === "audio" ? "A1" : "V1";
   const draggingRef = useRef(false);
@@ -711,6 +731,7 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
   );
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (disabled) return;
     if (event.button !== 0) return;
     // Prevent native HTML5 drag / text selection from stealing the gesture.
     event.preventDefault();
@@ -769,11 +790,12 @@ export function ClipDragHandle({ draft }: ClipDragHandleProps) {
   return (
     <div
       role="button"
-      tabIndex={0}
-      className="editor-cartridge-grip"
+      tabIndex={disabled ? -1 : 0}
+      className={`editor-cartridge-grip${disabled ? " is-soon" : ""}`}
       onPointerDown={onPointerDown}
-      title="Drag to timeline"
+      title={disabled ? (unavailableTitle ?? "Not available") : "Drag to timeline"}
       aria-label="Drag prepared clip to timeline"
+      aria-disabled={disabled || undefined}
     >
       <span className="editor-cartridge-grip-dots" aria-hidden />
       <span className="editor-cartridge-grip-label">Drag clip</span>

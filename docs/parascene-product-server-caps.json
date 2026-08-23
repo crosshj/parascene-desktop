@@ -1,0 +1,1608 @@
+{
+  "_meta": {
+    "endpoint": "GET https://api.parascene.com/api/servers",
+    "refreshed_at": "2026-08-22",
+    "note": "Live snapshot from signed-in desktop session. Strip auth_token when publishing.",
+    "server_ids": [
+      "1",
+      "3",
+      "4",
+      "6"
+    ]
+  },
+  "servers": {
+    "1": {
+      "id": 1,
+      "name": "Parascene",
+      "description": "Official Parascene system server",
+      "status": "active",
+      "server_url": "https://parascene-provider.vercel.app/api",
+      "methods": {
+        "replicate": {
+          "name": "Replicate",
+          "fields": {
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "X.ai Grok Imagine Image",
+                  "value": "xai/grok-imagine-image"
+                },
+                {
+                  "hint": "No input image support. Low censorship.",
+                  "label": "PrunaAI P-Image",
+                  "value": "prunaai/p-image"
+                },
+                {
+                  "hint": "Supports multiple image inputs. Low censorship.",
+                  "label": "PrunaAI P-Image Edit",
+                  "value": "prunaai/p-image-edit"
+                },
+                {
+                  "hint": "No input image support. Low censorship.",
+                  "label": "Qwen Image",
+                  "value": "qwen/qwen-image"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "Qwen Image Edit",
+                  "value": "qwen/qwen-image-edit"
+                },
+                {
+                  "hint": "Supports multiple image inputs.",
+                  "label": "Google Nano Banana (Gemini 2.5)",
+                  "value": "google/nano-banana"
+                },
+                {
+                  "hint": "Supports single image input.",
+                  "label": "BFL Flux 2 Pro",
+                  "value": "black-forest-labs/flux-2-pro"
+                },
+                {
+                  "hint": "Supports multiple image inputs.",
+                  "label": "ByteDance Seedream 4",
+                  "value": "bytedance/seedream-4"
+                },
+                {
+                  "hint": "No input image support.",
+                  "label": "PrunaAI Z-Image Turbo",
+                  "value": "prunaai/z-image-turbo",
+                  "uses_dimensions": true
+                },
+                {
+                  "hint": "Supports multiple image inputs [reference, style, character].",
+                  "label": "Luma Photon",
+                  "value": "luma/photon"
+                },
+                {
+                  "hint": "Supports single image input [subject].",
+                  "label": "MiniMax Image 01",
+                  "value": "minimax/image-01"
+                },
+                {
+                  "hint": "No input image support.",
+                  "label": "Leonardo AI Lucid Origin",
+                  "value": "leonardoai/lucid-origin"
+                },
+                {
+                  "hint": "No input image support. Low censorship.",
+                  "label": "Recraft V4",
+                  "value": "recraft-ai/recraft-v4",
+                  "uses_recraft_size": true
+                },
+                {
+                  "hint": "No input image support.  Low censorship.",
+                  "label": "ByteDance SDXL Lightning 4-step",
+                  "value": "bytedance/sdxl-lightning-4step:6f7a773af6fc3e8de9d5a3c00be77c17308914bf67772726aff83496ba1e3bbe",
+                  "uses_dimensions": true
+                },
+                {
+                  "hint": "Supports multiple image inputs [image, mask].  Low censorship.",
+                  "label": "Stability AI SDXL",
+                  "value": "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+                  "uses_dimensions": true
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "input_images": {
+              "type": "image_url_array",
+              "label": "Input Images",
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 3,
+          "default": true,
+          "description": "Run a Replicate image generation model."
+        },
+        "uploadImage": {
+          "name": "Upload Image",
+          "fields": {
+            "image_url": {
+              "type": "image_url",
+              "label": "Image URL",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0,
+          "description": "Letterboxes an image from a URL to the chosen aspect ratio (long edge 1024; no crop)."
+        },
+        "replicatePro": {
+          "name": "Replicate Pro",
+          "fields": {
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "Supports multiple image inputs. Premium.",
+                  "label": "Google Nano Banana 2",
+                  "value": "google/nano-banana-2"
+                },
+                {
+                  "hint": "Supports multiple image inputs. Premium.",
+                  "label": "Google Nano Banana Pro",
+                  "value": "google/nano-banana-pro"
+                },
+                {
+                  "hint": "Supports multiple image inputs. Premium.",
+                  "label": "OpenAI GPT-Image 1.5",
+                  "value": "openai/gpt-image-1.5"
+                },
+                {
+                  "hint": "Supports multiple image inputs. Premium.",
+                  "label": "OpenAI GPT-Image 2",
+                  "value": "openai/gpt-image-2"
+                },
+                {
+                  "hint": "Supports multiple image inputs. Premium.",
+                  "label": "BFL Flux 2 Max",
+                  "value": "black-forest-labs/flux-2-max"
+                },
+                {
+                  "hint": "Supports multiple image inputs.",
+                  "label": "BFL Flux 2 Pro Multi-Image Edit",
+                  "value": "black-forest-labs/flux-2-pro"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "input_images": {
+              "type": "image_url_array",
+              "label": "Input Images",
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 15,
+          "description": "Premium Replicate models. Higher quality, higher credits."
+        },
+        "pixelLabImage": {
+          "name": "PixelLab",
+          "fields": {
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "default": "pixflux",
+              "options": [
+                {
+                  "label": "Pixflux",
+                  "value": "pixflux"
+                },
+                {
+                  "label": "Bitforge",
+                  "value": "bitforge"
+                }
+              ],
+              "required": false
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "no_background": {
+              "type": "boolean",
+              "label": "No Background",
+              "default": false,
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.2,
+          "description": "Generate pixel art with PixelLab's Pixflux and Bitforge"
+        },
+        "replicateVideo": {
+          "name": "Replicate Video",
+          "async": true,
+          "fields": {
+            "image": {
+              "type": "image_url",
+              "label": "Image",
+              "required": true
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "default": "wan-video/wan-2.2-i2v-fast",
+              "options": [
+                {
+                  "hint": "Image-to-video (i2v), fast.",
+                  "label": "Wan Video 2.2 i2v Fast",
+                  "value": "wan-video/wan-2.2-i2v-fast"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            }
+          },
+          "intent": "video_generate",
+          "credits": 10,
+          "description": "Run a Replicate image-to-video model."
+        }
+      },
+      "capability_matrix": [],
+      "last_check_at": "2026-07-25T16:52:22.017Z"
+    },
+    "3": {
+      "id": 3,
+      "name": "SHARKGOD GENS",
+      "description": "paradudes - Random pixel art character (PNG)                                                                                           \nparaacidrobots - Random animated pixel art character (GIF)                                                                              \nparawindworlds - Random animated 3D voxel world (GIF)",
+      "status": "active",
+      "server_url": null,
+      "methods": {
+        "paradudes": {
+          "name": "Para Dudes",
+          "fields": {},
+          "credits": 0.25,
+          "preview": "https://sharkgod-gens.vercel.app/previews/paradudes.png",
+          "description": "Random pixel art character (PNG)"
+        },
+        "paraacidrobots": {
+          "name": "Para Acid Robots",
+          "fields": {},
+          "credits": 0.25,
+          "preview": "https://sharkgod-gens.vercel.app/previews/paraacidrobots.gif",
+          "description": "Random animated pixel art character (GIF)"
+        },
+        "parawindworlds": {
+          "name": "Para Windworlds",
+          "fields": {},
+          "credits": 0.5,
+          "preview": "https://sharkgod-gens.vercel.app/previews/parawindworlds.gif",
+          "description": "Random animated 3D voxel world (GIF)"
+        }
+      },
+      "capability_matrix": [],
+      "last_check_at": null
+    },
+    "4": {
+      "id": 4,
+      "name": "Croskie",
+      "description": null,
+      "status": "active",
+      "server_url": null,
+      "methods": {
+        "abstract": {
+          "name": "Abstract Generator",
+          "fields": {
+            "style": {
+              "type": "select",
+              "label": "Style",
+              "default": "",
+              "options": [
+                {
+                  "label": "Random",
+                  "value": ""
+                },
+                {
+                  "label": "Soft",
+                  "value": "soft"
+                },
+                {
+                  "label": "Dreamy",
+                  "value": "dreamy"
+                },
+                {
+                  "label": "Bold",
+                  "value": "bold"
+                },
+                {
+                  "label": "Neon",
+                  "value": "neon"
+                },
+                {
+                  "label": "Dark",
+                  "value": "dark"
+                },
+                {
+                  "label": "Candy",
+                  "value": "candy"
+                },
+                {
+                  "label": "Minimal",
+                  "value": "minimal"
+                }
+              ],
+              "required": false,
+              "description": "Pick a style or choose Random."
+            },
+            "width": {
+              "type": "number",
+              "label": "Width",
+              "required": false,
+              "description": "Output width in pixels (default 1024)"
+            },
+            "format": {
+              "type": "select",
+              "label": "Format",
+              "default": "png",
+              "options": [
+                {
+                  "label": "PNG",
+                  "value": "png"
+                },
+                {
+                  "label": "SVG",
+                  "value": "svg"
+                }
+              ],
+              "required": false,
+              "description": "Choose the output file format."
+            },
+            "height": {
+              "type": "number",
+              "label": "Height",
+              "required": false,
+              "description": "Output height in pixels (default 1024)"
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates vibrant abstract wallpapers with layered blobs, glowing gradients, organic shapes, and varied visual styles."
+        },
+        "cuteRobot": {
+          "name": "Cute Robot Generator",
+          "fields": {
+            "face": {
+              "type": "select",
+              "label": "Face",
+              "default": "",
+              "options": [
+                {
+                  "label": "Random",
+                  "value": ""
+                },
+                {
+                  "label": "Happy",
+                  "value": "happy"
+                },
+                {
+                  "label": "Sleepy",
+                  "value": "sleepy"
+                },
+                {
+                  "label": "Heart",
+                  "value": "heart"
+                },
+                {
+                  "label": "Pixel",
+                  "value": "pixel"
+                },
+                {
+                  "label": "Loading",
+                  "value": "loading"
+                },
+                {
+                  "label": "Surprised",
+                  "value": "surprised"
+                },
+                {
+                  "label": "Wink",
+                  "value": "wink"
+                }
+              ],
+              "required": false
+            },
+            "name": {
+              "type": "string",
+              "label": "Name",
+              "required": false,
+              "description": "Optional robot name"
+            },
+            "bodyType": {
+              "type": "select",
+              "label": "Body Type",
+              "default": "",
+              "options": [
+                {
+                  "label": "Random",
+                  "value": ""
+                },
+                {
+                  "label": "Round",
+                  "value": "round"
+                },
+                {
+                  "label": "Square",
+                  "value": "square"
+                },
+                {
+                  "label": "Capsule",
+                  "value": "capsule"
+                },
+                {
+                  "label": "Tiny",
+                  "value": "tiny"
+                },
+                {
+                  "label": "Wide",
+                  "value": "wide"
+                },
+                {
+                  "label": "Stacked",
+                  "value": "stacked"
+                },
+                {
+                  "label": "Floating",
+                  "value": "floating"
+                },
+                {
+                  "label": "Tank",
+                  "value": "tank"
+                }
+              ],
+              "required": false
+            },
+            "accessory": {
+              "type": "select",
+              "label": "Accessory",
+              "default": "",
+              "options": [
+                {
+                  "label": "Random",
+                  "value": ""
+                },
+                {
+                  "label": "Antenna",
+                  "value": "antenna"
+                },
+                {
+                  "label": "Headphones",
+                  "value": "headphones"
+                },
+                {
+                  "label": "Flower",
+                  "value": "flower"
+                },
+                {
+                  "label": "Cap",
+                  "value": "cap"
+                },
+                {
+                  "label": "Halo",
+                  "value": "halo"
+                },
+                {
+                  "label": "Backpack",
+                  "value": "backpack"
+                },
+                {
+                  "label": "Ears",
+                  "value": "ears"
+                },
+                {
+                  "label": "Bow",
+                  "value": "bow"
+                },
+                {
+                  "label": "None",
+                  "value": "none"
+                }
+              ],
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a random cute robot companion with unique shapes, faces, and accessories."
+        },
+        "spriteGen": {
+          "name": "2D Sprite Generator",
+          "fields": {
+            "seed": {
+              "type": "number",
+              "label": "Seed",
+              "required": false,
+              "description": "Seed for deterministic sprite generation"
+            },
+            "scale": {
+              "type": "number",
+              "label": "Scale",
+              "required": false,
+              "description": "Pixel scale factor (default 12)"
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a simple 2D pixel character sprite"
+        },
+        "tileSheet": {
+          "name": "Tile Sheet Generator",
+          "fields": {
+            "grid": {
+              "type": "number",
+              "label": "Grid",
+              "required": false
+            },
+            "seed": {
+              "type": "string",
+              "label": "Seed",
+              "required": false
+            },
+            "gridLines": {
+              "type": "number",
+              "label": "Grid Lines",
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a 1024x1024 tileset PNG."
+        },
+        "wallpaper": {
+          "name": "Wallpaper Generator",
+          "fields": {},
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a procedural abstract wallpaper PNG."
+        },
+        "chibiPixel": {
+          "name": "Chibi Pixel Art",
+          "fields": {},
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a 1024x1024 image with a chibi-style pixel art character"
+        },
+        "emotionGen": {
+          "name": "Emotion Portrait Generator",
+          "fields": {
+            "seed": {
+              "type": "string",
+              "label": "Seed",
+              "required": false
+            },
+            "scale": {
+              "type": "number",
+              "label": "Scale",
+              "required": false
+            },
+            "emotion": {
+              "type": "string",
+              "label": "Emotion",
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Procedural pixel emotion portrait."
+        },
+        "personaGen": {
+          "name": "Random Character Generator",
+          "fields": {},
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a random code-only pixel character. No input required."
+        },
+        "mutationGen": {
+          "name": "Mutation Generator",
+          "fields": {
+            "baseType": {
+              "type": "select",
+              "label": "Base Type",
+              "default": "",
+              "options": [
+                {
+                  "label": "Random",
+                  "value": ""
+                },
+                {
+                  "label": "Hero",
+                  "value": "hero"
+                },
+                {
+                  "label": "Creature",
+                  "value": "creature"
+                },
+                {
+                  "label": "Robot",
+                  "value": "robot"
+                },
+                {
+                  "label": "Animal",
+                  "value": "animal"
+                },
+                {
+                  "label": "Food",
+                  "value": "food"
+                }
+              ],
+              "required": false
+            },
+            "chaosLevel": {
+              "type": "select",
+              "label": "Chaos Level",
+              "default": "medium",
+              "options": [
+                {
+                  "label": "Low",
+                  "value": "low"
+                },
+                {
+                  "label": "Medium",
+                  "value": "medium"
+                },
+                {
+                  "label": "Maximum",
+                  "value": "max"
+                }
+              ],
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates alternate-universe mutation cards from a random base specimen."
+        },
+        "birthdayCard": {
+          "name": "Birthday Card Generator",
+          "fields": {
+            "age": {
+              "type": "string",
+              "label": "Age",
+              "required": false,
+              "description": "Optional age to include on the card."
+            },
+            "name": {
+              "type": "string",
+              "label": "Name",
+              "required": false,
+              "description": "Optional recipient name for the card."
+            },
+            "color": {
+              "type": "select",
+              "label": "Color Palette",
+              "default": "pink",
+              "options": [
+                {
+                  "label": "Pink",
+                  "value": "pink"
+                },
+                {
+                  "label": "Blue",
+                  "value": "blue"
+                },
+                {
+                  "label": "Purple",
+                  "value": "purple"
+                },
+                {
+                  "label": "Gold",
+                  "value": "gold"
+                },
+                {
+                  "label": "Rainbow",
+                  "value": "rainbow"
+                },
+                {
+                  "label": "Red",
+                  "value": "red"
+                },
+                {
+                  "label": "Green",
+                  "value": "green"
+                },
+                {
+                  "label": "Pastel",
+                  "value": "pastel"
+                }
+              ],
+              "required": false,
+              "description": "Choose the card color palette."
+            },
+            "theme": {
+              "type": "select",
+              "label": "Theme",
+              "default": "cute",
+              "options": [
+                {
+                  "label": "Cute",
+                  "value": "cute"
+                },
+                {
+                  "label": "Elegant",
+                  "value": "elegant"
+                },
+                {
+                  "label": "Party",
+                  "value": "party"
+                },
+                {
+                  "label": "Floral",
+                  "value": "floral"
+                },
+                {
+                  "label": "Kids",
+                  "value": "kids"
+                },
+                {
+                  "label": "Pastel",
+                  "value": "pastel"
+                },
+                {
+                  "label": "Bold",
+                  "value": "bold"
+                },
+                {
+                  "label": "Minimal",
+                  "value": "minimal"
+                }
+              ],
+              "required": false,
+              "description": "Choose the visual theme of the birthday card."
+            },
+            "layout": {
+              "type": "select",
+              "label": "Layout",
+              "default": "centered",
+              "options": [
+                {
+                  "label": "Centered",
+                  "value": "centered"
+                },
+                {
+                  "label": "Split",
+                  "value": "split"
+                },
+                {
+                  "label": "Framed",
+                  "value": "framed"
+                },
+                {
+                  "label": "Confetti Top",
+                  "value": "confetti-top"
+                },
+                {
+                  "label": "Balloon Corners",
+                  "value": "balloon-corners"
+                }
+              ],
+              "required": false,
+              "description": "Choose the layout style of the card."
+            },
+            "messageStyle": {
+              "type": "select",
+              "label": "Message Style",
+              "default": "sweet",
+              "options": [
+                {
+                  "label": "Simple",
+                  "value": "simple"
+                },
+                {
+                  "label": "Sweet",
+                  "value": "sweet"
+                },
+                {
+                  "label": "Funny",
+                  "value": "funny"
+                },
+                {
+                  "label": "Cheerful",
+                  "value": "cheerful"
+                }
+              ],
+              "required": false,
+              "description": "Choose the style of birthday message."
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates colorful 1024\u00d71024 birthday cards with different themes, palettes, layouts, and message styles."
+        },
+        "fortuneCookie": {
+          "name": "Fortune Cookie",
+          "fields": {},
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates a fortune cookie image."
+        },
+        "websiteDesign": {
+          "name": "Website Design Generator",
+          "inputs": {
+            "name": {
+              "type": "text",
+              "default": "Jane Doe",
+              "description": "Name to show on the website design"
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "description": "Generates random website mockup designs with nice color palettes."
+        }
+      },
+      "capability_matrix": [],
+      "last_check_at": "2026-05-15T01:11:25.837Z"
+    },
+    "6": {
+      "id": 6,
+      "name": "Parascene Blue",
+      "description": "A collection of local models for you.",
+      "status": "active",
+      "server_url": "https://blue.parascene.com/api",
+      "methods": {
+        "text2image": {
+          "id": "text2image",
+          "name": "Text To Image",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "label": "flux: flux1-dev",
+                  "value": "diffusion_models/flux/flux1-dev.safetensors"
+                },
+                {
+                  "label": "flux: flux1-dev-fp8",
+                  "value": "checkpoints/FLUX1/flux1-dev-fp8.safetensors"
+                },
+                {
+                  "label": "flux: flux1-dev-kontext_fp8_scaled",
+                  "value": "diffusion_models/flux/flux1-dev-kontext_fp8_scaled.safetensors"
+                },
+                {
+                  "label": "flux: flux1-krea-dev_fp8_scaled",
+                  "value": "diffusion_models/flux/flux1-krea-dev_fp8_scaled.safetensors"
+                },
+                {
+                  "label": "flux: flux1-schnell",
+                  "value": "diffusion_models/flux/flux1-schnell.safetensors"
+                },
+                {
+                  "label": "flux: flux1-schnell-fp8",
+                  "value": "checkpoints/FLUX1/flux1-schnell-fp8.safetensors"
+                },
+                {
+                  "label": "flux: getphatFLUXReality_v10FP8",
+                  "value": "diffusion_models/flux/getphatFLUXReality_v10FP8.safetensors"
+                },
+                {
+                  "label": "flux: getphatFLUXReality_v5HardcoreFP8",
+                  "value": "diffusion_models/flux/getphatFLUXReality_v5HardcoreFP8.safetensors"
+                },
+                {
+                  "label": "flux: real-dream-flux-1-fp8",
+                  "value": "diffusion_models/flux/real-dream-flux-1-fp8.safetensors"
+                },
+                {
+                  "label": "flux: STOIQOAfroditeFLUXXL_F1DAlpha",
+                  "value": "diffusion_models/flux/STOIQOAfroditeFLUXXL_F1DAlpha.safetensors"
+                },
+                {
+                  "label": "flux: STOIQONewrealityFLUXSD35_f1DAlphaTwo",
+                  "value": "diffusion_models/flux/STOIQONewrealityFLUXSD35_f1DAlphaTwo.safetensors"
+                },
+                {
+                  "label": "pony: cyberrealisticPony_v130",
+                  "value": "checkpoints/pony/cyberrealisticPony_v130.safetensors"
+                },
+                {
+                  "label": "qwen: qwen_image_edit_fp8_e4m3fn",
+                  "value": "diffusion_models/qwen/qwen_image_edit_fp8_e4m3fn.safetensors"
+                },
+                {
+                  "label": "qwen: Qwen-Rapid-AIO-NSFW-v9",
+                  "value": "checkpoints/qwen/Qwen-Rapid-AIO-NSFW-v9.safetensors"
+                },
+                {
+                  "label": "sd15: cyberrealistic_v20",
+                  "value": "checkpoints/1.5/cyberrealistic_v20.safetensors"
+                },
+                {
+                  "label": "sd15: deliberate_v11",
+                  "value": "checkpoints/1.5/deliberate_v11.safetensors"
+                },
+                {
+                  "label": "sd15: dreamShaper_8_pruned",
+                  "value": "checkpoints/1.5/dreamShaper_8_pruned.safetensors"
+                },
+                {
+                  "label": "sd15: liberty_main",
+                  "value": "checkpoints/1.5/liberty_main.safetensors"
+                },
+                {
+                  "label": "sd15: lofi_V2pre",
+                  "value": "checkpoints/1.5/lofi_V2pre.safetensors"
+                },
+                {
+                  "label": "sd15: qgo10b_qgo10b",
+                  "value": "checkpoints/1.5/qgo10b_qgo10b.safetensors"
+                },
+                {
+                  "label": "sd15: realisticVisionV60B1_v60B1VAE",
+                  "value": "checkpoints/1.5/realisticVisionV60B1_v60B1VAE.safetensors"
+                },
+                {
+                  "label": "sd15: revAnimated_v122",
+                  "value": "checkpoints/1.5/revAnimated_v122.safetensors"
+                },
+                {
+                  "label": "sd15: rpg_v5",
+                  "value": "checkpoints/1.5/rpg_v5.safetensors"
+                },
+                {
+                  "label": "sd15: toonAme_version20",
+                  "value": "checkpoints/1.5/toonAme_version20.safetensors"
+                },
+                {
+                  "label": "sdxl: dreamshaperXL_turboDpmppSDE",
+                  "value": "checkpoints/xl/dreamshaperXL_turboDpmppSDE.safetensors"
+                },
+                {
+                  "label": "sdxl: illustriousXL20_v20",
+                  "value": "checkpoints/xl/illustriousXL20_v20.safetensors"
+                },
+                {
+                  "label": "sdxl: juggernautXL_v7Rundiffusion",
+                  "value": "checkpoints/xl/juggernautXL_v7Rundiffusion.safetensors"
+                },
+                {
+                  "label": "sdxl: juggernautXL_v9Rdphoto2Lightning",
+                  "value": "checkpoints/xl/juggernautXL_v9Rdphoto2Lightning.safetensors"
+                },
+                {
+                  "label": "sdxl: protovisionXLHighFidelity3D_releaseV660Bakedvae",
+                  "value": "checkpoints/xl/protovisionXLHighFidelity3D_releaseV660Bakedvae.safetensors"
+                },
+                {
+                  "label": "sdxl: realcartoonXL_v6",
+                  "value": "checkpoints/xl/realcartoonXL_v6.safetensors"
+                },
+                {
+                  "label": "sdxl: realDream_sdxlLightning1",
+                  "value": "checkpoints/xl/realDream_sdxlLightning1.safetensors"
+                },
+                {
+                  "label": "sdxl: sd_xl_base_1.0",
+                  "value": "checkpoints/xl/sd_xl_base_1.0.safetensors"
+                },
+                {
+                  "label": "sdxl: sd_xl_turbo_1.0_fp16",
+                  "value": "checkpoints/xl/sd_xl_turbo_1.0_fp16.safetensors"
+                },
+                {
+                  "label": "sdxl: zavychromaxl_v40",
+                  "value": "checkpoints/xl/zavychromaxl_v40.safetensors"
+                },
+                {
+                  "label": "z-image: z_image_turbo_bf16",
+                  "value": "diffusion_models/z-image/z_image_turbo_bf16.safetensors"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            }
+          },
+          "intent": "image_generate",
+          "credits": 0.1,
+          "default": true,
+          "description": "Generate an image from text."
+        },
+        "text2video": {
+          "id": "text2video",
+          "name": "Text To Video",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "Wan 2.2 t2v rapid-AIO checkpoint (WAN\\wan2.2-t2v-rapid-aio-v10.safetensors).",
+                  "label": "Wan \u2014 text-to-video (rapid AIO)",
+                  "value": "wan_t2v"
+                },
+                {
+                  "hint": "LTX 2.3 t2v checkpoint (ltx-2.3-22b-dev-fp8.safetensors).",
+                  "label": "LTX \u2014 text-to-video",
+                  "value": "ltx_t2v"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "duration_seconds": {
+              "max": 15,
+              "min": 1,
+              "step": 0.5,
+              "type": "number",
+              "label": "Duration (seconds)",
+              "required": false,
+              "description": "Output video length in seconds (default ~5\u20139 depending on model)."
+            }
+          },
+          "intent": "video_generate",
+          "credits": 1,
+          "default": false,
+          "description": "Generate a video from a text prompt."
+        },
+        "audio2video": {
+          "id": "audio2video",
+          "name": "Audio To Video",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "LTX 2.3 ia2v checkpoint with user-supplied audio (ltx-2.3-22b-dev-fp8.safetensors).",
+                  "label": "LTX \u2014 audio-to-video (ia2v)",
+                  "value": "ltx_a2v"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "input_images": {
+              "type": "image_url_array",
+              "label": "Input Images",
+              "required": false,
+              "description": "Optional start image. When omitted, generates from audio and prompt only."
+            },
+            "duration_seconds": {
+              "max": 15,
+              "min": 1,
+              "step": 0.5,
+              "type": "number",
+              "label": "Duration (seconds)",
+              "required": false,
+              "description": "Output video length in seconds (default 9). Audio is trimmed to match."
+            },
+            "input_audio_urls": {
+              "type": "audio_url_array",
+              "label": "Input Audio",
+              "required": true
+            }
+          },
+          "intent": "video_generate",
+          "credits": 1,
+          "default": false,
+          "description": "Generate a video from audio and prompt; optional start image."
+        },
+        "image2image": {
+          "id": "image2image",
+          "name": "Image To Image",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "Flux Kontext reference-latent edit (fixed weights in workflow).",
+                  "label": "Flux \u2014 Kontext edit",
+                  "value": "flux_kontext_i2i"
+                },
+                {
+                  "hint": "Qwen Image Edit + Lightning LoRA (fixed workflow).",
+                  "label": "Qwen \u2014 Image Edit 4-step",
+                  "value": "qwen_edit_i2i"
+                },
+                {
+                  "hint": "Qwen Rapid AIO edit-plus stack (fixed checkpoint).",
+                  "label": "Qwen \u2014 Rapid AIO edit",
+                  "value": "qwen_rapid_i2i"
+                },
+                {
+                  "hint": "OmniGen2 reference-latent edit (fixed workflow).",
+                  "label": "OmniGen2 \u2014 image edit",
+                  "value": "omnigen2_edit_i2i"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: dreamshaperXL_turboDpmppSDE",
+                  "value": "checkpoints/xl/dreamshaperXL_turboDpmppSDE.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: illustriousXL20_v20",
+                  "value": "checkpoints/xl/illustriousXL20_v20.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: juggernautXL_v7Rundiffusion",
+                  "value": "checkpoints/xl/juggernautXL_v7Rundiffusion.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: juggernautXL_v9Rdphoto2Lightning",
+                  "value": "checkpoints/xl/juggernautXL_v9Rdphoto2Lightning.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: protovisionXLHighFidelity3D_releaseV660Bakedvae",
+                  "value": "checkpoints/xl/protovisionXLHighFidelity3D_releaseV660Bakedvae.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: realcartoonXL_v6",
+                  "value": "checkpoints/xl/realcartoonXL_v6.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: realDream_sdxlLightning1",
+                  "value": "checkpoints/xl/realDream_sdxlLightning1.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: sd_xl_base_1.0",
+                  "value": "checkpoints/xl/sd_xl_base_1.0.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: sd_xl_turbo_1.0_fp16",
+                  "value": "checkpoints/xl/sd_xl_turbo_1.0_fp16.safetensors"
+                },
+                {
+                  "hint": "Supports single image input. Low censorship.",
+                  "label": "sdxl: zavychromaxl_v40",
+                  "value": "checkpoints/xl/zavychromaxl_v40.safetensors"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "denoise": {
+              "max": 1,
+              "min": 0,
+              "step": 0.01,
+              "type": "number",
+              "label": "Denoise",
+              "required": false,
+              "description": "Strength of denoising. If not provided, SDXL models default to 0.65."
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "input_images": {
+              "type": "image_url_array",
+              "label": "Input Images",
+              "required": false
+            }
+          },
+          "intent": "image_mutate",
+          "credits": 0.1,
+          "default": false,
+          "description": "Generate an image from an input image and text."
+        },
+        "image2video": {
+          "id": "image2video",
+          "name": "Image To Video",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "Wan 2.2 i2v stack on Comfy (weights under diffusion_models/wan/i2v).",
+                  "label": "Wan \u2014 image-to-video",
+                  "value": "wan_i2v"
+                },
+                {
+                  "hint": "LTX 2.3 i2v checkpoint (weights under checkpoints/ltx/i2v).",
+                  "label": "LTX \u2014 image-to-video",
+                  "value": "ltx_i2v"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "input_images": {
+              "type": "image_url_array",
+              "label": "Input Images",
+              "required": true,
+              "description": "Start frame (required). Optional second image is the end frame (first/last-frame interpolate)."
+            },
+            "duration_seconds": {
+              "max": 15,
+              "min": 1,
+              "step": 0.5,
+              "type": "number",
+              "label": "Duration (seconds)",
+              "required": false,
+              "description": "Output video length in seconds (default ~5\u20139 depending on model)."
+            }
+          },
+          "intent": "video_generate",
+          "credits": 1,
+          "default": false,
+          "description": "Generate a video from a start image and prompt (local Comfy workflows)."
+        },
+        "video2video": {
+          "id": "video2video",
+          "name": "Video To Video",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "Classic V2V: input video + prompt. Requires wan2.2_fun_vace_*_14B_fp8_scaled weights.",
+                  "label": "Wan \u2014 video-to-video (Fun VACE)",
+                  "value": "wan_v2v"
+                },
+                {
+                  "hint": "Character image + motion video. Requires wan2.2_fun_vace_*_14B_fp8_scaled weights.",
+                  "label": "Wan \u2014 motion transfer (Fun VACE)",
+                  "value": "wan_motion"
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "aspect_ratio": {
+              "type": "select",
+              "label": "Aspect Ratio",
+              "hidden": true,
+              "default": "1:1",
+              "options": [
+                {
+                  "label": "1:1",
+                  "value": "1:1"
+                },
+                {
+                  "label": "4:5",
+                  "value": "4:5"
+                },
+                {
+                  "label": "9:16",
+                  "value": "9:16"
+                },
+                {
+                  "label": "16:9",
+                  "value": "16:9"
+                }
+              ],
+              "required": false
+            },
+            "input_images": {
+              "type": "image_url_array",
+              "label": "Input Images",
+              "required": false,
+              "description": "Required for wan_motion: character/reference image. Ignored for wan_v2v."
+            },
+            "duration_seconds": {
+              "max": 15,
+              "min": 1,
+              "step": 0.5,
+              "type": "number",
+              "label": "Duration (seconds)",
+              "required": false,
+              "description": "Output video length in seconds (default ~5). Clamped to 1\u201315."
+            },
+            "input_video_urls": {
+              "type": "video_url_array",
+              "label": "Input Video",
+              "required": true,
+              "description": "Source video (motion / footage to condition on)."
+            }
+          },
+          "intent": "video_generate",
+          "credits": 1,
+          "default": false,
+          "description": "Restyle a video (Wan VACE) or transfer motion from a video onto a character image."
+        }
+      },
+      "capability_matrix": [],
+      "last_check_at": "2026-07-25T06:48:23.288Z"
+    }
+  }
+}

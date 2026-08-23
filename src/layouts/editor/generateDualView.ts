@@ -31,6 +31,13 @@ export function defaultGenerateDualView(
   return "result";
 }
 
+/** Result | Form chrome only after generate starts or a finished result exists. */
+export function shouldShowGenerateDualChrome(
+  phase: GenerateDualPhase,
+): boolean {
+  return phase !== "pre_gen";
+}
+
 /**
  * Keep Result | Form when moving between finished generated assets so browsing
  * provenance does not bounce back to Result.

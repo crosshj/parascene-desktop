@@ -19,6 +19,15 @@ import { isSessionReauthError } from "../auth/errors";
 import { useShell } from "../app/ShellProvider";
 import type { LibrarySurface } from "../app/shellSession";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { identifyDesktopCabinet } from "../project/desktopProjectGroups";
+import {
+  appendMembersToGroupCover,
+  followUpDesktopCabinetGroupAppend,
+} from "./libraryGroupMembers";
+import {
+  buildGroupMembershipByMemberId,
+  resolveLibraryGroupAddTarget,
+} from "./libraryGroupAddTarget";
 import { CreationsFilterEmpty, FolderEmpty } from "./CreationsFilterEmpty";
 import { runCloudLibraryRepair } from "../sync/cloudRepair";
 import {
@@ -1228,6 +1237,7 @@ function CreationsPanel({
     releaseOrphanFolder,
     creationsFilterId,
     setCreationsFilterId,
+    setOpenProjectGroupIds,
   } = useShell();
   const confirm = useConfirm();
   const [active, setActive] = useState<Creation | null>(null);
@@ -1701,6 +1711,108 @@ function CreationsPanel({
     }
     return map;
   }, [boardCreations, creations, folderFilterMembersById]);
+
+  const libraryCreationsById = useMemo(() => {
+    const map: Record<string, Creation> = {};
+    const ingest = (list: Creation[] | null | undefined) => {
+      for (const creation of list ?? []) {
+        map[creation.id] = creation;
+      }
+    };
+    ingest(boardCreations);
+    ingest(folderMembers);
+    ingest(creations);
+    for (const creation of folderFilterMembersById.values()) {
+      map[creation.id] = creation;
+    }
+    return map;
+  }, [boardCreations, creations, folderFilterMembersById, folderMembers]);
+
+  const groupMembershipByMemberId = useMemo(
+    () => buildGroupMembershipByMemberId(libraryCreationsById),
+    [libraryCreationsById],
+  );
+
+  const groupAddTargetForSelection = useMemo(() => {
+    if (selectedIds.size === 0) return null;
+    return resolveLibraryGroupAddTarget({
+      assetIds: [...selectedIds],
+      groupMembershipByMemberId,
+      creationsById: libraryCreationsById,
+    });
+  }, [
+    groupMembershipByMemberId,
+    libraryCreationsById,
+    selectedIds,
+  ]);
+
+  const addToGroupLabel = groupAddTargetForSelection
+    ? `Add to group${
+        groupAddTargetForSelection.memberIds.length > 1
+          ? ` (${groupAddTargetForSelection.memberIds.length})`
+          : ""
+      }`
+    : null;
+
+  const addToGroupTitle = groupAddTargetForSelection
+    ? `Add selected ${groupAddTargetForSelection.memberMediaKind}s to “${groupAddTargetForSelection.groupLabel}”. Include the group cover or a member in the selection.`
+    : null;
+
+  const onAddSelectionToGroup = useCallback(() => {
+    const target = groupAddTargetForSelection;
+    if (!target) return;
+    const count = target.memberIds.length;
+    const cover = libraryCreationsById[target.groupId] ?? null;
+    void confirm({
+      title:
+        count === 1
+          ? `Add to group?`
+          : `Add ${count} to group?`,
+      message:
+        count === 1
+          ? `This will add the selected ${target.memberMediaKind} to “${target.groupLabel}” on Parascene.`
+          : `This will add ${count} selected ${target.memberMediaKind}s to “${target.groupLabel}” on Parascene.`,
+      confirmLabel: "Add to group",
+      cancelLabel: "Cancel",
+      errorTitle: "Could not add to group",
+      onConfirm: async ({ setMessage }) => {
+        setMessage("Starting…");
+        const result = await appendMembersToGroupCover({
+          groupId: target.groupId,
+          memberIds: target.memberIds,
+          onProgress: setMessage,
+        });
+        await followUpDesktopCabinetGroupAppend({
+          groupId: result.groupId,
+          cover,
+          onProgress: setMessage,
+        });
+        const cabinet = cover
+          ? identifyDesktopCabinet(cover)?.projectId?.trim()
+          : null;
+        if (cabinet && cabinet === openProjectId) {
+          await addCreationsToProject(cabinet, [result.groupId]);
+          const kind = identifyDesktopCabinet(cover)?.role;
+          if (kind === "project_images") {
+            setOpenProjectGroupIds({ imagesGroupId: result.groupId });
+          } else if (kind === "project_videos") {
+            setOpenProjectGroupIds({ videosGroupId: result.groupId });
+          }
+        }
+        setSelectedIds(new Set());
+        setDeferredKeepIds(new Set());
+        await refreshFolders();
+      },
+    });
+  }, [
+    addCreationsToProject,
+    confirm,
+    groupAddTargetForSelection,
+    libraryCreationsById,
+    openProjectId,
+    refreshFolders,
+    setOpenProjectGroupIds,
+  ]);
 
   const homeFolderAspect = useMemo(
     () => folderBoardAspect(gridFilters),
@@ -2301,6 +2413,11 @@ function CreationsPanel({
             onNewProject={onNewProjectFromSelection}
             onNewFolder={() => setCreateFolderOpen(true)}
             onAddToFolder={() => setPickFolderOpen(true)}
+            onAddToGroup={
+              groupAddTargetForSelection ? onAddSelectionToGroup : undefined
+            }
+            addToGroupLabel={addToGroupLabel}
+            addToGroupTitle={addToGroupTitle}
             onRemoveFromFolder={() => {
               void onRemoveSelectionFromFolder();
             }}

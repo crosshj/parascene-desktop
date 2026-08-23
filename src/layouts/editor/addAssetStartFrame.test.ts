@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
   clipSongTimeRangeFromTimeline,
@@ -7,15 +8,25 @@ import {
   lastFrameSourceSec,
   looksLikeImagePath,
   nextVideoClipAfter,
+  parasceneImageUrlFromCreation,
   priorVideoClipBefore,
   resolveAddAssetGenerationTiming,
   resolveEditorMainAudioCreationId,
+  resolveParasceneStartFrameImageUrl,
   startFrameIsReady,
   timelineSecToSongSec,
   visualLayerAfterPlaceholder,
   visualLayerBeforePlaceholder,
 } from "./addAssetStartFrame";
 import { resolveTimelineFrame } from "./timelineCompose";
+
+vi.mock("../../library/catalogClient", () => ({
+  getCreations: vi.fn(),
+}));
+
+import { getCreations } from "../../library/catalogClient";
+
+const getCreationsMock = vi.mocked(getCreations);
 
 function clip(
   partial: Partial<TimelineClip> &
@@ -504,6 +515,76 @@ describe("startFrameIsReady", () => {
         frameTimeSec: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("parasceneImageUrlFromCreation", () => {
+  it("returns remote HTTPS URLs for image creations only", () => {
+    const image = {
+      id: "img-1",
+      mediaType: "image",
+      remoteUrl: "https://cdn.example/a.png",
+    } as Creation;
+    const video = {
+      id: "vid-1",
+      mediaType: "video",
+      remoteUrl: "https://cdn.example/a.mp4",
+    } as Creation;
+    expect(parasceneImageUrlFromCreation(image)).toBe(
+      "https://cdn.example/a.png",
+    );
+    expect(parasceneImageUrlFromCreation(video)).toBeNull();
+  });
+});
+
+describe("resolveParasceneStartFrameImageUrl", () => {
+  it("uses cached remote URLs for fit framing without cloning", async () => {
+    expect(
+      await resolveParasceneStartFrameImageUrl({
+        previewUrl: null,
+        note: "",
+        framePath: "/tmp/framed.jpg",
+        frameTimeSec: null,
+        framing: "fit",
+        sourceAssetId: "img-1",
+        remoteImageUrl: "https://cdn.example/still.png",
+      }),
+    ).toBe("https://cdn.example/still.png");
+    expect(getCreationsMock).not.toHaveBeenCalled();
+  });
+
+  it("skips passthrough when framing is not fit", async () => {
+    expect(
+      await resolveParasceneStartFrameImageUrl({
+        previewUrl: null,
+        note: "",
+        framePath: "/tmp/framed.jpg",
+        frameTimeSec: null,
+        framing: "fill",
+        sourceAssetId: "img-1",
+        remoteImageUrl: "https://cdn.example/still.png",
+      }),
+    ).toBeNull();
+  });
+
+  it("resolves library image URLs from sourceAssetId", async () => {
+    getCreationsMock.mockResolvedValueOnce([
+      {
+        id: "img-1",
+        mediaType: "image",
+        remoteUrl: "https://cdn.example/from-library.png",
+      } as Creation,
+    ]);
+    expect(
+      await resolveParasceneStartFrameImageUrl({
+        previewUrl: null,
+        note: "",
+        framePath: "/tmp/framed.jpg",
+        frameTimeSec: null,
+        framing: "fit",
+        sourceAssetId: "img-1",
+      }),
+    ).toBe("https://cdn.example/from-library.png");
   });
 });
 

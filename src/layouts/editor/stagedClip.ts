@@ -176,7 +176,14 @@ export function addAssetDraftFromGeneration(
   } else {
     draft.audioMode = audioModeForIntent(intentId, generation.audioMode);
   }
-  if (provider === "parascene_blue" || provider === "blue_direct") {
+  if (
+    intentId === "text_to_image" ||
+    intentId === "image_to_image"
+  ) {
+    if (model?.trim()) {
+      draft.replicateModel = model.trim();
+    }
+  } else if (provider === "parascene_blue" || provider === "blue_direct") {
     if (model?.trim()) {
       draft.blueModel = model.trim();
     } else if (generation.mode === "first_last") {

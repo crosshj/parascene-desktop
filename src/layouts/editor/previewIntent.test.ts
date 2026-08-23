@@ -76,7 +76,13 @@ describe("previewIntent catalog", () => {
     expect(isIntentServerWired("image_audio_to_video", "parascene_blue")).toBe(
       true,
     );
+    expect(isIntentServerWired("video_to_video", "parascene_blue")).toBe(true);
     expect(isIntentServerWired("video_to_video", "blue_direct")).toBe(false);
+    expect(isIntentServerWired("reference_to_video", "parascene_blue")).toBe(
+      false,
+    );
+    expect(isIntentServerWired("text_to_image", "parascene_blue")).toBe(true);
+    expect(isIntentServerWired("image_to_image", "parascene_blue")).toBe(true);
     expect(isIntentServerWired("text_to_image", "replicate")).toBe(true);
     expect(isIntentServerWired("text_to_image", "blue_direct")).toBe(true);
   });
@@ -98,6 +104,11 @@ describe("previewIntent catalog", () => {
         makeAddAssetIntent("text_to_image", "replicate"),
       ),
     ).toBe(false);
+    expect(
+      addAssetIntentAllowsTimelinePlacement(
+        makeAddAssetIntent("video_to_video", "parascene_blue"),
+      ),
+    ).toBe(true);
     expect(
       addAssetIntentAllowsTimelinePlacement(
         makeAddAssetIntent("video_to_video", "blue_direct"),
@@ -148,9 +159,11 @@ describe("previewIntent catalog", () => {
   });
 
   it("lists servers per intent", () => {
-    expect(serversForIntent("reference_to_video").every((c) => c.status === "coming_soon")).toBe(
-      true,
-    );
+    expect(
+      serversForIntent("reference_to_video").every(
+        (c) => c.status === "coming_soon",
+      ),
+    ).toBe(true);
   });
 
   it("embeds intent on add-asset drag drafts", () => {

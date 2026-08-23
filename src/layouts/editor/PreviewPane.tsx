@@ -126,11 +126,14 @@ import {
 } from "./stagedClip";
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
 import { GenerateResultPane } from "./GenerateResultPane";
+import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
   shouldPreserveGenerateDualView,
+  shouldShowGenerateDualChrome,
+  type GenerateDualPhase,
   type GenerateDualViewId,
   type LibraryGenerateUiState,
 } from "./generateDualView";
@@ -148,7 +151,14 @@ import { loadLastGenerateIntent } from "./generateIntentPrefs";
 import {
   addAssetGenerationFromCreation,
   isTextToImageGeneration,
+  isImageToImageGeneration,
 } from "../../project/desktopAddAssetGeneration";
+import {
+  libraryAssetPlaceholderPhase,
+  isActiveLibraryAssetPlaceholder,
+  resolveLibraryAssetPlaceholder,
+} from "../../project/libraryAssetPlaceholder";
+import { libraryPlaceholderResultSteps } from "./libraryAssetGeneration";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -159,8 +169,18 @@ type PreviewPaneProps = {
   /** Pre-drop generation intent while the + slot is active. */
   addAssetIntent?: AddAssetIntent | null;
   onAddAssetIntentChange?: (intent: AddAssetIntent) => void;
-  /** Seed T2I form when opening + from Generate new. */
-  libraryFormSeed?: { prompt: string; model?: string } | null;
+  /** Seed library generate form when opening + from Generate new / Clone. */
+  libraryFormSeed?: {
+    prompt: string;
+    model?: string;
+    startFrameAssetId?: string;
+  } | null;
+  /** Exit + slot once a library placeholder asset is reserved. */
+  onLibraryAssetGenerationStarted?: (assetId: string) => void;
+  /** Remove a failed Generate → Assets placeholder. */
+  onDiscardLibraryAssetPlaceholder?: () => void;
+  /** Clear a failed Generate → Assets placeholder so the form can run again. */
+  onRetryLibraryAssetPlaceholder?: () => void;
   /** Placeholder clip on the timeline for add-asset generation. */
   addAssetPlaceholderClip?: TimelineClip | null;
   addAssetGenerationSession?: AddAssetGenerationSession | null;
@@ -369,6 +389,9 @@ export function PreviewPane({
   addAssetIntent = null,
   onAddAssetIntentChange,
   libraryFormSeed = null,
+  onLibraryAssetGenerationStarted,
+  onDiscardLibraryAssetPlaceholder,
+  onRetryLibraryAssetPlaceholder,
   addAssetPlaceholderClip = null,
   addAssetGenerationSession = null,
   lyricAlignment = null,
@@ -424,7 +447,7 @@ export function PreviewPane({
     null,
   );
   const [generateDualPhaseSeen, setGenerateDualPhaseSeen] = useState<
-    string | null
+    GenerateDualPhase | null
   >(null);
   const [generateDualNowMs, setGenerateDualNowMs] = useState(() => Date.now());
   const [libraryGenerateState, setLibraryGenerateState] =
@@ -433,6 +456,17 @@ export function PreviewPane({
       progressNote: "",
     });
   const [libraryFormEpoch, setLibraryFormEpoch] = useState(0);
+  const [addAssetSlotSeen, setAddAssetSlotSeen] = useState(addAssetSlotActive);
+  if (addAssetSlotActive !== addAssetSlotSeen) {
+    setAddAssetSlotSeen(addAssetSlotActive);
+    if (addAssetSlotActive) {
+      setLibraryGenerateState({ phase: "pre_gen", progressNote: "" });
+      setLibraryFormEpoch((n) => n + 1);
+      setGenerateDualHostKey(null);
+      setGenerateDualPhaseSeen(null);
+      setGenerateDualView("form");
+    }
+  }
   const [selectionClass, setSelectionClass] =
     useState<MultiSelectionClass | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(false);
@@ -479,6 +513,7 @@ export function PreviewPane({
     setDetailFailed(false);
     setPlaying(false);
     setCurrentSec(0);
+    setLibraryGenerateState({ phase: "pre_gen", progressNote: "" });
     /* eslint-enable react-hooks/set-state-in-effect */
     appliedSeedKeyRef.current = null;
   }, [addAssetMode, addAssetSlotActive]);
@@ -1365,14 +1400,37 @@ export function PreviewPane({
     addAssetPlaceholderClip != null &&
     isAddAssetPlaceholderClip(addAssetPlaceholderClip);
   const showAddAssetIntent = addAssetMode && addAssetSlotActive;
+  const selectedLibraryPlaceholder = resolveLibraryAssetPlaceholder(
+    project.libraryAssetPlaceholders,
+    assetId,
+  );
+  const selectedLibraryPlaceholderPhase =
+    libraryAssetPlaceholderPhase(selectedLibraryPlaceholder);
+  const showLibraryAssetPlaceholderDual =
+    !addAssetSlotActive &&
+    monitorMode === "source" &&
+    isActiveLibraryAssetPlaceholder(selectedLibraryPlaceholder);
   const resolvedLibraryIntent = showAddAssetIntent
     ? resolveAddAssetIntent(addAssetIntent ?? {})
-    : null;
+    : selectedLibraryPlaceholder
+      ? resolveAddAssetIntent({
+          intentId: selectedLibraryPlaceholder.addAssetDraft.intentId,
+          server: selectedLibraryPlaceholder.addAssetDraft.server,
+          provider: selectedLibraryPlaceholder.addAssetDraft.provider,
+          methodId: selectedLibraryPlaceholder.addAssetDraft.methodId,
+          destination: "assets",
+        })
+      : null;
   const showLibraryGenerateDual =
     showAddAssetIntent &&
     addAssetIntentAllowsLibraryGeneration(resolvedLibraryIntent) &&
     (resolvedLibraryIntent?.server === "blue_direct" ||
-      resolvedLibraryIntent?.server === "replicate");
+      resolvedLibraryIntent?.server === "replicate" ||
+      resolvedLibraryIntent?.server === "parascene_blue") &&
+    !selectedLibraryPlaceholder;
+  /** + slot library forms only join dual chrome after Generate starts. */
+  const showLibraryGenerateDualActive =
+    showLibraryGenerateDual && libraryGenerateState.phase !== "pre_gen";
   const showDoneGenerateDual =
     !addAssetMode &&
     !addAssetSlotActive &&
@@ -1382,41 +1440,139 @@ export function PreviewPane({
       isPlaceholder: false,
       generation: resolvedAddAssetGeneration,
     });
+  const showGenerateDualHost =
+    showAddAssetGenerate ||
+    showDoneGenerateDual ||
+    showLibraryGenerateDualActive ||
+    showLibraryAssetPlaceholderDual;
+  const generateDualPhase = showLibraryAssetPlaceholderDual
+    ? selectedLibraryPlaceholderPhase
+    : showLibraryGenerateDual
+      ? libraryGenerateState.phase
+      : resolveGenerateDualPhase({
+          placeholder: showAddAssetGenerate ? addAssetPlaceholderClip : null,
+          session: addAssetGenerationSession,
+          generation: resolvedAddAssetGeneration,
+        });
+  const generateDualErrorMessage = (() => {
+    if (showLibraryAssetPlaceholderDual && selectedLibraryPlaceholder) {
+      return (
+        selectedLibraryPlaceholder.addAssetDraft.lastError?.trim() ||
+        (selectedLibraryPlaceholderPhase === "error"
+          ? selectedLibraryPlaceholder.progressNote?.trim() || null
+          : null)
+      );
+    }
+    if (showLibraryGenerateDual) {
+      return libraryGenerateState.errorMessage?.trim() || null;
+    }
+    if (showAddAssetGenerate) {
+      return (
+        (addAssetGenerationSession?.clipId === addAssetPlaceholderClip?.id
+          ? addAssetGenerationSession?.errorMessage?.trim()
+          : null) ||
+        addAssetPlaceholderClip?.addAssetDraft?.lastError?.trim() ||
+        null
+      );
+    }
+    return null;
+  })();
+  const generateDualFormLocked =
+    generateDualPhase === "running" ||
+    generateDualPhase === "done" ||
+    generateDualPhase === "error";
+  const generateDualErrorRecovery =
+    generateDualPhase === "error"
+      ? {
+          onDiscard:
+            showLibraryAssetPlaceholderDual && onDiscardLibraryAssetPlaceholder
+              ? onDiscardLibraryAssetPlaceholder
+              : undefined,
+          onRetry: () => {
+            if (
+              showLibraryAssetPlaceholderDual &&
+              onRetryLibraryAssetPlaceholder
+            ) {
+              onRetryLibraryAssetPlaceholder();
+              setGenerateDualView("result");
+              return;
+            }
+            if (showAddAssetGenerate) {
+              const errorText = generateDualErrorMessage ?? "";
+              const canRetryDownload =
+                Boolean(
+                  addAssetPlaceholderClip?.addAssetDraft?.replicatePredictionId?.trim(),
+                ) || isDownloadRetryableError(errorText);
+              if (canRetryDownload) onRetryAddAssetDownload?.();
+              else onClearAddAssetGenerationError?.();
+              setGenerateDualView("form");
+              return;
+            }
+            if (showLibraryGenerateDual) {
+              setLibraryGenerateState({
+                phase: "pre_gen",
+                progressNote: "",
+                errorMessage: undefined,
+              });
+              setLibraryFormEpoch((n) => n + 1);
+              setGenerateDualView("form");
+            }
+          },
+        }
+      : undefined;
   const showGenerateDual =
-    showAddAssetGenerate || showDoneGenerateDual || showLibraryGenerateDual;
-  const generateDualPhase = showLibraryGenerateDual
-    ? libraryGenerateState.phase
-    : resolveGenerateDualPhase({
-        placeholder: showAddAssetGenerate ? addAssetPlaceholderClip : null,
-        session: addAssetGenerationSession,
-        generation: resolvedAddAssetGeneration,
-      });
+    showGenerateDualHost && shouldShowGenerateDualChrome(generateDualPhase);
   const nextGenerateDualHostKey = showAddAssetGenerate
     ? `ph:${addAssetPlaceholderClip?.id ?? ""}`
-    : showLibraryGenerateDual
-      ? `lib:${resolvedLibraryIntent?.intentId ?? ""}:${resolvedLibraryIntent?.server ?? ""}`
-      : showDoneGenerateDual
-        ? `gen:${resolvedAddAssetGeneration?.creationId ?? resolvedAddAssetGeneration?.generatedAt ?? "done"}`
-        : null;
-  if (showGenerateDual && nextGenerateDualHostKey !== generateDualHostKey) {
-    const preserveView = shouldPreserveGenerateDualView({
-      prevHostKey: generateDualHostKey,
-      nextHostKey: nextGenerateDualHostKey,
-    });
+    : showLibraryAssetPlaceholderDual
+      ? `asset:${selectedLibraryPlaceholder?.id ?? assetId ?? ""}`
+      : showLibraryGenerateDualActive
+        ? `lib:${resolvedLibraryIntent?.intentId ?? ""}:${resolvedLibraryIntent?.server ?? ""}`
+        : showDoneGenerateDual
+          ? `gen:${resolvedAddAssetGeneration?.creationId ?? resolvedAddAssetGeneration?.generatedAt ?? "done"}`
+          : null;
+  // Track pre-gen hosts too so reselecting a draft placeholder resets to Form
+  // (chrome is hidden until Generate, so showGenerateDual alone is not enough).
+  if (
+    showGenerateDualHost &&
+    nextGenerateDualHostKey != null &&
+    nextGenerateDualHostKey !== generateDualHostKey
+  ) {
     setGenerateDualHostKey(nextGenerateDualHostKey);
-    if (!preserveView) {
-      setGenerateDualView(defaultGenerateDualView(generateDualPhase));
+    if (generateDualPhase === "pre_gen") {
+      setGenerateDualView("form");
+    } else if (showGenerateDual) {
+      const preserveView = shouldPreserveGenerateDualView({
+        prevHostKey: generateDualHostKey,
+        nextHostKey: nextGenerateDualHostKey,
+      });
+      if (!preserveView) {
+        setGenerateDualView(defaultGenerateDualView(generateDualPhase));
+      }
     }
+    setGenerateDualPhaseSeen(generateDualPhase);
+  } else if (
+    showGenerateDualHost &&
+    generateDualPhase === "pre_gen" &&
+    generateDualView !== "form"
+  ) {
+    setGenerateDualView("form");
     setGenerateDualPhaseSeen(generateDualPhase);
   } else if (
     showGenerateDual &&
     generateDualPhase !== generateDualPhaseSeen
   ) {
+    const prevPhase = generateDualPhaseSeen;
     setGenerateDualPhaseSeen(generateDualPhase);
-    if (generateDualPhase === "running" || generateDualPhase === "done") {
+    if (generateDualPhase === "running" && prevPhase !== "running") {
       setGenerateDualView("result");
-    } else if (generateDualPhase === "error" || generateDualPhase === "pre_gen") {
-      setGenerateDualView("form");
+    } else if (
+      generateDualPhase === "done" &&
+      (prevPhase === "running" || prevPhase === "error")
+    ) {
+      setGenerateDualView("result");
+    } else if (generateDualPhase === "error" && prevPhase !== "error") {
+      setGenerateDualView("result");
     }
   }
   const showSelectionIntent =
@@ -1437,7 +1593,8 @@ export function PreviewPane({
     unsupportedSelection != null;
   const fillPreviewSurface =
     showAddAssetGenerate ||
-    showLibraryGenerateDual ||
+    showLibraryAssetPlaceholderDual ||
+    (showLibraryGenerateDual && !showLibraryAssetPlaceholderDual) ||
     (showDoneGenerateDual && generateDualView === "form") ||
     (showAddAssetIntent && !showLibraryGenerateDual) ||
     showSelectionIntent ||
@@ -2708,12 +2865,26 @@ export function PreviewPane({
                   Form
                 </button>
               </div>
+              {sourceLabelText ? (
+                <div
+                  className="editor-preview-source-label"
+                  data-source={
+                    sourceKind ??
+                    (showAddAssetGenerate
+                      ? "generate"
+                      : showAddAssetIntent ||
+                          showSelectionIntent ||
+                          showUnsupportedSelection
+                        ? "asset"
+                        : undefined)
+                  }
+                >
+                  <SourceLabelIcon kind={sourceKind} />
+                  <span>{sourceLabelText}</span>
+                </div>
+              ) : null}
               {generateDualPhase === "running" ? (
                 <p className="muted generate-dual-view-status">Generating…</p>
-              ) : generateDualPhase === "error" ? (
-                <p className="muted generate-dual-view-status">
-                  Generation error — check Form
-                </p>
               ) : null}
             </div>
           ) : null}
@@ -2724,12 +2895,8 @@ export function PreviewPane({
             style={surfaceStyle}
           >
             {showAddAssetGenerate && addAssetPlaceholderClip ? (
-              <>
-                <div
-                  className="generate-dual-pane"
-                  hidden={generateDualView !== "form"}
-                >
-                  <AddAssetIntentPanel
+              !showGenerateDual ? (
+                <AddAssetIntentPanel
                     intent={
                       resolveAddAssetIntent(
                         addAssetPlaceholderClip.addAssetDraft ?? {},
@@ -2778,13 +2945,69 @@ export function PreviewPane({
                     onRetryDownload={onRetryAddAssetDownload}
                     imageAssets={imageAssets}
                     progressHostedExternally
-                    locked={
-                      generateDualPhase === "running" ||
-                      generateDualPhase === "done"
-                    }
+                    locked={generateDualFormLocked}
+                    errorRecovery={generateDualErrorRecovery}
                   />
-                </div>
-                <div
+              ) : (
+                <>
+                  <div
+                    className="generate-dual-pane"
+                    hidden={generateDualView !== "form"}
+                  >
+                    <AddAssetIntentPanel
+                    intent={
+                      resolveAddAssetIntent(
+                        addAssetPlaceholderClip.addAssetDraft ?? {},
+                      ) ?? {
+                        intentId: "image_to_video",
+                        server: "parascene_blue",
+                        provider: "parascene_blue",
+                        methodId: "image_to_video",
+                        destination: "timeline",
+                      }
+                    }
+                    onIntentChange={(next) => {
+                      const resolved = resolveAddAssetIntent(next) ?? next;
+                      onAddAssetDraftChange?.({
+                        ...(addAssetPlaceholderClip.addAssetDraft ?? {}),
+                        intentId: resolved.intentId,
+                        server: resolved.server,
+                        provider: resolved.server,
+                        methodId: resolved.intentId,
+                        continuityMode: continuityModeForIntent(
+                          resolved.intentId,
+                          addAssetPlaceholderClip.addAssetDraft?.continuityMode,
+                        ),
+                        audioMode: audioModeForIntent(
+                          resolved.intentId,
+                          addAssetPlaceholderClip.addAssetDraft?.audioMode,
+                        ),
+                        lastError: undefined,
+                        replicatePredictionId: undefined,
+                        blueJobId: undefined,
+                        generationJob: undefined,
+                      });
+                    }}
+                    placedClip={addAssetPlaceholderClip}
+                    aspectRatio={aspectRatio}
+                    timeline={timelineClips}
+                    lyricAlignment={lyricAlignment}
+                    mainAudioCreationId={mainAudioCreationId}
+                    session={addAssetGenerationSession}
+                    onStartGeneration={(request) =>
+                      onStartAddAssetGeneration?.(request)
+                    }
+                    onDurationChange={onAddAssetDurationChange}
+                    onDraftChange={onAddAssetDraftChange}
+                    onClearError={onClearAddAssetGenerationError}
+                    onRetryDownload={onRetryAddAssetDownload}
+                    imageAssets={imageAssets}
+                    progressHostedExternally
+                    locked={generateDualFormLocked}
+                    errorRecovery={generateDualErrorRecovery}
+                  />
+                  </div>
+                  <div
                   className="generate-dual-pane"
                   hidden={generateDualView !== "result"}
                 >
@@ -2799,8 +3022,69 @@ export function PreviewPane({
                     nowMs={generateDualNowMs}
                   />
                 </div>
+                </>
+              )
+            ) : showLibraryAssetPlaceholderDual &&
+              selectedLibraryPlaceholder &&
+              resolvedLibraryIntent ? (
+              <>
+                <div
+                  className="generate-dual-pane"
+                  hidden={generateDualView !== "form"}
+                >
+                  <AddAssetIntentPanel
+                    intent={resolvedLibraryIntent}
+                    onIntentChange={() => {}}
+                    locked={generateDualFormLocked}
+                    hideLibraryInlineProgress
+                    imageAssets={imageAssets}
+                    onLibraryAssetGenerationStarted={
+                      onLibraryAssetGenerationStarted
+                    }
+                    errorRecovery={generateDualErrorRecovery}
+                    libraryPlaceholderId={selectedLibraryPlaceholder.id}
+                    libraryFormSeed={{
+                      prompt:
+                        selectedLibraryPlaceholder.addAssetDraft.prompt ?? "",
+                      model:
+                        selectedLibraryPlaceholder.addAssetDraft.replicateModel,
+                      startFrameAssetId:
+                        selectedLibraryPlaceholder.addAssetDraft
+                          .startFrameAssetId,
+                    }}
+                  />
+                </div>
+                <div
+                  className="generate-dual-pane"
+                  hidden={generateDualView !== "result"}
+                >
+                  <GenerateResultPane
+                    phase={generateDualPhase}
+                    nowMs={generateDualNowMs}
+                    progressNote={selectedLibraryPlaceholder.progressNote}
+                    progressSteps={libraryPlaceholderResultSteps(
+                      selectedLibraryPlaceholder,
+                    )}
+                    startedAtMs={
+                      selectedLibraryPlaceholder.addAssetDraft.generationJob
+                        ?.startedAt
+                        ? Date.parse(
+                            selectedLibraryPlaceholder.addAssetDraft
+                              .generationJob.startedAt,
+                          )
+                        : null
+                    }
+                    errorMessage={
+                      selectedLibraryPlaceholder.addAssetDraft.lastError ??
+                      (selectedLibraryPlaceholderPhase === "error"
+                        ? selectedLibraryPlaceholder.progressNote
+                        : null)
+                    }
+                  />
+                </div>
               </>
-            ) : showLibraryGenerateDual && showAddAssetIntent ? (
+            ) : showLibraryGenerateDualActive &&
+              showAddAssetIntent ? (
               <>
                 <div
                   className="generate-dual-pane"
@@ -2810,13 +3094,15 @@ export function PreviewPane({
                     key={`lib-t2i-${libraryFormEpoch}`}
                     intent={addAssetIntent}
                     onIntentChange={(next) => onAddAssetIntentChange?.(next)}
-                    locked={
-                      libraryGenerateState.phase === "running" ||
-                      libraryGenerateState.phase === "done"
-                    }
+                    locked={generateDualFormLocked}
                     hideLibraryInlineProgress
+                    imageAssets={imageAssets}
                     onLibraryGenerateStateChange={setLibraryGenerateState}
                     libraryFormSeed={libraryFormSeed}
+                    onLibraryAssetGenerationStarted={
+                      onLibraryAssetGenerationStarted
+                    }
+                    errorRecovery={generateDualErrorRecovery}
                     onGenerateNew={() => {
                       setLibraryGenerateState({
                         phase: "pre_gen",
@@ -2839,14 +3125,6 @@ export function PreviewPane({
                     doneMessage={libraryGenerateState.progressNote}
                     resultPreviewUrl={libraryGenerateState.resultPreviewUrl}
                     resultMediaKind="image"
-                    onGenerateNew={() => {
-                      setLibraryGenerateState({
-                        phase: "pre_gen",
-                        progressNote: "",
-                      });
-                      setLibraryFormEpoch((n) => n + 1);
-                      setGenerateDualView("form");
-                    }}
                   />
                 </div>
               </>
@@ -2869,6 +3147,32 @@ export function PreviewPane({
                   onIntentChange={() => {}}
                   locked
                   reviewGeneration={resolvedAddAssetGeneration}
+                  onGenerateNew={
+                    onDuplicateGeneratedAsNewGenerate
+                      ? () =>
+                          onDuplicateGeneratedAsNewGenerate(
+                            resolvedAddAssetGeneration,
+                          )
+                      : undefined
+                  }
+                />
+              ) : isImageToImageGeneration(resolvedAddAssetGeneration) ? (
+                <AddAssetIntentPanel
+                  intent={makeAddAssetIntent(
+                    "image_to_image",
+                    normalizeGenerateServer(
+                      resolvedAddAssetGeneration.server,
+                    ) ??
+                      normalizeGenerateServer(
+                        resolvedAddAssetGeneration.provider,
+                      ) ??
+                      "parascene_blue",
+                    "assets",
+                  )}
+                  onIntentChange={() => {}}
+                  locked
+                  reviewGeneration={resolvedAddAssetGeneration}
+                  imageAssets={imageAssets}
                   onGenerateNew={
                     onDuplicateGeneratedAsNewGenerate
                       ? () =>
@@ -2940,6 +3244,14 @@ export function PreviewPane({
                 intent={addAssetIntent}
                 onIntentChange={(next) => onAddAssetIntentChange?.(next)}
                 libraryFormSeed={libraryFormSeed}
+                imageAssets={imageAssets}
+                hideLibraryInlineProgress={showLibraryGenerateDual}
+                onLibraryGenerateStateChange={
+                  showLibraryGenerateDual ? setLibraryGenerateState : undefined
+                }
+                onLibraryAssetGenerationStarted={
+                  onLibraryAssetGenerationStarted
+                }
               />
             ) : showCompositionWorkspace && activeWorkstream ? (
               <div
@@ -3173,7 +3485,7 @@ export function PreviewPane({
             ) : null}
           </div>
 
-          {sourceLabelText ? (
+          {sourceLabelText && !showGenerateDual ? (
             <div className="editor-preview-source-row">
               <div
                 className="editor-preview-source-label"

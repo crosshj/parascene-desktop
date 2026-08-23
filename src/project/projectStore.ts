@@ -32,6 +32,13 @@ import {
   resolveLastFrameSource,
 } from "./addAssetFrameSource";
 import {
+  activeLibraryAssetPlaceholders,
+  libraryAssetPlaceholderDisplayName,
+  normalizeLibraryAssetPlaceholders,
+  pendingLibraryPlaceholderCreationIds,
+  type LibraryAssetPlaceholder,
+} from "./libraryAssetPlaceholder";
+import {
   compositionInternalCreationIds,
   normalizeStillWorkstream,
   normalizeStillWorkstreams,
@@ -133,6 +140,11 @@ export type StoredProject = {
   storyboardProposal?: StoryboardProposal | null;
   /** MV Concept seed prompt; omitted → null. */
   labStoryboardDirection?: string | null;
+  /** Generate → Assets placeholders keyed by provisional asset id. */
+  libraryAssetPlaceholders?: Record<
+    string,
+    import("./libraryAssetPlaceholder").LibraryAssetPlaceholder
+  >;
   updatedAt: string;
   /** Opaque project-document revision; distinct from Library/cloud revisions. */
   documentRevision?: string;
@@ -913,12 +925,23 @@ function normalizeSelectedTimelineClipId(
   return timeline.some((c) => c.id === value) ? value : null;
 }
 
+function libraryAssetPlaceholderIds(
+  placeholders: StoredProject["libraryAssetPlaceholders"],
+): string[] {
+  return Object.keys(normalizeLibraryAssetPlaceholders(placeholders));
+}
+
 function normalizeSelectedAssetId(
   value: unknown,
   creationIds: string[],
+  extraSelectableIds: readonly string[] = [],
 ): string | null {
   if (typeof value !== "string" || !value) return null;
-  return creationIds.includes(value) ? value : null;
+  const id = value.trim();
+  if (!id) return null;
+  if (creationIds.includes(id)) return id;
+  if (extraSelectableIds.includes(id)) return id;
+  return null;
 }
 
 export function normalizeFolderIds(value: unknown): string[] {
@@ -947,10 +970,17 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
   const timelineMonitorActive = normalizeTimelineMonitorActive(
     project.timelineMonitorActive,
   );
+  const placeholderIds = libraryAssetPlaceholderIds(
+    project.libraryAssetPlaceholders,
+  );
   const selectedAssetId =
     selectedTimelineClipId || timelineMonitorActive
       ? null
-      : normalizeSelectedAssetId(project.selectedAssetId, creationIds);
+      : normalizeSelectedAssetId(
+          project.selectedAssetId,
+          creationIds,
+          placeholderIds,
+        );
   const selectedClipId = timelineMonitorActive ? null : selectedTimelineClipId;
   const folderIds = normalizeFolderIds(project.folderIds);
   const boundFolderId = normalizeBoundFolderId(project.boundFolderId, folderIds);
@@ -993,6 +1023,9 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
     labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
+    libraryAssetPlaceholders: normalizeLibraryAssetPlaceholders(
+      project.libraryAssetPlaceholders,
+    ),
   };
 }
 
@@ -1290,7 +1323,11 @@ export function replaceStoredProjectAssets(
   return {
     ...project,
     creationIds: nextIds,
-    selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
+    selectedAssetId: normalizeSelectedAssetId(
+      project.selectedAssetId,
+      nextIds,
+      libraryAssetPlaceholderIds(project.libraryAssetPlaceholders),
+    ),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1319,6 +1356,12 @@ export function removeCreationIds(
   if (remove.size === 0) return project;
 
   const nextIds = project.creationIds.filter((id) => !remove.has(id));
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    project.libraryAssetPlaceholders,
+  );
+  const nextPlaceholders = Object.fromEntries(
+    Object.entries(placeholders).filter(([id]) => !remove.has(id)),
+  );
   const prevTimeline = normalizeStoredTimeline(project.timeline);
   const nextTimeline = prevTimeline.filter((clip) => {
     if (clip.assetId && remove.has(clip.assetId)) return false;
@@ -1345,6 +1388,8 @@ export function removeCreationIds(
       : normalizeStoryboardProposal(project.storyboardProposal);
 
   const assetsChanged = nextIds.length !== project.creationIds.length;
+  const placeholdersChanged =
+    Object.keys(nextPlaceholders).length !== Object.keys(placeholders).length;
   const timelineChanged = nextTimeline.length !== prevTimeline.length;
   const mainAudioChanged = nextMainAudio !== project.mainAudioCreationId;
   const lyricAlignmentChanged =
@@ -1355,6 +1400,7 @@ export function removeCreationIds(
     JSON.stringify(nextStoryboard);
   if (
     !assetsChanged &&
+    !placeholdersChanged &&
     !timelineChanged &&
     !mainAudioChanged &&
     !lyricAlignmentChanged &&
@@ -1370,11 +1416,16 @@ export function removeCreationIds(
   return {
     ...project,
     creationIds: nextIds,
+    libraryAssetPlaceholders: nextPlaceholders,
     timeline: nextTimeline,
     mainAudioCreationId: nextMainAudio,
     lyricAlignment: nextLyricAlignment,
     storyboardProposal: nextStoryboard,
-    selectedAssetId: normalizeSelectedAssetId(project.selectedAssetId, nextIds),
+    selectedAssetId: normalizeSelectedAssetId(
+      project.selectedAssetId,
+      nextIds,
+      Object.keys(nextPlaceholders),
+    ),
     selectedTimelineClipId: nextSelectedClip,
     updatedAt: new Date().toISOString(),
   };
@@ -1547,10 +1598,16 @@ export function setStoredProjectSelectedTimelineClipId(
 ): StoredProject {
   const timeline = normalizeStoredTimeline(project.timeline);
   const next = normalizeSelectedTimelineClipId(clipId, timeline);
-  const nextAssetId = next ? null : normalizeSelectedAssetId(
-    project.selectedAssetId,
-    project.creationIds,
+  const placeholderIds = libraryAssetPlaceholderIds(
+    project.libraryAssetPlaceholders,
   );
+  const nextAssetId = next
+    ? null
+    : normalizeSelectedAssetId(
+        project.selectedAssetId,
+        project.creationIds,
+        placeholderIds,
+      );
   const nextMonitorActive = next
     ? false
     : normalizeTimelineMonitorActive(project.timelineMonitorActive);
@@ -1578,7 +1635,11 @@ export function setStoredProjectSelectedAssetId(
   project: StoredProject,
   assetId: string | null,
 ): StoredProject {
-  const next = normalizeSelectedAssetId(assetId, project.creationIds);
+  const next = normalizeSelectedAssetId(
+    assetId,
+    project.creationIds,
+    libraryAssetPlaceholderIds(project.libraryAssetPlaceholders),
+  );
   const nextClipId = next
     ? null
     : normalizeSelectedTimelineClipId(
@@ -1834,16 +1895,157 @@ export function setStoredProjectLabStoryboardDirection(
   };
 }
 
+export function upsertStoredLibraryAssetPlaceholder(
+  project: StoredProject,
+  placeholder: LibraryAssetPlaceholder,
+): StoredProject {
+  const placeholders = {
+    ...normalizeLibraryAssetPlaceholders(project.libraryAssetPlaceholders),
+    [placeholder.id]: placeholder,
+  };
+  return {
+    ...project,
+    libraryAssetPlaceholders: placeholders,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function patchStoredLibraryAssetPlaceholder(
+  project: StoredProject,
+  id: string,
+  patch: Partial<
+    Pick<
+      LibraryAssetPlaceholder,
+      "status" | "addAssetDraft" | "addAssetGeneration" | "progressNote"
+    >
+  >,
+): StoredProject {
+  const key = id.trim();
+  if (!key) return project;
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    project.libraryAssetPlaceholders,
+  );
+  const prev = placeholders[key];
+  if (!prev) return project;
+  const next: LibraryAssetPlaceholder = {
+    ...prev,
+    ...patch,
+    addAssetDraft: patch.addAssetDraft
+      ? { ...prev.addAssetDraft, ...patch.addAssetDraft }
+      : prev.addAssetDraft,
+    updatedAt: new Date().toISOString(),
+  };
+  return {
+    ...project,
+    libraryAssetPlaceholders: { ...placeholders, [key]: next },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function clearStoredLibraryAssetPlaceholder(
+  project: StoredProject,
+  id: string,
+): StoredProject {
+  const key = id.trim();
+  if (!key) return project;
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    project.libraryAssetPlaceholders,
+  );
+  if (!placeholders[key]) return project;
+  const rest = { ...placeholders };
+  delete rest[key];
+  return {
+    ...project,
+    libraryAssetPlaceholders: rest,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** File the finished creation and drop the provisional placeholder row. */
+export function completeStoredLibraryAssetPlaceholder(
+  project: StoredProject,
+  placeholderId: string,
+  creationId: string,
+): StoredProject {
+  const placeholderKey = placeholderId.trim();
+  const creationKey = creationId.trim();
+  if (!placeholderKey || !creationKey) return project;
+  const withCreation = mergeCreationIds(project, [creationKey]);
+  const cleared = clearStoredLibraryAssetPlaceholder(
+    withCreation,
+    placeholderKey,
+  );
+  if (project.selectedAssetId !== placeholderKey) {
+    return cleared;
+  }
+  return setStoredProjectSelectedAssetId(cleared, creationKey);
+}
+
+export function replaceStoredLibraryAssetPlaceholderId(
+  project: StoredProject,
+  fromId: string,
+  toId: string,
+): StoredProject {
+  const from = fromId.trim();
+  const to = toId.trim();
+  if (!from || !to || from === to) return project;
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    project.libraryAssetPlaceholders,
+  );
+  const prev = placeholders[from];
+  if (!prev) return project;
+  const rest = { ...placeholders };
+  delete rest[from];
+  const withoutFrom = project.creationIds.filter((id) => id !== from);
+  const withCreation = mergeCreationIds(
+    { ...project, creationIds: withoutFrom },
+    [to],
+  );
+  const selectedAssetId =
+    project.selectedAssetId === from ? to : project.selectedAssetId;
+  const nextIds = withCreation.creationIds;
+  return {
+    ...withCreation,
+    selectedAssetId: normalizeSelectedAssetId(
+      selectedAssetId,
+      nextIds,
+      Object.keys(rest),
+    ),
+    libraryAssetPlaceholders: {
+      ...rest,
+      [to]: { ...prev, id: to, updatedAt: new Date().toISOString() },
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /** Map a stored project into the shell UI Project shape. */
 export function storedProjectToUi(project: StoredProject): Project {
   const stillWorkstreams = normalizeStillWorkstreams(project.stillWorkstreams);
   const internalIds = compositionInternalCreationIds(stillWorkstreams);
   const creationIds = project.creationIds.filter((id) => !internalIds.has(id));
-  const assets: ProjectAsset[] = creationIds.map((id) => ({
-    id,
-    name: id,
-    kind: "image",
-  }));
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    project.libraryAssetPlaceholders,
+  );
+  const activePlaceholders = activeLibraryAssetPlaceholders(placeholders);
+  const hiddenCreationIds =
+    pendingLibraryPlaceholderCreationIds(activePlaceholders);
+  const assets: ProjectAsset[] = [];
+  for (const placeholder of activePlaceholders) {
+    assets.push({
+      id: placeholder.id,
+      name: libraryAssetPlaceholderDisplayName(placeholder),
+      kind: "image",
+    });
+  }
+  for (const id of creationIds) {
+    if (hiddenCreationIds.has(id)) continue;
+    assets.push({
+      id,
+      name: id,
+      kind: "image",
+    });
+  }
   const timeline = normalizeStoredTimeline(project.timeline);
   const timelineMonitorActive = normalizeTimelineMonitorActive(
     project.timelineMonitorActive,
@@ -1851,10 +2053,15 @@ export function storedProjectToUi(project: StoredProject): Project {
   const selectedTimelineClipId = timelineMonitorActive
     ? null
     : normalizeSelectedTimelineClipId(project.selectedTimelineClipId, timeline);
+  const placeholderIds = Object.keys(placeholders);
   const selectedAssetId =
     selectedTimelineClipId || timelineMonitorActive
       ? null
-      : normalizeSelectedAssetId(project.selectedAssetId, creationIds);
+      : normalizeSelectedAssetId(
+          project.selectedAssetId,
+          creationIds,
+          placeholderIds,
+        );
   return {
     id: project.id,
     title: project.title,
@@ -1894,6 +2101,9 @@ export function storedProjectToUi(project: StoredProject): Project {
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     hookSuggestions: [],
+    libraryAssetPlaceholders: normalizeLibraryAssetPlaceholders(
+      project.libraryAssetPlaceholders,
+    ),
   };
 }
 
@@ -1921,6 +2131,7 @@ export function emptyUiProject(): Project {
     selectedTimelineClipId: null,
     selectedAssetId: null,
     pendingStagedDraft: null,
+    libraryAssetPlaceholders: {},
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,

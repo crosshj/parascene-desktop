@@ -67,10 +67,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      if (cancelled) return;
+      adoptSession(null);
+      clearUserAvatarDisplay();
+      setStatus("signed_out");
+    }, 12_000);
     (async () => {
       try {
         const restored = await restoreSession();
         if (cancelled) return;
+        window.clearTimeout(timeout);
         if (restored) {
           const next = adoptSession(restored);
           setSession(next);
@@ -83,6 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch {
         if (!cancelled) {
+          window.clearTimeout(timeout);
           adoptSession(null);
           clearUserAvatarDisplay();
           setStatus("signed_out");
@@ -91,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
     };
   }, []);
 

@@ -28,10 +28,12 @@ import {
   type ReplicateTextToImageModelOption,
 } from "./replicateTextToImageModels";
 import type { LibraryGenerateUiState } from "./generateDualView";
+import { CloneButton, GenerateTargetButton } from "./AddAssetIntentFooter";
 
 export type ReplicateTextToImageFormParts = {
   fields: ReactNode;
-  footer: ReactNode;
+  generateAction?: ReactNode;
+  cloneAction?: ReactNode;
 };
 
 export type UseReplicateTextToImageFormOpts = {
@@ -291,28 +293,22 @@ export function useReplicateTextToImageForm(
     </>
   );
 
-  const footer = (
-    <div className="add-asset-generate-footer preview-intent-footer">
-      {doneLocked || (locked && onGenerateNew) ? (
-        <button
-          type="button"
-          className="btn btn-primary editor-add-asset-generate"
-          onClick={doneLocked ? handleGenerateNew : () => onGenerateNew?.()}
-        >
-          Generate new
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="btn btn-primary editor-add-asset-generate"
-          disabled={!canGenerate}
-          onClick={() => void handleGenerate()}
-        >
-          {running ? "Generating…" : "Generate image"}
-        </button>
-      )}
-    </div>
-  );
+  const cloneAction =
+    onGenerateNew && (doneLocked || locked) ? (
+      <CloneButton
+        onClick={doneLocked ? handleGenerateNew : () => onGenerateNew?.()}
+      />
+    ) : null;
 
-  return { fields, footer };
+  const generateAction =
+    !doneLocked && !(locked && onGenerateNew) ? (
+      <GenerateTargetButton
+        target="Assets"
+        disabled={!canGenerate}
+        running={running}
+        onClick={() => void handleGenerate()}
+      />
+    ) : null;
+
+  return { fields, generateAction, cloneAction };
 }
