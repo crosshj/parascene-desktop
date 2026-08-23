@@ -34,6 +34,14 @@ This is **not** only “desktop talks to third-party APIs.” Replicate direct a
 - What the web app shows (or does not show) for those jobs
 - Long-term Blue auth model (token vs session vs OAuth)
 
+## Generation provenance (Parascene vs local-only)
+
+**Settled — catalog:** For **Parascene Creation-backed** gens, Parascene `meta.method` / `meta.args` (snapshotted into local `remoteJson` by sync) is the source of truth. A Creation generated inside a desktop project must leave the catalog looking the same as one that only arrived through sync — **do not** post-mutate `remoteJson` with a desktop stamp after generate. Result | Form derives from that meta.
+
+**Settled — inputs:** Parascene cannot read local files; durable I2V/I2I frames must be Creations. Direct to Blue / Replicate may use local extracts, and must store **Parascene-like** provenance locally. See [GUIDE-generation-inputs-provenance.md](./GUIDE-generation-inputs-provenance.md) (guardrails) and [PLAN-generation-provenance.md](./PLAN-generation-provenance.md).
+
+**Local-only** gens (Direct to Blue, Replicate direct) have no Creation meta; they stamp `meta.desktop.addAssetGeneration`, and sync preserves it.
+
 ## Summary
 
 | Idea | Status |
@@ -41,4 +49,5 @@ This is **not** only “desktop talks to third-party APIs.” Replicate direct a
 | Desktop reduces web/DB load via local catalog, files, and offline-capable work | **Yes — design goal** |
 | Not everything must be stored in Parascene cloud / DB | **Yes** |
 | Parascene Blue direct gens without a Creation row (local import) | **Yes — Lab + Generate Direct to Blue** |
+| Parascene Creation meta is provenance for Creation-backed gens (no post-gen catalog stamp) | **Yes** |
 | Promote local gens → Parascene Creations | **Open** |

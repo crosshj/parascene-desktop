@@ -51,6 +51,34 @@ export function shouldPreserveGenerateDualView(opts: {
   return prev.startsWith("gen:") && next.startsWith("gen:");
 }
 
+/**
+ * While Form is sticky across gen→gen asset clicks, the next creation may not
+ * match yet. Hold Form (not Result media) so the image does not flash.
+ */
+export function shouldHoldGenerateDualFormSurface(opts: {
+  view: GenerateDualViewId;
+  /** Last dual host key — `gen:…` means we were reviewing a finished gen. */
+  hostKey: string | null | undefined;
+  /** True once the newly selected asset's done-gen dual host is ready. */
+  doneGenerateDualReady: boolean;
+  hasAssetId: boolean;
+  isAggregateSelection?: boolean;
+  /**
+   * Catalog row matches the selected asset — not mid-load. When settled and the
+   * asset is not generate-hosted, stop holding the Form loading surface (show
+   * preview instead). Does not reset the remembered Form | Result tab.
+   */
+  selectionSettled?: boolean;
+}): boolean {
+  if (opts.view !== "form") return false;
+  if (opts.doneGenerateDualReady) return false;
+  if (opts.isAggregateSelection) return false;
+  if (!opts.hasAssetId) return false;
+  if (!(opts.hostKey?.trim() || "").startsWith("gen:")) return false;
+  if (opts.selectionSettled) return false;
+  return true;
+}
+
 export function resolveGenerateDualPhase(opts: {
   placeholder?: TimelineClip | null;
   session?: AddAssetGenerationSession | null;
@@ -79,6 +107,21 @@ export function resolveGenerateDualPhase(opts: {
 export function selectionSupportsGenerateDualView(opts: {
   isPlaceholder: boolean;
   generation: AddAssetGeneration | null | undefined;
+  /**
+   * Multi-select, group cover, or any aggregate — Form is for one generation
+   * subject, never a pile of assets.
+   */
+  isAggregateSelection?: boolean;
+  /** True when the focused catalog row is a group cover. */
+  isGroupCover?: boolean;
+  /** Focused asset id; must match generation.creationId when both set. */
+  selectedCreationId?: string | null;
 }): boolean {
-  return opts.isPlaceholder || Boolean(opts.generation);
+  if (opts.isAggregateSelection || opts.isGroupCover) return false;
+  if (opts.isPlaceholder) return true;
+  if (!opts.generation) return false;
+  const genId = opts.generation.creationId?.trim() || "";
+  const selected = opts.selectedCreationId?.trim() || "";
+  if (selected && genId && selected !== genId) return false;
+  return true;
 }

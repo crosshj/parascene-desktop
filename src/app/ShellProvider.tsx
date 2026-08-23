@@ -23,6 +23,7 @@ import {
   loadStoredProjectStrict,
   markStoredProjectLegacyOpen,
   mergeCreationIds,
+  removeCreationIds,
   partitionStoredProjects,
   renameStoredProject,
   replaceStoredProjectAssets,
@@ -106,7 +107,11 @@ import {
   deleteCreationChecked,
   getCreation,
 } from "../library/catalogClient";
-import { creationUpsertWithAddAssetGeneration } from "../project/desktopAddAssetGeneration";
+import {
+  creationUpsertWithAddAssetGeneration,
+  shouldStampCatalogAddAssetGeneration,
+  stampIntentFromVideoRun,
+} from "../project/desktopAddAssetGeneration";
 import {
   frameSourceAssetId,
   resolveFirstFrameSource,
@@ -602,6 +607,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               return project;
             }
             let next = mergeCreationIds(project, result.projectCreationIds);
+            const removeIds = (result.projectCreationIdsToRemove ?? []).filter(
+              (id) => id.trim().length > 0,
+            );
+            if (removeIds.length > 0) {
+              next = removeCreationIds(next, removeIds);
+            }
             if (result.videosGroupId || result.imagesGroupId) {
               next = setStoredProjectGroupIds(next, {
                 ...(result.videosGroupId
@@ -627,11 +638,20 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                 lastFrameSource: draft?.lastFrameSource,
                 continuityMode: result.mode,
               });
+            // Never fall back to a throwaway local-* extract on Parascene gens —
+            // durable FIRST is the Creation still (or nothing).
+            const draftStartId = draft?.startFrameAssetId?.trim() || "";
             const startFrameAssetId =
               result.startFrameAssetId?.trim() ||
               frameSourceAssetId(firstFrameSource) ||
-              draft?.startFrameAssetId?.trim() ||
+              (draftStartId.startsWith("local-") ? undefined : draftStartId) ||
               undefined;
+            const stampedIntent = stampIntentFromVideoRun({
+              mode: result.mode,
+              model: result.model,
+              draftIntentId: draft?.intentId,
+              draftMethodId: draft?.methodId,
+            });
             const addAssetGeneration = {
               prompt: result.prompt,
               audioMode:
@@ -654,10 +674,10 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               creationId: result.creationId,
               mode: result.mode,
               model: result.model,
-              intentId: draft?.intentId,
+              intentId: stampedIntent.intentId,
               server,
               provider: draft?.provider ?? draft?.server,
-              methodId: draft?.methodId ?? draft?.intentId,
+              methodId: stampedIntent.methodId,
               startFrameAssetId,
               firstFrameSource: firstFrameSource ?? undefined,
               lastFrameSource,
@@ -678,21 +698,24 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               result.creationId,
               { addAssetGeneration },
             );
-            // Catalog stamp so Assets-pane selection can show Generated details
-            // even after the timeline clip is removed.
-            void (async () => {
-              try {
-                const creation = await getCreation(result.creationId);
-                await applyManifest([
-                  creationUpsertWithAddAssetGeneration(
-                    creation,
-                    addAssetGeneration,
-                  ),
-                ]);
-              } catch {
-                // Clip provenance remains; catalog stamp is best-effort.
-              }
-            })();
+            // Local-only servers (Blue Direct / Replicate) need a catalog stamp.
+            // Parascene Creation-backed gens already carry meta.args — leave
+            // remoteJson alone so project gens match sync-only cloud assets.
+            if (shouldStampCatalogAddAssetGeneration(server)) {
+              void (async () => {
+                try {
+                  const creation = await getCreation(result.creationId);
+                  await applyManifest([
+                    creationUpsertWithAddAssetGeneration(
+                      creation,
+                      addAssetGeneration,
+                    ),
+                  ]);
+                } catch {
+                  // Clip provenance remains; catalog stamp is best-effort.
+                }
+              })();
+            }
             return setStoredProjectTimeline(next, nextTimeline);
           }),
         );
@@ -1611,6 +1634,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             project,
             placeholderId,
             creationId,
+            { mergeCreationIntoProject: false },
           );
         });
         if (wasSelected) {

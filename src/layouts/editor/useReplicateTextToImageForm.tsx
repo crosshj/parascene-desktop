@@ -116,6 +116,17 @@ export function useReplicateTextToImageForm(
     el.style.height = `${el.scrollHeight}px`;
   }, [prompt]);
 
+  const lockedReviewKey = locked
+    ? `${initialPrompt}\0${initialModelId ?? ""}`
+    : "";
+  const [appliedLockedReviewKey, setAppliedLockedReviewKey] =
+    useState(lockedReviewKey);
+  if (locked && lockedReviewKey !== appliedLockedReviewKey) {
+    setAppliedLockedReviewKey(lockedReviewKey);
+    setPrompt(initialPrompt);
+    if (initialModelId) setModelId(initialModelId);
+  }
+
   const selected = models?.find((m) => m.id === modelId) ?? null;
   const canGenerate =
     !fieldsLocked &&

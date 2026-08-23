@@ -10,6 +10,7 @@ import {
   memberIdsFromRemoteGroup,
   pickCabinetKeeper,
   remainingMembersAfterRemoval,
+  siblingProjectCabinetCoverIds,
   stillCandidateIdsFromGroup,
   withGroupMembership,
 } from "./projectGroups";
@@ -201,6 +202,52 @@ describe("pickCabinetKeeper", () => {
 
   it("returns null for an empty candidate list", () => {
     expect(pickCabinetKeeper([])).toBeNull();
+  });
+});
+
+describe("siblingProjectCabinetCoverIds", () => {
+  it("returns other Images containers in the same project folder", () => {
+    const keeper = fakeCreation({
+      id: "25892",
+      title: "Parascene Desktop · The More I Know · Images",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: { kind: "group_creations", source_creation_ids: [1] },
+        },
+      }),
+    });
+    const stale = fakeCreation({
+      id: "25650",
+      title: "Parascene Desktop · The More I Know · Images",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: { kind: "group_creations", source_creation_ids: [2] },
+        },
+      }),
+    });
+    const pack = fakeCreation({
+      id: "24485",
+      title: "Look pack",
+      remoteJson: JSON.stringify({
+        meta: {
+          group: { kind: "group_creations", source_creation_ids: [9] },
+        },
+      }),
+    });
+    expect(
+      siblingProjectCabinetCoverIds({
+        keeperId: "25892",
+        kind: "images",
+        projectId: "p1",
+        projectTitle: "The More I Know",
+        folderMemberIds: ["24485", "25650", "25742", "25892"],
+        creationsById: {
+          "25892": keeper,
+          "25650": stale,
+          "24485": pack,
+        },
+      }),
+    ).toEqual(["25650"]);
   });
 });
 

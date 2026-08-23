@@ -11,6 +11,11 @@ import {
   projectAspectCss,
 } from "../../project/aspectRatios";
 import {
+  loadGenerationFramePreviews,
+  resolveGenerationFramePreviews,
+} from "../../project/generationFramePreviews";
+import type { AddAssetGeneration } from "../../project/types";
+import {
   parasceneStillModelFamilies,
   parasceneResolveStillModel,
 } from "./parasceneProductCaps";
@@ -22,6 +27,7 @@ import {
 } from "./AddAssetIntentFooter";
 import type { LibraryGenerateUiState } from "./generateDualView";
 import type { ProjectAsset } from "../../project/types";
+import { reviewGenerationIdentity } from "../../project/desktopAddAssetGeneration";
 
 const EMPTY_IMAGE_ASSETS: ProjectAsset[] = [];
 
@@ -43,6 +49,11 @@ export type UseParasceneImageToImageFormOpts = {
   initialPrompt?: string;
   initialModelId?: string;
   initialSourceAssetId?: string;
+  /**
+   * Finished generation under review — start stills use the shared
+   * generation-frame helper (same path as I2V Form).
+   */
+  reviewGeneration?: AddAssetGeneration | null;
   /** Reuse an existing Generate → Assets placeholder id. */
   placeholderId?: string;
 };
@@ -57,7 +68,12 @@ export function useParasceneImageToImageForm(
   const onGenerateNew = opts.onGenerateNew;
   const initialPrompt = opts.initialPrompt ?? "";
   const initialModelId = opts.initialModelId?.trim() || null;
-  const initialSource = opts.initialSourceAssetId?.trim() || null;
+  const reviewGeneration = opts.reviewGeneration ?? null;
+  const reviewFrames = resolveGenerationFramePreviews(reviewGeneration);
+  const initialSource =
+    opts.initialSourceAssetId?.trim() ||
+    reviewFrames.startAssetId ||
+    null;
   const placeholderId = opts.placeholderId?.trim() || undefined;
 
   const { project } = useShell();
@@ -82,6 +98,10 @@ export function useParasceneImageToImageForm(
   const [assetPreviews, setAssetPreviews] = useState<
     Record<string, string | null>
   >({});
+  const [asyncReviewStartPreview, setAsyncReviewStartPreview] = useState<{
+    identity: string;
+    url: string | null;
+  } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
@@ -107,6 +127,34 @@ export function useParasceneImageToImageForm(
     el.style.height = `${el.scrollHeight}px`;
   }, [prompt]);
 
+  const reviewIdentity = reviewGenerationIdentity(reviewGeneration);
+  const lockedReviewKey =
+    locked && reviewIdentity
+      ? [
+          reviewIdentity,
+          reviewGeneration?.prompt ?? initialPrompt,
+          reviewGeneration?.model?.trim() || initialModelId || "",
+          reviewGeneration?.startFrameAssetId?.trim() || initialSource || "",
+        ].join("\0")
+      : "";
+  const [appliedLockedReviewKey, setAppliedLockedReviewKey] =
+    useState(lockedReviewKey);
+  if (locked && lockedReviewKey && lockedReviewKey !== appliedLockedReviewKey) {
+    setAppliedLockedReviewKey(lockedReviewKey);
+    setPrompt(reviewGeneration?.prompt ?? initialPrompt);
+    const model =
+      reviewGeneration?.model?.trim() || initialModelId?.trim() || "";
+    if (model) {
+      const hit = parasceneResolveStillModel("image_to_image", model);
+      if (hit) setModelId(hit.id);
+    }
+    const source =
+      reviewGeneration?.startFrameAssetId?.trim() ||
+      initialSource?.trim() ||
+      "";
+    setSourceAssetId(source || null);
+  }
+
   useEffect(() => {
     if (fieldsLocked || imageAssets.length === 0) return;
     let cancelled = false;
@@ -125,12 +173,42 @@ export function useParasceneImageToImageForm(
     };
   }, [fieldsLocked, imageAssets]);
 
+  // Locked review: load start still only when sync preview is missing.
+  useEffect(() => {
+    if (!reviewGeneration || !reviewIdentity) return;
+    const sync = resolveGenerationFramePreviews(reviewGeneration);
+    if (sync.startPreviewUrl || !sync.startAssetId) return;
+    let cancelled = false;
+    void loadGenerationFramePreviews(reviewGeneration).then((loaded) => {
+      if (cancelled) return;
+      setAsyncReviewStartPreview({
+        identity: reviewIdentity,
+        url: loaded.startPreviewUrl,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reviewGeneration, reviewIdentity]);
+
   const sourceAsset =
     sourceAssetId != null
       ? imageAssets.find((asset) => asset.id === sourceAssetId)
       : null;
+  const asyncReviewStartPreviewUrl =
+    asyncReviewStartPreview?.identity === reviewIdentity
+      ? asyncReviewStartPreview.url
+      : null;
+  const reviewStartLoading = Boolean(
+    reviewGeneration &&
+      !reviewFrames.startPreviewUrl &&
+      reviewFrames.startAssetId &&
+      !asyncReviewStartPreviewUrl,
+  );
   const sourcePreviewUrl =
-    sourceAssetId != null ? assetPreviews[sourceAssetId] : null;
+    reviewFrames.startPreviewUrl ??
+    asyncReviewStartPreviewUrl ??
+    (sourceAssetId != null ? assetPreviews[sourceAssetId] : null);
   const fieldsInteractive = !fieldsLocked;
 
   const handleGenerateNew = () => {
@@ -167,7 +245,7 @@ export function useParasceneImageToImageForm(
     <>
       <section className="add-asset-generate-section">
         <h3>Source image</h3>
-        {imageAssets.length === 0 ? (
+        {imageAssets.length === 0 && !sourceAssetId ? (
           <p className="muted add-asset-generate-note">
             Add stills to Assets to use as the source image.
           </p>
@@ -185,9 +263,11 @@ export function useParasceneImageToImageForm(
                 />
               ) : (
                 <p className="muted add-asset-generate-field-placeholder">
-                  {sourceAssetId
-                    ? "Selected image is not available yet."
-                    : "No source image selected."}
+                  {!sourceAssetId
+                    ? "No source image selected."
+                    : reviewStartLoading
+                      ? "Selected image is not available yet."
+                      : "Selected image could not be loaded."}
                 </p>
               )}
             </div>

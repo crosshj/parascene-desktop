@@ -3,8 +3,10 @@ import {
   firstVisibleGenerateServer,
   isGenerateServerCapVisible,
   libraryServerFormReady,
+  resetGenerateServerCredentialCachesForTests,
   serverChoiceDescription,
   serverNeedsCredentials,
+  settledEnabledGenerateServerIds,
 } from "./generateServerCredentials";
 
 describe("generateServerCredentials", () => {
@@ -83,5 +85,31 @@ describe("generateServerCredentials", () => {
     expect(
       firstVisibleGenerateServer("text_to_image", allCreds, "replicate"),
     ).toBe("replicate");
+  });
+});
+
+describe("settledEnabledGenerateServerIds", () => {
+  it("caches enabled systems and ignores selection-driven remounts", () => {
+    resetGenerateServerCredentialCachesForTests();
+    const enabled = { blueConfigured: true, replicateReady: false };
+    expect([...settledEnabledGenerateServerIds(enabled)]).toEqual([
+      "parascene_blue",
+      "blue_direct",
+    ]);
+    // Loading remount must not wipe the settled roster.
+    expect([
+      ...settledEnabledGenerateServerIds({
+        blueConfigured: null,
+        replicateReady: null,
+      }),
+    ]).toEqual(["parascene_blue", "blue_direct"]);
+  });
+
+  it("does not grow the roster for a historic unselected system", () => {
+    resetGenerateServerCredentialCachesForTests();
+    const enabled = { blueConfigured: false, replicateReady: false };
+    expect([...settledEnabledGenerateServerIds(enabled)]).toEqual([
+      "parascene_blue",
+    ]);
   });
 });

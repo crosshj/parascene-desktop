@@ -16,7 +16,13 @@ describe("projectImagePickerAssets", () => {
         remoteJson: JSON.stringify({
           meta: {
             group: {
+              kind: "group_creations",
               source_creation_ids: [201, 202],
+            },
+            desktop: {
+              role: "project_images",
+              client: "parascene-desktop",
+              projectId: "p1",
             },
           },
         }),
@@ -27,8 +33,12 @@ describe("projectImagePickerAssets", () => {
     };
 
     const rows = projectImagePickerAssets(assets, creationsById, {
-      imagesGroupId: "100",
-      videosGroupId: null,
+      projectId: "p1",
+      projectTitle: "Demo",
+      projectCabinets: {
+        imagesGroupId: "100",
+        videosGroupId: null,
+      },
     });
 
     expect(rows.map((row) => row.id)).toEqual(["201", "200"]);

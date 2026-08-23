@@ -1006,6 +1006,38 @@ describe("projectStore", () => {
     );
   });
 
+  it("can complete a placeholder without flat-filing the creation (cabinet members)", () => {
+    const project = createStoredProject("Demo", ["images-group"]);
+    const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: {
+        prompt: "sunset",
+        intentId: "text_to_image",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "text_to_image",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const selected = setStoredProjectSelectedAssetId(
+      withPlaceholder,
+      "placeholder-1",
+    );
+    const completed = completeStoredLibraryAssetPlaceholder(
+      selected,
+      "placeholder-1",
+      "creation-99",
+      { mergeCreationIntoProject: false },
+    );
+
+    expect(completed.creationIds).toEqual(["images-group"]);
+    expect(completed.selectedAssetId).toBe("creation-99");
+  });
+
   it("removes library asset placeholders without creation ids", () => {
     let project = createStoredProject("Demo", ["c1"]);
     project = upsertStoredLibraryAssetPlaceholder(project, {

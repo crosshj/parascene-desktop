@@ -29,10 +29,11 @@ import {
   creationPreviewUrl,
 } from "../../library/previewUrl";
 import type { Creation, MediaType } from "../../library/types";
+import { type ProjectCabinetIds } from "../../project/desktopProjectGroups";
 import {
-  isEditorProjectCabinet,
-  type ProjectCabinetIds,
-} from "../../project/desktopProjectGroups";
+  flattenProjectAssetsForBrowserDisplay,
+  projectContainerCoverIdsForMemberLoad,
+} from "./assetBrowserDisplay";
 import {
   projectAspectCss,
   type ProjectAspectRatio,
@@ -58,6 +59,8 @@ const FILTERS: { id: AssetKindFilter; label: string }[] = [
 type AssetBrowserPaneProps = {
   assets: ProjectAsset[];
   folders?: LibraryFolder[];
+  projectId: string;
+  projectTitle: string;
   /** Desktop Images cabinet id — expand members; hide cover. */
   imagesGroupId?: string | null;
   /** Desktop Videos cabinet id — expand members; hide cover. */
@@ -281,6 +284,8 @@ function StubAssetTile({
 export function AssetBrowserPane({
   assets,
   folders = [],
+  projectId,
+  projectTitle,
   imagesGroupId = null,
   videosGroupId = null,
   filter,
@@ -473,8 +478,22 @@ export function AssetBrowserPane({
         // it from the cover's embedded source_creations so we don't paint stubs.
         const memberIds = new Set<string>();
         const cabinetCovers: Creation[] = [];
-        for (const row of rows) {
-          if (!isEditorProjectCabinet(row.id, row, projectCabinets)) continue;
+        const coverIds = projectContainerCoverIdsForMemberLoad({
+          projectId,
+          projectTitle,
+          rootAssets,
+          creationsById: next,
+          projectCabinets,
+        });
+        const missingCoverIds = coverIds.filter((id) => !next[id]);
+        if (missingCoverIds.length > 0) {
+          const extra = await getCreations(missingCoverIds);
+          if (cancelled) return;
+          for (const row of extra) next[row.id] = row;
+        }
+        for (const coverId of coverIds) {
+          const row = next[coverId];
+          if (!row) continue;
           cabinetCovers.push(row);
           for (const mid of groupSourceCreationIds(row)) {
             if (!next[mid]) memberIds.add(mid);
@@ -534,42 +553,20 @@ export function AssetBrowserPane({
       cancelled = true;
       unlisten?.();
     };
-  }, [assetIdsKey, projectCabinets]);
+  }, [assetIdsKey, projectCabinets, projectId, projectTitle, rootAssets]);
 
   /** Flat list for the grid: cabinets expand to members (covers are hidden). */
-  const displayAssets = useMemo(() => {
-    const out: ProjectAsset[] = [];
-    const seen = new Set<string>();
-
-    const pushId = (id: string, fallbackKind: ProjectAsset["kind"]) => {
-      if (seen.has(id)) return;
-      seen.add(id);
-      const creation = creationsById[id];
-      const existing = assets.find((a) => a.id === id);
-      out.push({
-        id,
-        name: existing?.name ?? id,
-        kind: kindFromCreation(creation, existing?.kind ?? fallbackKind),
-        durationLabel: existing?.durationLabel,
-      });
-    };
-
-    for (const asset of rootAssets) {
-      const creation = creationsById[asset.id];
-      if (isEditorProjectCabinet(asset.id, creation, projectCabinets)) {
-        const memberIds = creation ? groupSourceCreationIds(creation) : [];
-        const cabinetKind =
-          asset.id === projectCabinets?.videosGroupId ? "video" : "image";
-        for (const mid of memberIds) {
-          pushId(mid, cabinetKind);
-        }
-        continue;
-      }
-      pushId(asset.id, asset.kind);
-    }
-
-    return out;
-  }, [assets, creationsById, projectCabinets, rootAssets]);
+  const displayAssets = useMemo(
+    () =>
+      flattenProjectAssetsForBrowserDisplay({
+        projectId,
+        projectTitle,
+        rootAssets,
+        creationsById,
+        projectCabinets,
+      }),
+    [creationsById, projectCabinets, projectId, projectTitle, rootAssets],
+  );
 
   const visible = displayAssets.filter((asset) => {
     if (filter === "all") return true;

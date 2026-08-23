@@ -13,67 +13,38 @@ import {
   groupSourceCreationIds,
 } from "../../library/creationFlags";
 import type { Creation } from "../../library/types";
-import {
-  isEditorProjectCabinet,
-  type ProjectCabinetIds,
-} from "../../project/desktopProjectGroups";
+import { type ProjectCabinetIds } from "../../project/desktopProjectGroups";
 import type { ProjectAsset } from "../../project/types";
+import {
+  flattenProjectAssetsForBrowserDisplay,
+  projectContainerCoverIdsForMemberLoad,
+} from "./assetBrowserDisplay";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
 
-function kindFromCreation(
-  creation: Creation | undefined,
-  fallback: ProjectAsset["kind"],
-): ProjectAsset["kind"] {
-  const mt = String(creation?.mediaType ?? fallback)
-    .trim()
-    .toLowerCase();
-  if (mt === "video" || mt === "audio" || mt === "image") return mt;
-  return fallback;
-}
+export type ProjectImagePickerContext = {
+  projectId: string;
+  projectTitle: string;
+  projectCabinets: ProjectCabinetIds | null | undefined;
+};
 
 /** Flatten project assets (including cabinet members) to image stills only. */
 export function projectImagePickerAssets(
   assets: readonly ProjectAsset[],
   creationsById: Readonly<Record<string, Creation | undefined>>,
-  projectCabinets: ProjectCabinetIds | null | undefined,
+  context: ProjectImagePickerContext,
 ): ProjectAsset[] {
-  const out: ProjectAsset[] = [];
-  const seen = new Set<string>();
-
-  const pushId = (id: string, fallbackKind: ProjectAsset["kind"]) => {
-    if (seen.has(id)) return;
-    const creation = creationsById[id];
-    const kind = kindFromCreation(creation, fallbackKind);
-    if (kind !== "image") return;
-    seen.add(id);
-    const existing = assets.find((asset) => asset.id === id);
-    out.push({
-      id,
-      name: existing?.name ?? id,
-      kind: "image",
-      durationLabel: existing?.durationLabel,
-    });
-  };
-
-  for (const asset of assets) {
-    const creation = creationsById[asset.id];
-    if (isEditorProjectCabinet(asset.id, creation, projectCabinets)) {
-      if (asset.id === projectCabinets?.videosGroupId) continue;
-      const memberIds = creation ? groupSourceCreationIds(creation) : [];
-      for (const memberId of memberIds) {
-        pushId(memberId, "image");
-      }
-      continue;
-    }
-    pushId(asset.id, asset.kind);
-  }
-
-  return out;
+  return flattenProjectAssetsForBrowserDisplay({
+    projectId: context.projectId,
+    projectTitle: context.projectTitle,
+    rootAssets: assets,
+    creationsById,
+    projectCabinets: context.projectCabinets,
+  }).filter((asset) => asset.kind === "image");
 }
 
 async function loadProjectAssetCreations(
   assetIds: readonly string[],
-  projectCabinets: ProjectCabinetIds | null | undefined,
+  context: ProjectImagePickerContext,
 ): Promise<Record<string, Creation>> {
   const ids = [...new Set(assetIds.map((id) => id.trim()).filter(Boolean))];
   if (ids.length === 0) return {};
@@ -84,8 +55,21 @@ async function loadProjectAssetCreations(
 
   const memberIds = new Set<string>();
   const cabinetCovers: Creation[] = [];
-  for (const row of rows) {
-    if (!isEditorProjectCabinet(row.id, row, projectCabinets)) continue;
+  const coverIds = projectContainerCoverIdsForMemberLoad({
+    projectId: context.projectId,
+    projectTitle: context.projectTitle,
+    rootAssets: ids.map((id) => ({ id, name: id, kind: "image" })),
+    creationsById: next,
+    projectCabinets: context.projectCabinets,
+  });
+  const missingCoverIds = coverIds.filter((id) => !next[id]);
+  if (missingCoverIds.length > 0) {
+    const extra = await getCreations(missingCoverIds);
+    for (const row of extra) next[row.id] = row;
+  }
+  for (const coverId of coverIds) {
+    const row = next[coverId];
+    if (!row) continue;
     cabinetCovers.push(row);
     for (const memberId of groupSourceCreationIds(row)) {
       if (!next[memberId]) memberIds.add(memberId);
@@ -116,7 +100,7 @@ async function loadProjectAssetCreations(
 
 export function useProjectImagePickerAssets(
   assets: readonly ProjectAsset[],
-  projectCabinets: ProjectCabinetIds | null | undefined,
+  context: ProjectImagePickerContext,
 ): ProjectAsset[] {
   const assetIdsKey = useMemo(
     () => assets.map((asset) => asset.id).join("\0"),
@@ -133,7 +117,7 @@ export function useProjectImagePickerAssets(
     }
 
     let cancelled = false;
-    void loadProjectAssetCreations(ids, projectCabinets)
+    void loadProjectAssetCreations(ids, context)
       .then((next) => {
         if (!cancelled) setCreationsById(next);
       })
@@ -158,14 +142,10 @@ export function useProjectImagePickerAssets(
       cancelled = true;
       unlisten?.();
     };
-  }, [assetIdsKey, projectCabinets]);
+  }, [assetIdsKey, context]);
 
   return useMemo(() => {
     const resolvedCreationsById = assetIdsKey ? creationsById : {};
-    return projectImagePickerAssets(
-      assets,
-      resolvedCreationsById,
-      projectCabinets,
-    );
-  }, [assetIdsKey, assets, creationsById, projectCabinets]);
+    return projectImagePickerAssets(assets, resolvedCreationsById, context);
+  }, [assetIdsKey, assets, context, creationsById]);
 }

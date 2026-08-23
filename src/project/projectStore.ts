@@ -1966,11 +1966,15 @@ export function completeStoredLibraryAssetPlaceholder(
   project: StoredProject,
   placeholderId: string,
   creationId: string,
+  opts?: { mergeCreationIntoProject?: boolean },
 ): StoredProject {
   const placeholderKey = placeholderId.trim();
   const creationKey = creationId.trim();
   if (!placeholderKey || !creationKey) return project;
-  const withCreation = mergeCreationIds(project, [creationKey]);
+  const mergeCreation = opts?.mergeCreationIntoProject !== false;
+  const withCreation = mergeCreation
+    ? mergeCreationIds(project, [creationKey])
+    : project;
   const cleared = clearStoredLibraryAssetPlaceholder(
     withCreation,
     placeholderKey,
@@ -1978,7 +1982,15 @@ export function completeStoredLibraryAssetPlaceholder(
   if (project.selectedAssetId !== placeholderKey) {
     return cleared;
   }
-  return setStoredProjectSelectedAssetId(cleared, creationKey);
+  if (mergeCreation) {
+    return setStoredProjectSelectedAssetId(cleared, creationKey);
+  }
+  // Cabinet member — keep selection without flat-filing into creationIds.
+  return {
+    ...cleared,
+    selectedAssetId: creationKey,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 export function replaceStoredLibraryAssetPlaceholderId(

@@ -88,6 +88,8 @@ export type AddAssetGenerationSuccess = {
   clipId: string;
   creationId: string;
   projectCreationIds: string[];
+  /** Throwaway local-* extracts to unfile after a Parascene still was used. */
+  projectCreationIdsToRemove?: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
   prompt: string;
@@ -439,31 +441,66 @@ export function startAddAssetGenerationJob(
         lastFrameSource: request.clip.addAssetDraft?.lastFrameSource,
         continuityMode,
       });
-      const firstFrameSource: AddAssetFrameSource =
-        (await ensureDurableFrameSource(
-          request.startFrame,
-          draftFirst,
-          projectId,
-        )) ?? draftFirst;
+      // Parascene lane: stills are Creation members of the Images group.
+      // Never re-import the temp ffmpeg extract as local-*, and never also
+      // merge those still Creation ids into the flat project folder.
+      const isParasceneLane = provider === "parascene_blue";
+      const startCreationId = result.startFrameCreationId?.trim() || null;
+      const endCreationId = result.endFrameCreationId?.trim() || null;
+      const firstFrameSource: AddAssetFrameSource = startCreationId
+        ? { kind: "asset", assetId: startCreationId }
+        : isParasceneLane
+          ? draftFirst
+          : (await ensureDurableFrameSource(
+              request.startFrame,
+              draftFirst,
+              projectId,
+            )) ?? draftFirst;
       const lastFrameSource: AddAssetFrameSource =
         continuityMode === "first_last"
-          ? (await ensureDurableFrameSource(
-              request.endFrame,
-              draftLast,
-              projectId,
-            )) ?? draftLast
+          ? endCreationId
+            ? { kind: "asset", assetId: endCreationId }
+            : isParasceneLane
+              ? draftLast
+              : (await ensureDurableFrameSource(
+                  request.endFrame,
+                  draftLast,
+                  projectId,
+                )) ?? draftLast
           : { kind: "none" };
-      const stillIds = [
-        frameSourceAssetId(firstFrameSource),
-        frameSourceAssetId(lastFrameSource),
-      ].filter((id): id is string => Boolean(id));
+      // Local-only servers keep imported stills as flat project members.
+      // Parascene stills already live in the Images group cover.
+      const stillIdsForFlatProject = isParasceneLane
+        ? []
+        : [
+            frameSourceAssetId(firstFrameSource),
+            frameSourceAssetId(lastFrameSource),
+          ].filter((id): id is string => Boolean(id));
+      const bridgeLocalIds = isParasceneLane
+        ? [
+            ...new Set(
+              [
+                request.clip.addAssetDraft?.startFrameAssetId?.trim(),
+                frameSourceAssetId(draftFirst),
+                frameSourceAssetId(draftLast),
+              ].filter(
+                (id): id is string =>
+                  typeof id === "string" && id.startsWith("local-"),
+              ),
+            ),
+          ]
+        : [];
       const success: AddAssetGenerationSuccess = {
         projectId,
         clipId,
         creationId: result.creationId,
         projectCreationIds: [
-          ...new Set([...result.projectCreationIds, ...stillIds]),
+          ...new Set([
+            ...result.projectCreationIds,
+            ...stillIdsForFlatProject,
+          ]),
         ],
+        projectCreationIdsToRemove: bridgeLocalIds,
         videosGroupId: result.videosGroupId,
         imagesGroupId: result.imagesGroupId,
         prompt: request.prompt,

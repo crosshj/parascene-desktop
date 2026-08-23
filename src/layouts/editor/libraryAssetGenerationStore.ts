@@ -3,14 +3,11 @@
  * Survives leaving the + slot — UI reads {@link LibraryAssetPlaceholder} on the project.
  */
 
-import { applyManifest, getCreation } from "../../library/catalogClient";
 import type { ProjectAspectRatio } from "../../project/aspectRatios";
 import type { AddAssetDraft, AddAssetGeneration } from "../../project/types";
 import type { AddAssetGenerationJob } from "../../project/types";
 import {
-  creationUpsertWithAddAssetGeneration,
   makeTextToImageGeneration,
-  makeImageToImageGeneration,
 } from "../../project/desktopAddAssetGeneration";
 import {
   parasceneResolveStillModel,
@@ -243,28 +240,18 @@ async function runLibraryParasceneTextToImage(
       },
     });
 
-    if (result.projectCreationIds.length > 0) {
-      await applier.addCreations(result.projectCreationIds);
-    }
+    // Point at the cabinet cover before mirroring folder membership into the
+    // project doc — otherwise the cover briefly renders as a group tile.
     if (result.imagesGroupId) {
       applier.setImagesGroupId(result.imagesGroupId);
     }
-
-    const generation = makeTextToImageGeneration({
-      prompt: opts.prompt,
-      creationId: result.creationId,
-      model: opts.route.value,
-      server: "parascene_blue",
-    });
-
-    try {
-      const creation = await getCreation(result.creationId);
-      await applyManifest([
-        creationUpsertWithAddAssetGeneration(creation, generation),
-      ]);
-    } catch {
-      /* manifest optional — selection preview may lag one tick */
+    if (result.projectCreationIds.length > 0) {
+      await applier.addCreations(result.projectCreationIds);
     }
+
+    // Do not stamp meta.desktop on the catalog row — Parascene Creation meta
+    // (synced into remoteJson) is the provenance source of truth. Result | Form
+    // derives from meta.args via resolveAddAssetGenerationFromCreation.
 
     applier.completePlaceholder({
       placeholderId,
@@ -408,29 +395,14 @@ async function runLibraryParasceneImageToImage(
     pendingCreationId = result.creationId;
     patchJob(`Syncing ${result.creationId}…`, "importing");
 
-    if (result.projectCreationIds.length > 0) {
-      await applier.addCreations(result.projectCreationIds);
-    }
     if (result.imagesGroupId) {
       applier.setImagesGroupId(result.imagesGroupId);
     }
-
-    const generation = makeImageToImageGeneration({
-      prompt: opts.prompt,
-      creationId: result.creationId,
-      model: opts.route.value,
-      server: "parascene_blue",
-      sourceCreationId: opts.sourceCreationId,
-    });
-
-    try {
-      const creation = await getCreation(result.creationId);
-      await applyManifest([
-        creationUpsertWithAddAssetGeneration(creation, generation),
-      ]);
-    } catch {
-      /* manifest optional — selection preview may lag one tick */
+    if (result.projectCreationIds.length > 0) {
+      await applier.addCreations(result.projectCreationIds);
     }
+
+    // Parascene Creation meta is provenance — do not rewrite remoteJson.
 
     applier.completePlaceholder({
       placeholderId,

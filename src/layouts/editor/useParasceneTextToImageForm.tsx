@@ -83,6 +83,20 @@ export function useParasceneTextToImageForm(
     el.style.height = `${el.scrollHeight}px`;
   }, [prompt]);
 
+  const lockedReviewKey = locked
+    ? `${initialPrompt}\0${initialModelId ?? ""}`
+    : "";
+  const [appliedLockedReviewKey, setAppliedLockedReviewKey] =
+    useState(lockedReviewKey);
+  if (locked && lockedReviewKey !== appliedLockedReviewKey) {
+    setAppliedLockedReviewKey(lockedReviewKey);
+    setPrompt(initialPrompt);
+    if (initialModelId) {
+      const hit = parasceneResolveStillModel("text_to_image", initialModelId);
+      if (hit) setModelId(hit.id);
+    }
+  }
+
   const handleGenerateNew = () => {
     setDoneLocked(false);
     reportState({ phase: "pre_gen", progressNote: "" });

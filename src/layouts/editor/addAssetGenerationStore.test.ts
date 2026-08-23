@@ -11,6 +11,10 @@ vi.mock("./addAssetGenerate", async () => {
   };
 });
 
+vi.mock("../../project/projectAssetLanding", () => ({
+  importLocalPathsForProject: vi.fn(),
+}));
+
 vi.mock("./addAssetBlueDirectGenerate", async () => {
   const actual =
     await vi.importActual<typeof import("./addAssetBlueDirectGenerate")>(
@@ -24,6 +28,7 @@ vi.mock("./addAssetBlueDirectGenerate", async () => {
 
 import { runAddAssetGeneration } from "./addAssetGenerate";
 import { resumeBlueDirectAddAssetWait } from "./addAssetBlueDirectGenerate";
+import { importLocalPathsForProject } from "../../project/projectAssetLanding";
 import {
   __resetAddAssetGenerationStoreForTests,
   bindAddAssetGenerationApplier,
@@ -83,6 +88,8 @@ describe("addAssetGenerationStore", () => {
       projectCreationIds: string[];
       videosGroupId: string | null;
       imagesGroupId: string | null;
+      startFrameCreationId: string | null;
+      endFrameCreationId: string | null;
       mode: "first_last";
       model: string;
     }) => void;
@@ -154,6 +161,8 @@ describe("addAssetGenerationStore", () => {
       projectCreationIds: ["vid-1"],
       videosGroupId: "vg",
       imagesGroupId: null,
+      startFrameCreationId: null,
+      endFrameCreationId: null,
       mode: "first_last",
       model: "wan_i2v",
     });
@@ -313,6 +322,8 @@ describe("addAssetGenerationStore", () => {
         projectCreationIds: ["vid-1"],
         videosGroupId: null,
         imagesGroupId: null,
+        startFrameCreationId: null,
+        endFrameCreationId: null,
         mode: "start_frame" as const,
         model: "owner/model",
       };
@@ -369,6 +380,8 @@ describe("addAssetGenerationStore", () => {
         projectCreationIds: [`vid-${importCount}`],
         videosGroupId: null,
         imagesGroupId: null,
+        startFrameCreationId: null,
+        endFrameCreationId: null,
         mode: "start_frame" as const,
         model: "ltx_i2v",
       };
@@ -417,4 +430,68 @@ describe("addAssetGenerationStore", () => {
     expect(importCount).toBe(1);
     expect(applySuccess).toHaveBeenCalledTimes(1);
   });
+
+  it("Parascene success stamps Creation still and does not flatten it or import local-*", async () => {
+    const importLocal = vi.mocked(importLocalPathsForProject);
+    importLocal.mockReset();
+    runMock.mockResolvedValue({
+      creationId: "vid-1",
+      projectCreationIds: ["videos-group-1"],
+      videosGroupId: "videos-group-1",
+      imagesGroupId: "images-group-1",
+      startFrameCreationId: "still-creation-9",
+      endFrameCreationId: null,
+      mode: "start_frame",
+      model: "ltx_i2v",
+    });
+
+    const applySuccess = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess,
+      applyFailure: vi.fn(),
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+
+    const request = makeRequest();
+    request.continuityMode = "start_frame";
+    request.clip = {
+      ...request.clip,
+      addAssetDraft: {
+        startFrameAssetId: "local-bridge-extract",
+        firstFrameSource: { kind: "asset", assetId: "local-bridge-extract" },
+        server: "parascene_blue",
+      },
+    };
+
+    startAddAssetGenerationJob({
+      projectId: "proj-1",
+      request,
+      runOpts: {
+        timeline: [],
+        mainAudioCreationId: "audio-1",
+        aspectRatio: "16:9",
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        imagesGroupId: "images-group-1",
+        videosGroupId: "videos-group-1",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(applySuccess).toHaveBeenCalled();
+    });
+
+    expect(importLocal).not.toHaveBeenCalled();
+    expect(applySuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creationId: "vid-1",
+        startFrameAssetId: "still-creation-9",
+        firstFrameSource: { kind: "asset", assetId: "still-creation-9" },
+        projectCreationIds: ["videos-group-1"],
+        projectCreationIdsToRemove: ["local-bridge-extract"],
+      }),
+    );
+  });
+
 });

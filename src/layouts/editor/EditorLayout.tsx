@@ -387,8 +387,7 @@ export function EditorLayout() {
     [],
   );
 
-  // Assets expands cabinets only via store pointers. If those were cleared but
-  // stamped covers remain in project assets, restore images/videos group ids.
+  // Restore Images/Videos cabinet pointers only when they are missing.
   const assetIdsKey = project.assets.map((asset) => asset.id).join("\0");
   useEffect(() => {
     if (project.imagesGroupId && project.videosGroupId) return;
@@ -401,6 +400,7 @@ export function EditorLayout() {
         if (cancelled) return;
         const recovered = recoverMissingCabinetIdsFromCreations({
           projectId: project.id,
+          projectTitle: project.title,
           imagesGroupId: project.imagesGroupId,
           videosGroupId: project.videosGroupId,
           creations: rows,
@@ -422,6 +422,7 @@ export function EditorLayout() {
   }, [
     assetIdsKey,
     project.id,
+    project.title,
     project.imagesGroupId,
     project.videosGroupId,
     setOpenProjectGroupIds,
@@ -498,10 +499,11 @@ export function EditorLayout() {
     }),
     [project.imagesGroupId, project.videosGroupId],
   );
-  const imageAssets = useProjectImagePickerAssets(
-    project.assets,
+  const imageAssets = useProjectImagePickerAssets(project.assets, {
+    projectId: project.id,
+    projectTitle: project.title,
     projectCabinets,
-  );
+  });
 
   const pauseTimelinePlayback = useCallback(() => {
     if (!timelinePlaying) return;
@@ -2368,6 +2370,8 @@ export function EditorLayout() {
         <AssetBrowserPane
           assets={project.assets}
           folders={[]}
+          projectId={project.id}
+          projectTitle={project.title}
           imagesGroupId={project.imagesGroupId}
           videosGroupId={project.videosGroupId}
           filter={assetFilter}

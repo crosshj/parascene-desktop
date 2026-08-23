@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { requestOpenSettings } from "../../settings/events";
 import type { BakeInfo } from "../../library/slideshowMedia";
 import {
@@ -37,13 +37,11 @@ import {
 import { ReplicateTextToImageFormLayout } from "./ReplicateTextToImageForm";
 import { BlueDirectTextToImageForm } from "./BlueDirectTextToImageForm";
 import { GenerateIntentIcon } from "./GenerateIntentIcon";
-import { GenerateServerIcon } from "./GenerateServerIcon";
+import { GenerateSystemChooser } from "./GenerateSystemChooser";
 import { saveLastGenerateIntent } from "./generateIntentPrefs";
 import {
   firstVisibleGenerateServer,
-  isGenerateServerCapVisible,
   libraryServerFormReady,
-  serverChoiceDescription,
   serverNeedsCredentials,
   useGenerateServerCredentials,
 } from "./generateServerCredentials";
@@ -131,28 +129,7 @@ export function SelectionIntentPanel({
   const needsCreds = server ? serverNeedsCredentials(server, creds) : false;
   const libraryFormReady = libraryServerFormReady(capability, creds);
 
-  const serverCapIsVisible = (cap: {
-    server: GenerateServerId;
-    status: "wired" | "coming_soon";
-  }) => isGenerateServerCapVisible(cap, creds);
 
-  useEffect(() => {
-    if (!showGenerate || !intentId || !server || !generateIntent) return;
-    const cap = intentServerCapability(intentId, server);
-    if (cap && isGenerateServerCapVisible(cap, creds)) return;
-    const nextServer = firstVisibleGenerateServer(intentId, creds, server);
-    if (nextServer === server) return;
-    const intent = makeAddAssetIntent(intentId, nextServer);
-    saveLastGenerateIntent(intent);
-    onGenerateIntentChange(intent);
-  }, [
-    showGenerate,
-    intentId,
-    server,
-    generateIntent,
-    creds,
-    onGenerateIntentChange,
-  ]);
 
   const timelinePlacement = useMemo((): TimelinePlacementState => {
     if (canPlaceSlideshow && draft) {
@@ -212,7 +189,7 @@ export function SelectionIntentPanel({
             Coming soon
             {` on ${
               GENERATE_SERVERS.find((s) => s.id === server)?.label ??
-              "this server"
+              "this system"
             }`}
             .
           </p>
@@ -385,44 +362,11 @@ export function SelectionIntentPanel({
             </div>
           </section>
 
-          {intentId ? (
-            <section className="add-asset-generate-section">
-              <h3>Server</h3>
-              <div className="preview-intent-choice-grid" role="list">
-                {serversForIntent(intentId)
-                  .filter((cap) => serverCapIsVisible(cap))
-                  .map((cap) => {
-                  const def = GENERATE_SERVERS.find((s) => s.id === cap.server);
-                  if (!def) return null;
-                  const soon = cap.status === "coming_soon";
-                  return (
-                    <button
-                      key={cap.server}
-                      type="button"
-                      role="listitem"
-                      className={`preview-intent-choice preview-intent-choice--compact${
-                        server === cap.server ? " is-selected" : ""
-                      }${soon ? " is-soon" : ""}`}
-                      aria-pressed={server === cap.server}
-                      onClick={() => selectServer(cap.server)}
-                    >
-                      <span className="preview-intent-choice-icon preview-intent-choice-icon--brand">
-                        <GenerateServerIcon serverId={cap.server} />
-                      </span>
-                      <span className="preview-intent-choice-text">
-                        <span className="preview-intent-choice-label">
-                          {def.label}
-                        </span>
-                        <span className="muted preview-intent-choice-desc">
-                          {serverChoiceDescription(cap, creds, def.description)}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
+          <GenerateSystemChooser
+            selectedId={server}
+            disabled={!intentId}
+            onSelect={selectServer}
+          />
         </>
       ) : null}
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback } from "react";
 import { requestOpenSettings } from "../../settings/events";
 import type {
   AddAssetDraft,
@@ -31,7 +31,7 @@ import {
 } from "./previewIntent";
 import type { LibraryGenerateUiState } from "./generateDualView";
 import { GenerateIntentIcon } from "./GenerateIntentIcon";
-import { GenerateServerIcon } from "./GenerateServerIcon";
+import { GenerateSystemChooser } from "./GenerateSystemChooser";
 import { saveLastGenerateIntent } from "./generateIntentPrefs";
 import { addAssetDragDraftFromIntent } from "./stagedClip";
 import {
@@ -58,9 +58,7 @@ import {
 } from "./AddAssetGeneratePanel";
 import {
   firstVisibleGenerateServer,
-  isGenerateServerCapVisible,
   libraryServerFormReady,
-  serverChoiceDescription,
   serverNeedsCredentials,
   useGenerateServerCredentials,
 } from "./generateServerCredentials";
@@ -201,11 +199,6 @@ export function AddAssetIntentPanel({
   const serverNeedsCreds = (id: GenerateServerId): boolean =>
     serverNeedsCredentials(id, creds);
 
-  const serverCapIsVisible = (cap: {
-    server: GenerateServerId;
-    status: "wired" | "coming_soon";
-  }): boolean => isGenerateServerCapVisible(cap, creds);
-
   const firstSelectableServer = (
     intent: GenerateIntentId,
     prefer?: GenerateServerId | null,
@@ -220,21 +213,6 @@ export function AddAssetIntentPanel({
     },
     [onIntentChange],
   );
-
-  useEffect(() => {
-    if (locked || !intentId || !server) return;
-    const cap = intentServerCapability(intentId, server);
-    if (cap && isGenerateServerCapVisible(cap, creds)) return;
-    const nextServer = firstVisibleGenerateServer(intentId, creds, server);
-    if (nextServer === server) return;
-    commitIntent(
-      makeAddAssetIntent(
-        intentId,
-        nextServer,
-        placed ? "timeline" : destination,
-      ),
-    );
-  }, [locked, intentId, server, creds, placed, destination, commitIntent]);
 
   const selectIntent = (next: GenerateIntentId) => {
     if (intentLocked) return;
@@ -263,7 +241,7 @@ export function AddAssetIntentPanel({
             {selectedIntent ? ` — ${selectedIntent.label}` : ""}
             {` on ${
               GENERATE_SERVERS.find((s) => s.id === server)?.label ??
-              "this server"
+              "this system"
             }`}
             .
           </p>
@@ -286,29 +264,16 @@ export function AddAssetIntentPanel({
       ) : null
     ) : null;
 
-  const timelinePlacement = useMemo(
-    () =>
-      resolveAddAssetTimelinePlacement({
-        placed,
-        intentId,
-        server,
-        draft: dragDraft,
-        comingSoon,
-        needsCreds,
-        canPlace,
-        timelineSoon,
-      }),
-    [
-      placed,
-      intentId,
-      server,
-      dragDraft,
-      comingSoon,
-      needsCreds,
-      canPlace,
-      timelineSoon,
-    ],
-  );
+  const timelinePlacement = resolveAddAssetTimelinePlacement({
+    placed,
+    intentId,
+    server,
+    draft: dragDraft,
+    comingSoon,
+    needsCreds,
+    canPlace,
+    timelineSoon,
+  });
 
   const assetsSoonGenerateAction =
     !placed && assetsSoon && !comingSoon && !needsCreds ? (
@@ -387,45 +352,11 @@ export function AddAssetIntentPanel({
         </div>
       </section>
 
-      {intentId ? (
-        <section className="add-asset-generate-section">
-          <h3>Server</h3>
-          <div className="preview-intent-choice-grid" role="list">
-            {serversForIntent(intentId)
-              .filter((cap) => serverCapIsVisible(cap))
-              .map((cap) => {
-              const def = GENERATE_SERVERS.find((s) => s.id === cap.server);
-              if (!def) return null;
-              const soon = cap.status === "coming_soon";
-              return (
-                <button
-                  key={cap.server}
-                  type="button"
-                  role="listitem"
-                  className={`preview-intent-choice preview-intent-choice--compact${
-                    server === cap.server ? " is-selected" : ""
-                  }${soon ? " is-soon" : ""}`}
-                  aria-pressed={server === cap.server}
-                  disabled={locked}
-                  onClick={() => selectServer(cap.server)}
-                >
-                  <span className="preview-intent-choice-icon preview-intent-choice-icon--brand">
-                    <GenerateServerIcon serverId={cap.server} />
-                  </span>
-                  <span className="preview-intent-choice-text">
-                    <span className="preview-intent-choice-label">
-                      {def.label}
-                    </span>
-                    <span className="muted preview-intent-choice-desc">
-                      {serverChoiceDescription(cap, creds, def.description)}
-                    </span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
+      <GenerateSystemChooser
+        selectedId={server}
+        disabled={locked || !intentId}
+        onSelect={selectServer}
+      />
 
       {!placed &&
       selectedIntent?.destinationPolicy === "timeline_only" ? (
@@ -445,7 +376,7 @@ export function AddAssetIntentPanel({
     !comingSoon &&
     !needsCreds ? (
       <AddAssetGeneratePanel
-        key={placedClip.id}
+        key={locked ? "locked-review-generate" : placedClip.id}
         embedded
         clip={placedClip}
         aspectRatio={aspectRatio}
@@ -472,7 +403,7 @@ export function AddAssetIntentPanel({
           {server
             ? ` on ${
                 GENERATE_SERVERS.find((s) => s.id === server)?.label ??
-                "this server"
+                "this system"
               }`
             : ""}
           .
@@ -541,6 +472,7 @@ export function AddAssetIntentPanel({
         initialPrompt={libraryFormSeed?.prompt ?? reviewGeneration?.prompt ?? ""}
         initialModelId={libraryFormSeed?.model ?? reviewGeneration?.model}
         initialSourceAssetId={i2iSourceAssetId}
+        reviewGeneration={reviewGeneration}
       >
         {({ fields, generateAction, cloneAction }) => (
           <div

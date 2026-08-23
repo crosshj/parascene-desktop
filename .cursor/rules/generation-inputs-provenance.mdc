@@ -1,0 +1,23 @@
+---
+description: Generation inputs & provenance — Parascene vs local-capable servers (frame upload, Form truth, no temp local as Parascene FIRST)
+globs: docs/GUIDE-generation-inputs-provenance.md,docs/PLAN-generation-provenance.md,docs/GUIDE-architecture-principles.md,src/layouts/editor/addAssetGenerate.ts,src/layouts/editor/addAssetGenerationStore.ts,src/layouts/editor/addAssetStartFrame.ts,src/layouts/editor/AddAssetGeneratePanel.tsx,src/layouts/editor/AddAssetIntentPanel.tsx,src/layouts/editor/runParascene*.ts,src/layouts/editor/libraryAssetGenerationStore.ts,src/layouts/editor/BlueDirect*.tsx,src/layouts/editor/useReplicate*.tsx,src/project/desktopAddAssetGeneration.ts,src/app/ShellProvider.tsx,src/sync/**/*.ts
+alwaysApply: false
+---
+
+# Generation inputs & provenance
+
+Before changing Generate, frame extract/upload, Form review, catalog stamps, or sync of generation meta:
+
+1. **Read** [docs/GUIDE-generation-inputs-provenance.md](docs/GUIDE-generation-inputs-provenance.md).
+2. Skim [docs/PLAN-generation-provenance.md](docs/PLAN-generation-provenance.md) for catalog stamp vs derive rules.
+
+## Non-negotiables
+
+- **Parascene** (`parascene_blue`) cannot read local files. Durable I2V/I2I/FLF inputs must be **Parascene Creations**. Temp ffmpeg extracts are upload transport only.
+- After Parascene success, Form / provenance FIRST/LAST must show the **Creation still**, never a leftover `local-*` extract id.
+- Do **not** keep throwaway local extracts as project members on the Parascene path once the Creation still exists.
+- **Direct to Blue / Replicate** may use local extracts as durable inputs — and must store **Parascene-like** provenance (`method` / `args`-shaped) locally on the output.
+- Parascene Creation-backed outputs: **do not** post-mutate catalog `remoteJson` for provenance; sync snapshot of Creation meta is enough.
+- Never copy Blue/Replicate frame habits onto the Parascene path (or the reverse).
+
+If a change would leave Form pointing at `local-*` after a Parascene gen that uploaded a still, stop and fix durable input identity instead.

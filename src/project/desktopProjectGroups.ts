@@ -174,35 +174,54 @@ export function isProjectCabinetId(
   );
 }
 
-/**
- * When store pointers were cleared but stamped cabinet covers remain among
- * project assets, recover `imagesGroupId` / `videosGroupId` so Editor Assets
- * can expand them. Match stamped `projectId` only — never party title.
- */
-export function recoverMissingCabinetIdsFromCreations(opts: {
-  projectId: string;
-  imagesGroupId?: string | null;
-  videosGroupId?: string | null;
-  creations: readonly Pick<
-    Creation,
-    "id" | "remoteJson" | "filename" | "title" | "createdAt"
-  >[];
-}): { imagesGroupId?: string; videosGroupId?: string } {
-  const want = opts.projectId.trim();
-  const needImages = !opts.imagesGroupId?.trim();
-  const needVideos = !opts.videosGroupId?.trim();
-  if (!want || (!needImages && !needVideos)) return {};
+type CabinetCoverCreation = Pick<
+  Creation,
+  "id" | "remoteJson" | "filename" | "title" | "createdAt"
+>;
 
-  type Cand = { id: string; createdAt: string };
-  const images: Cand[] = [];
-  const videos: Cand[] = [];
+/**
+ * Assets display: this project's Images/Videos container.
+ * Store pointers expand even without a stamp. This helper covers party-name
+ * / stamped covers so leftover container cards still expand instead of showing.
+ */
+export function isProjectContainerCoverForDisplay(
+  creation: CabinetCoverCreation | null | undefined,
+  opts: { projectId?: string | null; projectTitle?: string | null },
+): boolean {
+  const identity = identifyDesktopCabinet(creation);
+  if (!identity) return false;
+  const wantId = opts.projectId?.trim() || "";
+  const wantTitle = opts.projectTitle?.trim() || "";
+  const stamped = identity.projectId?.trim() || "";
+  if (wantId && stamped && stamped === wantId) return true;
+  if (wantTitle && identity.projectTitle && identity.projectTitle === wantTitle) {
+    return true;
+  }
+  return false;
+}
+
+type CabinetCoverCand = { id: string; createdAt: string };
+
+function collectOpenProjectCabinetCovers(opts: {
+  projectId: string;
+  projectTitle?: string | null;
+  creations: readonly CabinetCoverCreation[];
+}): { images: CabinetCoverCand[]; videos: CabinetCoverCand[] } {
+  const want = opts.projectId.trim();
+  if (!want) return { images: [], videos: [] };
+
+  const images: CabinetCoverCand[] = [];
+  const videos: CabinetCoverCand[] = [];
   for (const creation of opts.creations) {
     const identity = identifyDesktopCabinet(creation);
     if (!identity) continue;
-    if (!matchesDesktopCabinetProject(identity, {
-      role: identity.role,
-      projectId: want,
-    })) {
+    if (
+      !matchesDesktopCabinetProject(identity, {
+        role: identity.role,
+        projectId: want,
+        projectTitle: opts.projectTitle,
+      })
+    ) {
       continue;
     }
     const id = String(creation.id).trim();
@@ -211,20 +230,42 @@ export function recoverMissingCabinetIdsFromCreations(opts: {
     if (identity.role === "project_images") images.push(row);
     else if (identity.role === "project_videos") videos.push(row);
   }
+  return { images, videos };
+}
 
-  const pickNewest = (cands: Cand[]): string | undefined => {
-    if (cands.length === 0) return undefined;
-    return [...cands].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
-      ?.id;
-  };
+function pickNewestCabinetCover(
+  cands: readonly CabinetCoverCand[],
+): string | undefined {
+  if (cands.length === 0) return undefined;
+  return [...cands].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+    ?.id;
+}
 
+/**
+ * When store pointers were cleared but stamped cabinet covers remain among
+ * project assets, recover `imagesGroupId` / `videosGroupId` so Editor Assets
+ * can expand them. Match stamped `projectId` only — never party title.
+ */
+export function recoverMissingCabinetIdsFromCreations(opts: {
+  projectId: string;
+  projectTitle?: string | null;
+  imagesGroupId?: string | null;
+  videosGroupId?: string | null;
+  creations: readonly CabinetCoverCreation[];
+}): { imagesGroupId?: string; videosGroupId?: string } {
+  const want = opts.projectId.trim();
+  const needImages = !opts.imagesGroupId?.trim();
+  const needVideos = !opts.videosGroupId?.trim();
+  if (!want || (!needImages && !needVideos)) return {};
+
+  const { images, videos } = collectOpenProjectCabinetCovers(opts);
   const out: { imagesGroupId?: string; videosGroupId?: string } = {};
   if (needImages) {
-    const id = pickNewest(images);
+    const id = pickNewestCabinetCover(images);
     if (id) out.imagesGroupId = id;
   }
   if (needVideos) {
-    const id = pickNewest(videos);
+    const id = pickNewestCabinetCover(videos);
     if (id) out.videosGroupId = id;
   }
   return out;

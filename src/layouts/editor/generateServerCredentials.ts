@@ -4,7 +4,10 @@ import {
   BLUE_CREDENTIALS_CHANGED_EVENT,
   REPLICATE_TOKEN_CHANGED_EVENT,
 } from "../../settings/events";
-import { replicateModelsListEnabled, replicateTokenStatus } from "../../replicate/replicateClient";
+import {
+  replicateModelsListEnabled,
+  replicateTokenStatus,
+} from "../../replicate/replicateClient";
 import {
   serversForIntent,
   type GenerateIntentId,
@@ -33,19 +36,27 @@ export function serverNeedsCredentials(
   return false;
 }
 
+/**
+ * Whether a system is enabled in Settings right now (not intent wiring).
+ * Parascene is always on; BYO lanes need confirmed credentials.
+ * While creds are still loading (`null`), BYO counts as not enabled.
+ */
+export function isGenerateServerEnabled(
+  id: GenerateServerId,
+  creds: GenerateServerCredentialState,
+): boolean {
+  if (id === "parascene_blue") return true;
+  if (id === "blue_direct") return creds.blueConfigured === true;
+  if (id === "replicate") return creds.replicateReady === true;
+  return false;
+}
+
 /** Hide BYO servers until Settings credentials are confirmed (any cap status). */
 export function isGenerateServerCapVisible(
   cap: Pick<IntentServerCapability, "server" | "status">,
   creds: GenerateServerCredentialState,
 ): boolean {
-  if (cap.server === "parascene_blue") return true;
-  if (cap.server === "blue_direct") {
-    return creds.blueConfigured === true;
-  }
-  if (cap.server === "replicate") {
-    return creds.replicateReady === true;
-  }
-  return true;
+  return isGenerateServerEnabled(cap.server, creds);
 }
 
 export function serverChoiceDescription(
@@ -84,8 +95,7 @@ export function firstVisibleGenerateServer(
   );
   const ready = caps.filter((cap) => cap.status === "wired");
   return (
-    (prefer &&
-      ready.find((c) => c.server === prefer)?.server) ||
+    (prefer && ready.find((c) => c.server === prefer)?.server) ||
     ready[0]?.server ||
     caps[0]?.server ||
     "parascene_blue"
@@ -99,28 +109,84 @@ export async function refreshReplicateReady(): Promise<boolean> {
   return enabled.length > 0;
 }
 
+/** Module cache — survives Form remounts while flipping assets. */
+let cachedCredentialState: GenerateServerCredentialState | null = null;
+let cachedEnabledServerIds: readonly GenerateServerId[] | null = null;
+
+function enabledIdsFromCreds(
+  creds: GenerateServerCredentialState,
+): GenerateServerId[] {
+  const ids: GenerateServerId[] = ["parascene_blue"];
+  if (creds.blueConfigured === true) ids.push("blue_direct");
+  if (creds.replicateReady === true) ids.push("replicate");
+  return ids;
+}
+
+function sameIdList(
+  a: readonly GenerateServerId[],
+  b: readonly GenerateServerId[],
+): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+/**
+ * Settled enabled-system ids for the System chooser.
+ *
+ * Credentials are read once Settings answers; the enabled list is cached and
+ * only recomputed when those answers change — never from selection / intent.
+ * While Settings is still loading, returns the last settled cache (or Parascene
+ * alone on first paint) so flipping assets cannot reshuffle the roster.
+ */
+export function settledEnabledGenerateServerIds(
+  creds: GenerateServerCredentialState,
+): readonly GenerateServerId[] {
+  const settled =
+    creds.blueConfigured !== null && creds.replicateReady !== null;
+  if (!settled) {
+    return cachedEnabledServerIds ?? ["parascene_blue"];
+  }
+  const next = enabledIdsFromCreds(creds);
+  if (!cachedEnabledServerIds || !sameIdList(cachedEnabledServerIds, next)) {
+    cachedEnabledServerIds = next;
+  }
+  return cachedEnabledServerIds;
+}
+
+/** @internal test helper — clear module caches between cases. */
+export function resetGenerateServerCredentialCachesForTests(): void {
+  cachedCredentialState = null;
+  cachedEnabledServerIds = null;
+}
+
 /** Settings-backed readiness for BYO servers (Blue credentials, Replicate token + models). */
 export function useGenerateServerCredentials(): GenerateServerCredentialState {
-  const [blueConfigured, setBlueConfigured] = useState<boolean | null>(null);
-  const [replicateReady, setReplicateReady] = useState<boolean | null>(null);
+  const [creds, setCreds] = useState<GenerateServerCredentialState>(
+    () =>
+      cachedCredentialState ?? {
+        blueConfigured: null,
+        replicateReady: null,
+      },
+  );
 
   useEffect(() => {
     let cancelled = false;
+    const apply = (next: GenerateServerCredentialState) => {
+      if (cancelled) return;
+      cachedCredentialState = next;
+      if (next.blueConfigured !== null && next.replicateReady !== null) {
+        settledEnabledGenerateServerIds(next);
+      }
+      setCreds(next);
+    };
     const refresh = () => {
-      void blueCredentialsStatus()
-        .then((s) => {
-          if (!cancelled) setBlueConfigured(s.configured);
-        })
-        .catch(() => {
-          if (!cancelled) setBlueConfigured(false);
-        });
-      void refreshReplicateReady()
-        .then((ready) => {
-          if (!cancelled) setReplicateReady(ready);
-        })
-        .catch(() => {
-          if (!cancelled) setReplicateReady(false);
-        });
+      void Promise.all([
+        blueCredentialsStatus()
+          .then((s) => s.configured)
+          .catch(() => false),
+        refreshReplicateReady().catch(() => false),
+      ]).then(([blueConfigured, replicateReady]) => {
+        apply({ blueConfigured, replicateReady });
+      });
     };
     refresh();
     window.addEventListener(BLUE_CREDENTIALS_CHANGED_EVENT, refresh);
@@ -132,5 +198,5 @@ export function useGenerateServerCredentials(): GenerateServerCredentialState {
     };
   }, []);
 
-  return { blueConfigured, replicateReady };
+  return creds;
 }

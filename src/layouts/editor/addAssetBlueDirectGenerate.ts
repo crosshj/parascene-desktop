@@ -153,6 +153,8 @@ async function importBlueOutput(opts: {
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -180,6 +182,8 @@ async function importBlueOutput(opts: {
     projectCreationIds: [created.id],
     videosGroupId: null,
     imagesGroupId: opts.imagesGroupId,
+    startFrameCreationId: null,
+    endFrameCreationId: null,
     mode: opts.continuity,
     model: opts.modelId,
   };
@@ -205,6 +209,8 @@ export async function runBlueDirectAddAssetGeneration(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -437,6 +443,8 @@ export async function resumeBlueDirectAddAssetWait(opts: {
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -481,6 +489,8 @@ export async function resumeBlueDirectAddAssetDownload(opts: {
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {

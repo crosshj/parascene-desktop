@@ -4,6 +4,7 @@ import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
+  shouldHoldGenerateDualFormSurface,
   shouldPreserveGenerateDualView,
   shouldShowGenerateDualChrome,
 } from "./generateDualView";
@@ -57,6 +58,59 @@ describe("generateDualView", () => {
     ).toBe(false);
   });
 
+  it("holds Form surface across gen→gen load gaps so media does not flash", () => {
+    expect(
+      shouldHoldGenerateDualFormSurface({
+        view: "form",
+        hostKey: "gen:a",
+        doneGenerateDualReady: false,
+        hasAssetId: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHoldGenerateDualFormSurface({
+        view: "form",
+        hostKey: "gen:a",
+        doneGenerateDualReady: true,
+        hasAssetId: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHoldGenerateDualFormSurface({
+        view: "result",
+        hostKey: "gen:a",
+        doneGenerateDualReady: false,
+        hasAssetId: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHoldGenerateDualFormSurface({
+        view: "form",
+        hostKey: "ph:x",
+        doneGenerateDualReady: false,
+        hasAssetId: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHoldGenerateDualFormSurface({
+        view: "form",
+        hostKey: "gen:a",
+        doneGenerateDualReady: false,
+        hasAssetId: true,
+        isAggregateSelection: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHoldGenerateDualFormSurface({
+        view: "form",
+        hostKey: "gen:a",
+        doneGenerateDualReady: false,
+        hasAssetId: true,
+        selectionSettled: true,
+      }),
+    ).toBe(false);
+  });
+
   it("detects placeholder phases", () => {
     expect(
       resolveGenerateDualPhase({ placeholder: placeholder() }),
@@ -98,7 +152,7 @@ describe("generateDualView", () => {
     ).toBe("done");
   });
 
-  it("supports dual view for placeholders and provenance", () => {
+  it("supports dual view for placeholders and single-asset provenance", () => {
     expect(
       selectionSupportsGenerateDualView({
         isPlaceholder: true,
@@ -115,12 +169,46 @@ describe("generateDualView", () => {
           mode: "start_frame",
           model: "ltx_i2v",
         },
+        selectedCreationId: "c1",
       }),
     ).toBe(true);
     expect(
       selectionSupportsGenerateDualView({
         isPlaceholder: false,
         generation: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("refuses Form for aggregates, group covers, and mismatched ids", () => {
+    const generation = {
+      prompt: "x",
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      creationId: "c1",
+      mode: "start_frame" as const,
+      model: "ltx_i2v",
+    };
+    expect(
+      selectionSupportsGenerateDualView({
+        isPlaceholder: false,
+        generation,
+        isAggregateSelection: true,
+        selectedCreationId: "c1",
+      }),
+    ).toBe(false);
+    expect(
+      selectionSupportsGenerateDualView({
+        isPlaceholder: false,
+        generation,
+        isGroupCover: true,
+        selectedCreationId: "c1",
+      }),
+    ).toBe(false);
+    expect(
+      selectionSupportsGenerateDualView({
+        isPlaceholder: false,
+        generation,
+        selectedCreationId: "other",
       }),
     ).toBe(false);
   });

@@ -326,16 +326,43 @@ async function prepareParasceneGenerationStill(opts: {
   videosGroupId: string | null;
 }): Promise<{
   imageUrl: string;
+  /** Parascene still Creation id the model will see (never a temp local-*). */
+  creationId: string | null;
   projectCreationIds: string[];
   groupId: string | null;
 }> {
   const passthrough = await resolveParasceneStartFrameImageUrl(opts.frame);
   if (passthrough) {
     opts.onProgress(`Using ${opts.progressLabel} on Parascene…`);
+    const existingId =
+      opts.frame.sourceIsImage && opts.frame.sourceAssetId?.trim()
+        ? opts.frame.sourceAssetId.trim()
+        : null;
+    if (!existingId) {
+      // URL-only passthrough (rare) — no flat project member, no Creation id.
+      return {
+        imageUrl: passthrough,
+        creationId: null,
+        projectCreationIds: [],
+        groupId: null,
+      };
+    }
+    // Already a Parascene Creation: keep it in the Images group only — never
+    // also file it as a flat project folder member.
+    opts.onProgress(`Filing ${opts.progressLabel} into Images group…`);
+    const filed = await fileCreationIntoProjectGroup({
+      creationId: existingId,
+      mediaType: "image",
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+    });
     return {
       imageUrl: passthrough,
-      projectCreationIds: [],
-      groupId: null,
+      creationId: existingId,
+      projectCreationIds: filed.projectCreationIds,
+      groupId: filed.groupId,
     };
   }
   if (!opts.frame.framePath?.trim()) {
@@ -358,6 +385,7 @@ async function prepareParasceneGenerationStill(opts: {
   });
   return {
     imageUrl: still.imageUrl,
+    creationId: still.creationId,
     projectCreationIds: still.projectCreationIds,
     groupId: still.groupId,
   };
@@ -417,8 +445,9 @@ export function replaceAddAssetPlaceholderWithVideo(
 
 /**
  * Find generation provenance for an Assets-pane creation id by scanning timeline
- * clips. Prefer {@link addAssetGenerationFromCreation} on the catalog row when
- * present — that stamp survives clip deletion.
+ * clips. Prefer {@link resolveAddAssetGenerationFromCreation} on the catalog row
+ * when present — desktop stamps survive clip deletion, and Parascene `meta.args`
+ * fills in when no stamp was written.
  */
 export function findTimelineGenerationForAsset(
   timeline: readonly TimelineClip[],
@@ -487,6 +516,9 @@ export async function runAddAssetGeneration(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  /** Parascene still Creation used as FIRST (never a temp local-* extract). */
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -588,6 +620,8 @@ async function runParasceneProductVideoIntent(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -634,6 +668,8 @@ async function runParasceneProductVideoIntent(
     projectCreationIds: result.projectCreationIds,
     videosGroupId: result.videosGroupId,
     imagesGroupId: result.imagesGroupId,
+    startFrameCreationId: null,
+    endFrameCreationId: null,
     mode: "start_frame",
     model: result.model,
   };
@@ -646,6 +682,8 @@ async function runTextToVideoAddAssetGeneration(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -707,6 +745,8 @@ async function runTextToVideoAddAssetGeneration(
     projectCreationIds: filed.projectCreationIds,
     videosGroupId: filed.groupId,
     imagesGroupId: opts.imagesGroupId,
+    startFrameCreationId: null,
+    endFrameCreationId: null,
     mode: "none",
     model,
   };
@@ -719,6 +759,9 @@ async function runFirstLastAddAssetGeneration(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  /** Durable Parascene still Creation used as FIRST (not a temp local extract). */
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -818,6 +861,8 @@ async function runFirstLastAddAssetGeneration(
     ],
     videosGroupId: filed.groupId,
     imagesGroupId: lastStill.groupId ?? firstStill.groupId,
+    startFrameCreationId: firstStill.creationId,
+    endFrameCreationId: lastStill.creationId,
     mode: "first_last",
     model: FLF2V_MODEL,
   };
@@ -830,6 +875,8 @@ async function runStartFrameAddAssetGeneration(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: AddAssetContinuityMode;
   model: string;
 }> {
@@ -1000,6 +1047,8 @@ async function runStartFrameAddAssetGeneration(
     ],
     videosGroupId: filed.groupId,
     imagesGroupId,
+    startFrameCreationId: startStill.creationId,
+    endFrameCreationId: null,
     mode: "start_frame",
     model,
   };

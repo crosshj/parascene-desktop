@@ -6756,7 +6756,8 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: fill;
+  /* Preserve each asset's intrinsic aspect — never stretch into the project matte. */
+  object-fit: contain;
 }
 
 .add-asset-generate-pane .add-asset-generate-frame-preview .add-asset-generate-field-placeholder {

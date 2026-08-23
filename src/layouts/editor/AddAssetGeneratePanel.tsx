@@ -11,6 +11,7 @@ import { creationPreviewUrl } from "../../library/previewUrl";
 import type {
   AddAssetDraft,
   AddAssetFrameSource,
+  AddAssetGeneration,
   LyricAlignment,
   ProjectAsset,
   TimelineClip,
@@ -23,6 +24,10 @@ import {
   resolveFirstFrameSource,
   resolveLastFrameSource,
 } from "../../project/addAssetFrameSource";
+import {
+  loadGenerationFramePreviews,
+  resolveGenerationFramePreviews,
+} from "../../project/generationFramePreviews";
 import {
   PROJECT_ASPECT_OPTIONS,
   projectAspectCss,
@@ -580,6 +585,11 @@ export function AddAssetGeneratePanel({
   const [assetPreviews, setAssetPreviews] = useState<Record<string, string | null>>(
     {},
   );
+  const [catalogFramePreviews, setCatalogFramePreviews] = useState<{
+    key: string;
+    startPreviewUrl: string | null;
+    endPreviewUrl: string | null;
+  } | null>(null);
   const [framePickerSlot, setFramePickerSlot] = useState<"first" | "last" | null>(
     null,
   );
@@ -615,22 +625,39 @@ export function AddAssetGeneratePanel({
   /** Form stays visible but non-interactive while running / reviewing. */
   const fieldsInteractive = !formLocked && phase !== "running";
 
+  // Shared Form start/last still path (same helper as locked I2I review).
+  const frameReviewGeneration: AddAssetGeneration | null =
+    clip.addAssetGeneration ??
+    (clip.addAssetDraft
+      ? {
+          prompt: clip.addAssetDraft.prompt ?? "",
+          generatedAt: "",
+          creationId: "",
+          mode: clip.addAssetDraft.continuityMode,
+          startFrameAssetId: clip.addAssetDraft.startFrameAssetId,
+          firstFrameSource: clip.addAssetDraft.firstFrameSource,
+          lastFrameSource: clip.addAssetDraft.lastFrameSource,
+          startFramePreviewUrl: clip.addAssetDraft.startFramePreviewUrl,
+          endFramePreviewUrl: clip.addAssetDraft.endFramePreviewUrl,
+        }
+      : null);
+  const syncFramePreviews = resolveGenerationFramePreviews(frameReviewGeneration);
+  const catalogHit =
+    catalogFramePreviews?.key === framesKey ? catalogFramePreviews : null;
   const stampedStartUrl =
-    clip.addAssetGeneration?.startFramePreviewUrl?.trim() ||
-    clip.addAssetDraft?.startFramePreviewUrl?.trim() ||
-    null;
+    catalogHit?.startPreviewUrl || syncFramePreviews.startPreviewUrl || null;
   const stampedEndUrl =
-    clip.addAssetGeneration?.endFramePreviewUrl?.trim() ||
-    clip.addAssetDraft?.endFramePreviewUrl?.trim() ||
-    null;
+    catalogHit?.endPreviewUrl || syncFramePreviews.endPreviewUrl || null;
+  const stampedStartAssetId =
+    syncFramePreviews.startAssetId || startFrameAssetId || null;
   const stampedStart: StartFramePreview | null = stampedStartUrl
     ? {
         previewUrl: stampedStartUrl,
         note: "",
         framePath: null,
         frameTimeSec: null,
-        sourceAssetId: startFrameAssetId,
-        sourceIsImage: Boolean(startFrameAssetId),
+        sourceAssetId: stampedStartAssetId,
+        sourceIsImage: Boolean(stampedStartAssetId),
       }
     : null;
   const stampedBridge: BridgeFrames | null =
@@ -649,10 +676,17 @@ export function AddAssetGeneratePanel({
             clip.addAssetDraft?.continuityMode === "start_frame")
         ? { first: stampedStart, last: stampedStart }
         : null;
+  // Locked review with a known start asset id waits on catalog load — do not
+  // re-extract timeline frames.
+  const stampedPendingCatalog =
+    formLocked &&
+    Boolean(stampedStartAssetId) &&
+    !stampedStartUrl &&
+    Boolean(clip.addAssetGeneration || clip.addAssetDraft);
   const stampedEmpty =
     (formLocked && clip.addAssetGeneration?.mode === "none") ||
     (formLocked &&
-      !startFrameAssetId &&
+      !stampedStartAssetId &&
       !stampedStartUrl &&
       !frameSourceIsSet(firstFrameSource) &&
       !frameSourceIsSet(lastFrameSource) &&
@@ -660,7 +694,7 @@ export function AddAssetGeneratePanel({
   const stampedLoaded =
     stampedBridge != null
       ? { key: framesKey, start: stampedStart, bridge: stampedBridge }
-      : stampedEmpty
+      : stampedPendingCatalog || stampedEmpty
         ? {
             key: framesKey,
             start: null as StartFramePreview | null,
@@ -1169,6 +1203,56 @@ export function AddAssetGeneratePanel({
     fieldsInteractive,
     currentIntentId,
     currentServer,
+  ]);
+
+  // Fill missing stamp URLs from catalog (locked Form included).
+  useEffect(() => {
+    if (!formLocked) return;
+    const generation =
+      clip.addAssetGeneration ??
+      (clip.addAssetDraft
+        ? {
+            prompt: clip.addAssetDraft.prompt ?? "",
+            generatedAt: "",
+            creationId: "",
+            mode: clip.addAssetDraft.continuityMode,
+            startFrameAssetId: clip.addAssetDraft.startFrameAssetId,
+            firstFrameSource: clip.addAssetDraft.firstFrameSource,
+            lastFrameSource: clip.addAssetDraft.lastFrameSource,
+            startFramePreviewUrl: clip.addAssetDraft.startFramePreviewUrl,
+            endFramePreviewUrl: clip.addAssetDraft.endFramePreviewUrl,
+          }
+        : null);
+    if (!generation) return;
+    const sync = resolveGenerationFramePreviews(generation);
+    const needsLoad =
+      (Boolean(sync.startAssetId) && !sync.startPreviewUrl) ||
+      (Boolean(sync.endAssetId) && !sync.endPreviewUrl);
+    if (!needsLoad) return;
+    let cancelled = false;
+    void loadGenerationFramePreviews(generation).then((loaded) => {
+      if (cancelled) return;
+      setCatalogFramePreviews({
+        key: framesKey,
+        startPreviewUrl: loaded.startPreviewUrl,
+        endPreviewUrl: loaded.endPreviewUrl,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // framesKey + generation frame fields; avoid depending on a fresh object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [
+    formLocked,
+    framesKey,
+    clip.addAssetGeneration,
+    clip.addAssetDraft?.startFramePreviewUrl,
+    clip.addAssetDraft?.endFramePreviewUrl,
+    clip.addAssetDraft?.startFrameAssetId,
+    clip.addAssetDraft?.firstFrameSource,
+    clip.addAssetDraft?.lastFrameSource,
+    clip.addAssetDraft?.continuityMode,
   ]);
 
   useEffect(() => {
@@ -2252,24 +2336,48 @@ export function AddAssetGeneratePanel({
                 <FramePreview
                   aspectRatio={aspectRatio}
                   loading={
-                    framesLoading && frameSourceIsSet(firstFrameSource)
+                    framesLoading &&
+                    (frameSourceIsSet(firstFrameSource) ||
+                      Boolean(firstPreview?.previewUrl))
                   }
                   loadingLabel="Loading first frame…"
                   preview={
-                    firstFrameSource.kind === "none" ? null : firstPreview
+                    firstFrameSource.kind === "none" &&
+                    !firstPreview?.previewUrl
+                      ? null
+                      : firstPreview
                   }
                   emptyLabel={
-                    firstFrameSource.kind === "none"
+                    firstFrameSource.kind === "none" &&
+                    !firstPreview?.previewUrl
                       ? "None"
                       : firstFrameSource.kind === "asset"
                         ? "Selected image is not available yet."
-                        : "No previous clip."
+                        : firstPreview?.previewUrl
+                          ? "Start still"
+                          : "No previous clip."
                   }
                   alt="First frame"
                 />
                 <div className="add-asset-generate-frame-slot-actions">
                   <p className="muted add-asset-generate-frame-source-caption">
-                    {frameSourceCaption(firstFrameSource, "first", imageAssets)}
+                    {firstFrameSource.kind === "none" &&
+                    firstPreview?.previewUrl
+                      ? stampedStartAssetId
+                        ? frameSourceCaption(
+                            {
+                              kind: "asset",
+                              assetId: stampedStartAssetId,
+                            },
+                            "first",
+                            imageAssets,
+                          )
+                        : "Start still"
+                      : frameSourceCaption(
+                          firstFrameSource,
+                          "first",
+                          imageAssets,
+                        )}
                   </p>
                   {fieldsInteractive ? (
                     <button

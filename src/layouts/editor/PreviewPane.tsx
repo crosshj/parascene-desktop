@@ -131,6 +131,7 @@ import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
+  shouldHoldGenerateDualFormSurface,
   shouldPreserveGenerateDualView,
   shouldShowGenerateDualChrome,
   type GenerateDualPhase,
@@ -149,9 +150,11 @@ import {
 } from "./previewIntent";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
 import {
-  addAssetGenerationFromCreation,
+  mergeStampWithDerivedGeneration,
+  resolveAddAssetGenerationFromCreation,
   isTextToImageGeneration,
   isImageToImageGeneration,
+  reviewGenerationIdentity,
 } from "../../project/desktopAddAssetGeneration";
 import {
   libraryAssetPlaceholderPhase,
@@ -443,6 +446,8 @@ export function PreviewPane({
   const [creation, setCreation] = useState<Creation | null>(null);
   const [generateDualView, setGenerateDualView] =
     useState<GenerateDualViewId>("form");
+  const [pinnedReviewGeneration, setPinnedReviewGeneration] =
+    useState<AddAssetGeneration | null>(null);
   const [generateDualHostKey, setGenerateDualHostKey] = useState<string | null>(
     null,
   );
@@ -825,24 +830,18 @@ export function PreviewPane({
     creation && assetId && creation.id === assetId,
   );
   const catalogAddAssetGeneration = creationMatchesAsset
-    ? addAssetGenerationFromCreation(creation)
+    ? resolveAddAssetGenerationFromCreation(creation)
     : null;
-  const resolvedAddAssetGeneration =
-    selectedClipAddAssetGeneration ?? catalogAddAssetGeneration;
-  const reviewGenerationAnchorClip =
-    resolvedAddAssetGeneration?.creationId?.trim()
-      ? (findTimelineGenerationForAsset(
-          timelineClips,
-          resolvedAddAssetGeneration.creationId,
-        )?.clip ?? null)
-      : null;
-  const reviewPlacedClip = resolvedAddAssetGeneration
-    ? reviewPlaceholderClipFromGeneration(
-        resolvedAddAssetGeneration,
-        undefined,
-        reviewGenerationAnchorClip,
-      )
-    : null;
+  // Clip stamps can disagree with Parascene meta (e.g. I2I stamp on I2V).
+  // Merge when we have the Creation so Form opens the correct lane.
+  const resolvedAddAssetGeneration = selectedClipAddAssetGeneration
+    ? creationMatchesAsset
+      ? mergeStampWithDerivedGeneration(
+          selectedClipAddAssetGeneration,
+          creation,
+        )
+      : selectedClipAddAssetGeneration
+    : catalogAddAssetGeneration;
   const detail = creationMatchesAsset ? creationDetailUrl(creation!) : null;
   const catalogThumb = creationMatchesAsset
     ? creationPreviewUrl(creation!)
@@ -1431,14 +1430,27 @@ export function PreviewPane({
   /** + slot library forms only join dual chrome after Generate starts. */
   const showLibraryGenerateDualActive =
     showLibraryGenerateDual && libraryGenerateState.phase !== "pre_gen";
+  // Form is for one generation subject — never multi-select, group covers,
+  // or a selection that is still expanding into a composite.
+  const isAggregateGenerateSelection =
+    isCompositeSelection ||
+    sourceSelectionIds.length > 1 ||
+    (selectionLoading && sourceSelectionIds.length >= 1 && Boolean(creation && isGroupCreation(creation)));
   const showDoneGenerateDual =
     !addAssetMode &&
     !addAssetSlotActive &&
     monitorMode === "source" &&
+    !isAggregateGenerateSelection &&
+    creationMatchesAsset &&
+    Boolean(creation) &&
+    !isGroupCreation(creation!) &&
     Boolean(resolvedAddAssetGeneration) &&
     selectionSupportsGenerateDualView({
       isPlaceholder: false,
       generation: resolvedAddAssetGeneration,
+      isAggregateSelection: isAggregateGenerateSelection,
+      isGroupCover: Boolean(creation && isGroupCreation(creation)),
+      selectedCreationId: assetId,
     });
   const showGenerateDualHost =
     showAddAssetGenerate ||
@@ -1520,8 +1532,84 @@ export function PreviewPane({
           },
         }
       : undefined;
+  const generateDualSelectionSettled =
+    Boolean(assetId?.trim()) && creationMatchesAsset && !selectionLoading;
+  // Form sticky across gen→gen: while the next creation loads, dual host is
+  // briefly false — hold Form (not media) so the image does not flash.
+  const holdGenerateDualForm = shouldHoldGenerateDualFormSurface({
+    view: generateDualView,
+    hostKey: generateDualHostKey,
+    doneGenerateDualReady: showDoneGenerateDual,
+    hasAssetId: Boolean(assetId?.trim()),
+    isAggregateSelection: isAggregateGenerateSelection,
+    selectionSettled: generateDualSelectionSettled,
+  });
+  if (showDoneGenerateDual && resolvedAddAssetGeneration) {
+    const nextReviewId = reviewGenerationIdentity(resolvedAddAssetGeneration);
+    if (
+      nextReviewId &&
+      nextReviewId !== reviewGenerationIdentity(pinnedReviewGeneration)
+    ) {
+      setPinnedReviewGeneration(resolvedAddAssetGeneration);
+    }
+  }
+  const activeReviewGeneration =
+    showDoneGenerateDual && resolvedAddAssetGeneration
+      ? resolvedAddAssetGeneration
+      : holdGenerateDualForm
+        ? pinnedReviewGeneration
+        : null;
+  const showDoneGenerateReviewForm =
+    generateDualView === "form" &&
+    Boolean(activeReviewGeneration) &&
+    (showDoneGenerateDual || holdGenerateDualForm);
+  const activeReviewAnchorClip = useMemo(() => {
+    const id = activeReviewGeneration?.creationId?.trim();
+    if (!id) return null;
+    return findTimelineGenerationForAsset(timelineClips, id)?.clip ?? null;
+  }, [activeReviewGeneration, timelineClips]);
+  const activeReviewPlacedClip = useMemo(() => {
+    if (!activeReviewGeneration) return null;
+    return reviewPlaceholderClipFromGeneration(
+      activeReviewGeneration,
+      undefined,
+      activeReviewAnchorClip,
+    );
+  }, [activeReviewGeneration, activeReviewAnchorClip]);
+  const doneReviewIntent = useMemo((): AddAssetIntent | null => {
+    if (!activeReviewGeneration) return null;
+    if (isTextToImageGeneration(activeReviewGeneration)) {
+      return makeAddAssetIntent(
+        "text_to_image",
+        normalizeGenerateServer(activeReviewGeneration.server) ??
+          normalizeGenerateServer(activeReviewGeneration.provider) ??
+          "blue_direct",
+        "assets",
+      );
+    }
+    if (isImageToImageGeneration(activeReviewGeneration)) {
+      return makeAddAssetIntent(
+        "image_to_image",
+        normalizeGenerateServer(activeReviewGeneration.server) ??
+          normalizeGenerateServer(activeReviewGeneration.provider) ??
+          "parascene_blue",
+        "assets",
+      );
+    }
+    return (
+      resolveAddAssetIntent(activeReviewPlacedClip?.addAssetDraft ?? {}) ?? {
+        intentId: "image_to_video",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "image_to_video",
+        destination: "timeline",
+      }
+    );
+  }, [activeReviewGeneration, activeReviewPlacedClip]);
+  // Remember Form vs Result across assets; non-form selections only hide chrome.
   const showGenerateDual =
-    showGenerateDualHost && shouldShowGenerateDualChrome(generateDualPhase);
+    showGenerateDualHost &&
+    (shouldShowGenerateDualChrome(generateDualPhase) || holdGenerateDualForm);
   const nextGenerateDualHostKey = showAddAssetGenerate
     ? `ph:${addAssetPlaceholderClip?.id ?? ""}`
     : showLibraryAssetPlaceholderDual
@@ -1595,7 +1683,7 @@ export function PreviewPane({
     showAddAssetGenerate ||
     showLibraryAssetPlaceholderDual ||
     (showLibraryGenerateDual && !showLibraryAssetPlaceholderDual) ||
-    (showDoneGenerateDual && generateDualView === "form") ||
+    showDoneGenerateReviewForm ||
     (showAddAssetIntent && !showLibraryGenerateDual) ||
     showSelectionIntent ||
     showCompositionWorkspace ||
@@ -3128,98 +3216,43 @@ export function PreviewPane({
                   />
                 </div>
               </>
-            ) : showDoneGenerateDual &&
-              resolvedAddAssetGeneration &&
-              generateDualView === "form" ? (
-              isTextToImageGeneration(resolvedAddAssetGeneration) ? (
-                <AddAssetIntentPanel
-                  intent={makeAddAssetIntent(
-                    "text_to_image",
-                    normalizeGenerateServer(
-                      resolvedAddAssetGeneration.server,
-                    ) ??
-                      normalizeGenerateServer(
-                        resolvedAddAssetGeneration.provider,
-                      ) ??
-                      "blue_direct",
-                    "assets",
-                  )}
-                  onIntentChange={() => {}}
-                  locked
-                  reviewGeneration={resolvedAddAssetGeneration}
-                  onGenerateNew={
-                    onDuplicateGeneratedAsNewGenerate
-                      ? () =>
-                          onDuplicateGeneratedAsNewGenerate(
-                            resolvedAddAssetGeneration,
-                          )
-                      : undefined
-                  }
-                />
-              ) : isImageToImageGeneration(resolvedAddAssetGeneration) ? (
-                <AddAssetIntentPanel
-                  intent={makeAddAssetIntent(
-                    "image_to_image",
-                    normalizeGenerateServer(
-                      resolvedAddAssetGeneration.server,
-                    ) ??
-                      normalizeGenerateServer(
-                        resolvedAddAssetGeneration.provider,
-                      ) ??
-                      "parascene_blue",
-                    "assets",
-                  )}
-                  onIntentChange={() => {}}
-                  locked
-                  reviewGeneration={resolvedAddAssetGeneration}
-                  imageAssets={imageAssets}
-                  onGenerateNew={
-                    onDuplicateGeneratedAsNewGenerate
-                      ? () =>
-                          onDuplicateGeneratedAsNewGenerate(
-                            resolvedAddAssetGeneration,
-                          )
-                      : undefined
-                  }
-                />
-              ) : (
-                <AddAssetIntentPanel
-                  intent={
-                    resolveAddAssetIntent(
-                      reviewPlacedClip?.addAssetDraft ?? {},
-                    ) ?? {
-                      intentId: "image_to_video",
-                      server: "parascene_blue",
-                      provider: "parascene_blue",
-                      methodId: "image_to_video",
-                      destination: "timeline",
-                    }
-                  }
-                  onIntentChange={() => {}}
-                  placedClip={
-                    reviewPlacedClip ??
-                    reviewPlaceholderClipFromGeneration(
-                      resolvedAddAssetGeneration,
-                    )
-                  }
-                  aspectRatio={aspectRatio}
-                  timeline={timelineClips}
-                  lyricAlignment={lyricAlignment}
-                  mainAudioCreationId={mainAudioCreationId}
-                  imageAssets={imageAssets}
-                  locked
-                  progressHostedExternally
-                  onStartGeneration={() => {}}
-                  onGenerateNew={
-                    onDuplicateGeneratedAsNewGenerate
-                      ? () =>
-                          onDuplicateGeneratedAsNewGenerate(
-                            resolvedAddAssetGeneration,
-                          )
-                      : undefined
-                  }
-                />
-              )
+            ) : showDoneGenerateReviewForm &&
+              activeReviewGeneration &&
+              doneReviewIntent ? (
+              <AddAssetIntentPanel
+                key="done-generate-review"
+                intent={doneReviewIntent}
+                onIntentChange={() => {}}
+                locked
+                reviewGeneration={
+                  isTextToImageGeneration(activeReviewGeneration) ||
+                  isImageToImageGeneration(activeReviewGeneration)
+                    ? activeReviewGeneration
+                    : null
+                }
+                placedClip={
+                  isTextToImageGeneration(activeReviewGeneration) ||
+                  isImageToImageGeneration(activeReviewGeneration)
+                    ? null
+                    : activeReviewPlacedClip
+                }
+                aspectRatio={aspectRatio}
+                timeline={timelineClips}
+                lyricAlignment={lyricAlignment}
+                mainAudioCreationId={mainAudioCreationId}
+                imageAssets={imageAssets}
+                progressHostedExternally={
+                  !isTextToImageGeneration(activeReviewGeneration) &&
+                  !isImageToImageGeneration(activeReviewGeneration)
+                }
+                onStartGeneration={() => {}}
+                onGenerateNew={
+                  onDuplicateGeneratedAsNewGenerate
+                    ? () =>
+                        onDuplicateGeneratedAsNewGenerate(activeReviewGeneration)
+                    : undefined
+                }
+              />
             ) : monitorMode === "timeline" ? (
               <TimelineMonitorHost
                 clips={timelineClips}

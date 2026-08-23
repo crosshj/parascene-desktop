@@ -210,6 +210,8 @@ async function importReplicateOutput(opts: {
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: ReplicateVideoContinuity;
   model: string;
 }> {
@@ -240,6 +242,8 @@ async function importReplicateOutput(opts: {
     projectCreationIds: [created.id],
     videosGroupId: null,
     imagesGroupId: opts.imagesGroupId,
+    startFrameCreationId: null,
+    endFrameCreationId: null,
     mode: opts.continuity,
     model: opts.modelId,
   };
@@ -252,6 +256,8 @@ export async function runReplicateAddAssetGeneration(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: ReplicateVideoContinuity;
   model: string;
 }> {
@@ -492,6 +498,8 @@ async function finishReplicateDownloadImport(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: ReplicateVideoContinuity;
   model: string;
 }> {
@@ -539,6 +547,8 @@ export async function resumeReplicateAddAssetDownload(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: ReplicateVideoContinuity;
   model: string;
 }> {
@@ -574,6 +584,8 @@ export async function resumeReplicateAddAssetWait(
   projectCreationIds: string[];
   videosGroupId: string | null;
   imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
   mode: ReplicateVideoContinuity;
   model: string;
 }> {

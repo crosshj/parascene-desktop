@@ -97,6 +97,17 @@ export function BlueDirectTextToImageForm({
     el.style.height = `${el.scrollHeight}px`;
   }, [prompt]);
 
+  const lockedReviewKey = locked
+    ? `${initialPrompt}\0${initialModelId?.trim() ?? ""}`
+    : "";
+  const [appliedLockedReviewKey, setAppliedLockedReviewKey] =
+    useState(lockedReviewKey);
+  if (locked && lockedReviewKey !== appliedLockedReviewKey) {
+    setAppliedLockedReviewKey(lockedReviewKey);
+    setPrompt(initialPrompt);
+    if (initialModelId?.trim()) setModelId(initialModelId.trim());
+  }
+
   const selected = models?.find((m) => m.id === modelId) ?? null;
   const canGenerate =
     !fieldsLocked &&

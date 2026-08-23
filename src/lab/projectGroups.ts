@@ -54,7 +54,11 @@ import {
 import {
   mutateStoredProjectsWithNativeMutation,
 } from "../project/projectMutationCoordinator";
-import { addProjectAssets, getProjectFolder } from "../project/projectFolderClient";
+import {
+  addProjectAssets,
+  getProjectFolder,
+  removeProjectAssetsChecked,
+} from "../project/projectFolderClient";
 import { listFolders } from "../library/folderClient";
 import { collapseCabinetMembersFromProjectFolder } from "../project/cabinetFolderCollapse";
 import { ingestRemoteCreation } from "./ingestCreation";
@@ -713,6 +717,58 @@ export type CabinetCandidate = {
  * Pick a single keeper among duplicate cabinet covers.
  * Prefer `preferredId` when present; else most members; else oldest createdAt.
  */
+/** True when this cover is this project's Images/Videos cabinet of `role`. */
+export function isSameProjectCabinetRole(
+  creation: Creation | null | undefined,
+  opts: {
+    role: DesktopProjectGroupRole;
+    projectId?: string | null;
+    projectTitle?: string | null;
+  },
+): boolean {
+  const identity = identifyDesktopCabinet(creation);
+  if (!identity || identity.role !== opts.role) return false;
+  if (matchesDesktopCabinetProject(identity, opts)) return true;
+  const wantTitle = opts.projectTitle?.trim() || "";
+  return Boolean(
+    wantTitle && identity.projectTitle && identity.projectTitle === wantTitle,
+  );
+}
+
+/**
+ * Other Images/Videos covers already in this project's folder.
+ * After a regroup those leftovers must be unfiled so only one container remains.
+ */
+export function siblingProjectCabinetCoverIds(opts: {
+  keeperId: string;
+  kind: ProjectGroupKind;
+  projectId: string;
+  projectTitle: string;
+  folderMemberIds: readonly string[];
+  creationsById: Readonly<Record<string, Creation | undefined>>;
+}): string[] {
+  const role = roleForProjectGroupKind(opts.kind);
+  const keeper = opts.keeperId.trim();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of opts.folderMemberIds) {
+    const id = String(raw).trim();
+    if (!id || id === keeper || seen.has(id)) continue;
+    if (
+      !isSameProjectCabinetRole(opts.creationsById[id], {
+        role,
+        projectId: opts.projectId,
+        projectTitle: opts.projectTitle,
+      })
+    ) {
+      continue;
+    }
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 export function pickCabinetKeeper(
   candidates: readonly CabinetCandidate[],
   preferredId?: string | null,
@@ -803,6 +859,51 @@ export async function resolveProjectCabinetId(opts: {
   const stored = opts.storedGroupId?.trim() || "";
   const foreignOwned = await cabinetIdsOwnedByOtherProjects(opts.projectId);
 
+  // Prefer a cabinet already in this project's folder so we never create a
+  // second Images/Videos cover while an older one is still filed.
+  try {
+    const folder = await getProjectFolder(opts.projectId);
+    const rows = await getCreations(folder.memberIds.map(String));
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
+    const folderCandidates: CabinetCandidate[] = [];
+    for (const raw of folder.memberIds) {
+      const id = String(raw).trim();
+      if (!id || foreignOwned.has(id)) continue;
+      const creation = byId[id];
+      if (
+        !isSameProjectCabinetRole(creation, {
+          role,
+          projectId: opts.projectId,
+          projectTitle: opts.projectTitle,
+        })
+      ) {
+        continue;
+      }
+      const members = creation
+        ? groupSourceCreationIds(creation).filter((mid) => mid !== id)
+        : [];
+      folderCandidates.push({
+        id,
+        memberCount: members.length,
+        createdAt: creation?.createdAt || "",
+      });
+    }
+    if (folderCandidates.length > 0) {
+      const keeper =
+        (stored && folderCandidates.some((c) => c.id === stored)
+          ? stored
+          : null) ?? pickCabinetKeeper(folderCandidates, stored || null);
+      if (keeper) {
+        opts.onProgress?.(
+          `${label}: using folder cabinet ${keeper} (${folderCandidates.length} filed).`,
+        );
+        return keeper;
+      }
+    }
+  } catch {
+    /* folder lookup failed — fall through to stored / catalog */
+  }
+
   if (stored) {
     if (foreignOwned.has(stored)) {
       opts.onProgress?.(
@@ -845,6 +946,59 @@ export async function resolveProjectCabinetId(opts: {
   return null;
 }
 
+/** One Images or Videos cover in the project folder; unfile and ungroup extras. */
+async function keepSingleProjectCabinetCover(opts: {
+  sdk: ParasceneSdk;
+  kind: ProjectGroupKind;
+  projectId: string;
+  projectTitle: string;
+  keeperId: string;
+  extraOrphanIds?: readonly string[];
+}): Promise<string[]> {
+  const folder = await getProjectFolder(opts.projectId);
+  const rows = await getCreations(folder.memberIds.map(String));
+  const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
+  const orphans = [
+    ...siblingProjectCabinetCoverIds({
+      keeperId: opts.keeperId,
+      kind: opts.kind,
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      folderMemberIds: folder.memberIds.map(String),
+      creationsById: byId,
+    }),
+    ...(opts.extraOrphanIds ?? []).map((id) => id.trim()).filter(Boolean),
+  ].filter((id, index, all) => id !== opts.keeperId && all.indexOf(id) === index);
+
+  if (orphans.length > 0) {
+    try {
+      await removeProjectAssetsChecked(opts.projectId, orphans);
+    } catch {
+      /* folder unfile is best-effort; ungroup still retires the extra cover */
+    }
+    const keeperMembers = cabinetMemberIdSet(
+      byId[opts.keeperId] ?? (await getCreations([opts.keeperId]))[0],
+      opts.keeperId,
+    );
+    for (const orphanId of orphans) {
+      await ungroupAndMergeOrphan({
+        sdk: opts.sdk,
+        orphanId,
+        keeperId: opts.keeperId,
+        kind: opts.kind,
+        projectId: opts.projectId,
+        projectTitle: opts.projectTitle,
+        keeperMemberIds: keeperMembers,
+        messages: [],
+        onProgress: () => {},
+      });
+    }
+  }
+
+  await addProjectAssets(opts.projectId, [opts.keeperId]);
+  return orphans;
+}
+
 /**
  * After a create completes, file into the matching project group when possible.
  * Still runs in the webview (single group call) — can move to `group_creations` later.
@@ -881,9 +1035,19 @@ export async function fileCreationIntoProjectGroup(opts: {
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
   });
-  // Cover is the project-folder filing for the cabinet. Members stay in group
-  // meta and expand in Assets; timeline may reference them without folder_items.
-  await addProjectAssets(opts.projectId, [groupId]);
+  await keepSingleProjectCabinetCover({
+    sdk,
+    kind,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    keeperId: groupId,
+    extraOrphanIds: existing && existing !== groupId ? [existing] : [],
+  });
+  await collapseCabinetMembersFromProjectFolder({
+    projectId: opts.projectId,
+    imagesGroupId: kind === "images" ? groupId : opts.imagesGroupId,
+    videosGroupId: kind === "videos" ? groupId : opts.videosGroupId,
+  });
   return {
     groupId,
     message: existing
@@ -940,8 +1104,15 @@ export async function addMembersToProjectGroup(opts: {
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
   });
-  await addProjectAssets(opts.projectId, [groupId]);
   onProgress("Updating project folder…");
+  await keepSingleProjectCabinetCover({
+    sdk,
+    kind: opts.kind,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    keeperId: groupId,
+    extraOrphanIds: existing && existing !== groupId ? [existing] : [],
+  });
   await collapseCabinetMembersFromProjectFolder({
     projectId: opts.projectId,
     imagesGroupId: opts.kind === "images" ? groupId : opts.imagesGroupId,
