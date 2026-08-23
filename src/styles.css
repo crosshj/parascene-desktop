@@ -6948,37 +6948,53 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   background: transparent;
 }
 
-/* Clear Result | Form chrome so Intent / Result content doesn’t sit under it. */
-.editor-preview-surface.is-generate-dual .add-asset-generate-pane,
+/* Form pane already clears the 22px overlay via .add-asset-generate-pane padding. */
 .editor-preview-surface.is-generate-dual .generate-result-pane {
-  padding-top: calc(0.5rem + 22px + 0.65rem + 2.35rem);
+  padding-top: calc(0.5rem + 22px + 0.65rem);
 }
 
+/* Compact overlay — hug the Result | Form cluster instead of a full-width bar.
+   WebView2 treats a stretched abspos + backdrop-filter as an opaque header. */
 .generate-dual-view-chrome {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 0.5rem;
+  left: 0.5rem;
+  right: auto;
   z-index: 6;
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 0.55rem 0.75rem;
-  padding: 0.45rem 0.65rem 0.4rem;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: blur(6px);
+  gap: 0.55rem;
+  width: max-content;
+  max-width: calc(100% - 1rem);
   min-width: 0;
+  padding: 0;
+  background: none;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+
+.generate-dual-view-chrome > * {
+  pointer-events: auto;
 }
 
 .generate-dual-view-toggle {
   margin: 0;
   flex: 0 0 auto;
+  height: 22px;
+}
+
+.generate-dual-view-toggle button {
+  padding: 0 0.55rem;
+  height: 100%;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .generate-dual-view-chrome .editor-preview-source-label {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: none;
 }
 
 .generate-dual-view-status {
@@ -7019,7 +7035,7 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  padding: calc(0.5rem + 22px + 0.65rem + 2.35rem) 1.1rem 1rem;
+  padding: calc(0.5rem + 22px + 0.65rem) 1.1rem 1rem;
   box-sizing: border-box;
 }
 
