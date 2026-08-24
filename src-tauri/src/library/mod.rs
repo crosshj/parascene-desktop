@@ -1,6 +1,7 @@
 mod beats;
 mod catalog;
-mod clip_thumb;
+pub(crate) mod clip_thumb;
+mod cloud_repair;
 mod crt_gpu;
 mod diag;
 mod download;
@@ -21,6 +22,9 @@ mod project_assets;
 mod render;
 mod reverse;
 mod slideshow;
+mod sync_full;
+mod sync_newest;
+mod sync_refresh;
 mod thumb_fill;
 
 pub use beats::library_detect_beats;
@@ -44,7 +48,9 @@ pub use folders::{
     library_remove_from_folder, library_rename_folder, library_set_folder_cover,
 };
 pub use import_local::{library_import_from_disk, library_import_local_paths};
-pub use jobs::{jobs_cancel, jobs_enqueue, jobs_get, jobs_list};
+pub use jobs::{
+    jobs_cancel, jobs_enqueue, jobs_get, jobs_list, EnqueueJobRequest, Job,
+};
 pub use lab_audio::{
     library_apply_image_framing, library_audio_waveform_peaks, library_cached_full_vocals,
     library_delete_extend_cache_file, library_extend_clip, library_extract_video_frame,
@@ -57,6 +63,11 @@ pub use lab_deps::{
 pub use lab_transcribe::library_transcribe_local;
 pub use merge::library_merge_timeline_clips;
 pub use join::{library_join_bake, library_join_preview};
+pub use parascene_api::{
+    delete_audio_clip, delete_creation, get_creation, get_credits, get_library_folders,
+    group_creations, mutate_library_folders, record_audio_clip, ungroup_creations,
+    upload_fit_thumbnail, upload_generic_image,
+};
 pub use plate::{
     library_bake_plate_still, library_cache_composition_run,
     library_delete_composition_run,
@@ -79,6 +90,7 @@ pub use render::{
 };
 pub use reverse::{library_ensure_reversed, library_rebuild_reversed};
 pub use slideshow::library_ensure_slideshow;
+pub use sync_refresh::run_refresh_creations_by_id;
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
 use catalog::{query_creations_page, CreationPage};

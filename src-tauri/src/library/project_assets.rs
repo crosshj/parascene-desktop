@@ -824,6 +824,15 @@ pub fn library_import_project_asset_paths(
     project_id: String,
     paths: Vec<String>,
 ) -> Result<ImportLocalResult, String> {
+    import_local_paths_for_project(&app, project_id.trim(), paths)
+}
+
+/// Job worker entry — import generate outputs into a project Assets folder.
+pub(crate) fn import_local_paths_for_project(
+    app: &AppHandle,
+    project_id: &str,
+    paths: Vec<String>,
+) -> Result<ImportLocalResult, String> {
     let project_id = project_id.trim();
     if project_id.is_empty() {
         return Err("Project id is required".into());
@@ -833,7 +842,7 @@ pub fn library_import_project_asset_paths(
     require_local_project_document(&conn, project_id)?;
     let folder = required_project_folder(&conn, project_id)?;
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    import_paths(&app, &files, Some(&folder.id), Some(project_id))
+    import_paths(app, &files, Some(&folder.id), Some(project_id))
 }
 
 #[tauri::command]

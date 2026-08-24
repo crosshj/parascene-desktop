@@ -44,11 +44,7 @@ import {
   resolveAddAssetTimelinePlacement,
 } from "./addAssetTimelinePlacement";
 
-import { ReplicateTextToImageFormLayout } from "./ReplicateTextToImageForm";
-import { BlueDirectTextToImageForm } from "./BlueDirectTextToImageForm";
-import {
-  ParasceneTextToImageFormLayout,
-} from "./ParasceneTextToImageForm";
+import { TextToImageFormLayout } from "./TextToImageForm";
 import {
   ParasceneImageToImageFormLayout,
 } from "./ParasceneImageToImageForm";
@@ -426,22 +422,19 @@ export function AddAssetIntentPanel({
       </section>
     ) : null;
 
-  if (
-    showLibraryT2i &&
-    server === "parascene_blue" &&
-    libraryFormReady
-  ) {
+  if (showLibraryT2i && libraryFormReady && server) {
     return (
-      <ParasceneTextToImageFormLayout
-        idPrefix="add-asset-parascene-t2i"
+      <TextToImageFormLayout
+        server={server}
+        idPrefix={`add-asset-${server}-t2i`}
         locked={locked}
-        hideInlineProgress={hideLibraryInlineProgress}
-        onGenerateStateChange={onLibraryGenerateStateChange}
         onGenerateNew={onGenerateNew}
-        onLibraryAssetGenerationStarted={onLibraryAssetGenerationStarted}
         placeholderId={libraryPlaceholderId ?? undefined}
         initialPrompt={t2iPrompt}
         initialModelId={t2iModelId}
+        allowTimelineTarget={Boolean(
+          intentId && intentOffersTimelineDestination(intentId),
+        )}
       >
         {({ fields, generateAction, cloneAction }) => (
           <div
@@ -455,7 +448,7 @@ export function AddAssetIntentPanel({
             {intentFooter({ generate: generateAction, clone: cloneAction })}
           </div>
         )}
-      </ParasceneTextToImageFormLayout>
+      </TextToImageFormLayout>
     );
   }
 
@@ -487,68 +480,6 @@ export function AddAssetIntentPanel({
           </div>
         )}
       </ParasceneImageToImageFormLayout>
-    );
-  }
-
-  if (
-    showLibraryT2i &&
-    server === "replicate" &&
-    libraryFormReady
-  ) {
-    return (
-      <ReplicateTextToImageFormLayout
-        idPrefix="add-asset-t2i"
-        locked={locked}
-        hideInlineProgress={hideLibraryInlineProgress}
-        onGenerateStateChange={onLibraryGenerateStateChange}
-        onGenerateNew={onGenerateNew}
-        initialPrompt={t2iPrompt}
-        initialModelId={t2iModelId}
-      >
-        {({ fields, generateAction, cloneAction }) => (
-          <div
-            className="add-asset-generate-pane preview-intent-pane"
-            aria-label="Choose generation method"
-          >
-            <div className="add-asset-generate-body">
-              {choices}
-              {fields}
-            </div>
-            {intentFooter({ generate: generateAction, clone: cloneAction })}
-          </div>
-        )}
-      </ReplicateTextToImageFormLayout>
-    );
-  }
-
-  if (
-    showLibraryT2i &&
-    server === "blue_direct" &&
-    libraryFormReady
-  ) {
-    return (
-      <div
-        className="add-asset-generate-pane preview-intent-pane"
-        aria-label="Choose generation method"
-      >
-        <div className="add-asset-generate-body">
-          {choices}
-          <BlueDirectTextToImageForm
-            locked={locked}
-            hideInlineProgress={hideLibraryInlineProgress}
-            onGenerateStateChange={onLibraryGenerateStateChange}
-            onGenerateNew={onGenerateNew}
-            initialPrompt={t2iPrompt}
-            initialModelId={t2iModelId}
-            renderFooter={(parts) =>
-              intentFooter({
-                generate: parts.generateAction,
-                clone: parts.cloneAction,
-              })
-            }
-          />
-        </div>
-      </div>
     );
   }
 

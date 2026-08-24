@@ -1632,7 +1632,7 @@ pub(crate) fn sync_status_for(paths: &ParascenePaths) -> Result<SyncStatus, Stri
     sync_status(&conn, paths)
 }
 
-fn apply_manifest(conn: &Connection, rows: &[CreationUpsert]) -> Result<(), String> {
+pub(crate) fn apply_manifest(conn: &Connection, rows: &[CreationUpsert]) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
     conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
         .map_err(|e| e.to_string())?;
@@ -2042,7 +2042,7 @@ pub fn library_existing_creation_ids(ids: Vec<String>) -> Result<Vec<String>, St
     existing_creation_ids(&conn, &ids)
 }
 
-fn existing_creation_ids(conn: &Connection, ids: &[String]) -> Result<Vec<String>, String> {
+pub(crate) fn existing_creation_ids(conn: &Connection, ids: &[String]) -> Result<Vec<String>, String> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -2097,7 +2097,7 @@ pub fn library_cloud_ids_since(since_iso: String) -> Result<Vec<CreationIdAt>, S
     cloud_ids_since(&conn, &since_iso)
 }
 
-fn cloud_ids_since(conn: &Connection, since_iso: &str) -> Result<Vec<CreationIdAt>, String> {
+pub(crate) fn cloud_ids_since(conn: &Connection, since_iso: &str) -> Result<Vec<CreationIdAt>, String> {
     let since = since_iso.trim();
     if since.is_empty() {
         return Ok(Vec::new());

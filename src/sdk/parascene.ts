@@ -214,7 +214,7 @@ export class LibraryFoldersUnavailableError extends Error {
   }
 }
 
-function parseLibraryFoldersSnapshot(raw: unknown): LibraryFoldersSnapshot {
+export function parseLibraryFoldersSnapshot(raw: unknown): LibraryFoldersSnapshot {
   const data =
     raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const revision = Number(data.revision);

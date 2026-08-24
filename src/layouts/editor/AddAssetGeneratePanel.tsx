@@ -1,10 +1,6 @@
-import {
-  CloneButton,
-  DiscardButton,
-  GenerateTargetButton,
-  TryAgainButton,
-} from "./AddAssetIntentFooter";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { WorkflowForm } from "../../forms/WorkflowForm";
+import { promptSchemaField } from "../../forms/schemaForm";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
 import { getCreations } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
@@ -28,6 +24,7 @@ import {
   loadGenerationFramePreviews,
   resolveGenerationFramePreviews,
 } from "../../project/generationFramePreviews";
+import type { ReplicateInputField } from "../../replicate/replicateClient";
 import {
   PROJECT_ASPECT_OPTIONS,
   projectAspectCss,
@@ -96,6 +93,12 @@ import {
   type ReplicateTweakFields,
   type ReplicateVideoTweaks,
 } from "./replicateVideoTweaks";
+import {
+  CloneButton,
+  DiscardButton,
+  GenerateTargetButton,
+  TryAgainButton,
+} from "./AddAssetIntentFooter";
 
 export type StartAddAssetGenerationRequest = {
   clip: TimelineClip;
@@ -550,7 +553,6 @@ export function AddAssetGeneratePanel({
   }, [draftLastSource, draftContinuity]);
   const startFrameAssetId = frameSourceAssetId(firstFrameSource);
   const [prompt, setPrompt] = useState(initial.prompt);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(
     initial.audioMode,
   );
@@ -598,12 +600,6 @@ export function AddAssetGeneratePanel({
   const [pickerTimelineLoading, setPickerTimelineLoading] = useState(false);
   const [pickerSlotSeen, setPickerSlotSeen] = useState(framePickerSlot);
 
-  useLayoutEffect(() => {
-    const el = promptRef.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [prompt]);
   const [loadedFrames, setLoadedFrames] = useState<{
     key: string;
     start: StartFramePreview | null;
@@ -778,6 +774,10 @@ export function AddAssetGeneratePanel({
     isBlueDirect,
   ]);
 
+  const useT2vWorkflowForm =
+    !isReplicate && currentIntentId === "text_to_video";
+  const useBlueWorkflowForm = !isReplicate;
+
   const resolvedBlueModel: string = (() => {
     if (isReplicate) return "ltx_i2v";
     if (isParasceneProductAdvanced && parasceneCapsModels.length > 0) {
@@ -807,6 +807,41 @@ export function AddAssetGeneratePanel({
     });
     return picked?.id ?? blueModel ?? "ltx_i2v";
   })();
+
+  const blueWorkflowModelFields = useMemo((): ReplicateInputField[] => {
+    if (!useBlueWorkflowForm) return [];
+    const options =
+      compatibleBlueModels.length > 0
+        ? compatibleBlueModels
+        : resolvedBlueModel
+          ? [{ id: resolvedBlueModel, label: resolvedBlueModel }]
+          : [];
+    const enumLabels: Record<string, string> = {};
+    for (const m of options) {
+      enumLabels[m.id] = m.label;
+    }
+    return [
+      {
+        name: "model",
+        title: "Blue model",
+        typeName: "string",
+        required: true,
+        enumValues: options.map((m) => m.id),
+        enumLabels,
+        fileLike: false,
+        arrayItemFileLike: false,
+      },
+    ];
+  }, [useBlueWorkflowForm, compatibleBlueModels, resolvedBlueModel]);
+
+  const generatePromptFields = useMemo(
+    (): ReplicateInputField[] => [
+      promptSchemaField("prompt", {
+        description: `Describe what happens in these ${clipDurationSec.toFixed(1)} seconds…`,
+      }),
+    ],
+    [clipDurationSec],
+  );
 
   const hasA2vModels = useMemo(() => {
     if (isReplicate || !blueModels) return false;
@@ -1838,7 +1873,7 @@ export function AddAssetGeneratePanel({
   }
 
   const showMotionMatch = resolvedContinuityMode === "motion_match";
-  const showImagesNone = !isReplicate && currentIntentId === "text_to_video";
+  const showImagesNone = useT2vWorkflowForm;
   const firstPreview = bridge?.first ?? startFrame;
   const lastPreview = bridge?.last ?? null;
 
@@ -1927,26 +1962,22 @@ export function AddAssetGeneratePanel({
           </section>
         ) : null}
 
-        {!isReplicate ? (
+        {useBlueWorkflowForm ? (
           <section className="add-asset-generate-section">
             <h3>Model</h3>
+            {useT2vWorkflowForm ? (
+              <div className="add-asset-generate-callout" role="note">
+                <p className="muted" style={{ margin: 0 }}>
+                  Text to Video — prompt only, no start image (
+                  {resolvedBlueModel}).
+                </p>
+              </div>
+            ) : null}
             {blueModelsError ? (
               <p className="add-asset-generate-error">{blueModelsError}</p>
             ) : null}
-            {!fieldsInteractive && blueModels == null ? (
-              <label className="add-asset-generate-field">
-                <span>Blue model</span>
-                <select
-                  className="control"
-                  value={resolvedBlueModel}
-                  disabled
-                >
-                  <option value={resolvedBlueModel}>
-                    {resolvedBlueModel}
-                  </option>
-                </select>
-              </label>
-            ) : blueModels == null ? (
+            {!fieldsInteractive && blueModels == null ? null : blueModels ==
+              null ? (
               <p className="muted">Loading Blue models…</p>
             ) : compatibleBlueModels.length === 0 ? (
               <p className="muted">
@@ -1955,36 +1986,20 @@ export function AddAssetGeneratePanel({
                   ? " (Parascene Creation supports Wan/LTX only — use Direct to Blue for MiniMax and more)."
                   : "."}
               </p>
-            ) : (
-              <label className="add-asset-generate-field">
-                <span>Blue model</span>
-                <select
-                  className="control"
-                  value={resolvedBlueModel}
-                  disabled={!fieldsInteractive}
-                  onChange={(event) => {
-                    const next = event.target.value.trim();
-                    if (next) selectBlueModel(next);
-                  }}
-                >
-                  {compatibleBlueModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </section>
-        ) : null}
-
-        {!isReplicate && currentIntentId === "text_to_video" ? (
-          <section className="add-asset-generate-section">
-            <div className="add-asset-generate-callout" role="note">
-              <p className="muted" style={{ margin: 0 }}>
-                Text to Video — prompt only, no start image ({resolvedBlueModel}).
-              </p>
-            </div>
+            ) : null}
+            {blueModels != null || !fieldsInteractive ? (
+              <WorkflowForm
+                className="add-asset-workflow-form"
+                fields={blueWorkflowModelFields}
+                values={{ model: resolvedBlueModel }}
+                disabled={!fieldsInteractive}
+                onChange={(name, value) => {
+                  if (name !== "model") return;
+                  const next = value.trim();
+                  if (next) selectBlueModel(next);
+                }}
+              />
+            ) : null}
           </section>
         ) : null}
 
@@ -2588,22 +2603,15 @@ export function AddAssetGeneratePanel({
         ) : null}
 
         <section className="add-asset-generate-section">
-          <label
-            className="add-asset-generate-prompt-label"
-            htmlFor="add-asset-prompt"
-          >
-            <span>Prompt</span>
-            <textarea
-              id="add-asset-prompt"
-              ref={promptRef}
-              className="add-asset-generate-prompt is-auto-size"
-              rows={2}
-              value={prompt}
-              disabled={!fieldsInteractive}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={`Describe what happens in these ${clipDurationSec.toFixed(1)} seconds…`}
-            />
-          </label>
+          <WorkflowForm
+            className="add-asset-workflow-form"
+            fields={generatePromptFields}
+            values={{ prompt }}
+            disabled={!fieldsInteractive}
+            onChange={(name, value) => {
+              if (name === "prompt") setPrompt(value);
+            }}
+          />
         </section>
       </div>
 

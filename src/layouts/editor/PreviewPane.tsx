@@ -14,6 +14,7 @@ import {
   cacheCompositionRun,
   deleteCompositionRun,
   ensureLocal,
+  ensureCatalogCreation,
   getCreation,
   getCreations,
 } from "../../library/catalogClient";
@@ -781,6 +782,14 @@ export function PreviewPane({
       selectionClass?.type === "unsupportedMixed" ||
       selectionClass?.type === "compositeImages");
 
+  const projectGroupCoverIds = useMemo(
+    () =>
+      [project.imagesGroupId, project.videosGroupId]
+        .map((id) => (id ? String(id).trim() : ""))
+        .filter(Boolean),
+    [project.imagesGroupId, project.videosGroupId],
+  );
+
   useEffect(() => {
     if (!assetId) return;
     // Multi-select unsupported/composite paths own the preview surface.
@@ -790,7 +799,9 @@ export function PreviewPane({
 
     const load = async () => {
       try {
-        const row = await getCreation(assetId);
+        const row = await ensureCatalogCreation(assetId, {
+          groupCoverIds: projectGroupCoverIds,
+        });
         if (cancelled) return;
         setCreation(row);
         if (
@@ -824,7 +835,7 @@ export function PreviewPane({
       cancelled = true;
       unlisten?.();
     };
-  }, [assetId, selectionOwnsPreview]);
+  }, [assetId, projectGroupCoverIds, selectionOwnsPreview]);
 
   const creationMatchesAsset = Boolean(
     creation && assetId && creation.id === assetId,

@@ -161,6 +161,8 @@ export type AddAssetGenerationJob = {
   pendingCreationId?: string;
   /** Direct to Blue job id once submitted. */
   blueJobId?: string;
+  /** service_invoke job id — prefer watching this over FE wait loops. */
+  serviceJobId?: string;
   /** Model id for resume/provenance (`owner/name` or `ltx_a2v`, …). */
   model?: string;
 };
@@ -212,6 +214,8 @@ export type AddAssetDraft = {
   };
   /** Project image asset id used as start frame instead of the prior timeline clip. */
   startFrameAssetId?: string;
+  /** Generate → Assets vs Generate → Timeline (library stills). */
+  generateDestination?: "assets" | "timeline";
   /**
    * How start/bridge stills are mapped into the project frame before upload
    * (Fit / Fill / Stretch). Defaults to Fit.

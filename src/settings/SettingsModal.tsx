@@ -11,7 +11,7 @@ import {
   type LabDepsStatus,
 } from "../lab/labDeps";
 import {
-  loadOpenAiApiKey,
+  hydrateOpenAiApiKey,
   saveOpenAiApiKey,
 } from "../lab/openaiClient";
 import {
@@ -21,7 +21,6 @@ import {
 } from "../replicate/replicateClient";
 import {
   notifyBlueCredentialsChanged,
-  notifyOpenAiKeyChanged,
   notifyReplicateTokenChanged,
 } from "./events";
 
@@ -90,7 +89,7 @@ export function SettingsModal({ open, onClose }: Props) {
     if (!open) return;
     // Intentional: reset the form to persisted values each time the modal opens.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setApiKey(loadOpenAiApiKey());
+    void hydrateOpenAiApiKey().then((key) => setApiKey(key));
     setInstallNote(null);
     void refreshDeps();
     void refreshReplicate();
@@ -112,8 +111,7 @@ export function SettingsModal({ open, onClose }: Props) {
   if (!open) return null;
 
   const save = async () => {
-    saveOpenAiApiKey(apiKey);
-    notifyOpenAiKeyChanged();
+    await saveOpenAiApiKey(apiKey);
     try {
       if (replicateToken.trim()) {
         await replicateTokenSet(replicateToken.trim());

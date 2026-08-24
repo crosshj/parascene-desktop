@@ -22,6 +22,7 @@ import {
   clearUserAvatarDisplay,
   ensureUserAvatar,
 } from "../sync/avatarSync";
+import { hydrateOpenAiApiKey } from "../lab/openaiClient";
 
 type AuthContextValue = {
   status: AuthStatus;
@@ -75,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, 12_000);
     (async () => {
       try {
+        void hydrateOpenAiApiKey();
         const restored = await restoreSession();
         if (cancelled) return;
         window.clearTimeout(timeout);

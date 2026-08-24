@@ -1,7 +1,11 @@
 /** Lab audio helpers — full-track demucs, then FFmpeg slices from mix or vocals. */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { createAuthedSdk } from "../auth/session";
+import {
+  deleteAudioClipViaService,
+  recordAudioClipViaService,
+  uploadGenericImageViaService,
+} from "../services/parasceneCatalog";
 
 export type AudioSliceResult = {
   path: string;
@@ -93,10 +97,8 @@ export async function uploadVocalsSliceClip(
   path: string,
   opts?: { title?: string; durationSec?: number },
 ): Promise<{ clipId: string; audioUrl: string | null }> {
-  const bytesBase64 = await invoke<string>("library_read_file_base64", { path });
-  const sdk = createAuthedSdk();
-  const { id, audioUrl } = await sdk.recordAudioClip({
-    bytesBase64,
+  const { id, audioUrl } = await recordAudioClipViaService({
+    path,
     contentType: "audio/wav",
     title: opts?.title ?? "Lab vocals slice",
     durationSec: opts?.durationSec,
@@ -107,8 +109,7 @@ export async function uploadVocalsSliceClip(
 
 /** Remove a previously uploaded audio clip (manual cleanup). */
 export async function deleteAudioClip(clipId: string): Promise<void> {
-  const sdk = createAuthedSdk();
-  await sdk.deleteAudioClip(clipId);
+  await deleteAudioClipViaService(clipId);
 }
 
 export type WaveformPeaks = {
@@ -189,10 +190,8 @@ export async function uploadLocalImageFile(
   path: string,
   opts?: { filename?: string; contentType?: string },
 ): Promise<{ url: string; key?: string }> {
-  const bytesBase64 = await invoke<string>("library_read_file_base64", { path });
-  const sdk = createAuthedSdk();
-  return sdk.uploadGenericImage({
-    bytesBase64,
+  return uploadGenericImageViaService({
+    path,
     contentType: opts?.contentType ?? "image/jpeg",
     filename: opts?.filename ?? "lab-frame.jpg",
   });

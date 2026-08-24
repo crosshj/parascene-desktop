@@ -18,8 +18,8 @@ const getFolderSyncState = vi.fn();
 const applyFolderSnapshot = vi.fn();
 const ackFolderOps = vi.fn();
 const setFolderPendingOps = vi.fn();
-const getLibraryFolders = vi.fn();
-const mutateLibraryFolders = vi.fn();
+const pullLibraryFoldersSnapshot = vi.fn();
+const mutateLibraryFoldersSnapshot = vi.fn();
 
 vi.mock("../library/folderClient", async () => {
   const actual = await vi.importActual<typeof import("../library/folderClient")>(
@@ -34,12 +34,15 @@ vi.mock("../library/folderClient", async () => {
   };
 });
 
+vi.mock("../services/folderSyncApi", () => ({
+  pullLibraryFoldersSnapshot: (...args: unknown[]) =>
+    pullLibraryFoldersSnapshot(...args),
+  mutateLibraryFoldersSnapshot: (...args: unknown[]) =>
+    mutateLibraryFoldersSnapshot(...args),
+}));
+
 vi.mock("../auth/session", () => ({
   ensureAccessToken: vi.fn(async () => "tok"),
-  createAuthedSdk: () => ({
-    getLibraryFolders: (...args: unknown[]) => getLibraryFolders(...args),
-    mutateLibraryFolders: (...args: unknown[]) => mutateLibraryFolders(...args),
-  }),
 }));
 
 function remoteFolder(
@@ -359,15 +362,15 @@ describe("syncLibraryFolders", () => {
     applyFolderSnapshot.mockReset();
     ackFolderOps.mockReset();
     setFolderPendingOps.mockReset();
-    getLibraryFolders.mockReset();
-    mutateLibraryFolders.mockReset();
+    pullLibraryFoldersSnapshot.mockReset();
+    mutateLibraryFoldersSnapshot.mockReset();
   });
 
   it("installs cloud snapshot when there are no pending ops", async () => {
     const empty = state({ revision: 1 });
     const after = state({ revision: 3, folders: [] });
     getFolderSyncState.mockResolvedValue(empty);
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 3,
       folders: [remoteFolder({ id: "f1", title: "Cloud" })],
     });
@@ -382,7 +385,7 @@ describe("syncLibraryFolders", () => {
         expect.objectContaining({ id: "f1", title: "Cloud" }),
       ]),
     );
-    expect(mutateLibraryFolders).not.toHaveBeenCalled();
+    expect(mutateLibraryFoldersSnapshot).not.toHaveBeenCalled();
   });
 
   it("uploads project repairs generated while applying a cloud snapshot", async () => {
@@ -398,14 +401,14 @@ describe("syncLibraryFolders", () => {
     getFolderSyncState
       .mockResolvedValueOnce(state({ revision: 1 }))
       .mockResolvedValueOnce(state({ revision: 3, pendingOps: [] }));
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 2,
       folders: [remoteFolder({ id: folderId, title: "Ordinary cloud folder" })],
     });
     applyFolderSnapshot
       .mockResolvedValueOnce(state({ revision: 2, pendingOps: [repair] }))
       .mockResolvedValueOnce(state({ revision: 3, pendingOps: [repair] }));
-    mutateLibraryFolders.mockResolvedValue({
+    mutateLibraryFoldersSnapshot.mockResolvedValue({
       revision: 3,
       folders: [
         remoteFolder({
@@ -419,7 +422,7 @@ describe("syncLibraryFolders", () => {
 
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
-    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledWith({
       baseRevision: 2,
       operations: [repair.op],
     });
@@ -443,8 +446,8 @@ describe("syncLibraryFolders", () => {
     getFolderSyncState
       .mockResolvedValueOnce(initial)
       .mockResolvedValueOnce(state({ revision: 3, pendingOps: [] }));
-    getLibraryFolders.mockResolvedValue({ revision: 2, folders: [] });
-    mutateLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({ revision: 2, folders: [] });
+    mutateLibraryFoldersSnapshot.mockResolvedValue({
       revision: 3,
       folders: [remoteFolder({ id: folderId, title: "B-roll", creation_ids: [103] })],
     });
@@ -456,7 +459,7 @@ describe("syncLibraryFolders", () => {
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
     expect(result.uploadedBatches).toBe(1);
-    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledWith({
       baseRevision: 2,
       operations: [
         expect.objectContaining({
@@ -510,7 +513,7 @@ describe("syncLibraryFolders", () => {
           },
         ],
       });
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 2,
       folders: [remoteFolder({ id: folderId, title: "Cloud" })],
     });
@@ -524,7 +527,7 @@ describe("syncLibraryFolders", () => {
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(false);
     expect(result.conflicts).toHaveLength(1);
-    expect(mutateLibraryFolders).not.toHaveBeenCalled();
+    expect(mutateLibraryFoldersSnapshot).not.toHaveBeenCalled();
   });
 
   it("retries after a 409 when the merge is safe", async () => {
@@ -541,11 +544,11 @@ describe("syncLibraryFolders", () => {
       .mockResolvedValueOnce(initial)
       .mockResolvedValueOnce(state({ revision: 2, pendingOps }))
       .mockResolvedValueOnce(state({ revision: 3, pendingOps: [] }));
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 1,
       folders: [],
     });
-    mutateLibraryFolders
+    mutateLibraryFoldersSnapshot
       .mockRejectedValueOnce(
         new LibraryFoldersConflictError({
           revision: 2,
@@ -566,7 +569,7 @@ describe("syncLibraryFolders", () => {
 
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
-    expect(mutateLibraryFolders).toHaveBeenCalledTimes(2);
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("drops stuck unowned empty-meta clears and restores cloud project folders", async () => {
@@ -586,7 +589,7 @@ describe("syncLibraryFolders", () => {
     getFolderSyncState
       .mockResolvedValueOnce(initial)
       .mockResolvedValueOnce(state({ revision: 2, pendingOps: [] }));
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 2,
       folders: [
         remoteFolder({
@@ -620,7 +623,7 @@ describe("syncLibraryFolders", () => {
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
     expect(setFolderPendingOps).toHaveBeenCalledWith([]);
-    expect(mutateLibraryFolders).not.toHaveBeenCalled();
+    expect(mutateLibraryFoldersSnapshot).not.toHaveBeenCalled();
   });
 
   it("expands owned marker clears to delete+create before upload", async () => {
@@ -638,7 +641,7 @@ describe("syncLibraryFolders", () => {
         state({ revision: 1, pendingOps: [clearOp], baselineFolders: [] }),
       )
       .mockResolvedValueOnce(state({ revision: 2, pendingOps: [] }));
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 1,
       folders: [
         remoteFolder({
@@ -674,7 +677,7 @@ describe("syncLibraryFolders", () => {
     applyFolderSnapshot.mockResolvedValue(
       state({ revision: 2, pendingOps: [] }),
     );
-    mutateLibraryFolders.mockResolvedValue({
+    mutateLibraryFoldersSnapshot.mockResolvedValue({
       revision: 2,
       folders: [remoteFolder({ id: folderId, title: "Orphan", creation_ids: [101], meta: {} })],
     });
@@ -682,7 +685,7 @@ describe("syncLibraryFolders", () => {
 
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
-    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledWith({
       baseRevision: 1,
       operations: [
         expect.objectContaining({
@@ -732,7 +735,7 @@ describe("syncLibraryFolders", () => {
       .mockResolvedValueOnce(
         state({ revision: 10, pendingOps: [] }),
       );
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 9,
       folders: [remoteFolder({ id: folderId, title: "Project (2 assets)" })],
     });
@@ -742,7 +745,7 @@ describe("syncLibraryFolders", () => {
     applyFolderSnapshot.mockResolvedValue(
       state({ revision: 10, pendingOps: healedPending }),
     );
-    mutateLibraryFolders.mockResolvedValue({
+    mutateLibraryFoldersSnapshot.mockResolvedValue({
       revision: 10,
       folders: [remoteFolder({ id: folderId, title: "Silent Killer", creation_ids: [42] })],
     });
@@ -754,7 +757,7 @@ describe("syncLibraryFolders", () => {
       expect.objectContaining({ op: "update", id: folderId, title: "Silent Killer" }),
       expect.objectContaining({ op: "move", folder_id: folderId }),
     ]);
-    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledWith({
       baseRevision: 9,
       operations: [
         expect.objectContaining({ op: "update", id: folderId, title: "Silent Killer" }),
@@ -762,7 +765,7 @@ describe("syncLibraryFolders", () => {
       ],
     });
     expect(
-      mutateLibraryFolders.mock.calls[0]![0].operations.some(
+      mutateLibraryFoldersSnapshot.mock.calls[0]![0].operations.some(
         (op: LibraryFolderOperation) => op.op === "create",
       ),
     ).toBe(false);
@@ -792,7 +795,7 @@ describe("syncLibraryFolders", () => {
       )
       .mockResolvedValueOnce(state({ revision: 10, pendingOps: [] }));
 
-    getLibraryFolders
+    pullLibraryFoldersSnapshot
       // Initial pull — cloud empty so create is not dropped pre-upload
       .mockResolvedValueOnce({ revision: 9, folders: [] })
       // Re-pull after error — folder now on cloud
@@ -801,7 +804,7 @@ describe("syncLibraryFolders", () => {
         folders: [remoteFolder({ id: folderId, title: "Project (2 assets)" })],
       });
 
-    mutateLibraryFolders
+    mutateLibraryFoldersSnapshot
       .mockRejectedValueOnce(new Error("folder id already exists"))
       .mockResolvedValueOnce({
         revision: 10,
@@ -822,8 +825,8 @@ describe("syncLibraryFolders", () => {
 
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
-    expect(mutateLibraryFolders).toHaveBeenCalledTimes(2);
-    expect(mutateLibraryFolders.mock.calls[1]![0].operations).toEqual([
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledTimes(2);
+    expect(mutateLibraryFoldersSnapshot.mock.calls[1]![0].operations).toEqual([
       expect.objectContaining({ op: "update", id: folderId, title: "Silent Killer" }),
     ]);
   });
@@ -845,7 +848,7 @@ describe("syncLibraryFolders", () => {
         state({ revision: 9, pendingOps, baselineFolders: [] }),
       )
       .mockResolvedValueOnce(state({ revision: 10, pendingOps: [] }));
-    getLibraryFolders.mockResolvedValue({
+    pullLibraryFoldersSnapshot.mockResolvedValue({
       revision: 9,
       folders: [
         remoteFolder({
@@ -858,7 +861,7 @@ describe("syncLibraryFolders", () => {
     applyFolderSnapshot.mockResolvedValue(
       state({ revision: 10, pendingOps: [] }),
     );
-    mutateLibraryFolders.mockResolvedValue({
+    mutateLibraryFoldersSnapshot.mockResolvedValue({
       revision: 10,
       folders: [
         remoteFolder({ id: folderId, title: "Sana Sinabi Ko Na", meta: {} }),
@@ -868,7 +871,7 @@ describe("syncLibraryFolders", () => {
 
     const result = await syncLibraryFolders();
     expect(result.ok).toBe(true);
-    expect(mutateLibraryFolders).toHaveBeenCalledWith({
+    expect(mutateLibraryFoldersSnapshot).toHaveBeenCalledWith({
       baseRevision: 9,
       operations: [
         expect.objectContaining({

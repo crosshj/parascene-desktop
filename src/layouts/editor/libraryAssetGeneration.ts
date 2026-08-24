@@ -70,14 +70,19 @@ export function libraryPlaceholderResultSteps(
 ): LibraryPlaceholderResultStep[] {
   if (!placeholder) return [];
   const job = placeholder.addAssetDraft.generationJob;
-  const note = placeholder.progressNote?.toLowerCase() ?? "";
+  const provider = job?.provider ?? placeholder.addAssetDraft.provider;
+  const isLocal =
+    provider === "replicate" || provider === "blue_direct";
+  const waitLabel = isLocal ? "Wait for output" : "Wait for Parascene";
+  const syncLabel = isLocal ? "Import into Assets" : "Sync to Library";
   const steps: LibraryPlaceholderResultStep[] = [
     { id: "start", label: "Start generation", status: "pending" },
-    { id: "wait", label: "Wait for Parascene", status: "pending" },
-    { id: "sync", label: "Sync to Library", status: "pending" },
+    { id: "wait", label: waitLabel, status: "pending" },
+    { id: "sync", label: syncLabel, status: "pending" },
     { id: "file", label: "Add to Assets", status: "pending" },
   ];
   if (!job) return steps;
+  const note = placeholder.progressNote?.toLowerCase() ?? "";
   if (job.status === "starting") {
     steps[0] = { ...steps[0], status: "active" };
     return steps;

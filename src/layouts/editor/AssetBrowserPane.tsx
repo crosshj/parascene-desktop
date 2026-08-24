@@ -9,14 +9,11 @@ import {
 import { createPortal } from "react-dom";
 import { creationAspectCss } from "../../library/aspectRatio";
 import {
-  applyManifest,
   ensureLocal,
-  getCreations,
 } from "../../library/catalogClient";
 import { CreationCard } from "../../library/CreationCard";
 import {
   creationCardTitle,
-  groupEmbeddedSourceCreations,
   groupSourceCreationIds,
 } from "../../library/creationFlags";
 import { isLocalOnlyCreation } from "../../library/creationFilters";
@@ -32,8 +29,8 @@ import type { Creation, MediaType } from "../../library/types";
 import { type ProjectCabinetIds } from "../../project/desktopProjectGroups";
 import {
   flattenProjectAssetsForBrowserDisplay,
-  projectContainerCoverIdsForMemberLoad,
 } from "./assetBrowserDisplay";
+import { loadProjectAssetsCatalog } from "./projectCatalogLoad";
 import {
   projectAspectCss,
   type ProjectAspectRatio,
@@ -46,7 +43,6 @@ import {
   compositionOutsideMemberIds,
   type StillWorkstream,
 } from "../../project/stillWorkstream";
-import { mapGroupSourceCreations } from "../../sync/manifestSync";
 export type AssetKindFilter = "all" | MediaType;
 
 const FILTERS: { id: AssetKindFilter; label: string }[] = [
@@ -467,59 +463,15 @@ export function AssetBrowserPane({
 
     const load = async () => {
       try {
-        const rows = await getCreations(ids);
-        if (cancelled) return;
-        const next: Record<string, Creation> = {};
-        for (const row of rows) next[row.id] = row;
-
-        // Pull cabinet members so Assets can show them outside the cover.
-        // Display flatten only — do not file members into the project folder.
-        // Same as Library lightbox: if a member row was pruned/missing, rebuild
-        // it from the cover's embedded source_creations so we don't paint stubs.
-        const memberIds = new Set<string>();
-        const cabinetCovers: Creation[] = [];
-        const coverIds = projectContainerCoverIdsForMemberLoad({
+        const next = await loadProjectAssetsCatalog({
+          rootAssetIds: ids,
           projectId,
           projectTitle,
           rootAssets,
-          creationsById: next,
+          creationsById: {},
           projectCabinets,
         });
-        const missingCoverIds = coverIds.filter((id) => !next[id]);
-        if (missingCoverIds.length > 0) {
-          const extra = await getCreations(missingCoverIds);
-          if (cancelled) return;
-          for (const row of extra) next[row.id] = row;
-        }
-        for (const coverId of coverIds) {
-          const row = next[coverId];
-          if (!row) continue;
-          cabinetCovers.push(row);
-          for (const mid of groupSourceCreationIds(row)) {
-            if (!next[mid]) memberIds.add(mid);
-          }
-        }
-        if (memberIds.size > 0) {
-          let members = await getCreations([...memberIds]);
-          if (cancelled) return;
-          const found = new Set(members.map((row) => row.id));
-          const missing = [...memberIds].filter((id) => !found.has(id));
-          if (missing.length > 0) {
-            const missingSet = new Set(missing);
-            const upserts = cabinetCovers.flatMap((cover) =>
-              mapGroupSourceCreations(
-                groupEmbeddedSourceCreations(cover),
-              ).filter((row) => missingSet.has(row.id)),
-            );
-            if (upserts.length > 0) {
-              await applyManifest(upserts);
-              if (cancelled) return;
-              members = await getCreations([...memberIds]);
-            }
-          }
-          if (cancelled) return;
-          for (const row of members) next[row.id] = row;
-        }
+        if (cancelled) return;
 
         setCreationsById(next);
 

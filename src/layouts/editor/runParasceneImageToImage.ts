@@ -2,11 +2,8 @@
  * Parascene credits path — Image to Image via server 6 Blue or server 1 Replicate lanes.
  */
 
-import { createAuthedSdk } from "../../auth/session";
-import { formatParasceneCreationFailure } from "../../sdk/parascene";
 import { getCreations } from "../../library/catalogClient";
-import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
-import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
+import { runLabParasceneGenerate } from "../../services/labParasceneGenerate";
 import { parasceneImageUrlFromCreation } from "./addAssetStartFrame";
 import {
   parasceneResolveStillModel,
@@ -59,7 +56,6 @@ export async function runParasceneImageToImage(opts: {
         : "Replicate";
 
   opts.onProgress?.(`Starting image-to-image on ${label}…`);
-  const sdk = createAuthedSdk();
   const args: Record<string, unknown> = {
     prompt,
     model: route.value,
@@ -69,34 +65,22 @@ export async function runParasceneImageToImage(opts: {
     args.aspect_ratio = opts.aspectRatio;
   }
 
-  const started = await sdk.create({
-    serverId: route.serverId,
-    method: route.method,
-    creationToken: newCreationToken(),
-    args,
-  });
-  opts.onProgress?.(`Waiting for ${started.id}…`);
-  const done = await sdk.waitForCreation(started.id, {
-    onTick: (row) =>
-      opts.onProgress?.(`Waiting for ${started.id} (${row.status || "…"})`),
-  });
-  if (String(done.status).toLowerCase() === "failed") {
-    throw new Error(formatParasceneCreationFailure(done, "Image-to-image"));
-  }
-  opts.onProgress?.("Syncing to Library…");
-  const creationId = await ingestRemoteCreation(done);
-  opts.onProgress?.("Filing into Images group…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId,
-    mediaType: "image",
+  const result = await runLabParasceneGenerate({
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     imagesGroupId: opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
+    serverId: route.serverId,
+    method: route.method,
+    args,
+    mediaType: "image",
+    intent: "image_to_image",
+    label: route.label || route.method,
+    onProgress: opts.onProgress,
   });
   return {
-    creationId,
-    projectCreationIds: filed.projectCreationIds,
-    imagesGroupId: filed.groupId ?? opts.imagesGroupId,
+    creationId: result.creationId,
+    projectCreationIds: result.projectCreationIds,
+    imagesGroupId: result.imagesGroupId ?? opts.imagesGroupId,
   };
 }

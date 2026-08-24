@@ -101,6 +101,7 @@ import {
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
 import { bindLibraryAssetGenerationApplier } from "../layouts/editor/libraryAssetGenerationStore";
+import { defaultStagedClipDraft } from "../layouts/editor/stagedClip";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
 import {
   applyManifest,
@@ -1652,6 +1653,18 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setImagesGroupId: (imagesGroupId) => {
         patchOpenProject((project) =>
           setStoredProjectGroupIds(project, { imagesGroupId }),
+        );
+      },
+      placeTimelineClip: ({ creationId, label }) => {
+        const draft = defaultStagedClipDraft({
+          assetId: creationId,
+          label,
+          kind: "image",
+        });
+        window.dispatchEvent(
+          new CustomEvent("parascene-staged-clip-place", {
+            detail: { draft },
+          }),
         );
       },
     });

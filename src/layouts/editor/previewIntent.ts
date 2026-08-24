@@ -398,7 +398,7 @@ export function intentOffersTimelineDestination(
 export function intentTimelinePlacementComingSoon(
   intentId: GenerateIntentId | null | undefined,
 ): boolean {
-  return intentId === "text_to_image" || intentId === "image_to_image";
+  return intentId === "image_to_image";
 }
 
 export function makeAddAssetIntent(

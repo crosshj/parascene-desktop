@@ -34,8 +34,7 @@ import {
   CompositePlatePanel,
   type CompositePlatePanelProps,
 } from "./CompositePlatePanel";
-import { ReplicateTextToImageFormLayout } from "./ReplicateTextToImageForm";
-import { BlueDirectTextToImageForm } from "./BlueDirectTextToImageForm";
+import { TextToImageFormLayout } from "./TextToImageForm";
 import { GenerateIntentIcon } from "./GenerateIntentIcon";
 import { GenerateSystemChooser } from "./GenerateSystemChooser";
 import { saveLastGenerateIntent } from "./generateIntentPrefs";
@@ -388,13 +387,15 @@ export function SelectionIntentPanel({
     </>
   );
 
-  if (
-    canLibraryGenerate &&
-    server === "replicate" &&
-    libraryFormReady
-  ) {
+  if (canLibraryGenerate && intentId === "text_to_image" && libraryFormReady && server) {
     return (
-      <ReplicateTextToImageFormLayout idPrefix="selection-t2i">
+      <TextToImageFormLayout
+        server={server}
+        idPrefix={`selection-${server}-t2i`}
+        allowTimelineTarget={Boolean(
+          intentId && intentOffersTimelineDestination(intentId),
+        )}
+      >
         {({ fields, generateAction }) => (
           <div
             className="add-asset-generate-pane preview-intent-pane"
@@ -410,32 +411,7 @@ export function SelectionIntentPanel({
             />
           </div>
         )}
-      </ReplicateTextToImageFormLayout>
-    );
-  }
-
-  if (
-    canLibraryGenerate &&
-    server === "blue_direct" &&
-    libraryFormReady
-  ) {
-    return (
-      <div
-        className="add-asset-generate-pane preview-intent-pane"
-        aria-label="Choose what to do with selection"
-      >
-        <div className="add-asset-generate-body">
-          {body}
-          <BlueDirectTextToImageForm
-            renderFooter={(parts) => (
-              <AddAssetIntentFooter
-                generate={parts.generateAction}
-                timeline={timelinePlacement}
-              />
-            )}
-          />
-        </div>
-      </div>
+      </TextToImageFormLayout>
     );
   }
 

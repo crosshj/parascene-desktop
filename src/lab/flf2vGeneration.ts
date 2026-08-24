@@ -1,7 +1,3 @@
-import { createAuthedSdk } from "../auth/session";
-import type { RemoteCreateImage } from "../sdk/parascene";
-import { ingestRemoteCreation, newCreationToken } from "./ingestCreation";
-
 export const FLF2V_MODEL = "wan_i2v";
 
 export type Flf2vCreateArgs = {
@@ -37,63 +33,4 @@ export function buildFlf2vCreateArgs(opts: {
     args.duration_seconds = opts.durationSeconds;
   }
   return args;
-}
-
-export type RunFlf2vGenerationOpts = {
-  prompt: string;
-  aspectRatio: string;
-  firstImageUrl: string;
-  /** Omit for start-frame-only WAN. */
-  lastImageUrl?: string;
-  /** Output length in seconds. Caller must clamp. */
-  durationSeconds?: number;
-  onProgress: (note: string) => void;
-  onPendingCreation?: (id: string | null) => void;
-};
-
-export async function runFlf2vGeneration(
-  opts: RunFlf2vGenerationOpts,
-): Promise<{ creationId: string; remote: RemoteCreateImage }> {
-  const {
-    prompt,
-    aspectRatio,
-    firstImageUrl,
-    lastImageUrl,
-    durationSeconds,
-    onProgress,
-    onPendingCreation,
-  } = opts;
-  const hasLast = Boolean(lastImageUrl?.trim());
-  onProgress(
-    hasLast
-      ? "Starting first–last frame video…"
-      : "Starting image-to-video…",
-  );
-  const sdk = createAuthedSdk();
-  const args = buildFlf2vCreateArgs({
-    prompt,
-    aspectRatio,
-    firstImageUrl,
-    lastImageUrl,
-    durationSeconds,
-  });
-  const started = await sdk.create({
-    serverId: 6,
-    method: "image2video",
-    creationToken: newCreationToken(),
-    args,
-  });
-  onPendingCreation?.(String(started.id));
-  onProgress(`Generating video (${started.id})…`);
-  const done = await sdk.waitForCreation(started.id, {
-    onTick: (row) =>
-      onProgress(`Generating video (${row.status || "…"})…`),
-  });
-  onPendingCreation?.(null);
-  if (String(done.status).toLowerCase() === "failed") {
-    throw new Error(`Video generation failed (${done.id})`);
-  }
-  onProgress("Syncing video to library…");
-  const creationId = await ingestRemoteCreation(done);
-  return { creationId, remote: done };
 }

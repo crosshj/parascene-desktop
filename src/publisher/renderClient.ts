@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import type { ProjectLooks } from "../project/looks";
-import { normalizeProjectLooks } from "../project/looks";
 import {
   normalizeSlideshowMode,
   type SlideshowMode,
@@ -219,18 +218,17 @@ export async function renderTimeline(
   clips: RenderTimelineClipInput[],
   looks?: ProjectLooks,
 ): Promise<TimelineRender> {
-  await ensureRenderMediaLocal(clips);
-  const normalizedLooks = normalizeProjectLooks(looks);
+  const { runPublisherRender } = await import("../services/publisherRender");
   recordUiOpTrace({
     type: "render_ffmpeg_start",
     count: clips.length,
     reason: `project=${projectId} aspect=${aspectRatio}`,
   });
-  return invoke<TimelineRender>("publisher_render_timeline", {
+  return runPublisherRender({
     projectId,
     aspectRatio,
     clips,
-    looks: normalizedLooks,
+    looks,
   });
 }
 

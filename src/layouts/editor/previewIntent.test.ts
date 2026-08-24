@@ -98,10 +98,15 @@ describe("previewIntent catalog", () => {
         makeAddAssetIntent("image_to_video", "replicate"),
       ),
     ).toBe(true);
-    // Stills: Timeline is offered in UI as Soon, not Place-ready.
+    // Stills: Timeline generate is wired for text to image.
     expect(
       addAssetIntentAllowsTimelinePlacement(
         makeAddAssetIntent("text_to_image", "replicate"),
+      ),
+    ).toBe(true);
+    expect(
+      addAssetIntentAllowsTimelinePlacement(
+        makeAddAssetIntent("image_to_image", "replicate"),
       ),
     ).toBe(false);
     expect(
@@ -118,7 +123,7 @@ describe("previewIntent catalog", () => {
     expect(selectionModeAllowsTimelinePlacement("composite")).toBe(false);
   });
 
-  it("marks text to image as choose with timeline soon", () => {
+  it("marks text to image as choose destination", () => {
     const t2i = GENERATE_INTENTS.find((i) => i.id === "text_to_image");
     expect(t2i?.destinationPolicy).toBe("choose");
     expect(t2i?.label).toBe("Text to Image");

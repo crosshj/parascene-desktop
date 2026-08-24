@@ -12,9 +12,9 @@ import { useShell } from "../../app/ShellProvider";
 import {
   deleteCompositionRun,
   getCreations,
-  mergeTimelineClips,
   type MergeProgress,
 } from "../../library/catalogClient";
+import { runLocalMerge } from "../../services/localMerge";
 import { loadStoredProjectStrict } from "../../project/projectStore";
 import { collectProjectReferencedCreationIds } from "../../project/projectUsage";
 import {
@@ -1695,7 +1695,7 @@ export function EditorLayout() {
 
     const sourceSelection = mergeSelection;
     try {
-      const creation = await mergeTimelineClips(
+      const creation = await runLocalMerge(
         sourceSelection.clips.map((clip) => ({
           assetId: clip.assetId ?? "",
           inSec: clip.inSec ?? 0,
@@ -2452,7 +2452,7 @@ export function EditorLayout() {
           if (!id) return;
           const placeholder = project.libraryAssetPlaceholders?.[id];
           if (!placeholder) return;
-          retryLibraryAssetPlaceholder({
+          void retryLibraryAssetPlaceholder({
             placeholder,
             projectId: project.id,
             projectTitle: project.title,

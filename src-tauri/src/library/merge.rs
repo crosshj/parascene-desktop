@@ -192,7 +192,7 @@ fn merge_filename(id: &str) -> String {
     format!("{}.mp4", safe_id(id))
 }
 
-fn run_merge(app: &AppHandle, clips: Vec<MergeTimelineClipInput>) -> Result<Creation, String> {
+pub(crate) fn run_merge(app: &AppHandle, clips: Vec<MergeTimelineClipInput>) -> Result<Creation, String> {
     if clips.len() < 2 {
         return Err("Select at least two contiguous video clips to merge".into());
     }

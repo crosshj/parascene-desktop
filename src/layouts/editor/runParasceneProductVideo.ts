@@ -2,14 +2,16 @@
  * Parascene credits path — video2video / reference2video via server 6.
  */
 
-import { createAuthedSdk } from "../../auth/session";
-import { formatParasceneCreationFailure } from "../../sdk/parascene";
 import { getCreations } from "../../library/catalogClient";
 import type { Creation } from "../../library/types";
 import { parascenePublicImageUrl } from "../../library/previewUrl";
 import { uploadLocalImageFile } from "../../lab/audioTools";
-import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
-import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
+import {
+  invokeParasceneGenerate,
+  pendingCreationIdFromRun,
+  watchParasceneGenerate,
+} from "../../services/generateStill";
+import type { ServiceRun } from "../../services/types";
 import type { GenerateIntentId } from "./previewIntent";
 import {
   parasceneMethodForIntent,
@@ -89,6 +91,7 @@ export async function runParasceneProductVideoGeneration(opts: {
   referenceCreationIds?: string[];
   onProgress: (note: string) => void;
   onPendingCreation?: (id: string | null) => void;
+  onServiceJobId?: (id: string) => void;
 }): Promise<{
   creationId: string;
   projectCreationIds: string[];
@@ -155,39 +158,36 @@ export async function runParasceneProductVideoGeneration(opts: {
   }
 
   opts.onProgress(`Starting ${method} on Parascene…`);
-  const sdk = createAuthedSdk();
-  const started = await sdk.create({
-    serverId: 6,
-    method,
-    creationToken: newCreationToken(),
-    args,
-  });
-  opts.onPendingCreation?.(String(started.id));
-  opts.onProgress(`Waiting for ${started.id}…`);
-  const done = await sdk.waitForCreation(started.id, {
-    onTick: (row) =>
-      opts.onProgress(`Waiting for ${started.id} (${row.status || "…"})`),
-  });
-  opts.onPendingCreation?.(null);
-  if (String(done.status).toLowerCase() === "failed") {
-    throw new Error(formatParasceneCreationFailure(done, "Video generation"));
-  }
-  opts.onProgress("Syncing to Library…");
-  const creationId = await ingestRemoteCreation(done);
-  opts.onProgress("Filing into project…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId,
-    mediaType: "video",
+  const handle = await invokeParasceneGenerate({
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     imagesGroupId: opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
+    serverId,
+    method,
+    args,
+    intent: opts.intentId,
+    mediaType: "video",
+    target: "timeline",
+    clientRequestId: opts.placeholder.id,
+    label: model,
+  });
+  if (handle.mode === "job") {
+    opts.onServiceJobId?.(handle.id);
+  }
+  const result = await watchParasceneGenerate(handle, {
+    onUpdate: (run: ServiceRun) => {
+      const note = run.progressNote?.trim();
+      if (note) opts.onProgress(note);
+      const pendingId = pendingCreationIdFromRun(run);
+      if (pendingId) opts.onPendingCreation?.(pendingId);
+    },
   });
   return {
-    creationId,
-    projectCreationIds: filed.projectCreationIds,
-    videosGroupId: filed.groupId ?? opts.videosGroupId,
-    imagesGroupId: opts.imagesGroupId,
+    creationId: result.creationId,
+    projectCreationIds: result.projectCreationIds,
+    videosGroupId: result.videosGroupId ?? opts.videosGroupId,
+    imagesGroupId: result.imagesGroupId ?? opts.imagesGroupId,
     model,
   };
 }

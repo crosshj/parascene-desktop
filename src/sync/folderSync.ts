@@ -1,4 +1,8 @@
-import { createAuthedSdk, ensureAccessToken } from "../auth/session";
+import { ensureAccessToken } from "../auth/session";
+import {
+  mutateLibraryFoldersSnapshot,
+  pullLibraryFoldersSnapshot,
+} from "../services/folderSyncApi";
 import {
   ackFolderOps,
   applyFolderSnapshot,
@@ -672,8 +676,7 @@ export function applyConflictResolutions(
 
 async function pullSnapshot(): Promise<LibraryFoldersSnapshot> {
   await ensureAccessToken();
-  const sdk = createAuthedSdk();
-  return sdk.getLibraryFolders();
+  return pullLibraryFoldersSnapshot();
 }
 
 async function pushOps(
@@ -681,8 +684,7 @@ async function pushOps(
   ops: LibraryFolderOperation[],
 ): Promise<LibraryFoldersSnapshot> {
   await ensureAccessToken();
-  const sdk = createAuthedSdk();
-  return sdk.mutateLibraryFolders({ baseRevision, operations: ops });
+  return mutateLibraryFoldersSnapshot({ baseRevision, operations: ops });
 }
 
 function resultFromState(

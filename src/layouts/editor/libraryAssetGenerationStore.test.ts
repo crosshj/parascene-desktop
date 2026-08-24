@@ -78,8 +78,8 @@ describe("retryLibraryAssetPlaceholder", () => {
     });
   });
 
-  it("restarts image-to-image on the same placeholder id", () => {
-    const id = retryLibraryAssetPlaceholder({
+  it("restarts image-to-image on the same placeholder id", async () => {
+    const id = await retryLibraryAssetPlaceholder({
       placeholder: failedPlaceholder(),
       projectId: "project-1",
       projectTitle: "Demo",

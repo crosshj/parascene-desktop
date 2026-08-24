@@ -1,4 +1,6 @@
-use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
+use super::catalog::{
+    default_paths, get_creation_by_id, get_creations_by_ids, ready_connection, Creation,
+};
 use super::ffmpeg::{self, resolve_ffmpeg};
 use super::lab_audio::extend_clip_on_disk;
 use super::crt_gpu::{self, apply_crt_preset_to_video};
@@ -1993,6 +1995,131 @@ fn create_pending_render(
     manifest.renders.insert(0, render.clone());
     write_manifest(&paths, project_id, &manifest)?;
     Ok(render)
+}
+
+fn collect_render_asset_ids(clips: &[RenderTimelineClipInput]) -> Vec<String> {
+    let mut ids = std::collections::HashSet::new();
+    for clip in clips {
+        if let Some(id) = clip
+            .asset_id
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            ids.insert(id.to_string());
+        }
+        if let Some(slideshow) = &clip.slideshow {
+            for id in &slideshow.image_asset_ids {
+                let t = id.trim();
+                if !t.is_empty() {
+                    ids.insert(t.to_string());
+                }
+            }
+            if let Some(id) = slideshow
+                .audio_asset_id
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    ids.into_iter().collect()
+}
+
+/// Download media if needed, create pending row, encode to completion.
+/// Used by `publisher.render` service job (Rust owns the full loop).
+pub(crate) async fn await_timeline_render(
+    app: &AppHandle,
+    project_id: String,
+    aspect_ratio: String,
+    clips: Vec<RenderTimelineClipInput>,
+    looks: RenderLooks,
+) -> Result<TimelineRender, String> {
+    let ids = collect_render_asset_ids(&clips);
+    if !ids.is_empty() {
+        let _ = super::download::library_download_ids(app.clone(), ids.clone()).await?;
+        let paths = default_paths()?;
+        let missing = {
+            let conn = ready_connection(&paths)?;
+            let rows = get_creations_by_ids(&conn, &ids)?;
+            let have: std::collections::HashSet<_> = rows
+                .into_iter()
+                .filter(|c| c.local_path.as_ref().is_some_and(|p| !p.trim().is_empty()))
+                .map(|c| c.id)
+                .collect();
+            ids.into_iter()
+                .filter(|id| !have.contains(id))
+                .collect::<Vec<_>>()
+        };
+        if !missing.is_empty() {
+            return Err(if missing.len() == 1 {
+                format!(
+                    "Could not download local media for {}. Sync it in Library, then try again.",
+                    missing[0]
+                )
+            } else {
+                format!(
+                    "Could not download local media for {} assets ({}{}). Sync them in Library, then try again.",
+                    missing.len(),
+                    missing.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+                    if missing.len() > 5 { "…" } else { "" }
+                )
+            });
+        }
+    }
+
+    let project_for_pending = project_id.clone();
+    let aspect_for_pending = aspect_ratio.clone();
+    let clips_for_pending = clips.clone();
+    let looks_for_pending = looks.clone();
+    let pending = tauri::async_runtime::spawn_blocking(move || {
+        create_pending_render(
+            &project_for_pending,
+            &aspect_for_pending,
+            &clips_for_pending,
+            &looks_for_pending,
+        )
+    })
+    .await
+    .map_err(|e| format!("Create pending render failed: {e}"))??;
+
+    let app_for_block = app.clone();
+    let project_for_block = project_id.clone();
+    let render_id = pending.id.clone();
+    let render_id_for_block = render_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_render(
+            &app_for_block,
+            &project_for_block,
+            &render_id_for_block,
+            &aspect_ratio,
+            clips,
+            looks,
+        )
+    })
+    .await
+    .map_err(|e| format!("Render task failed: {e}"))?;
+
+    match result {
+        Ok(render) => {
+            emit_finished(app, &project_id, true, render_id, None);
+            Ok(render)
+        }
+        Err(error) => {
+            if let Ok(paths) = default_paths() {
+                let _ = update_render(&paths, &project_id, &render_id, |render| {
+                    render.status = "failed".into();
+                    render.finished_at = Some(Utc::now().to_rfc3339());
+                    render.progress = None;
+                    render.error = Some(error.clone());
+                });
+            }
+            emit_finished(app, &project_id, false, render_id, Some(error.clone()));
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]

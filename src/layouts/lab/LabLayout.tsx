@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShell } from "../../app/ShellProvider";
-import { createAuthedSdk } from "../../auth/session";
+import { getParasceneCredits } from "../../services/parasceneCatalog";
 import {
   deleteLocal,
   getCreations,
@@ -43,7 +43,9 @@ import { LabImagePicker } from "../../lab/LabImagePicker";
 import { LabLyricCaptionEditor } from "../../lab/LabLyricCaptionEditor";
 import { LabVideoRangePicker } from "../../lab/LabVideoRangePicker";
 import { CreationLightbox } from "../../library/CreationLightbox";
-import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
+import { ingestRemoteCreation } from "../../lab/ingestCreation";
+import { runLabParasceneGenerate } from "../../services/labParasceneGenerate";
+import { buildLtxI2vCreateArgs } from "../../lab/ltxI2vGeneration";
 import {
   LAB_A2V_PROMPT,
   LAB_MUTATE_PROMPT,
@@ -504,8 +506,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
   }, [refreshAssets]);
 
   useEffect(() => {
-    void createAuthedSdk()
-      .getCredits()
+    void getParasceneCredits()
       .then((c) => setCredits(c.balance))
       .catch(() => setCredits(null));
   }, [session.lastByModule]);
@@ -846,20 +847,25 @@ export function LabLayout({ active = true }: { active?: boolean }) {
         pendingMediaType: "image" | "video";
       },
     ): Promise<LastResult> => {
-      const sdk = createAuthedSdk();
+      const { runParasceneWaitCreation } = await import(
+        "../../services/generateStill"
+      );
       const id = payload.pendingCreationId;
       onProgress(`Resuming wait for ${id}…`);
       setPendingCreation(payload.moduleId, id, payload.pendingMediaType);
-      const done = await sdk.waitForCreation(id, {
-        onTick: (row) =>
-          onProgress(`Waiting for ${id} (${row.status || "…" }).`),
+      const waited = await runParasceneWaitCreation({
+        creationId: id,
+        projectId: project.id,
+        onProgress,
       });
       setPendingCreation(payload.moduleId, null, null);
-      if (String(done.status).toLowerCase() === "failed") {
-        throw new Error(`Creation failed (${done.id})`);
+      if (String(waited.status).toLowerCase() === "failed") {
+        throw new Error(`Creation failed (${waited.creationId})`);
       }
       onProgress("Syncing to local Library…");
-      const creationId = await ingestRemoteCreation(done);
+      const creationId = await ingestRemoteCreation(
+        waited.creation as Parameters<typeof ingestRemoteCreation>[0],
+      );
       onProgress(
         payload.pendingMediaType === "image"
           ? "Grouping image into Images…"
@@ -883,10 +889,10 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       }
       onProgress("Added to project.");
       return {
-        summary: `Created ${creationId} (${done.status})`,
+        summary: `Created ${creationId} (${waited.status})`,
         detail: filed.message,
         creationId,
-        json: { done, filed, resumed: true },
+        json: { done: waited.creation, filed, resumed: true },
       };
     },
     [
@@ -2122,8 +2128,6 @@ function CreateModule(
         }
         onClick={() =>
           props.onRun(async ({ onProgress, onPendingCreation }) => {
-            const sdk = createAuthedSdk();
-            const token = newCreationToken();
             const mediaType: "image" | "video" =
               kind === "video" ? "video" : "image";
             onProgress(
@@ -2131,77 +2135,60 @@ function CreateModule(
                 ? "Starting image create…"
                 : "Resolving latest Images group still…",
             );
-            const started =
-              kind === "image"
-                ? await sdk.create({
-                    serverId: 1,
-                    method: "replicate",
-                    creationToken: token,
-                    args: {
-                      prompt: prompt.trim(),
-                      model: "xai/grok-imagine-image",
-                      aspect_ratio: props.aspectRatio,
-                    },
-                  })
-                : await (async () => {
-                    const still = await resolveLatestImagesGroupStill({
-                      imagesGroupId: props.imagesGroupId,
-                      sdk,
-                    });
-                    onProgress(
-                      `Animating still ${still.sourceId} (image→video)…`,
-                    );
-                    return sdk.create({
-                      serverId: 6,
-                      method: "image2video",
-                      creationToken: token,
-                      args: {
-                        prompt: prompt.trim(),
-                        model: "ltx_i2v",
-                        aspect_ratio: props.aspectRatio,
-                        input_images: [still.imageUrl],
-                      },
-                    });
-                  })();
-            onPendingCreation(String(started.id), mediaType);
-            onProgress(`Waiting for ${started.id}…`);
-            const done = await sdk.waitForCreation(started.id, {
-              onTick: (row) =>
-                onProgress(`Waiting for ${started.id} (${row.status || "…" }).`),
-            });
-            onPendingCreation(null, null);
-            if (String(done.status).toLowerCase() === "failed") {
-              throw new Error(`Creation failed (${done.id})`);
+            let args: Record<string, unknown>;
+            let serverId: number;
+            let method: string;
+            if (kind === "image") {
+              serverId = 1;
+              method = "replicate";
+              args = {
+                prompt: prompt.trim(),
+                model: "xai/grok-imagine-image",
+                aspect_ratio: props.aspectRatio,
+              };
+            } else {
+              const still = await resolveLatestImagesGroupStill({
+                imagesGroupId: props.imagesGroupId,
+              });
+              onProgress(`Animating still ${still.sourceId} (image→video)…`);
+              serverId = 6;
+              method = "image2video";
+              args = buildLtxI2vCreateArgs({
+                prompt: prompt.trim(),
+                aspectRatio: props.aspectRatio,
+                imageUrl: still.imageUrl,
+              }) as unknown as Record<string, unknown>;
             }
-            onProgress("Syncing to local Library…");
-            const id = await ingestRemoteCreation(done);
-            onProgress(
-              mediaType === "image"
-                ? "Grouping image into Images…"
-                : "Grouping video into Videos…",
-            );
-            const filed = await fileCreationIntoProjectGroup({
-              creationId: id,
-              mediaType,
+            const result = await runLabParasceneGenerate({
               projectId: props.projectId,
               projectTitle: props.projectTitle,
               imagesGroupId: props.imagesGroupId,
               videosGroupId: props.videosGroupId,
+              serverId,
+              method,
+              args,
+              mediaType,
+              intent: mediaType === "video" ? "image_to_video" : "text_to_image",
+              onProgress,
+              onPendingCreation,
             });
-            props.onCreated(filed.projectCreationIds);
-            if (filed.groupId) {
+            props.onCreated(result.projectCreationIds);
+            if (result.groupId) {
               props.onGroups(
                 mediaType === "image"
-                  ? { imagesGroupId: filed.groupId }
-                  : { videosGroupId: filed.groupId },
+                  ? { imagesGroupId: result.groupId }
+                  : { videosGroupId: result.groupId },
               );
             }
             onProgress("Added to project.");
             return {
-              summary: `Created ${id} (${done.status})`,
-              detail: filed.message,
-              creationId: id,
-              json: { started, done, filed },
+              summary: `Created ${result.creationId}`,
+              detail:
+                mediaType === "image"
+                  ? `Filed into Images group ${result.groupId ?? "—"}`
+                  : `Filed into Videos group ${result.groupId ?? "—"}`,
+              creationId: result.creationId,
+              json: { result },
             };
           })
         }
@@ -2733,54 +2720,41 @@ function A2vModule(
               );
             }
             onProgress("Starting a2v…");
-            const sdk = createAuthedSdk();
-            const started = await sdk.create({
-              serverId: 6,
-              method: "audio2video",
-              creationToken: newCreationToken(),
-              args: {
-                prompt: prompt.trim(),
-                model: "ltx_a2v",
-                aspect_ratio: props.aspectRatio,
-                input_images: [imageUrl],
-                audio_clip_id: Number(clip.clipId),
-              },
-            });
-            onPendingCreation(String(started.id), "video");
-            onProgress(`Waiting for ${started.id}…`);
-            const done = await sdk.waitForCreation(started.id, {
-              onTick: (row) =>
-                onProgress(`Waiting for ${started.id} (${row.status || "…" }).`),
-            });
-            onPendingCreation(null, null);
-            if (String(done.status).toLowerCase() === "failed") {
-              throw new Error(`a2v failed (${done.id})`);
-            }
-            onProgress("Syncing to local Library…");
-            const id = await ingestRemoteCreation(done);
-            onProgress("Grouping video…");
-            const filed = await fileCreationIntoProjectGroup({
-              creationId: id,
-              mediaType: "video",
+            const args: Record<string, unknown> = {
+              prompt: prompt.trim(),
+              model: "ltx_a2v",
+              aspect_ratio: props.aspectRatio,
+              input_images: [imageUrl],
+              audio_clip_id: Number(clip.clipId),
+            };
+            const result = await runLabParasceneGenerate({
               projectId: props.projectId,
               projectTitle: props.projectTitle,
               imagesGroupId: props.imagesGroupId,
               videosGroupId: props.videosGroupId,
+              serverId: 6,
+              method: "audio2video",
+              args,
+              mediaType: "video",
+              intent: "image_to_video",
+              label: "ltx_a2v",
+              onProgress,
+              onPendingCreation,
             });
-            props.onCreated(filed.projectCreationIds);
-            if (filed.groupId) {
-              props.onGroups({ videosGroupId: filed.groupId });
+            props.onCreated(result.projectCreationIds);
+            if (result.groupId) {
+              props.onGroups({ videosGroupId: result.groupId });
             }
             onProgress("Added to project.");
-            const [created] = await getCreations([id]);
+            const [created] = await getCreations([result.creationId]);
             const playUrl = creationPlayUrl(created) ?? undefined;
             return {
-              summary: `a2v ${id}`,
-              detail: `Vocals slice ${slice.inSec}–${slice.outSec}s\n${filed.message}`,
-              creationId: id,
+              summary: `a2v ${result.creationId}`,
+              detail: `Vocals slice ${slice.inSec}–${slice.outSec}s\nFiled into Videos group ${result.groupId ?? "—"}`,
+              creationId: result.creationId,
               playUrl,
               playMediaType: "video",
-              json: { slice, clip, started, done, filed },
+              json: { slice, clip, result },
             };
           })
         }
@@ -3055,53 +3029,39 @@ function FrameModule(
         contentType: "image/jpeg",
       });
       onProgress("Creating image from upload…");
-      const sdk = createAuthedSdk();
-      const started = await sdk.create({
-        serverId: 1,
-        method: "uploadImage",
-        creationToken: newCreationToken(),
-        args: {
-          image_url: uploaded.url,
-          aspect_ratio: props.aspectRatio,
-        },
-      });
-      onPendingCreation(String(started.id), "image");
-      onProgress(`Waiting for ${started.id}…`);
-      const done = await sdk.waitForCreation(started.id, {
-        onTick: (row) =>
-          onProgress(`Waiting for ${started.id} (${row.status || "…" }).`),
-      });
-      onPendingCreation(null, null);
-      if (String(done.status).toLowerCase() === "failed") {
-        throw new Error(`Frame upload failed (${done.id})`);
-      }
-      onProgress("Syncing to local Library…");
-      const id = await ingestRemoteCreation(done);
-      onProgress("Grouping into Images…");
-      const filed = await fileCreationIntoProjectGroup({
-        creationId: id,
-        mediaType: "image",
+      const result = await runLabParasceneGenerate({
         projectId: props.projectId,
         projectTitle: props.projectTitle,
         imagesGroupId: props.imagesGroupId,
         videosGroupId: props.videosGroupId,
+        serverId: 1,
+        method: "uploadImage",
+        args: {
+          image_url: uploaded.url,
+          aspect_ratio: props.aspectRatio,
+        },
+        mediaType: "image",
+        intent: "text_to_image",
+        label: "uploadImage",
+        onProgress,
+        onPendingCreation,
       });
-      props.onCreated(filed.projectCreationIds);
-      if (filed.groupId) {
-        props.onGroups({ imagesGroupId: filed.groupId });
+      props.onCreated(result.projectCreationIds);
+      if (result.groupId) {
+        props.onGroups({ imagesGroupId: result.groupId });
       }
       onProgress("Added to Images group.");
-      const rows = await getCreations([id]);
+      const rows = await getCreations([result.creationId]);
       const playUrl = rows[0]
         ? creationDetailUrl(rows[0]) ?? frame.mediaUrl
         : frame.mediaUrl;
       return {
-        summary: `Frame @ ${t.toFixed(2)}s → ${id}`,
-        detail: filed.message,
-        creationId: id,
+        summary: `Frame @ ${t.toFixed(2)}s → ${result.creationId}`,
+        detail: `Filed into Images group ${result.groupId ?? "—"}`,
+        creationId: result.creationId,
         playUrl,
         playMediaType: "image",
-        json: { frame, uploaded, started, done, filed },
+        json: { frame, uploaded, result },
       };
     });
   };
@@ -3311,54 +3271,40 @@ function MutateModule(
             const imageUrl = remoteMediaUrl(img);
             if (!imageUrl) throw new Error("No remote image URL");
             const mutateOf = Number(imageId);
-            const sdk = createAuthedSdk();
-            const started = await sdk.create({
+            const result = await runLabParasceneGenerate({
+              projectId: props.projectId,
+              projectTitle: props.projectTitle,
+              imagesGroupId: props.imagesGroupId,
+              videosGroupId: props.videosGroupId,
               serverId: 1,
               method: "replicate",
-              creationToken: newCreationToken(),
-              mutateOfId: Number.isFinite(mutateOf) ? mutateOf : undefined,
               args: {
                 prompt: prompt.trim(),
                 model: "xai/grok-imagine-image",
                 input_images: [imageUrl],
                 aspect_ratio: props.aspectRatio,
               },
-            });
-            onPendingCreation(String(started.id), "image");
-            onProgress(`Waiting for ${started.id}…`);
-            const done = await sdk.waitForCreation(started.id, {
-              onTick: (row) =>
-                onProgress(`Waiting for ${started.id} (${row.status || "…" }).`),
-            });
-            onPendingCreation(null, null);
-            if (String(done.status).toLowerCase() === "failed") {
-              throw new Error(`Mutate failed (${done.id})`);
-            }
-            onProgress("Syncing to local Library…");
-            const id = await ingestRemoteCreation(done);
-            onProgress("Grouping image…");
-            const filed = await fileCreationIntoProjectGroup({
-              creationId: id,
               mediaType: "image",
-              projectId: props.projectId,
-              projectTitle: props.projectTitle,
-              imagesGroupId: props.imagesGroupId,
-              videosGroupId: props.videosGroupId,
+              intent: "image_to_image",
+              mutateOfId: Number.isFinite(mutateOf) ? mutateOf : undefined,
+              label: "mutate",
+              onProgress,
+              onPendingCreation,
             });
-            props.onCreated(filed.projectCreationIds);
-            if (filed.groupId) {
-              props.onGroups({ imagesGroupId: filed.groupId });
+            props.onCreated(result.projectCreationIds);
+            if (result.groupId) {
+              props.onGroups({ imagesGroupId: result.groupId });
             }
             onProgress("Added to project.");
-            const [created] = await getCreations([id]);
+            const [created] = await getCreations([result.creationId]);
             const playUrl = creationPlayUrl(created) ?? undefined;
             return {
-              summary: `Mutated → ${id}`,
-              detail: filed.message,
-              creationId: id,
+              summary: `Mutated → ${result.creationId}`,
+              detail: `Filed into Images group ${result.groupId ?? "—"}`,
+              creationId: result.creationId,
               playUrl,
               playMediaType: "image",
-              json: { started, done },
+              json: { result },
             };
           })
         }

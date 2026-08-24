@@ -4,16 +4,19 @@ import {
   sliceAudioRange,
   uploadVocalsSliceClip,
 } from "../../lab/audioTools";
-import { runA2vGeneration } from "../../lab/a2vGeneration";
 import {
+  buildBlueT2vCreateArgs,
   LTX_T2V_MODEL,
-  runBlueT2vGeneration,
   WAN_T2V_MODEL,
 } from "../../lab/blueT2vGeneration";
-import { FLF2V_MODEL, runFlf2vGeneration } from "../../lab/flf2vGeneration";
-import { LTX_I2V_MODEL, runLtxI2vGeneration } from "../../lab/ltxI2vGeneration";
-import { createAuthedSdk } from "../../auth/session";
-import { ingestRemoteCreation, newCreationToken } from "../../lab/ingestCreation";
+import {
+  buildFlf2vCreateArgs,
+  FLF2V_MODEL,
+} from "../../lab/flf2vGeneration";
+import {
+  buildLtxI2vCreateArgs,
+  LTX_I2V_MODEL,
+} from "../../lab/ltxI2vGeneration";
 import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
 import { getCreations } from "../../library/catalogClient";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
@@ -24,6 +27,13 @@ import type {
   LyricAlignment,
   TimelineClip,
 } from "../../project/types";
+import {
+  invokeParasceneGenerate,
+  pendingCreationIdFromRun,
+  watchParasceneGenerate,
+} from "../../services/generateStill";
+import { runLabParasceneGenerate } from "../../services/labParasceneGenerate";
+import type { ServiceRun } from "../../services/types";
 import {
   ADD_ASSET_TIMELINE_DURATION_SEC,
   addAssetClipDurationSec,
@@ -269,48 +279,32 @@ async function uploadFramedStill(opts: {
     contentType: "image/jpeg",
   });
   opts.onProgress(`Creating ${opts.progressLabel} on Parascene…`);
-  const sdk = createAuthedSdk();
-  const startedStill = await sdk.create({
-    serverId: 1,
-    method: "uploadImage",
-    creationToken: newCreationToken(),
-    args: {
-      image_url: uploaded.url,
-      aspect_ratio: opts.aspectRatio,
-    },
-  });
-  opts.onProgress(`Waiting for ${opts.progressLabel} ${startedStill.id}…`);
-  const doneStill = await sdk.waitForCreation(startedStill.id, {
-    onTick: (row) =>
-      opts.onProgress(
-        `Waiting for ${opts.progressLabel} (${row.status || "…"})…`,
-      ),
-  });
-  if (String(doneStill.status).toLowerCase() === "failed") {
-    throw new Error(
-      `${opts.progressLabel} upload failed (${doneStill.id})`,
-    );
-  }
-  const stillCreationId = await ingestRemoteCreation(doneStill);
-  opts.onProgress(`Filing ${opts.progressLabel} into Images group…`);
-  const filedStill = await fileCreationIntoProjectGroup({
-    creationId: stillCreationId,
-    mediaType: "image",
+  const result = await runLabParasceneGenerate({
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     imagesGroupId: opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
+    serverId: 1,
+    method: "uploadImage",
+    args: {
+      image_url: uploaded.url,
+      aspect_ratio: opts.aspectRatio,
+    },
+    mediaType: "image",
+    intent: "text_to_image",
+    label: "uploadImage",
+    onProgress: opts.onProgress,
   });
-  const [stillRow] = await getCreations([stillCreationId]);
+  const [stillRow] = await getCreations([result.creationId]);
   const imageUrl = stillRow?.remoteUrl?.trim() || uploaded.url;
   if (!imageUrl) {
     throw new Error(`${opts.progressLabel} has no remote URL.`);
   }
   return {
     imageUrl,
-    creationId: stillCreationId,
-    groupId: filedStill.groupId,
-    projectCreationIds: filedStill.projectCreationIds,
+    creationId: result.creationId,
+    groupId: result.imagesGroupId,
+    projectCreationIds: result.projectCreationIds,
   };
 }
 
@@ -505,6 +499,8 @@ export type RunAddAssetGenerationOpts = {
     replicatePredictionId?: string;
     pendingCreationId?: string;
     blueJobId?: string;
+    /** Durable service_invoke job id (survives remount / restart). */
+    serviceJobId?: string;
     model?: string;
   }) => void;
 };
@@ -568,6 +564,13 @@ export async function runAddAssetGeneration(
           model: `${opts.replicate!.owner}/${opts.replicate!.name}`,
         });
       },
+      onServiceJobId: (jobId) => {
+        opts.onRemoteJob?.({
+          provider: "replicate",
+          serviceJobId: jobId,
+          model: `${opts.replicate!.owner}/${opts.replicate!.name}`,
+        });
+      },
     });
   }
   if (opts.blueDirect) {
@@ -593,6 +596,13 @@ export async function runAddAssetGeneration(
         opts.onRemoteJob?.({
           provider: "blue_direct",
           blueJobId: jobId,
+          model: opts.blueModel?.trim() || "blue",
+        });
+      },
+      onServiceJobId: (jobId) => {
+        opts.onRemoteJob?.({
+          provider: "blue_direct",
+          serviceJobId: jobId,
           model: opts.blueModel?.trim() || "blue",
         });
       },
@@ -662,6 +672,13 @@ async function runParasceneProductVideoIntent(
         });
       }
     },
+    onServiceJobId: (id) => {
+      opts.onRemoteJob?.({
+        provider: "parascene_blue",
+        serviceJobId: id,
+        model,
+      });
+    },
   });
   return {
     creationId: result.creationId,
@@ -672,6 +689,73 @@ async function runParasceneProductVideoIntent(
     endFrameCreationId: null,
     mode: "start_frame",
     model: result.model,
+  };
+}
+
+async function runParasceneVideoViaService(opts: {
+  projectId: string;
+  projectTitle: string;
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  placeholderId: string;
+  method: string;
+  args: Record<string, unknown>;
+  intent: string;
+  model: string;
+  onProgress: (note: string) => void;
+  onRemoteJob?: RunAddAssetGenerationOpts["onRemoteJob"];
+}): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+}> {
+  opts.onProgress(
+    opts.intent === "text_to_video"
+      ? "Starting text-to-video…"
+      : "Starting image-to-video…",
+  );
+  const handle = await invokeParasceneGenerate({
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+    serverId: 6,
+    method: opts.method,
+    args: opts.args,
+    intent: opts.intent,
+    mediaType: "video",
+    target: "timeline",
+    clientRequestId: opts.placeholderId,
+    label: opts.model,
+  });
+  if (handle.mode === "job") {
+    opts.onRemoteJob?.({
+      provider: "parascene_blue",
+      serviceJobId: handle.id,
+      model: opts.model,
+    });
+  }
+  const result = await watchParasceneGenerate(handle, {
+    onUpdate: (run: ServiceRun) => {
+      const note = run.progressNote?.trim();
+      if (note) opts.onProgress(note);
+      const pendingId = pendingCreationIdFromRun(run);
+      if (pendingId) {
+        opts.onRemoteJob?.({
+          provider: "parascene_blue",
+          pendingCreationId: pendingId,
+          serviceJobId: handle.mode === "job" ? handle.id : undefined,
+          model: opts.model,
+        });
+      }
+    },
+  });
+  return {
+    creationId: result.creationId,
+    projectCreationIds: result.projectCreationIds,
+    videosGroupId: result.videosGroupId ?? opts.videosGroupId,
+    imagesGroupId: result.imagesGroupId ?? opts.imagesGroupId,
   };
 }
 
@@ -711,40 +795,34 @@ async function runTextToVideoAddAssetGeneration(
       : LTX_T2V_MODEL;
 
   pushSteps(advanceStep(steps, "generate"));
-  const { creationId } = await runBlueT2vGeneration({
+  const args = buildBlueT2vCreateArgs({
     prompt: fullPrompt,
     aspectRatio: opts.aspectRatio,
     model,
     durationSeconds,
-    onProgress: opts.onProgress,
-    onPendingCreation: (id) => {
-      if (!id) return;
-      opts.onRemoteJob?.({
-        provider: "parascene_blue",
-        pendingCreationId: id,
-        model,
-      });
-    },
   });
-  pushSteps(completeStep(steps, "generate"));
-
-  pushSteps(advanceStep(steps, "file"));
-  opts.onProgress("Filing video into project…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId,
-    mediaType: "video",
+  const result = await runParasceneVideoViaService({
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     imagesGroupId: opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
+    placeholderId: opts.placeholder.id,
+    method: "text2video",
+    args,
+    intent: "text_to_video",
+    model,
+    onProgress: opts.onProgress,
+    onRemoteJob: opts.onRemoteJob,
   });
+  pushSteps(completeStep(steps, "generate"));
+  pushSteps(advanceStep(steps, "file"));
   pushSteps(completeStep(steps, "file"));
 
   return {
-    creationId,
-    projectCreationIds: filed.projectCreationIds,
-    videosGroupId: filed.groupId,
-    imagesGroupId: opts.imagesGroupId,
+    creationId: result.creationId,
+    projectCreationIds: result.projectCreationIds,
+    videosGroupId: result.videosGroupId,
+    imagesGroupId: result.imagesGroupId,
     startFrameCreationId: null,
     endFrameCreationId: null,
     mode: "none",
@@ -820,47 +898,41 @@ async function runFirstLastAddAssetGeneration(
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
 
   pushSteps(advanceStep(steps, "generate"));
-  const { creationId } = await runFlf2vGeneration({
+  const args = buildFlf2vCreateArgs({
     prompt: fullPrompt,
     aspectRatio: opts.aspectRatio,
     firstImageUrl: firstStill.imageUrl,
     lastImageUrl: lastStill.imageUrl,
     durationSeconds,
-    onProgress: opts.onProgress,
-    onPendingCreation: (id) => {
-      if (!id) return;
-      opts.onRemoteJob?.({
-        provider: "parascene_blue",
-        pendingCreationId: id,
-        model: FLF2V_MODEL,
-      });
-    },
   });
-  pushSteps(completeStep(steps, "generate"));
-
-  pushSteps(advanceStep(steps, "file"));
-  opts.onProgress("Filing video into project…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId,
-    mediaType: "video",
+  const result = await runParasceneVideoViaService({
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     imagesGroupId: lastStill.groupId ?? firstStill.groupId ?? opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
+    placeholderId: opts.placeholder.id,
+    method: "image2video",
+    args: args as unknown as Record<string, unknown>,
+    intent: "image_to_video",
+    model: FLF2V_MODEL,
+    onProgress: opts.onProgress,
+    onRemoteJob: opts.onRemoteJob,
   });
+  pushSteps(completeStep(steps, "generate"));
+  pushSteps(advanceStep(steps, "file"));
   pushSteps(completeStep(steps, "file"));
 
   return {
-    creationId,
+    creationId: result.creationId,
     projectCreationIds: [
       ...new Set([
         ...firstStill.projectCreationIds,
         ...lastStill.projectCreationIds,
-        ...filed.projectCreationIds,
+        ...result.projectCreationIds,
       ]),
     ],
-    videosGroupId: filed.groupId,
-    imagesGroupId: lastStill.groupId ?? firstStill.groupId,
+    videosGroupId: result.videosGroupId,
+    imagesGroupId: lastStill.groupId ?? firstStill.groupId ?? result.imagesGroupId,
     startFrameCreationId: firstStill.creationId,
     endFrameCreationId: lastStill.creationId,
     mode: "first_last",
@@ -978,74 +1050,87 @@ async function runStartFrameAddAssetGeneration(
   pushSteps(advanceStep(steps, "generate"));
   let creationId: string;
   let model: string;
-  const onPendingCreation = (id: string | null, nextModel: string) => {
-    if (!id) return;
-    opts.onRemoteJob?.({
-      provider: "parascene_blue",
-      pendingCreationId: id,
-      model: nextModel,
-    });
-  };
+  let filedProjectCreationIds: string[] = [];
+  let videosGroupId: string | null = opts.videosGroupId;
   if (audioMode === "none" || !audioClipId) {
-    if (useWan) {
-      const result = await runFlf2vGeneration({
-        prompt: fullPrompt,
-        aspectRatio: opts.aspectRatio,
-        firstImageUrl: imageUrl,
-        durationSeconds,
-        onProgress: opts.onProgress,
-        onPendingCreation: (id) => onPendingCreation(id, FLF2V_MODEL),
-      });
-      creationId = result.creationId;
-      model = FLF2V_MODEL;
-    } else {
-      const result = await runLtxI2vGeneration({
-        prompt: fullPrompt,
-        aspectRatio: opts.aspectRatio,
-        imageUrl,
-        durationSeconds,
-        onProgress: opts.onProgress,
-        onPendingCreation: (id) => onPendingCreation(id, LTX_I2V_MODEL),
-      });
-      creationId = result.creationId;
-      model = LTX_I2V_MODEL;
-    }
+    model = useWan ? FLF2V_MODEL : LTX_I2V_MODEL;
+    const args = useWan
+      ? (buildFlf2vCreateArgs({
+          prompt: fullPrompt,
+          aspectRatio: opts.aspectRatio,
+          firstImageUrl: imageUrl,
+          durationSeconds,
+        }) as unknown as Record<string, unknown>)
+      : (buildLtxI2vCreateArgs({
+          prompt: fullPrompt,
+          aspectRatio: opts.aspectRatio,
+          imageUrl,
+          durationSeconds,
+        }) as unknown as Record<string, unknown>);
+    const result = await runParasceneVideoViaService({
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: imagesGroupId ?? opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+      placeholderId: opts.placeholder.id,
+      method: "image2video",
+      args,
+      intent: "image_to_video",
+      model,
+      onProgress: opts.onProgress,
+      onRemoteJob: opts.onRemoteJob,
+    });
+    creationId = result.creationId;
+    filedProjectCreationIds = result.projectCreationIds;
+    videosGroupId = result.videosGroupId;
+    imagesGroupId = result.imagesGroupId ?? imagesGroupId;
   } else {
     if (useWan) {
       throw new Error("WAN has no audio processing — choose Source audio None.");
     }
-    const result = await runA2vGeneration({
-      prompt: fullPrompt,
-      aspectRatio: opts.aspectRatio,
-      imageUrl,
-      audioClipId,
-      durationSeconds,
+    model = "ltx_a2v";
+    const args: Record<string, unknown> = {
+      prompt: fullPrompt.trim(),
+      model,
+      aspect_ratio: opts.aspectRatio,
+      input_images: [imageUrl],
+      audio_clip_id: Number(audioClipId),
+    };
+    if (
+      typeof durationSeconds === "number" &&
+      Number.isFinite(durationSeconds) &&
+      durationSeconds > 0
+    ) {
+      args.duration_seconds = durationSeconds;
+    }
+    const result = await runParasceneVideoViaService({
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: imagesGroupId ?? opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+      placeholderId: opts.placeholder.id,
+      method: "audio2video",
+      args,
+      intent: "image_to_video",
+      model,
       onProgress: opts.onProgress,
-      onPendingCreation: (id) => onPendingCreation(id, "ltx_a2v"),
+      onRemoteJob: opts.onRemoteJob,
     });
     creationId = result.creationId;
-    model = "ltx_a2v";
+    filedProjectCreationIds = result.projectCreationIds;
+    videosGroupId = result.videosGroupId;
+    imagesGroupId = result.imagesGroupId ?? imagesGroupId;
   }
   pushSteps(completeStep(steps, "generate"));
-
   pushSteps(advanceStep(steps, "file"));
-  opts.onProgress("Filing video into project…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId,
-    mediaType: "video",
-    projectId: opts.projectId,
-    projectTitle: opts.projectTitle,
-    imagesGroupId: imagesGroupId ?? opts.imagesGroupId,
-    videosGroupId: opts.videosGroupId,
-  });
   pushSteps(completeStep(steps, "file"));
 
   return {
     creationId,
     projectCreationIds: [
-      ...new Set([...stillProjectCreationIds, ...filed.projectCreationIds]),
+      ...new Set([...stillProjectCreationIds, ...filedProjectCreationIds]),
     ],
-    videosGroupId: filed.groupId,
+    videosGroupId,
     imagesGroupId,
     startFrameCreationId: startStill.creationId,
     endFrameCreationId: null,

@@ -14,6 +14,13 @@ use super::parascene_api::{
     cover_source_id, create_media, creation_id, creation_status, delete_creation, get_creation,
     group_creations, group_member_ids, media_url, CreateOpts,
 };
+use super::cloud_repair::run_cloud_repair;
+use super::merge::{run_merge, MergeTimelineClipInput};
+use super::project_assets::import_local_paths_for_project;
+use super::render::{await_timeline_render, RenderTimelineClipInput};
+use super::sync_full::run_sync_full;
+use super::sync_newest::run_sync_newest;
+use super::looks::RenderLooks;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -1618,6 +1625,484 @@ async fn run_delete_creation(_app: &AppHandle, job: &Job) -> Result<Value, Strin
     Ok(json!({ "deletedId": id }))
 }
 
+fn local_files_map(payload: &Value) -> Option<std::collections::HashMap<String, Value>> {
+    let raw = payload.get("localFiles")?;
+    let obj = raw.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+    Some(
+        obj.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
+}
+
+fn generate_target(payload: &Value) -> String {
+    payload_str(payload, "target").unwrap_or_else(|| "assets".into())
+}
+
+fn first_local_output_path(local_paths: &[String]) -> Option<String> {
+    local_paths
+        .iter()
+        .find_map(|p| {
+            let t = p.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        })
+}
+
+async fn maybe_import_local_generate_output(
+    app: &AppHandle,
+    job: &Job,
+    payload: &Value,
+    local_paths: &[String],
+) -> Result<Option<String>, String> {
+    let target = generate_target(payload);
+    if target != "assets" && target != "timeline" {
+        return Ok(None);
+    }
+    let project_id = job
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(project_id) = project_id else {
+        return Ok(None);
+    };
+    let Some(path) = first_local_output_path(local_paths) else {
+        return Ok(None);
+    };
+    throw_if_cancelled(&job.id)?;
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some("Importing into Assets…"),
+        Some(&json!({ "name": "ingest" })),
+        None,
+        None,
+    );
+    let imported = import_local_paths_for_project(app, project_id, vec![path])?;
+    Ok(imported
+        .creations
+        .first()
+        .map(|c| c.id.clone())
+        .filter(|id| !id.trim().is_empty()))
+}
+
+async fn finish_local_generate_job(
+    app: &AppHandle,
+    job: &Job,
+    payload: &Value,
+    mut value: Value,
+) -> Result<Value, String> {
+    let local_paths: Vec<String> = value
+        .get("localPaths")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(creation_id) =
+        maybe_import_local_generate_output(app, job, payload, &local_paths).await?
+    {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("creationId".into(), json!(creation_id));
+        }
+    }
+    Ok(value)
+}
+
+async fn run_blue_generate(app: &AppHandle, job: &Job) -> Result<Value, String> {
+    throw_if_cancelled(&job.id)?;
+    let payload: Value =
+        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
+    let method =
+        payload_str(&payload, "method").ok_or_else(|| "blue_generate requires method")?;
+    let args = payload
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let files = local_files_map(&payload);
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some("Blue generate…"),
+        Some(&json!({ "name": "create", "method": method })),
+        None,
+        None,
+    );
+    let result = crate::blue::run::run_method(app.clone(), method, args, files).await;
+    throw_if_cancelled(&job.id)?;
+    let result = result?;
+    let value = serde_json::to_value(result).map_err(|e| format!("blue result serialize: {e}"))?;
+    finish_local_generate_job(app, job, &payload, value).await
+}
+
+async fn run_replicate_generate(app: &AppHandle, job: &Job) -> Result<Value, String> {
+    throw_if_cancelled(&job.id)?;
+    let payload: Value =
+        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
+    let owner =
+        payload_str(&payload, "owner").ok_or_else(|| "replicate_generate requires owner")?;
+    let name = payload_str(&payload, "name").ok_or_else(|| "replicate_generate requires name")?;
+    let input = payload
+        .get("input")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let files = local_files_map(&payload).unwrap_or_default();
+    let required_file_fields: Vec<String> = payload
+        .get("requiredFileFields")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some(&format!("Replicate {owner}/{name}…")),
+        Some(&json!({ "name": "create", "owner": owner, "model": name })),
+        None,
+        None,
+    );
+    let result = crate::replicate::predict::run_prediction(
+        app.clone(),
+        owner,
+        name,
+        input,
+        files,
+        required_file_fields,
+    )
+    .await;
+    throw_if_cancelled(&job.id)?;
+    let result = result?;
+    let value =
+        serde_json::to_value(result).map_err(|e| format!("replicate result serialize: {e}"))?;
+    finish_local_generate_job(app, job, &payload, value).await
+}
+
+fn creation_failure_message(row: &Value, label: &str) -> String {
+    let id = creation_id(row).unwrap_or_else(|| "?".into());
+    let meta = row.get("meta");
+    let mut parts: Vec<String> = Vec::new();
+    if row
+        .get("is_moderated_error")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        parts.push("Blocked by content moderation".into());
+    }
+    if let Some(err) = meta
+        .and_then(|m| m.get("error"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(err.to_string());
+    } else if let Some(desc) = row
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(desc.to_string());
+    }
+    if let Some(code) = meta
+        .and_then(|m| m.get("error_code"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !parts.iter().any(|p| p == code) {
+            parts.push(code.to_string());
+        }
+    }
+    if parts.is_empty() {
+        format!("{label} failed ({id})")
+    } else {
+        format!("{label} failed ({id}): {}", parts.join(" — "))
+    }
+}
+
+/// Cabinet kind for `parascene_generate` filing (`images` | `videos`).
+fn parascene_generate_cabinet_kind(payload: &Value) -> &'static str {
+    if let Some(mt) = payload_str(payload, "mediaType") {
+        let lower = mt.to_ascii_lowercase();
+        if lower == "video" {
+            return "videos";
+        }
+        if lower == "image" {
+            return "images";
+        }
+    }
+    if let Some(intent) = payload_str(payload, "intent") {
+        let lower = intent.to_ascii_lowercase();
+        if lower.contains("video") {
+            return "videos";
+        }
+    }
+    if let Some(method) = payload_str(payload, "method") {
+        let lower = method.to_ascii_lowercase();
+        if lower.contains("video") {
+            return "videos";
+        }
+    }
+    "images"
+}
+
+async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, String> {
+    throw_if_cancelled(&job.id)?;
+    let payload: Value =
+        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
+    let server_id = payload
+        .get("serverId")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "parascene_generate requires serverId".to_string())?;
+    let method =
+        payload_str(&payload, "method").ok_or_else(|| "parascene_generate requires method")?;
+    let args = payload.get("args").cloned().unwrap_or_else(|| json!({}));
+    let project_title = payload_str(&payload, "projectTitle").unwrap_or_else(|| "Project".into());
+    let project_id = job
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let images_group_id = payload_str(&payload, "imagesGroupId");
+    let videos_group_id = payload_str(&payload, "videosGroupId");
+    let cabinet = parascene_generate_cabinet_kind(&payload);
+    let existing_group_id = if cabinet == "videos" {
+        videos_group_id.as_deref()
+    } else {
+        images_group_id.as_deref()
+    };
+    let noun = if cabinet == "videos" { "video" } else { "image" };
+    let cabinet_label = if cabinet == "videos" {
+        "Videos"
+    } else {
+        "Images"
+    };
+    let target = payload_str(&payload, "target").unwrap_or_else(|| "assets".into());
+    if target != "assets" && target != "timeline" {
+        return Err(format!("parascene_generate target={target} is not supported"));
+    }
+    let token = payload_str(&payload, "creationToken").unwrap_or_else(new_creation_token);
+    let timeout_ms = payload
+        .get("timeoutMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20 * 60_000);
+
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some(&format!("Starting {noun} generation on Parascene…")),
+        Some(&json!({ "name": "create", "method": method })),
+        None,
+        None,
+    );
+
+    let started = create_media(CreateOpts {
+        server_id,
+        method: method.clone(),
+        args,
+        creation_token: token,
+        mutate_of_id: payload.get("mutateOfId").and_then(|v| v.as_i64()),
+        group_id: payload.get("groupId").and_then(|v| v.as_i64()),
+    })
+    .await?;
+    let id = creation_id(&started).ok_or_else(|| "create missing id".to_string())?;
+    let checkpoint = json!({
+        "name": "wait",
+        "pendingCreationId": id,
+        "creationId": id,
+    });
+    patch_job(
+        app,
+        &job.id,
+        Some("waiting"),
+        Some(&format!("Waiting for {id}…")),
+        Some(&checkpoint),
+        None,
+        None,
+    )?;
+
+    let job_id = job.id.clone();
+    let done = wait_creation_loop(app, &job_id, &id, timeout_ms, |row| {
+        let status = creation_status(row);
+        let note = format!("Waiting for {id} ({status})");
+        let cp = json!({
+            "name": "wait",
+            "pendingCreationId": id,
+            "creationId": id,
+        });
+        let _ = with_conn(|conn| {
+            update_job_fields(
+                conn,
+                &job_id,
+                Some("waiting"),
+                Some(&note),
+                Some(&serde_json::to_string(&cp).unwrap_or_else(|_| "{}".into())),
+                None,
+                None,
+            )
+        });
+        let _ = load_and_emit(app, &job_id);
+        Ok(())
+    })
+    .await?;
+    throw_if_cancelled(&job.id)?;
+    if creation_status(&done) == "failed" {
+        let fail_label = if cabinet == "videos" {
+            "Video generation"
+        } else {
+            "Image generation"
+        };
+        return Err(creation_failure_message(&done, fail_label));
+    }
+
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some(&format!("Filing into {cabinet_label} group…")),
+        Some(&json!({
+            "name": "ingest",
+            "pendingCreationId": id,
+            "creationId": id,
+        })),
+        None,
+        None,
+    );
+
+    let group_id = group_members(
+        app,
+        &project_title,
+        project_id,
+        cabinet,
+        existing_group_id,
+        &[id.clone()],
+    )
+    .await?;
+
+    let mut out = json!({
+        "creationId": id,
+        "projectCreationIds": [group_id],
+        "status": creation_status(&done),
+        "target": target,
+        "mediaType": if cabinet == "videos" { "video" } else { "image" },
+    });
+    if let Some(obj) = out.as_object_mut() {
+        if cabinet == "videos" {
+            obj.insert("videosGroupId".into(), json!(group_id));
+            if let Some(images) = images_group_id {
+                obj.insert("imagesGroupId".into(), json!(images));
+            }
+        } else {
+            obj.insert("imagesGroupId".into(), json!(group_id));
+            if let Some(videos) = videos_group_id {
+                obj.insert("videosGroupId".into(), json!(videos));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+async fn run_merge_job(app: &AppHandle, job: &Job) -> Result<Value, String> {
+    throw_if_cancelled(&job.id)?;
+    let payload: Value =
+        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
+    let clips_value = payload
+        .get("clips")
+        .cloned()
+        .ok_or_else(|| "merge requires clips".to_string())?;
+    let clips: Vec<MergeTimelineClipInput> = serde_json::from_value(clips_value)
+        .map_err(|e| format!("merge clips invalid: {e}"))?;
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some("Merging clips…"),
+        Some(&json!({ "name": "merge" })),
+        None,
+        None,
+    );
+    let app_for_block = app.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || run_merge(&app_for_block, clips))
+            .await
+            .map_err(|e| format!("Merge task failed: {e}"))?;
+    throw_if_cancelled(&job.id)?;
+    match result {
+        Ok(creation) => Ok(json!({
+            "creationId": creation.id,
+            "creation": creation,
+        })),
+        Err(err) => Err(err),
+    }
+}
+
+async fn run_publisher_render_job(app: &AppHandle, job: &Job) -> Result<Value, String> {
+    throw_if_cancelled(&job.id)?;
+    let payload: Value =
+        serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
+    let project_id = job
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| payload.get("projectId").and_then(|v| v.as_str()))
+        .ok_or_else(|| "publisher_render requires projectId".to_string())?
+        .to_string();
+    let aspect_ratio = payload
+        .get("aspectRatio")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "publisher_render requires aspectRatio".to_string())?
+        .to_string();
+    let clips: Vec<RenderTimelineClipInput> = serde_json::from_value(
+        payload
+            .get("clips")
+            .cloned()
+            .ok_or_else(|| "publisher_render requires clips".to_string())?,
+    )
+    .map_err(|e| format!("publisher_render clips invalid: {e}"))?;
+    let looks: RenderLooks = payload
+        .get("looks")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("publisher_render looks invalid: {e}"))?
+        .unwrap_or_default();
+
+    let _ = patch_job(
+        app,
+        &job.id,
+        Some("running"),
+        Some("Preparing render…"),
+        Some(&json!({ "name": "publisher_render", "projectId": project_id })),
+        None,
+        None,
+    );
+
+    let render = await_timeline_render(app, project_id, aspect_ratio, clips, looks).await?;
+    Ok(json!({ "render": render }))
+}
+
 async fn run_job(app: &AppHandle, job: Job) {
     let id = job.id.clone();
     clear_cancel_request(&id);
@@ -1634,6 +2119,71 @@ async fn run_job(app: &AppHandle, job: Job) {
         "wait_creation" => run_wait_creation(app, &job).await,
         "group_creations" => run_group_creations(app, &job).await,
         "delete_creation" => run_delete_creation(app, &job).await,
+        "blue_generate" => run_blue_generate(app, &job).await,
+        "replicate_generate" => run_replicate_generate(app, &job).await,
+        "parascene_generate" => run_parascene_generate(app, &job).await,
+        "sync_newest" => {
+            let job_id = job.id.clone();
+            run_sync_newest(
+                app,
+                |msg| {
+                    patch_job(
+                        app,
+                        &job_id,
+                        Some("running"),
+                        Some(msg),
+                        Some(&json!({ "name": "sync_newest" })),
+                        None,
+                        None,
+                    )
+                    .map(|_| ())
+                },
+                || throw_if_cancelled(&job_id),
+            )
+            .await
+        }
+        "sync_full" => {
+            let job_id = job.id.clone();
+            run_sync_full(
+                app,
+                |msg| {
+                    patch_job(
+                        app,
+                        &job_id,
+                        Some("running"),
+                        Some(msg),
+                        Some(&json!({ "name": "sync_full" })),
+                        None,
+                        None,
+                    )
+                    .map(|_| ())
+                },
+                || throw_if_cancelled(&job_id),
+            )
+            .await
+        }
+        "merge" => run_merge_job(app, &job).await,
+        "publisher_render" => run_publisher_render_job(app, &job).await,
+        "cloud_repair" => {
+            let job_id = job.id.clone();
+            run_cloud_repair(
+                app,
+                |msg| {
+                    patch_job(
+                        app,
+                        &job_id,
+                        Some("running"),
+                        Some(msg),
+                        Some(&json!({ "name": "cloud_repair" })),
+                        None,
+                        None,
+                    )
+                    .map(|_| ())
+                },
+                || throw_if_cancelled(&job_id),
+            )
+            .await
+        }
         other => Err(format!("unknown job kind: {other}")),
     };
 
@@ -1757,6 +2307,14 @@ pub fn jobs_enqueue(app: AppHandle, request: EnqueueJobRequest) -> Result<Job, S
         "wait_creation",
         "group_creations",
         "delete_creation",
+        "blue_generate",
+        "replicate_generate",
+        "parascene_generate",
+        "sync_newest",
+        "sync_full",
+        "merge",
+        "publisher_render",
+        "cloud_repair",
     ];
     if !known.contains(&kind.as_str()) {
         return Err(format!("unknown job kind: {kind}"));
@@ -1856,7 +2414,7 @@ pub fn jobs_list(
 #[tauri::command]
 pub fn jobs_cancel(app: AppHandle, id: String) -> Result<Job, String> {
     mark_cancel_request(&id);
-    with_conn(|conn| {
+    let job = with_conn(|conn| {
         let job = get_job_conn(conn, &id)?.ok_or_else(|| format!("job {id} not found"))?;
         if matches!(job.status.as_str(), "done" | "failed" | "cancelled") {
             return Ok(job);
@@ -1874,11 +2432,17 @@ pub fn jobs_cancel(app: AppHandle, id: String) -> Result<Job, String> {
             )?;
         }
         get_job_conn(conn, &id)?.ok_or_else(|| format!("job {id} not found"))
-    })
-    .map(|job| {
-        emit_job(&app, &job);
-        // Kick worker so a waiting job notices cancel via flag; also drains queue.
-        start_jobs_worker(app);
-        job
-    })
+    })?;
+
+    // Provider runs use their own cancel flags; nudge them when a job is active.
+    match job.kind.as_str() {
+        "blue_generate" => crate::blue::run::request_cancel(),
+        "replicate_generate" => crate::replicate::predict::request_cancel_run(),
+        _ => {}
+    }
+
+    emit_job(&app, &job);
+    // Kick worker so a waiting job notices cancel via flag; also drains queue.
+    start_jobs_worker(app);
+    Ok(job)
 }

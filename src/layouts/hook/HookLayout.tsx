@@ -282,8 +282,8 @@ export function HookLayout() {
           (render) => render.id === event.payload.renderId,
         );
         if (index < 0) {
-          // Progress can arrive before the pending row is inserted; ignore —
-          // the next tick after setRenders(created) will catch up via refresh.
+          // Pending row may exist in the manifest before this list has it.
+          void refreshRenders();
           return current;
         }
         return current.map((render, i) =>

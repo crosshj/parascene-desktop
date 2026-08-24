@@ -6,9 +6,12 @@
 import {
   blueJobDownload,
   blueJobWait,
-  blueMethodRun,
   listenBlueRunProgress,
 } from "../../blue/blueClient";
+import {
+  invokeBlueGenerateStill,
+  watchLocalGenerateStill,
+} from "../../services/generateStill";
 import { getCreations } from "../../library/catalogClient";
 import { isolateVocalsRange, sliceAudioRange } from "../../lab/audioTools";
 import { buildBlueT2vCreateArgs } from "../../lab/blueT2vGeneration";
@@ -137,6 +140,8 @@ export type RunBlueDirectAddAssetGenerationOpts = {
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
   onBlueJobId?: (jobId: string) => void;
+  /** Durable service_invoke job id for remount / restart resume. */
+  onServiceJobId?: (jobId: string) => void;
 };
 
 async function importBlueOutput(opts: {
@@ -258,6 +263,65 @@ export async function runBlueDirectAddAssetGeneration(
       durationSeconds,
     }) as unknown as Record<string, unknown>;
     args.model = model;
+
+    pushSteps(advanceStep(steps, "generate"));
+    opts.onProgress("Running on Direct to Blue…");
+    void recordUiOpTrace({
+      type: "blue_direct_generate",
+      reason: `${method}/${model}`,
+    });
+
+    let unlistenT2v: (() => void) | undefined;
+    try {
+      unlistenT2v = await listenBlueRunProgress((ev) => {
+        const note = ev.message?.trim() || ev.status?.trim();
+        if (note) opts.onProgress(note);
+        const jobId = ev.predictionId?.trim();
+        if (jobId) opts.onBlueJobId?.(jobId);
+      });
+    } catch {
+      /* progress optional */
+    }
+
+    try {
+      const handle = await invokeBlueGenerateStill({
+        method,
+        args,
+        projectId: opts.projectId,
+        target: "timeline",
+        clientRequestId: opts.placeholder.id,
+        label: model,
+      });
+      if (handle.mode === "job") {
+        opts.onServiceJobId?.(handle.id);
+      }
+      const result = await watchLocalGenerateStill(handle, {
+        onUpdate: (run) => {
+          const note = run.progressNote?.trim();
+          if (note) opts.onProgress(note);
+        },
+      });
+      unlistenT2v?.();
+      if (result.predictionId?.trim()) {
+        opts.onBlueJobId?.(result.predictionId.trim());
+      }
+      pushSteps(completeStep(steps, "generate"));
+      pushSteps(advanceStep(steps, "file"));
+      pushSteps(completeStep(steps, "file"));
+      return {
+        creationId: result.creationId,
+        projectCreationIds: [result.creationId],
+        videosGroupId: null,
+        imagesGroupId: opts.imagesGroupId,
+        startFrameCreationId: null,
+        endFrameCreationId: null,
+        mode: continuity,
+        model,
+      };
+    } catch (err) {
+      unlistenT2v?.();
+      throw err;
+    }
   } else if (continuity === "first_last") {
     pushSteps(advanceStep(steps, "still"));
     const firstPath = requireLocalFrame(opts.startFrame, "First frame");
@@ -383,51 +447,57 @@ export async function runBlueDirectAddAssetGeneration(
 
   let result;
   try {
-    result = await blueMethodRun(method, args, localFiles);
+    const handle = await invokeBlueGenerateStill({
+      method,
+      args,
+      localFiles,
+      projectId: opts.projectId,
+      target: "timeline",
+      clientRequestId: opts.placeholder.id,
+      label: model,
+    });
+    if (handle.mode === "job") {
+      opts.onServiceJobId?.(handle.id);
+    }
+    result = await watchLocalGenerateStill(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (note) opts.onProgress(note);
+      },
+    });
   } catch (err) {
     unlisten?.();
     throw err;
   }
   unlisten?.();
 
-  const jobId =
-    result.predictionId?.trim() ||
-    (result as { jobId?: string }).jobId?.trim() ||
-    "";
-  if (jobId) opts.onBlueJobId?.(jobId);
-
-  const outputPath = result.localPaths?.[0]?.trim();
-  if (!outputPath) {
+  if (result.predictionId?.trim()) {
+    opts.onBlueJobId?.(result.predictionId.trim());
+  }
+  if (!result.creationId?.trim()) {
+    const jobId = result.predictionId?.trim() || "";
     if (jobId) {
       throw new BlueDirectPendingDownloadError(
-        "Blue finished but no local output file was downloaded.",
+        "Blue finished but no creation was imported.",
         jobId,
       );
     }
-    throw new Error("Blue finished but no local output file was downloaded.");
+    throw new Error("Blue finished but no creation was imported.");
   }
 
   pushSteps(completeStep(steps, "generate"));
-  try {
-    return await importBlueOutput({
-      outputPath,
-      projectId: opts.projectId,
-      imagesGroupId: opts.imagesGroupId,
-      onSteps: opts.onSteps,
-      onProgress: opts.onProgress,
-      steps,
-      continuity,
-      modelId: model,
-    });
-  } catch (err) {
-    if (jobId) {
-      throw new BlueDirectPendingDownloadError(
-        err instanceof Error ? err.message : String(err),
-        jobId,
-      );
-    }
-    throw err;
-  }
+  pushSteps(advanceStep(steps, "file"));
+  pushSteps(completeStep(steps, "file"));
+  return {
+    creationId: result.creationId,
+    projectCreationIds: [result.creationId],
+    videosGroupId: null,
+    imagesGroupId: opts.imagesGroupId,
+    startFrameCreationId: null,
+    endFrameCreationId: null,
+    mode: continuity,
+    model,
+  };
 }
 
 export async function resumeBlueDirectAddAssetWait(opts: {
@@ -474,6 +544,52 @@ export async function resumeBlueDirectAddAssetWait(opts: {
     continuity: opts.continuityMode,
     modelId: opts.model,
   });
+}
+
+/** Resume a Blue Direct generate that was started via service_invoke. */
+export async function resumeBlueDirectServiceJob(opts: {
+  serviceJobId: string;
+  projectId: string;
+  imagesGroupId: string | null;
+  continuityMode: AddAssetContinuityMode;
+  model: string;
+  onSteps: (steps: AddAssetGenerationStep[]) => void;
+  onProgress: (note: string) => void;
+}): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: AddAssetContinuityMode;
+  model: string;
+}> {
+  let steps = initialBlueDirectGenerationSteps(opts.continuityMode, "none");
+  const pushSteps = (next: AddAssetGenerationStep[]) => {
+    steps = next;
+    opts.onSteps(steps);
+  };
+  pushSteps(advanceStep(steps, "generate"));
+  opts.onProgress(`Resuming service job ${opts.serviceJobId}…`);
+  const result = await watchLocalGenerateStill(
+    { mode: "job", id: opts.serviceJobId },
+    {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (note) opts.onProgress(note);
+      },
+    },
+  );
+  pushSteps(completeStep(steps, "generate"));
+  pushSteps(advanceStep(steps, "file"));
+  pushSteps(completeStep(steps, "file"));
+  return {
+    creationId: result.creationId,
+    projectCreationIds: [result.creationId],
+    videosGroupId: null,
+    imagesGroupId: opts.imagesGroupId,
+    mode: opts.continuityMode,
+    model: opts.model,
+  };
 }
 
 export async function resumeBlueDirectAddAssetDownload(opts: {
@@ -542,19 +658,31 @@ export async function runBlueDirectTextToImage(opts: {
     throw new Error("Choose a Blue text-to-image model.");
   }
   args.model = model;
-  const result = await blueMethodRun("text2image", args);
-  const outputPath = result.localPaths?.[0]?.trim();
+  const unlisten = await listenBlueRunProgress((ev) => {
+    if (ev.message?.trim()) opts.onProgress?.(ev.message.trim());
+    else if (ev.status) opts.onProgress?.(`Blue: ${ev.status}`);
+  });
+  let result;
+  try {
+    const handle = await invokeBlueGenerateStill({
+      method: "text2image",
+      args,
+      projectId: opts.projectId,
+      target: "assets",
+      label: model,
+    });
+    result = await watchLocalGenerateStill(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (note) opts.onProgress?.(note);
+      },
+    });
+  } finally {
+    unlisten();
+  }
+  const outputPath = result.localPaths[0]?.trim();
   if (!outputPath) {
     throw new Error("Blue text-to-image finished but no local file was downloaded.");
   }
-  opts.onProgress?.("Importing image into library (local-only)…");
-  const imported = await importLocalPathsForProject({
-    paths: [outputPath],
-    projectId: opts.projectId,
-  });
-  const created = imported.creations[0];
-  if (!created?.id) {
-    throw new Error("Import produced no Library creation from Blue image output.");
-  }
-  return { creationId: created.id };
+  return { creationId: result.creationId };
 }

@@ -27,11 +27,13 @@ import {
   initialReplicateGenerationSteps,
   ReplicatePendingDownloadError,
   resumeReplicateAddAssetDownload,
+  resumeReplicateServiceJob,
 } from "./addAssetReplicateGenerate";
 import {
   BlueDirectPendingDownloadError,
   initialBlueDirectGenerationSteps,
   resumeBlueDirectAddAssetWait,
+  resumeBlueDirectServiceJob,
 } from "./addAssetBlueDirectGenerate";
 import { addAssetClipDurationSec } from "./stagedClip";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
@@ -166,7 +168,10 @@ function remoteJobKey(job: {
   replicatePredictionId?: string | null;
   pendingCreationId?: string | null;
   blueJobId?: string | null;
+  serviceJobId?: string | null;
 }): string | null {
+  const service = job.serviceJobId?.trim();
+  if (service) return `service:${service}`;
   const blue = job.blueJobId?.trim();
   if (blue) return `blue:${blue}`;
   const pred = job.replicatePredictionId?.trim();
@@ -180,6 +185,7 @@ function markRemoteJobConsumed(job: {
   replicatePredictionId?: string | null;
   pendingCreationId?: string | null;
   blueJobId?: string | null;
+  serviceJobId?: string | null;
 }): void {
   const key = remoteJobKey(job);
   if (key) consumedRemoteJobs.add(key);
@@ -189,6 +195,7 @@ function isRemoteJobConsumed(job: {
   replicatePredictionId?: string | null;
   pendingCreationId?: string | null;
   blueJobId?: string | null;
+  serviceJobId?: string | null;
 }): boolean {
   const key = remoteJobKey(job);
   return Boolean(key && consumedRemoteJobs.has(key));
@@ -386,6 +393,7 @@ export function startAddAssetGenerationJob(
     replicatePredictionId?: string;
     pendingCreationId?: string;
     blueJobId?: string;
+    serviceJobId?: string;
   } = {};
   // applyInFlight clears lastError / stale prediction ids — avoid racing clearFailure.
   persistInFlight(projectId, clipId, {
@@ -418,6 +426,7 @@ export function startAddAssetGenerationJob(
         replicatePredictionId: remote.replicatePredictionId,
         pendingCreationId: remote.pendingCreationId,
         blueJobId: remote.blueJobId,
+        serviceJobId: remote.serviceJobId ?? activeRemote.serviceJobId,
       };
       persistInFlight(projectId, clipId, {
         status: "waiting",
@@ -426,6 +435,7 @@ export function startAddAssetGenerationJob(
         replicatePredictionId: remote.replicatePredictionId,
         pendingCreationId: remote.pendingCreationId,
         blueJobId: remote.blueJobId,
+        serviceJobId: activeRemote.serviceJobId,
         model: remote.model ?? modelHint,
       });
     },
@@ -668,6 +678,7 @@ export function reconcileAddAssetGenerations(
           c.clip.addAssetDraft?.replicatePredictionId,
         pendingCreationId: c.job.pendingCreationId,
         blueJobId: c.job.blueJobId ?? c.clip.addAssetDraft?.blueJobId,
+        serviceJobId: c.job.serviceJobId,
       }),
   );
   if (candidates.length === 0) return false;
@@ -676,6 +687,7 @@ export function reconcileAddAssetGenerations(
   const withRemote =
     candidates.find(
       (c) =>
+        Boolean(c.job.serviceJobId?.trim()) ||
         Boolean(c.job.replicatePredictionId?.trim()) ||
         Boolean(c.job.pendingCreationId?.trim()) ||
         Boolean(c.job.blueJobId?.trim()),
@@ -697,12 +709,14 @@ export function reconcileAddAssetGenerations(
   const pendingCreationId = job.pendingCreationId?.trim() || "";
   const blueJobId =
     job.blueJobId?.trim() || draft?.blueJobId?.trim() || "";
+  const serviceJobId = job.serviceJobId?.trim() || "";
 
   if (
     job.status === "starting" &&
     !predictionId &&
     !pendingCreationId &&
-    !blueJobId
+    !blueJobId &&
+    !serviceJobId
   ) {
     resumeAttempted.add(clipId);
     applyJobFailure(
@@ -735,7 +749,46 @@ export function reconcileAddAssetGenerations(
   });
 
   const run =
-    job.provider === "replicate" && predictionId
+    serviceJobId
+      ? job.provider === "parascene_blue"
+        ? resumeParasceneAddAssetGeneration({
+            serviceJobId,
+            pendingCreationId: pendingCreationId || undefined,
+            projectId: opts.projectId,
+            projectTitle: opts.projectTitle,
+            imagesGroupId: opts.imagesGroupId,
+            videosGroupId: opts.videosGroupId,
+            continuityMode,
+            model: job.model?.trim() || "parascene_blue",
+            onSteps: (steps) => patchSession(clipId, { steps }),
+            onProgress: (progressNote) =>
+              patchSession(clipId, { progressNote }),
+          })
+        : job.provider === "blue_direct"
+          ? resumeBlueDirectServiceJob({
+              serviceJobId,
+              projectId: opts.projectId,
+              imagesGroupId: opts.imagesGroupId,
+              continuityMode,
+              model: job.model?.trim() || "blue_direct",
+              onSteps: (steps) => patchSession(clipId, { steps }),
+              onProgress: (progressNote) =>
+                patchSession(clipId, { progressNote }),
+            })
+          : resumeReplicateServiceJob({
+              serviceJobId,
+              projectId: opts.projectId,
+              imagesGroupId: opts.imagesGroupId,
+              continuityMode: continuityMode as ReplicateVideoContinuity,
+              modelId:
+                job.model?.trim() ||
+                draft?.replicateModel?.trim() ||
+                "replicate",
+              onSteps: (steps) => patchSession(clipId, { steps }),
+              onProgress: (progressNote) =>
+                patchSession(clipId, { progressNote }),
+            })
+      : job.provider === "replicate" && predictionId
       ? resumeReplicateWaitForPlaceholder({
           predictionId,
           projectId: opts.projectId,
@@ -796,6 +849,7 @@ export function reconcileAddAssetGenerations(
         replicatePredictionId: predictionId || null,
         pendingCreationId: pendingCreationId || null,
         blueJobId: blueJobId || null,
+        serviceJobId: serviceJobId || null,
       });
       await applier?.applySuccess(success);
       if (session?.clipId === clipId) {

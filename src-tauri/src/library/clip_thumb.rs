@@ -336,28 +336,8 @@ fn ensure_clip_thumb(
     Ok(dest)
 }
 
-pub(crate) fn delete_clip_thumbs_for_asset(
-    paths: &ParascenePaths,
-    asset_id: &str,
-) -> Result<(), String> {
-    let dir = cache_dir(paths);
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    let prefix = format!("{}-", safe_id(asset_id));
-    for entry in
-        fs::read_dir(&dir).map_err(|e| format!("Could not read clip thumbnail cache: {e}"))?
-    {
-        let entry = entry.map_err(|e| format!("Could not read clip thumbnail entry: {e}"))?;
-        if entry.file_name().to_string_lossy().starts_with(&prefix) {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn library_ensure_clip_thumb(
+/// Shared by Tauri command and `local.extract_frame` service Result mode.
+pub(crate) async fn ensure_clip_thumb_path(
     id: String,
     reverse: bool,
     time_sec: f64,
@@ -390,4 +370,41 @@ pub async fn library_ensure_clip_thumb(
     })
     .await
     .map_err(|e| format!("Clip thumbnail task failed: {e}"))?
+}
+
+pub(crate) fn delete_clip_thumbs_for_asset(
+    paths: &ParascenePaths,
+    asset_id: &str,
+) -> Result<(), String> {
+    let dir = cache_dir(paths);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let prefix = format!("{}-", safe_id(asset_id));
+    for entry in
+        fs::read_dir(&dir).map_err(|e| format!("Could not read clip thumbnail cache: {e}"))?
+    {
+        let entry = entry.map_err(|e| format!("Could not read clip thumbnail entry: {e}"))?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn library_ensure_clip_thumb(
+    id: String,
+    reverse: bool,
+    time_sec: f64,
+    framing: Option<String>,
+    aspect_ratio: Option<String>,
+    zoom: Option<f64>,
+    center_x: Option<f64>,
+    center_y: Option<f64>,
+) -> Result<String, String> {
+    ensure_clip_thumb_path(
+        id, reverse, time_sec, framing, aspect_ratio, zoom, center_x, center_y,
+    )
+    .await
 }

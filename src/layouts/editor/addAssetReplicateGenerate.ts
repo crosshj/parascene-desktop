@@ -4,11 +4,14 @@
 
 import {
   listenReplicateRunProgress,
-  replicateModelRun,
   replicatePredictionDownload,
   replicatePredictionWait,
   type ReplicateInputField,
 } from "../../replicate/replicateClient";
+import {
+  invokeReplicateGenerateStill,
+  watchLocalGenerateStill,
+} from "../../services/generateStill";
 import { getCreations } from "../../library/catalogClient";
 import { importLocalPathsForProject } from "../../project/projectAssetLanding";
 import type { TimelineClip } from "../../project/types";
@@ -194,6 +197,8 @@ export type RunReplicateAddAssetGenerationOpts = {
   onProgress: (note: string) => void;
   /** Fired when the remote prediction id is known (persist for app-restart resume). */
   onPredictionId?: (predictionId: string) => void;
+  /** Durable service_invoke job id for remount / restart resume. */
+  onServiceJobId?: (jobId: string) => void;
 };
 
 async function importReplicateOutput(opts: {
@@ -404,13 +409,26 @@ export async function runReplicateAddAssetGeneration(
   });
   let result;
   try {
-    result = await replicateModelRun(
-      opts.modelOwner,
-      opts.modelName,
+    const handle = await invokeReplicateGenerateStill({
+      owner: opts.modelOwner,
+      name: opts.modelName,
       input,
       localFiles,
       requiredFileFields,
-    );
+      projectId: opts.projectId,
+      target: "timeline",
+      clientRequestId: opts.placeholder.id,
+      label: modelId,
+    });
+    if (handle.mode === "job") {
+      opts.onServiceJobId?.(handle.id);
+    }
+    result = await watchLocalGenerateStill(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (note) opts.onProgress(note);
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     recordUiOpTrace({
@@ -427,19 +445,10 @@ export async function runReplicateAddAssetGeneration(
     unlisten();
   }
   if (result.predictionId?.trim()) reportPredictionId(result.predictionId);
-  if (result.error || result.status === "failed" || result.status === "canceled") {
-    const message =
-      result.error?.trim() || `Replicate run ${result.status || "failed"}`;
-    recordUiOpTrace({
-      type: "add_asset_replicate_run_fail",
-      kind: continuity,
-      ids: result.predictionId?.trim() || predictionId || modelId,
-      reason: message.slice(0, 200),
-    });
+  if (!result.creationId?.trim()) {
     const id = result.predictionId?.trim() || predictionId;
-    if (id && isDownloadRetryableError(message)) {
-      throw new ReplicatePendingDownloadError(message, id);
-    }
+    const message = "Replicate run finished with no creation id.";
+    if (id) throw new ReplicatePendingDownloadError(message, id);
     throw new Error(message);
   }
   recordUiOpTrace({
@@ -448,34 +457,19 @@ export async function runReplicateAddAssetGeneration(
     ids: result.predictionId?.trim() || predictionId || modelId,
     reason: `files=${summarizeLocalFilesForTrace(localFiles)}`,
   });
-  const outputPath = result.localPaths.find((p) => p.trim())?.trim();
-  if (!outputPath) {
-    const id = result.predictionId?.trim() || predictionId;
-    const message = "Replicate run finished with no local output file.";
-    if (id) throw new ReplicatePendingDownloadError(message, id);
-    throw new Error(message);
-  }
   pushSteps(completeStep(steps, "generate"));
-
-  try {
-    return await importReplicateOutput({
-      outputPath,
-      projectId: opts.projectId,
-      imagesGroupId: opts.imagesGroupId,
-      onSteps: opts.onSteps,
-      onProgress: opts.onProgress,
-      steps,
-      continuity,
-      modelId,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const id = result.predictionId?.trim() || predictionId;
-    if (id && isDownloadRetryableError(message)) {
-      throw new ReplicatePendingDownloadError(message, id);
-    }
-    throw error;
-  }
+  pushSteps(advanceStep(steps, "file"));
+  pushSteps(completeStep(steps, "file"));
+  return {
+    creationId: result.creationId,
+    projectCreationIds: [result.creationId],
+    videosGroupId: null,
+    imagesGroupId: opts.imagesGroupId,
+    startFrameCreationId: null,
+    endFrameCreationId: null,
+    mode: continuity,
+    model: modelId,
+  };
 }
 
 export type ResumeReplicateDownloadOpts = {
@@ -608,4 +602,49 @@ export async function resumeReplicateAddAssetWait(
     unlisten();
   }
   return finishReplicateDownloadImport(opts, result, steps, "Wait");
+}
+
+/** Resume a Replicate generate that was started via service_invoke. */
+export async function resumeReplicateServiceJob(opts: {
+  serviceJobId: string;
+  projectId: string;
+  imagesGroupId: string | null;
+  continuityMode: ReplicateVideoContinuity;
+  modelId: string;
+  onSteps: (steps: AddAssetGenerationStep[]) => void;
+  onProgress: (note: string) => void;
+}): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: ReplicateVideoContinuity;
+  model: string;
+}> {
+  let steps = initialReplicateGenerationSteps(opts.continuityMode);
+  opts.onSteps(steps);
+  steps = advanceStep(steps, "generate");
+  opts.onSteps(steps);
+  opts.onProgress(`Resuming service job ${opts.serviceJobId}…`);
+  const result = await watchLocalGenerateStill(
+    { mode: "job", id: opts.serviceJobId },
+    {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (note) opts.onProgress(note);
+      },
+    },
+  );
+  steps = completeStep(steps, "generate");
+  steps = advanceStep(steps, "file");
+  steps = completeStep(steps, "file");
+  opts.onSteps(steps);
+  return {
+    creationId: result.creationId,
+    projectCreationIds: [result.creationId],
+    videosGroupId: null,
+    imagesGroupId: opts.imagesGroupId,
+    mode: opts.continuityMode,
+    model: opts.modelId,
+  };
 }

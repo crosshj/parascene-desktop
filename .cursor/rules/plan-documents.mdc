@@ -1,0 +1,13 @@
+---
+description: Style for implementation/rollout plan documents (copied from parascene .cursorrules; location adapted to this repo)
+alwaysApply: true
+---
+
+# Plan documents
+
+When the user asks for a plan document (or a file whose purpose is an implementation/rollout plan):
+
+- Location and name: Write it under `docs/` with filename prefix `PLAN-` (e.g. `docs/PLAN-feature-name.md`).
+- Tone and shape: Keep it very terse. Short lines, plain language, scannable in a few seconds.
+- Markdown — use sparingly: Prefer a single top-level title (`# Plan: …`) then plain paragraphs and simple `-` bullets. Avoid tables, blockquotes, emoji, and deep heading hierarchies (`##` / `###` only when they genuinely separate major chunks). Avoid bold/italic except where one emphasis per section helps scanning. Skip horizontal rules unless they separate two large phases. Use fenced code blocks only for real code, paths, or API snippets — not for prose.
+- Goal: Someone glancing at the raw file or a preview should grasp phases, dependencies, and done criteria without parsing heavy formatting.

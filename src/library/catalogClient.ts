@@ -6,7 +6,15 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { ensureAccessToken } from "../auth/session";
+import {
+  getRemoteCreation,
+  uploadFitThumbnailToCloud,
+} from "../services/parasceneCatalog";
+import { groupEmbeddedSourceCreations } from "../library/creationFlags";
+import { mapGroupSourceCreations, mapRemoteCreation } from "../sync/manifestSync";
 import { preserveDesktopAddAssetGeneration } from "../project/desktopAddAssetGeneration";
+import { extractFrame } from "../services/extractFrame";
+import { runLocalMerge } from "../services/localMerge";
 import type {
   Creation,
   CatalogFilterCounts,
@@ -101,6 +109,78 @@ export async function getCreations(ids: string[]): Promise<Creation[]> {
     if (row) out.push(row);
   }
   return out;
+}
+
+async function materializeMemberFromGroupCovers(
+  memberId: string,
+  coverIds: readonly string[],
+): Promise<boolean> {
+  if (coverIds.length === 0) return false;
+  const covers = await getCreations([...coverIds]);
+  const upserts = covers.flatMap((cover) =>
+    mapGroupSourceCreations(groupEmbeddedSourceCreations(cover)).filter(
+      (row) => row.id === memberId,
+    ),
+  );
+  if (upserts.length === 0) return false;
+  await applyManifest(upserts);
+  return true;
+}
+
+/** Local catalog row; fetches remote or embedded group member metadata when missing. */
+export async function ensureCatalogCreation(
+  id: string,
+  opts?: { groupCoverIds?: readonly string[] },
+): Promise<Creation> {
+  const trimmed = id.trim();
+  if (!trimmed) {
+    throw new Error("ensureCatalogCreation requires id");
+  }
+  try {
+    return await getCreation(trimmed);
+  } catch {
+    /* hydrate below */
+  }
+
+  const coverIds = (opts?.groupCoverIds ?? [])
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+
+  try {
+    const remote = await getRemoteCreation(trimmed);
+    await applyManifest([mapRemoteCreation(remote)]);
+    return getCreation(trimmed);
+  } catch {
+    /* member may exist only on a group cover row */
+  }
+
+  if (await materializeMemberFromGroupCovers(trimmed, coverIds)) {
+    return getCreation(trimmed);
+  }
+
+  throw new Error(`Creation ${trimmed} not found`);
+}
+
+/** Like {@link getCreations} but hydrates missing ids from Parascene when possible. */
+export async function getCreationsHydrated(
+  ids: string[],
+  groupCoverIds: readonly string[] = [],
+): Promise<Creation[]> {
+  if (ids.length === 0) return [];
+  const rows = await getCreations(ids);
+  const found = new Set(rows.map((row) => row.id));
+  const missing = [
+    ...new Set(ids.map((id) => id.trim()).filter(Boolean)),
+  ].filter((id) => !found.has(id));
+  if (missing.length === 0) return rows;
+  await Promise.all(
+    missing.map((id) =>
+      ensureCatalogCreation(id, { groupCoverIds }).catch((error) => {
+        console.warn(`Could not hydrate creation ${id}`, error);
+      }),
+    ),
+  );
+  return getCreations(ids);
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
@@ -301,7 +381,7 @@ export async function ensureClipThumb(
     centerY: number;
   },
 ): Promise<string> {
-  return invoke<string>("library_ensure_clip_thumb", {
+  return extractFrame({
     id,
     reverse,
     timeSec,
@@ -340,7 +420,7 @@ export type MergeFinished = {
 export async function mergeTimelineClips(
   clips: MergeTimelineClipInput[],
 ): Promise<Creation> {
-  return invoke<Creation>("library_merge_timeline_clips", { clips });
+  return runLocalMerge(clips);
 }
 
 export type JoinClipInput = {
@@ -412,11 +492,9 @@ export async function fillThumbAndPushToCloud(
   opts?: { onWait?: (ms: number) => void },
 ): Promise<Creation> {
   const creation = await fillThumb(id);
-  const { createAuthedSdk, ensureAccessToken } = await import("../auth/session");
   await ensureAccessToken();
-  const b64 = await readLocalThumbBase64(id);
-  const sdk = createAuthedSdk();
-  await sdk.uploadFitThumbnail(id, b64, { onWait: opts?.onWait });
+  await uploadFitThumbnailToCloud(id);
+  opts?.onWait?.(0);
   return creation;
 }
 
@@ -452,9 +530,7 @@ export async function pushLocalFitToCloud(
   id: string,
   opts?: { onWait?: (ms: number) => void },
 ): Promise<void> {
-  const { createAuthedSdk, ensureAccessToken } = await import("../auth/session");
   await ensureAccessToken();
-  const b64 = await readLocalThumbBase64(id);
-  const sdk = createAuthedSdk();
-  await sdk.uploadFitThumbnail(id, b64, { onWait: opts?.onWait });
+  await uploadFitThumbnailToCloud(id);
+  opts?.onWait?.(0);
 }

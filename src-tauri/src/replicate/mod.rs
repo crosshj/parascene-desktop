@@ -9,7 +9,7 @@ mod features;
 mod files;
 mod history;
 mod jobs;
-mod predict;
+pub(crate) mod predict;
 mod token;
 
 pub use commands::*;

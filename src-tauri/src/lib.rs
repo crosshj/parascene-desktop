@@ -6,6 +6,7 @@ mod library;
 mod media_stream;
 mod oauth_listener;
 mod replicate;
+mod service;
 mod user_avatar;
 
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
@@ -68,6 +69,9 @@ use replicate::{
     replicate_prediction_download, replicate_prediction_delete, replicate_prediction_get, replicate_prediction_wait,
     replicate_predictions_list, replicate_token_clear, replicate_token_set,
     replicate_token_status,
+};
+use service::{
+    service_cancel, service_describe, service_get, service_invoke, service_list, service_list_runs,
 };
 use tauri::Emitter;
 use tauri::Manager;
@@ -337,6 +341,12 @@ pub fn run() {
             jobs_get,
             jobs_list,
             jobs_cancel,
+            service_list,
+            service_describe,
+            service_invoke,
+            service_get,
+            service_cancel,
+            service_list_runs,
             publisher_list_renders,
             publisher_get_render,
             publisher_render_timeline,

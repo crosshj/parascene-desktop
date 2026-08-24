@@ -29,20 +29,19 @@ import {
   resolveLibraryGroupAddTarget,
 } from "./libraryGroupAddTarget";
 import { CreationsFilterEmpty, FolderEmpty } from "./CreationsFilterEmpty";
-import { runCloudLibraryRepair } from "../sync/cloudRepair";
+import { runCloudRepair as runCloudRepairService } from "../services/cloudRepair";
 import {
   folderConflictKindLabel,
   type FolderConflict,
   type FolderSyncResult,
 } from "../sync/folderSync";
 import {
-  syncCreationsMetadata,
-  syncFullCreationsManifest,
   syncGroupMembersManifest,
-  syncNewestCreationsManifest,
   NEWEST_SYNC_MAX_PAGES,
   NEWEST_SYNC_PAGE_SIZE,
 } from "../sync/manifestSync";
+import { runSyncFull, runSyncNewest } from "../services/syncCatalog";
+import { syncSessionUserAvatar } from "../sync/avatarSync";
 import {
   applySyncItemEvent,
   clearFinishedSyncActivity,
@@ -80,6 +79,7 @@ import { LibraryPageSkeleton } from "./LibraryLoadingSkeleton";
 import {
   cacheMissingMedia,
   cacheMissingThumbs,
+  downloadPending,
   ensureLocal,
   getCatalogFilterCounts,
   getCreation,
@@ -358,10 +358,10 @@ function useCatalog(librarySurface: LibrarySurface) {
     if (missing < creations.length * 0.5) return;
     aspectBackfillStarted.current = true;
     let cancelled = false;
-    void syncCreationsMetadata()
-      .then(async (next) => {
+    void runSyncFull()
+      .then(async (result) => {
         if (cancelled) return;
-        setStatus(next);
+        setStatus(result.status);
         await loadInitial();
       })
       .catch(() => {});
@@ -556,42 +556,78 @@ function useCatalog(librarySurface: LibrarySurface) {
       });
       try {
         const beforeTotal = status?.total ?? 0;
-        const newest =
+        const syncResult =
           mode === "newest"
-            ? await syncNewestCreationsManifest({
-                onProgress: (p) => {
-                  const now = Date.now();
-                  const isTerminal = p.phase === "done";
-                  if (!isTerminal && now - lastProgressUiAt.current < 200) {
-                    return;
-                  }
-                  lastProgressUiAt.current = now;
-                  setSyncHeadline(p.message);
-                  setProgress({
-                    done: p.checked,
-                    total: p.target,
-                    currentId: p.message,
-                    failed: 0,
-                    phase: "catalog",
-                  });
-                  pushActivity({
-                    id: jobId,
-                    kind: "catalog",
-                    state: "active",
-                    title,
-                    detail: p.message,
-                  });
-                },
-              })
-            : null;
-        const next = newest
-          ? newest.status
-          : await syncFullCreationsManifest();
+            ? await (async () => {
+                try {
+                  await syncSessionUserAvatar();
+                } catch {
+                  /* avatar is best-effort before catalog work */
+                }
+                const result = await runSyncNewest({
+                  onProgress: (p) => {
+                    const now = Date.now();
+                    const isTerminal = p.phase === "done";
+                    if (!isTerminal && now - lastProgressUiAt.current < 200) {
+                      return;
+                    }
+                    lastProgressUiAt.current = now;
+                    setSyncHeadline(p.message);
+                    setProgress({
+                      done: p.checked ?? 0,
+                      total: p.target ?? newestTarget,
+                      currentId: p.message,
+                      failed: 0,
+                      phase: "catalog",
+                    });
+                    pushActivity({
+                      id: jobId,
+                      kind: "catalog",
+                      state: "active",
+                      title,
+                      detail: p.message,
+                    });
+                  },
+                });
+                void downloadPending(CREATIONS_PAGE_SIZE).catch(() => {});
+                return result;
+              })()
+            : await (async () => {
+                try {
+                  await syncSessionUserAvatar();
+                } catch {
+                  /* avatar is best-effort before catalog work */
+                }
+                const result = await runSyncFull({
+                  onProgress: (p) => {
+                    const now = Date.now();
+                    if (now - lastProgressUiAt.current < 200) return;
+                    lastProgressUiAt.current = now;
+                    setSyncHeadline(p.message);
+                    setProgress({
+                      done: p.checked ?? 0,
+                      total: p.checked ?? 0,
+                      currentId: p.message,
+                      failed: 0,
+                      phase: "catalog",
+                    });
+                    pushActivity({
+                      id: jobId,
+                      kind: "catalog",
+                      state: "active",
+                      title,
+                      detail: p.message,
+                    });
+                  },
+                });
+                void downloadPending(CREATIONS_PAGE_SIZE).catch(() => {});
+                return result;
+              })();
+        const next = syncResult.status;
         setStatus(next);
 
-        const added =
-          newest?.added ?? Math.max(0, next.total - beforeTotal);
-        const pruned = newest?.pruned ?? 0;
+        const added = Math.max(0, syncResult.added ?? next.total - beforeTotal);
+        const pruned = mode === "newest" && "pruned" in syncResult ? syncResult.pruned : 0;
         const detail =
           mode === "newest"
             ? [
@@ -1020,61 +1056,30 @@ function useCatalog(librarySurface: LibrarySurface) {
       phase: "repair",
     });
     try {
-      const summary = await runCloudLibraryRepair({
-        onPhase: (phase) => {
-          const note =
-            phase === "local-fit-plan"
-              ? "Scanning local thumbs…"
-              : phase === "group-aspect"
-                ? "Updating group aspects…"
-                : phase === "local-fill"
-                  ? "Rebuilding mismatched thumbs…"
-                  : phase === "upload-existing-fit"
-                    ? "Uploading local fits…"
-                    : phase === "fit-thumbnails"
-                      ? "Cloud fit for items without media…"
-                      : phase === "resync"
-                        ? "Refreshing catalog…"
-                        : phase === "redownload-thumbs"
-                          ? "Refreshing previews…"
-                          : null;
+      const summary = await runCloudRepairService({
+        onProgress: (p) => {
+          const note = p.message;
           setProgress({
             done: 0,
             total: 0,
             currentId: note,
             failed: 0,
-            phase: phase === "redownload-thumbs" ? "thumbs" : "repair",
+            phase:
+              note.toLowerCase().includes("preview") ||
+              note.toLowerCase().includes("thumb")
+                ? "thumbs"
+                : "repair",
           });
-        },
-        onWait: (ms) => {
-          const secs = Math.max(1, Math.ceil(ms / 1000));
-          setProgress({
-            done: 0,
-            total: 0,
-            currentId: `Waiting ${secs}s for rate limit…`,
-            failed: 0,
-            phase: "repair",
-          });
-          window.setTimeout(() => {
-            setProgress((prev) =>
-              prev?.phase === "repair" &&
-              typeof prev.currentId === "string" &&
-              prev.currentId.startsWith("Waiting")
-                ? { ...prev, currentId: null }
-                : prev,
-            );
-          }, ms);
         },
         onItem: (event) => {
           setActivity((prev) => applySyncItemEvent(prev, event));
         },
       });
-      const next = await getSyncStatus();
-      setStatus(next);
+      setStatus(summary.status);
       await loadInitial();
       if (
-        summary.group.updated_count === 0 &&
-        summary.fit.updated_count === 0 &&
+        summary.groupUpdated === 0 &&
+        summary.fitUpdated === 0 &&
         summary.localFilled === 0 &&
         summary.uploadedOnly === 0
       ) {

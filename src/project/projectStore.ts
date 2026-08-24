@@ -841,6 +841,10 @@ function parseAddAssetGenerationJob(
     typeof row.blueJobId === "string" && row.blueJobId.trim()
       ? row.blueJobId.trim()
       : undefined;
+  const serviceJobId =
+    typeof row.serviceJobId === "string" && row.serviceJobId.trim()
+      ? row.serviceJobId.trim()
+      : undefined;
   const model =
     typeof row.model === "string" && row.model.trim()
       ? row.model.trim()
@@ -852,6 +856,7 @@ function parseAddAssetGenerationJob(
     replicatePredictionId,
     pendingCreationId,
     blueJobId,
+    serviceJobId,
     model,
   };
 }
