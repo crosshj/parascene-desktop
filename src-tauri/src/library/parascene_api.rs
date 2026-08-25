@@ -58,10 +58,12 @@ struct RateGate {
 
 fn rate_gate() -> &'static Mutex<RateGate> {
     static GATE: OnceLock<Mutex<RateGate>> = OnceLock::new();
-    GATE.get_or_init(|| Mutex::new(RateGate {
-        until: None,
-        strikes: 0,
-    }))
+    GATE.get_or_init(|| {
+        Mutex::new(RateGate {
+            until: None,
+            strikes: 0,
+        })
+    })
 }
 
 /// Remaining cooldown after a 429/403 storm, if any.
@@ -92,9 +94,7 @@ fn note_api_ok() {
 }
 
 fn cooling_down_error() -> String {
-    let secs = api_cooling_down()
-        .map(|d| d.as_secs().max(1))
-        .unwrap_or(15);
+    let secs = api_cooling_down().map(|d| d.as_secs().max(1)).unwrap_or(15);
     format!(
         "Rate limited (cooling down {secs}s). This computer is still blocked — not from this click."
     )
@@ -281,28 +281,6 @@ fn owned_creation_row(value: Value) -> Value {
     value
 }
 
-/// Still generating — no usable media yet. A public page can show the image
-/// while `status` is still `creating`; a media URL means wait is over.
-pub fn creation_is_in_flight(value: &Value) -> bool {
-    let row = creation_row(value);
-    let status = creation_status(row);
-    if matches!(
-        status.as_str(),
-        "failed" | "error" | "cancelled" | "canceled"
-    ) {
-        return false;
-    }
-    if media_url(row).is_some() {
-        return false;
-    }
-    status.is_empty()
-        || status == "creating"
-        || status == "pending"
-        || status == "queued"
-        || status == "processing"
-        || status.starts_with("creating")
-}
-
 pub fn group_member_ids(value: &Value) -> Vec<String> {
     let group = value
         .get("meta")
@@ -386,9 +364,16 @@ fn absolutize_media_path(raw: &str) -> Option<String> {
 }
 
 /// Prefer full media, then fit thumb, then square thumb (for i2v / still resolve).
+/// Too broad for Generate wait — use `output_media_url`.
 pub fn media_url(value: &Value) -> Option<String> {
     let value = creation_row(value);
-    for key in ["url", "video_url", "fit_thumbnail_url", "thumbnail_url", "file_path"] {
+    for key in [
+        "url",
+        "video_url",
+        "fit_thumbnail_url",
+        "thumbnail_url",
+        "file_path",
+    ] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
             if let Some(abs) = absolutize_media_path(s) {
                 return Some(abs);
@@ -396,6 +381,115 @@ pub fn media_url(value: &Value) -> Option<String> {
         }
     }
     None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitKind {
+    Image,
+    Video,
+}
+
+pub fn wait_kind_from_hints(
+    media_type: Option<&str>,
+    method: Option<&str>,
+    intent: Option<&str>,
+) -> WaitKind {
+    let blob = format!(
+        "{} {} {}",
+        media_type.unwrap_or(""),
+        method.unwrap_or(""),
+        intent.unwrap_or("")
+    )
+    .to_ascii_lowercase();
+    if blob.contains("video") {
+        WaitKind::Video
+    } else {
+        WaitKind::Image
+    }
+}
+
+pub fn url_looks_like_video(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    path.contains("/videos/")
+        || path.contains("/video/")
+        || path.ends_with(".mp4")
+        || path.ends_with(".webm")
+        || path.ends_with(".mov")
+        || path.ends_with(".m4v")
+}
+
+pub fn url_looks_like_image(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    path.contains("/images/")
+        || path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".webp")
+        || path.ends_with(".gif")
+        || path.ends_with(".avif")
+}
+
+fn json_url_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(absolutize_media_path)
+}
+
+pub fn creation_is_terminal_status(value: &Value) -> bool {
+    matches!(
+        creation_status(value).as_str(),
+        "failed" | "error" | "cancelled" | "canceled"
+    )
+}
+
+/// Output URL of the expected type. Thumbs, posters, and input stills do not count.
+pub fn output_media_url(value: &Value, kind: WaitKind) -> Option<String> {
+    let row = creation_row(value);
+    match kind {
+        WaitKind::Video => {
+            if let Some(url) = json_url_field(row, "video_url") {
+                return Some(url);
+            }
+            for key in ["url", "file_path"] {
+                if let Some(url) = json_url_field(row, key) {
+                    if url_looks_like_video(&url) {
+                        return Some(url);
+                    }
+                }
+            }
+            None
+        }
+        WaitKind::Image => {
+            for key in ["url", "image_url", "file_path"] {
+                if let Some(url) = json_url_field(row, key) {
+                    if !url_looks_like_video(&url) {
+                        return Some(url);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+pub fn wait_is_done(value: &Value, kind: WaitKind) -> bool {
+    creation_is_terminal_status(value) || output_media_url(value, kind).is_some()
+}
+
+pub fn local_path_is_output(kind: WaitKind, local_path: Option<&str>, media_type: &str) -> bool {
+    let Some(path) = local_path.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    match kind {
+        WaitKind::Video => {
+            url_looks_like_video(path)
+                || (media_type.eq_ignore_ascii_case("video") && !url_looks_like_image(path))
+        }
+        WaitKind::Image => !url_looks_like_video(path),
+    }
 }
 
 pub async fn list_my_creations(limit: u32, offset: u32) -> Result<(Vec<Value>, bool), String> {
@@ -419,10 +513,7 @@ pub async fn list_my_creations(limit: u32, offset: u32) -> Result<(Vec<Value>, b
 }
 
 pub async fn upload_fit_thumbnail(id: &str, image_base64: &str) -> Result<Value, String> {
-    let path = format!(
-        "/api/create/images/{}/fit-thumbnail",
-        urlencoding_path(id)
-    );
+    let path = format!("/api/create/images/{}/fit-thumbnail", urlencoding_path(id));
     let body = json!({
         "image_base64": image_base64,
         "content_type": "image/jpeg",
@@ -436,9 +527,12 @@ pub async fn upload_fit_thumbnail(id: &str, image_base64: &str) -> Result<Value,
 
 pub async fn repair_group_aspect(limit: u32) -> Result<Value, String> {
     let body = json!({ "limit": limit });
-    let (status, value) =
-        request_json(reqwest::Method::POST, "/api/create/images/repair-group-aspect", Some(&body))
-            .await?;
+    let (status, value) = request_json(
+        reqwest::Method::POST,
+        "/api/create/images/repair-group-aspect",
+        Some(&body),
+    )
+    .await?;
     if status >= 400 {
         return Err(api_error(status, &value, "repair group aspect failed"));
     }
@@ -495,8 +589,7 @@ pub async fn delete_creation(id: &str) -> Result<(), String> {
 
 pub async fn ungroup_creations(id: &str) -> Result<Vec<String>, String> {
     let path = format!("/api/create/images/{}/ungroup", urlencoding_path(id));
-    let (status, value) =
-        request_json(reqwest::Method::POST, &path, Some(&json!({}))).await?;
+    let (status, value) = request_json(reqwest::Method::POST, &path, Some(&json!({}))).await?;
     if status >= 400 {
         return Err(api_error(status, &value, "ungroup failed"));
     }
@@ -601,8 +694,12 @@ pub async fn group_creations(
     if let Some(m) = meta {
         body["meta"] = m.clone();
     }
-    let (status, value) =
-        request_json(reqwest::Method::POST, "/api/create/images/group", Some(&body)).await?;
+    let (status, value) = request_json(
+        reqwest::Method::POST,
+        "/api/create/images/group",
+        Some(&body),
+    )
+    .await?;
     if status >= 400 {
         return Err(api_error(status, &value, "group failed"));
     }
@@ -675,13 +772,8 @@ pub async fn record_audio_clip(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let (status, value) = request_bytes_post(
-        "/api/audio-clips/record",
-        body,
-        content_type,
-        &header_refs,
-    )
-    .await?;
+    let (status, value) =
+        request_bytes_post("/api/audio-clips/record", body, content_type, &header_refs).await?;
     if status >= 400 {
         return Err(api_error(status, &value, "audio clip upload failed"));
     }
@@ -709,17 +801,9 @@ pub async fn upload_generic_image(
     } else {
         filename.trim()
     };
-    let headers = [
-        ("X-upload-kind", "generic"),
-        ("X-upload-name", name),
-    ];
-    let (status, value) = request_bytes_post(
-        "/api/images/generic",
-        body,
-        content_type,
-        &headers,
-    )
-    .await?;
+    let headers = [("X-upload-kind", "generic"), ("X-upload-name", name)];
+    let (status, value) =
+        request_bytes_post("/api/images/generic", body, content_type, &headers).await?;
     if status >= 400 {
         return Err(api_error(status, &value, "upload failed"));
     }
@@ -749,21 +833,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn in_flight_until_media_exists() {
-        assert!(creation_is_in_flight(&json!({ "id": 26045, "status": "creating" })));
-        assert!(!creation_is_in_flight(&json!({
-            "id": 26045,
-            "status": "creating",
-            "url": "https://www.parascene.com/api/images/created/done.png",
-        })));
-        assert!(!creation_is_in_flight(&json!({
-            "id": 26045,
-            "status": "complete",
-            "file_path": "/api/images/created/done.png",
-        })));
-    }
-
-    #[test]
     fn unwraps_nested_creation_rows() {
         let wrapped = json!({
             "creation": {
@@ -772,8 +841,94 @@ mod tests {
                 "url": "https://www.parascene.com/x.png",
             }
         });
-        assert!(!creation_is_in_flight(&wrapped));
         assert_eq!(creation_row(&wrapped)["id"], 26045);
+    }
+
+    #[test]
+    fn wait_image_ignores_thumbs_and_video() {
+        assert!(!wait_is_done(
+            &json!({
+                "id": 1,
+                "status": "creating",
+                "thumbnail_url": "https://www.parascene.com/t.jpg",
+                "fit_thumbnail_url": "https://www.parascene.com/fit.jpg",
+            }),
+            WaitKind::Image,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 1,
+                "status": "creating",
+                "url": "https://www.parascene.com/api/images/created/done.png",
+            }),
+            WaitKind::Image,
+        ));
+        assert!(!wait_is_done(
+            &json!({
+                "id": 1,
+                "status": "creating",
+                "url": "https://www.parascene.com/api/videos/created/video/x.mp4",
+            }),
+            WaitKind::Image,
+        ));
+    }
+
+    #[test]
+    fn wait_video_requires_video_output_not_poster() {
+        assert!(!wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "creating",
+                "url": "https://www.parascene.com/api/images/created/still.png",
+                "thumbnail_url": "https://www.parascene.com/t.jpg",
+                "file_path": "/api/images/created/still.png",
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "creating",
+                "video_url": "https://www.parascene.com/api/videos/created/video/x.mp4",
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "complete",
+                "url": "/api/videos/created/video/x.mp4",
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({ "id": 2, "status": "failed" }),
+            WaitKind::Video,
+        ));
+        assert!(!wait_is_done(
+            &json!({ "id": 2, "status": "" }),
+            WaitKind::Video,
+        ));
+    }
+
+    #[test]
+    fn local_poster_is_not_video_output() {
+        assert!(!local_path_is_output(
+            WaitKind::Video,
+            Some("/tmp/26053.jpg"),
+            "video",
+        ));
+        assert!(local_path_is_output(
+            WaitKind::Video,
+            Some("/tmp/26053.mp4"),
+            "video",
+        ));
+        assert!(local_path_is_output(
+            WaitKind::Image,
+            Some("/tmp/26045.png"),
+            "image",
+        ));
+        assert!(!local_path_is_output(WaitKind::Image, None, "image"));
     }
 
     #[test]
@@ -786,10 +941,7 @@ mod tests {
             403,
             &json!({ "raw": "<html>cloudflare error code 1015</html>" }),
         ));
-        assert!(!is_rate_limited(
-            403,
-            &json!({ "error": "forbidden" }),
-        ));
+        assert!(!is_rate_limited(403, &json!({ "error": "forbidden" }),));
         assert!(is_rate_limited(429, &json!({})));
     }
 }

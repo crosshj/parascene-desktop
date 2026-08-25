@@ -17,7 +17,6 @@ import {
   buildLtxI2vCreateArgs,
   LTX_I2V_MODEL,
 } from "../../lab/ltxI2vGeneration";
-import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
 import { getCreations } from "../../library/catalogClient";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import type {
@@ -45,6 +44,10 @@ import {
   startFrameIsReady,
   type StartFramePreview,
 } from "./addAssetStartFrame";
+import {
+  generateSourceFactsFromFrame,
+  planGenerateSourceImage,
+} from "./generateSourceImage";
 import { runReplicateAddAssetGeneration } from "./addAssetReplicateGenerate";
 import { runBlueDirectAddAssetGeneration } from "./addAssetBlueDirectGenerate";
 import { runParasceneProductVideoGeneration } from "./runParasceneProductVideo";
@@ -325,39 +328,42 @@ async function prepareParasceneGenerationStill(opts: {
   projectCreationIds: string[];
   groupId: string | null;
 }> {
-  const passthrough = await resolveParasceneStartFrameImageUrl(opts.frame);
-  if (passthrough) {
+  const hostedUrl = opts.frame.sourceIsImage
+    ? await resolveParasceneStartFrameImageUrl(opts.frame)
+    : null;
+  const plan = planGenerateSourceImage(
+    generateSourceFactsFromFrame({
+      target: "parascene_blue",
+      sourceIsImage: Boolean(opts.frame.sourceIsImage),
+      sourceAssetId: opts.frame.sourceAssetId,
+      parasceneImageUrl: hostedUrl,
+      framing: opts.frame.framing,
+      imagesGroupId: opts.imagesGroupId,
+    }),
+  );
+  if (plan.regroupSource) {
+    throw new Error("Generate must not regroup a source image.");
+  }
+  if (plan.send === "parascene_url") {
+    if (!hostedUrl) {
+      throw new Error(`${opts.progressLabel} has no Parascene URL.`);
+    }
     opts.onProgress(`Using ${opts.progressLabel} on Parascene…`);
     const existingId =
       opts.frame.sourceIsImage && opts.frame.sourceAssetId?.trim()
         ? opts.frame.sourceAssetId.trim()
         : null;
-    if (!existingId) {
-      // URL-only passthrough (rare) — no flat project member, no Creation id.
-      return {
-        imageUrl: passthrough,
-        creationId: null,
-        projectCreationIds: [],
-        groupId: null,
-      };
-    }
-    // Already a Parascene Creation: keep it in the Images group only — never
-    // also file it as a flat project folder member.
-    opts.onProgress(`Filing ${opts.progressLabel} into Images group…`);
-    const filed = await fileCreationIntoProjectGroup({
-      creationId: existingId,
-      mediaType: "image",
-      projectId: opts.projectId,
-      projectTitle: opts.projectTitle,
-      imagesGroupId: opts.imagesGroupId,
-      videosGroupId: opts.videosGroupId,
-    });
     return {
-      imageUrl: passthrough,
+      imageUrl: hostedUrl,
       creationId: existingId,
-      projectCreationIds: filed.projectCreationIds,
-      groupId: filed.groupId,
+      projectCreationIds: opts.imagesGroupId ? [opts.imagesGroupId] : [],
+      groupId: opts.imagesGroupId,
     };
+  }
+  if (plan.send !== "upload_new_creation") {
+    throw new Error(
+      `${opts.progressLabel} cannot be sent as ${plan.send} on Parascene.`,
+    );
   }
   if (!opts.frame.framePath?.trim()) {
     throw new Error(

@@ -34,6 +34,31 @@ export function videoWantsLinkedAudio(clip: TimelineClip): boolean {
   );
 }
 
+/**
+ * Monitor soundtrack comes from the V1 video element (already in the buffer
+ * window) instead of opening that same file in a second audio decoder.
+ *
+ * True when Include Audio wins the mix: linked A1 companion of the covering
+ * video, or A1 empty with includeAudio. False for A1 beds and slideshows.
+ */
+export function videoElementCarriesMonitorAudio(
+  visual: TimelineClip | null,
+  winningAudio: TimelineClip | null,
+): boolean {
+  if (!visual) return false;
+  if (visual.kind === "image" || visual.kind === "slideshow") return false;
+
+  if (
+    winningAudio &&
+    isLinkedVideoAudioClip(winningAudio) &&
+    winningAudio.linkedVideoClipId === visual.id
+  ) {
+    return true;
+  }
+  if (!winningAudio && visual.includeAudio === true) return true;
+  return false;
+}
+
 export function findLinkedAudioForVideo(
   clips: readonly TimelineClip[],
   videoId: string,

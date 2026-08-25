@@ -610,6 +610,8 @@ export type Project = {
   >;
   /** Timeline zoom multiplier (0.5–3). */
   timelineZoom: number;
+  /** Cached mix of timeline audio for monitor playback. */
+  timelineAudioBakePath: string | null;
   /** Preview follows the timeline (program monitor). */
   timelineMonitorActive: boolean;
   /** Timeline playhead position in seconds. */

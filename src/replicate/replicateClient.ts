@@ -79,6 +79,8 @@ export type ReplicateInputField = {
   enumValues?: string[] | null;
   /** Optional display labels keyed by enum value (Generate / curated forms). */
   enumLabels?: Record<string, string> | null;
+  /** Optional `<optgroup>`s (Generate model lists). Values must be in `enumValues`. */
+  enumGroups?: Array<{ label: string; values: string[] }> | null;
   minimum?: number | null;
   maximum?: number | null;
   fileLike: boolean;

@@ -8,8 +8,8 @@ use crate::library::run_refresh_creations_by_id;
 use crate::library::{
     delete_audio_clip, delete_creation, get_creation, get_credits, get_library_folders,
     group_creations, jobs_cancel, jobs_enqueue, jobs_get, jobs_list, library_read_file_base64,
-    library_read_local_thumb_base64, mutate_library_folders, record_audio_clip,
-    ungroup_creations, upload_fit_thumbnail, upload_generic_image, EnqueueJobRequest, Job,
+    library_read_local_thumb_base64, mutate_library_folders, record_audio_clip, ungroup_creations,
+    upload_fit_thumbnail, upload_generic_image, EnqueueJobRequest, Job,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -619,7 +619,11 @@ fn payload_bytes(payload: &Value) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Invalid base64 body: {e}"))
 }
 
-async fn run_sync_operation(service: &str, operation: &str, payload: &Value) -> Result<Value, String> {
+async fn run_sync_operation(
+    service: &str,
+    operation: &str,
+    payload: &Value,
+) -> Result<Value, String> {
     match (service, operation) {
         ("local", "extract_frame") => {
             let id = payload
@@ -736,14 +740,7 @@ async fn run_sync_operation(service: &str, operation: &str, payload: &Value) -> 
                 .get("sourceType")
                 .or_else(|| payload.get("source_type"))
                 .and_then(|v| v.as_str());
-            record_audio_clip(
-                &bytes,
-                content_type,
-                title,
-                duration_sec,
-                source_type,
-            )
-            .await
+            record_audio_clip(&bytes, content_type, title, duration_sec, source_type).await
         }
         ("parascene", "delete_audio_clip") => {
             let id = payload

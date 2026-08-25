@@ -138,6 +138,7 @@ export async function resumeParasceneAddAssetGeneration(
   const waited = await runParasceneWaitCreation({
     creationId: pendingCreationId,
     projectId: opts.projectId,
+    mediaType: "video",
     onProgress: opts.onProgress,
   });
   if (String(waited.status).toLowerCase() === "failed") {

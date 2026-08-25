@@ -27,9 +27,7 @@ pub(crate) fn map_request_error(url: &str, err: reqwest::Error) -> String {
         || msg.contains("connection")
         || msg.contains("dns")
     {
-        return format!(
-            "Couldn't reach Parascene ({url}). Check your network and try again."
-        );
+        return format!("Couldn't reach Parascene ({url}). Check your network and try again.");
     }
     format!("Request failed for {url}: {msg}")
 }
@@ -161,10 +159,7 @@ pub async fn http_post_bytes_bearer(
             req = req.header(k, v);
         }
     }
-    let res = req
-        .send()
-        .await
-        .map_err(|e| map_request_error(&url, e))?;
+    let res = req.send().await.map_err(|e| map_request_error(&url, e))?;
     let status = res.status().as_u16();
     let headers = res.headers().clone();
     let body = res.text().await.map_err(|e| e.to_string())?;

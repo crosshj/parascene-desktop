@@ -472,7 +472,10 @@ pub fn library_import_local_paths(
     folder_id: Option<String>,
 ) -> Result<ImportLocalResult, String> {
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    let folder_id = folder_id.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    let folder_id = folder_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
     import_paths(&app, &files, folder_id, None)
 }
 

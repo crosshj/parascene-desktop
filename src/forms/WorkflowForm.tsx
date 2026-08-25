@@ -13,6 +13,8 @@ export type WorkflowFormProps = {
   onChange: (name: string, value: string) => void;
   disabled?: boolean;
   showAspectPreview?: boolean;
+  /** Schema name/type/title/help. Off when a section header already names the field. */
+  showFieldChrome?: boolean;
   /** Optional media slots until shared AssetRef picker exists. */
   renderFileField?: (field: ReplicateInputField) => ReactNode;
   /** Extra chrome above/below schema (model optgroups, intent-specific). */
@@ -29,6 +31,7 @@ export function WorkflowForm({
   onChange,
   disabled = false,
   showAspectPreview = false,
+  showFieldChrome = true,
   renderFileField,
   beforeFields,
   afterFields,
@@ -51,6 +54,7 @@ export function WorkflowForm({
         onChange={onChange}
         disabled={disabled}
         showAspectPreview={showAspectPreview}
+        showFieldChrome={showFieldChrome}
         renderFileField={renderFileField}
       />
       {afterFields}

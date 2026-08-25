@@ -33,6 +33,14 @@ import {
   type BakeInfo,
 } from "../../library/slideshowMedia";
 import { bakeClipExtend, deleteExtendCacheFile } from "../../lab/audioTools";
+import {
+  bakeTimelineAudio,
+  deleteTimelineAudioBake,
+} from "./timelineAudioBake";
+import {
+  createTimelineFragmentCache,
+  type TimelineFragmentStatus,
+} from "./timelineFragmentCache";
 import { getCreation } from "../../library/catalogClient";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
 import { AssistantPane } from "./AssistantPane";
@@ -210,6 +218,7 @@ export function EditorLayout() {
     selectCreationsOnOpenProject,
     setOpenProjectPendingStagedDraft,
     setOpenProjectTimelineZoom,
+    setOpenProjectTimelineAudioBakePath,
     setOpenProjectTimelineMonitorActive,
     setOpenProjectTimelinePlayheadSec,
     removeOpenStillWorkstream,
@@ -270,6 +279,12 @@ export function EditorLayout() {
     ReturnType<typeof getJoinableTimelinePair>
   >(null);
   const joinBusyRef = useRef(false);
+  const [audioBakeBusy, setAudioBakeBusy] = useState(false);
+  const [audioBakeError, setAudioBakeError] = useState<string | null>(null);
+  const [fragmentCache] = useState(() => createTimelineFragmentCache());
+  const [fragmentStatus, setFragmentStatus] = useState<TimelineFragmentStatus>(
+    () => fragmentCache.status(),
+  );
   const addAssetGenerationSession = useAddAssetGenerationSession(project.id);
   const prevAddAssetGenerationSessionRef = useRef(addAssetGenerationSession);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
@@ -1143,6 +1158,63 @@ export function EditorLayout() {
     clearPendingStagedDraft();
     setOpenProjectTimelineMonitorActive(true);
   };
+
+  const onBakeTimelineAudio = useCallback(() => {
+    if (audioBakeBusy || !project.id.trim()) return;
+    const clips = displayTimeline;
+    setAudioBakeBusy(true);
+    setAudioBakeError(null);
+    void (async () => {
+      try {
+        const result = await bakeTimelineAudio(project.id, clips);
+        setOpenProjectTimelineAudioBakePath(result.path);
+      } catch (error) {
+        setAudioBakeError(
+          error instanceof Error ? error.message : String(error),
+        );
+      } finally {
+        setAudioBakeBusy(false);
+      }
+    })();
+  }, [
+    audioBakeBusy,
+    displayTimeline,
+    project.id,
+    setOpenProjectTimelineAudioBakePath,
+  ]);
+
+  const onRemoveTimelineAudioBake = useCallback(() => {
+    const path = project.timelineAudioBakePath?.trim() || null;
+    setOpenProjectTimelineAudioBakePath(null);
+    setAudioBakeError(null);
+    if (!path) return;
+    void deleteTimelineAudioBake(path).catch(() => {});
+  }, [project.timelineAudioBakePath, setOpenProjectTimelineAudioBakePath]);
+
+  useEffect(() => {
+    const unsub = fragmentCache.subscribe(() => {
+      setFragmentStatus(fragmentCache.status());
+    });
+    return () => {
+      unsub();
+      fragmentCache.destroy();
+    };
+  }, [fragmentCache]);
+
+  useEffect(() => {
+    fragmentCache?.setClips({
+      projectId: project.id,
+      clips: displayTimeline,
+      aspectRatio: project.aspectRatio,
+    });
+  }, [fragmentCache, project.id, project.aspectRatio, displayTimeline]);
+
+  useEffect(() => {
+    fragmentCache?.setPlayhead(
+      displayPlayheadSec,
+      timelinePlaying && monitorMode === "timeline",
+    );
+  }, [fragmentCache, displayPlayheadSec, timelinePlaying, monitorMode]);
 
   const [bakeInfoByClipId, setBakeInfoByClipId] = useState<
     Map<string, BakeInfo>
@@ -2585,6 +2657,8 @@ export function EditorLayout() {
         }
         bakeInfo={clipStagingSeed ? (selectedBakeInfo ?? null) : null}
         bakeInfoByClipId={bakeInfoByClipId}
+        audioBakePath={project.timelineAudioBakePath}
+        fragmentCache={fragmentCache}
         onSlideshowRender={
           clipStagingSeed?.draft.kind === "slideshow"
             ? onSlideshowRender
@@ -2680,6 +2754,13 @@ export function EditorLayout() {
         canJoinSelected={Boolean(joinPair)}
         onJoinSelected={openJoinStudio}
         joinBusy={joinStudioOpen}
+        audioBakePath={project.timelineAudioBakePath}
+        audioBakeBusy={audioBakeBusy}
+        audioBakeError={audioBakeError}
+        onBakeAudio={onBakeTimelineAudio}
+        onRemoveAudioBake={onRemoveTimelineAudioBake}
+        fragmentStatus={fragmentStatus}
+        onRefreshFragmentCache={() => fragmentCache?.refresh()}
         outsideReferenceIds={outsideReferenceIds}
       />
 

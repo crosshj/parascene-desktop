@@ -136,6 +136,20 @@ type TimelinePaneProps = {
   canJoinSelected?: boolean;
   onJoinSelected?: () => void;
   joinBusy?: boolean;
+  audioBakePath?: string | null;
+  audioBakeBusy?: boolean;
+  audioBakeError?: string | null;
+  onBakeAudio?: () => void;
+  onRemoveAudioBake?: () => void;
+  fragmentStatus?: {
+    ready: number;
+    total: number;
+    baking: boolean;
+    queued?: number;
+    error: string | null;
+    playheadReady: boolean;
+  };
+  onRefreshFragmentCache?: () => void;
   /** Creation ids referenced by the project but not in the project folder. */
   outsideReferenceIds?: readonly string[];
 };
@@ -690,6 +704,13 @@ export function TimelinePane({
   canJoinSelected = false,
   onJoinSelected,
   joinBusy = false,
+  audioBakePath = null,
+  audioBakeBusy = false,
+  audioBakeError = null,
+  onBakeAudio,
+  onRemoveAudioBake,
+  fragmentStatus,
+  onRefreshFragmentCache,
   outsideReferenceIds = [],
 }: TimelinePaneProps) {
   const thumbAspectRatio = projectAspectCss(aspectRatio);
@@ -1937,6 +1958,102 @@ export function TimelinePane({
                 stroke="currentColor"
                 strokeWidth="1.5"
                 d="M3.5 2.5h3v5a2.5 2.5 0 1 0 5 0v-5h3M3.5 14.5h9"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={[
+              "editor-timeline-tool",
+              audioBakePath ? "is-active" : "",
+              audioBakeBusy ? "is-baking" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            title={
+              audioBakeBusy
+                ? "Baking timeline audio…"
+                : audioBakeError
+                  ? audioBakeError
+                  : audioBakePath
+                    ? "Refresh baked timeline audio"
+                    : "Bake timeline audio for playback"
+            }
+            aria-label={
+              audioBakePath
+                ? "Refresh baked timeline audio"
+                : "Bake timeline audio"
+            }
+            aria-busy={audioBakeBusy}
+            disabled={audioBakeBusy || !onBakeAudio}
+            onClick={() => onBakeAudio?.()}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M2 8h1.2l1.1-3.2 1.6 6.4L8 3.5 9.6 11l1.2-3H14"
+              />
+            </svg>
+          </button>
+          {audioBakePath ? (
+            <button
+              type="button"
+              className="editor-timeline-tool"
+              title="Remove baked timeline audio"
+              aria-label="Remove baked timeline audio"
+              disabled={audioBakeBusy || !onRemoveAudioBake}
+              onClick={() => onRemoveAudioBake?.()}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+                />
+              </svg>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={[
+              "editor-timeline-tool",
+              fragmentStatus?.playheadReady ? "is-active" : "",
+              fragmentStatus?.baking ? "is-baking" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            title={
+              fragmentStatus?.error
+                ? fragmentStatus.error
+                : fragmentStatus?.baking
+                  ? `Baking preview fragments… ${fragmentStatus.ready}/${fragmentStatus.total}${
+                      fragmentStatus.queued
+                        ? ` (${fragmentStatus.queued} queued)`
+                        : ""
+                    }`
+                  : fragmentStatus && fragmentStatus.total > 0
+                    ? `Preview cache ${fragmentStatus.ready}/${fragmentStatus.total} — click to rebuild`
+                    : "Bake timeline preview fragments"
+            }
+            aria-label="Refresh timeline preview cache"
+            aria-busy={fragmentStatus?.baking === true}
+            disabled={!onRefreshFragmentCache || fragmentStatus?.baking === true}
+            onClick={() => onRefreshFragmentCache?.()}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M2.5 4.5h11v7h-11zM2.5 7h11M6 4.5v7M10 4.5v7"
               />
             </svg>
           </button>

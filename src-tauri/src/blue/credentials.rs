@@ -30,8 +30,8 @@ fn mask_token(t: &str) -> String {
 }
 
 pub fn parse_credentials_json(raw: &str) -> Result<BlueCredentials, String> {
-    let v: serde_json::Value = serde_json::from_str(raw.trim())
-        .map_err(|e| format!("Invalid credentials JSON: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(raw.trim()).map_err(|e| format!("Invalid credentials JSON: {e}"))?;
     let token = v
         .get("token")
         .and_then(|x| x.as_str())
@@ -46,8 +46,7 @@ pub fn parse_credentials_json(raw: &str) -> Result<BlueCredentials, String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            "Credentials JSON must include non-empty \"cfAccessClientId\" string field."
-                .to_string()
+            "Credentials JSON must include non-empty \"cfAccessClientId\" string field.".to_string()
         })?;
     let cf_secret = v
         .get("cfAccessClientSecret")

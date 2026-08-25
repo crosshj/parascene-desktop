@@ -6,8 +6,7 @@ import {
   type SlideshowMode,
   type TimelineClip,
 } from "../project/types";
-import { downloadIds, getCreations } from "../library/catalogClient";
-import { ensureAccessToken } from "../auth/session";
+import { getCreations } from "../library/catalogClient";
 import { syncLinkedVideoAudio } from "../layouts/editor/linkedVideoAudio";
 import { recordUiOpTrace } from "../layouts/editor/uiOpTrace";
 
@@ -148,8 +147,8 @@ export function collectRenderAssetIds(
 }
 
 /**
- * Download any missing full media for a render, then verify local paths.
- * `downloadIds` blocks until the batch finishes (unlike ensureLocal enqueue).
+ * Confirm render assets already have local files. Does not download.
+ * Generation and Sync own network; Publisher encode uses disk only.
  */
 export async function ensureRenderMediaLocal(
   clips: readonly RenderTimelineClipInput[],
@@ -169,10 +168,6 @@ export async function ensureRenderMediaLocal(
     ids: ids.slice(0, 8).join(","),
   });
 
-  // Unpublished full media needs a live bearer before Rust downloads.
-  await ensureAccessToken();
-  await downloadIds(ids);
-
   const rows = await getCreations(ids);
   const byId = new Map(rows.map((row) => [row.id, row]));
   const missing = ids.filter((id) => !byId.get(id)?.localPath?.trim());
@@ -189,13 +184,13 @@ export async function ensureRenderMediaLocal(
     type: "render_media_ensure_fail",
     count: missing.length,
     ids: missing.slice(0, 8).join(","),
-    reason: "missing_local_path_after_download",
+    reason: "missing_local_path",
   });
 
   throw new Error(
     missing.length === 1
-      ? `Could not download local media for ${missing[0]}. Sync it in Library, then try again.`
-      : `Could not download local media for ${missing.length} assets (${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}). Sync them in Library, then try again.`,
+      ? `No local file on disk for ${missing[0]}. Sync the library, then try again.`
+      : `No local files on disk for ${missing.length} assets (${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}). Sync the library, then try again.`,
   );
 }
 
@@ -210,6 +205,26 @@ export async function getTimelineRender(
   renderId: string,
 ): Promise<TimelineRender> {
   return invoke<TimelineRender>("publisher_get_render", { projectId, renderId });
+}
+
+export async function startTimelineRender(
+  projectId: string,
+  aspectRatio: ProjectAspectRatio,
+  clips: RenderTimelineClipInput[],
+  looks?: ProjectLooks,
+) {
+  const { invokePublisherRender } = await import("../services/publisherRender");
+  recordUiOpTrace({
+    type: "render_ffmpeg_start",
+    count: clips.length,
+    reason: `project=${projectId} aspect=${aspectRatio}`,
+  });
+  return invokePublisherRender({
+    projectId,
+    aspectRatio,
+    clips,
+    looks,
+  });
 }
 
 export async function renderTimeline(

@@ -108,6 +108,25 @@ export type AddAssetGenerationSuccess = {
   startFrameAssetId?: string | null;
 };
 
+/** Native folder_items after Generate: cabinet covers only, never members. */
+export function generateFolderIdsToFile(result: {
+  projectCreationIds?: readonly string[] | null;
+  videosGroupId?: string | null;
+  imagesGroupId?: string | null;
+}): string[] {
+  const covers = [result.videosGroupId, result.imagesGroupId]
+    .map((id) => String(id ?? "").trim())
+    .filter(Boolean);
+  if (covers.length > 0) return [...new Set(covers)];
+  return [
+    ...new Set(
+      (result.projectCreationIds ?? [])
+        .map((id) => String(id).trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 function stampPreviewUrl(
   frame: StartFramePreview | null | undefined,
 ): string | undefined {
@@ -504,12 +523,14 @@ export function startAddAssetGenerationJob(
         projectId,
         clipId,
         creationId: result.creationId,
-        projectCreationIds: [
-          ...new Set([
+        projectCreationIds: generateFolderIdsToFile({
+          projectCreationIds: [
             ...result.projectCreationIds,
             ...stillIdsForFlatProject,
-          ]),
-        ],
+          ],
+          videosGroupId: result.videosGroupId,
+          imagesGroupId: result.imagesGroupId,
+        }),
         projectCreationIdsToRemove: bridgeLocalIds,
         videosGroupId: result.videosGroupId,
         imagesGroupId: result.imagesGroupId,
@@ -620,7 +641,11 @@ export function retryAddAssetDownloadJob(
         projectId,
         clipId,
         creationId: result.creationId,
-        projectCreationIds: result.projectCreationIds,
+        projectCreationIds: generateFolderIdsToFile({
+          projectCreationIds: result.projectCreationIds,
+          videosGroupId: result.videosGroupId,
+          imagesGroupId: result.imagesGroupId,
+        }),
         videosGroupId: result.videosGroupId,
         imagesGroupId: result.imagesGroupId,
         prompt,
@@ -836,7 +861,11 @@ export function reconcileAddAssetGenerations(
         projectId: opts.projectId,
         clipId,
         creationId: result.creationId,
-        projectCreationIds: result.projectCreationIds,
+        projectCreationIds: generateFolderIdsToFile({
+          projectCreationIds: result.projectCreationIds,
+          videosGroupId: result.videosGroupId,
+          imagesGroupId: result.imagesGroupId,
+        }),
         videosGroupId: result.videosGroupId,
         imagesGroupId: result.imagesGroupId,
         prompt,

@@ -1,6 +1,6 @@
 use super::catalog::{
-    clear_native_project_index, default_paths, delete_creation_local,
-    prune_stale_creation_usage, ready_connection, sync_status_for, SyncStatus,
+    clear_native_project_index, default_paths, delete_creation_local, prune_stale_creation_usage,
+    ready_connection, sync_status_for, SyncStatus,
 };
 use super::folders::{
     cloud_meta_for_folder, convert_marked_project_folder_to_regular, emit_folders_updated,
@@ -338,7 +338,9 @@ fn creation_location(
     for cover in covers {
         let (cover_id, raw) = cover.map_err(|e| e.to_string())?;
         let Some(raw) = raw else { continue };
-        let Ok(value) = serde_json::from_str::<Value>(&raw) else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
         let group = value
             .get("meta")
             .and_then(|meta| meta.get("group"))
@@ -1121,8 +1123,7 @@ pub fn library_remove_project_assets(
     let mut conn = ready_connection(&paths)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
     let folder = required_project_folder(&transaction, project_id)?;
-    let folder_member_set: BTreeSet<&str> =
-        folder.member_ids.iter().map(|s| s.as_str()).collect();
+    let folder_member_set: BTreeSet<&str> = folder.member_ids.iter().map(|s| s.as_str()).collect();
     let ids_in_folder: Vec<String> = ids
         .iter()
         .filter(|id| folder_member_set.contains(id.as_str()))
@@ -1148,8 +1149,7 @@ pub fn library_remove_project_assets(
         let _ = app.emit("project-assets-updated", &result);
         return Ok(result);
     }
-    let cabinet_members =
-        cabinet_member_ids_of_folder_covers(&transaction, &folder.member_ids)?;
+    let cabinet_members = cabinet_member_ids_of_folder_covers(&transaction, &folder.member_ids)?;
     let blockers = usage_blockers(&transaction, project_id, &ids_in_folder)?
         .into_iter()
         .filter(|row| !cabinet_members.contains(&row.creation_id))
@@ -1358,9 +1358,7 @@ pub fn library_check_creation_usage(
     let mut out = Vec::new();
     for row in rows {
         let row = row.map_err(|e| e.to_string())?;
-        if wanted.contains(&row.creation_id)
-            && project_folder(&conn, &row.project_id)?.is_some()
-        {
+        if wanted.contains(&row.creation_id) && project_folder(&conn, &row.project_id)?.is_some() {
             out.push(row);
         }
     }
@@ -1584,8 +1582,7 @@ pub fn library_release_orphan_project_folder(
                 .into(),
         );
     }
-    let released =
-        convert_marked_project_folder_to_regular(&transaction, project_id, &folder_id)?;
+    let released = convert_marked_project_folder_to_regular(&transaction, project_id, &folder_id)?;
     transaction.commit().map_err(|e| e.to_string())?;
     emit_folders_updated(&app, &list_folders(&conn)?);
     Ok(released)

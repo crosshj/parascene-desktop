@@ -1,6 +1,4 @@
-use super::catalog::{
-    default_paths, get_creation_by_id, ready_connection, Creation,
-};
+use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
 use super::ffmpeg::{self, resolve_ffmpeg};
 use super::import_local::insert_local_creation;
 use super::paths::ParascenePaths;
@@ -192,7 +190,10 @@ fn merge_filename(id: &str) -> String {
     format!("{}.mp4", safe_id(id))
 }
 
-pub(crate) fn run_merge(app: &AppHandle, clips: Vec<MergeTimelineClipInput>) -> Result<Creation, String> {
+pub(crate) fn run_merge(
+    app: &AppHandle,
+    clips: Vec<MergeTimelineClipInput>,
+) -> Result<Creation, String> {
     if clips.len() < 2 {
         return Err("Select at least two contiguous video clips to merge".into());
     }

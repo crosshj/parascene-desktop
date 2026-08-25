@@ -9,21 +9,22 @@ use super::catalog::{
     default_paths, delete_creation_local, get_creation_by_id, ingest_remote_creation_json,
     list_creations, ready_connection, Creation,
 };
+use super::cloud_repair::run_cloud_repair;
 use super::download::{
     cache_generation_files, emit_creation_updated, enqueue_media, enqueue_thumbs,
 };
-use super::parascene_api::{
-    cover_source_id, create_media, creation_id, creation_is_in_flight, creation_status,
-    delete_creation, get_creation, get_creation_poll, group_creations, group_member_ids, media_url,
-    CreateOpts,
-};
-use super::cloud_repair::run_cloud_repair;
+use super::looks::RenderLooks;
 use super::merge::{run_merge, MergeTimelineClipInput};
-use super::project_assets::import_local_paths_for_project;
+use super::parascene_api::{
+    cover_source_id, create_media, creation_id, creation_is_terminal_status, creation_status,
+    delete_creation, get_creation, get_creation_poll, group_creations, group_member_ids,
+    local_path_is_output, media_url, output_media_url, wait_is_done, wait_kind_from_hints,
+    CreateOpts, WaitKind,
+};
+use super::project_assets::{import_local_paths_for_project, library_add_project_assets};
 use super::render::{await_timeline_render, RenderTimelineClipInput};
 use super::sync_full::run_sync_full;
 use super::sync_newest::run_sync_newest;
-use super::looks::RenderLooks;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,13 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-const WAIT_POLL_MS: u64 = 2_000;
+const WAIT_IMAGE_SILENCE_MS: u64 = 8_000;
+const WAIT_VIDEO_SILENCE_MS: u64 = 45_000;
+const WAIT_IMAGE_POLL_MS: u64 = 8_000;
+const WAIT_VIDEO_POLL_MS: u64 = 15_000;
+const WAIT_IMAGE_TIMEOUT_MS: u64 = 10 * 60_000;
+const WAIT_VIDEO_TIMEOUT_MS: u64 = 20 * 60_000;
+const WAIT_SLICE_MS: u64 = 1_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,9 +207,8 @@ fn emit_job(app: &AppHandle, job: &Job) {
 }
 
 fn load_and_emit(app: &AppHandle, id: &str) -> Result<Job, String> {
-    let job = with_conn(|conn| {
-        get_job_conn(conn, id)?.ok_or_else(|| format!("job {id} not found"))
-    })?;
+    let job =
+        with_conn(|conn| get_job_conn(conn, id)?.ok_or_else(|| format!("job {id} not found")))?;
     emit_job(app, &job);
     Ok(job)
 }
@@ -216,8 +222,7 @@ fn patch_job(
     result: Option<&Value>,
     error: Option<&str>,
 ) -> Result<Job, String> {
-    let checkpoint_s = checkpoint
-        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()));
+    let checkpoint_s = checkpoint.map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()));
     let result_s = result.map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()));
     with_conn(|conn| {
         update_job_fields(
@@ -293,62 +298,243 @@ fn is_transient_poll_error(err: &str) -> bool {
         || e.contains("try again")
 }
 
-fn option_nonempty(value: Option<&str>) -> bool {
-    value.map(|s| !s.trim().is_empty()).unwrap_or(false)
+struct WaitOpts {
+    kind: WaitKind,
+    silence: bool,
+    timeout_ms: u64,
+    initial: Option<Value>,
 }
 
-/// Local thumb/file means Parascene already finished — don't keep polling.
-fn wait_row_if_local_media(
+fn wait_silence_ms(kind: WaitKind) -> u64 {
+    match kind {
+        WaitKind::Image => WAIT_IMAGE_SILENCE_MS,
+        WaitKind::Video => WAIT_VIDEO_SILENCE_MS,
+    }
+}
+
+fn wait_poll_ms(kind: WaitKind) -> u64 {
+    match kind {
+        WaitKind::Image => WAIT_IMAGE_POLL_MS,
+        WaitKind::Video => WAIT_VIDEO_POLL_MS,
+    }
+}
+
+fn wait_timeout_ms(kind: WaitKind) -> u64 {
+    match kind {
+        WaitKind::Image => WAIT_IMAGE_TIMEOUT_MS,
+        WaitKind::Video => WAIT_VIDEO_TIMEOUT_MS,
+    }
+}
+
+fn wait_kind_from_payload(payload: &Value) -> Option<WaitKind> {
+    let media_type =
+        payload_str(payload, "mediaType").or_else(|| payload_str(payload, "media_type"));
+    let method = payload_str(payload, "method");
+    let intent = payload_str(payload, "intent");
+    if media_type.is_none() && method.is_none() && intent.is_none() {
+        return None;
+    }
+    Some(wait_kind_from_hints(
+        media_type.as_deref(),
+        method.as_deref(),
+        intent.as_deref(),
+    ))
+}
+
+fn catalog_wait_kind(creation_id: &str) -> Option<WaitKind> {
+    let paths = default_paths().ok()?;
+    let conn = ready_connection(&paths).ok()?;
+    let row = get_creation_by_id(&conn, creation_id).ok()??;
+    let mt = row.media_type.to_ascii_lowercase();
+    if mt == "video" {
+        Some(WaitKind::Video)
+    } else if mt == "image" {
+        Some(WaitKind::Image)
+    } else {
+        None
+    }
+}
+
+fn resolve_wait_kind(payload: &Value, creation_id: Option<&str>) -> WaitKind {
+    wait_kind_from_payload(payload)
+        .or_else(|| creation_id.and_then(catalog_wait_kind))
+        .unwrap_or(WaitKind::Video)
+}
+
+/// Local output file of the expected type. Thumbs do not count.
+fn wait_row_if_local_output(
+    kind: WaitKind,
     id: &str,
-    local_thumb: Option<&str>,
     local_path: Option<&str>,
+    media_type: &str,
     remote_json: Option<&str>,
     remote_url: Option<&str>,
+    video_url: Option<&str>,
 ) -> Option<Value> {
-    if !option_nonempty(local_thumb) && !option_nonempty(local_path) {
+    if !local_path_is_output(kind, local_path, media_type) {
         return None;
     }
     if let Some(raw) = remote_json {
         if let Ok(value) = serde_json::from_str::<Value>(raw) {
-            if !creation_is_in_flight(&value) {
+            if wait_is_done(&value, kind) {
                 return Some(value);
             }
         }
     }
-    Some(json!({
+    let mut row = json!({
         "id": id,
         "status": "complete",
+        "media_type": media_type,
         "url": remote_url.unwrap_or(""),
         "file_path": local_path.unwrap_or(""),
-    }))
+    });
+    if let Some(v) = video_url.filter(|s| !s.trim().is_empty()) {
+        row["video_url"] = json!(v);
+    }
+    Some(row)
 }
 
-fn local_wait_ready_json(creation_id: &str) -> Option<Value> {
+fn local_output_ready_json(creation_id: &str, kind: WaitKind) -> Option<Value> {
     let paths = default_paths().ok()?;
     let conn = ready_connection(&paths).ok()?;
     let row = get_creation_by_id(&conn, creation_id).ok()??;
-    wait_row_if_local_media(
+    wait_row_if_local_output(
+        kind,
         &row.id,
-        row.local_thumb_path.as_deref(),
         row.local_path.as_deref(),
+        &row.media_type,
         row.remote_json.as_deref(),
         row.remote_url.as_deref(),
+        row.video_url.as_deref(),
     )
+}
+
+fn catalog_wait_done_json(creation_id: &str, kind: WaitKind) -> Option<Value> {
+    let paths = default_paths().ok()?;
+    let conn = ready_connection(&paths).ok()?;
+    let row = get_creation_by_id(&conn, creation_id).ok()??;
+    let raw = row.remote_json.as_deref()?;
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    wait_is_done(&value, kind).then_some(value)
+}
+
+async fn wait_sleep_cancellable(
+    job_id: &str,
+    creation_id: &str,
+    kind: WaitKind,
+    duration_ms: u64,
+    started: std::time::Instant,
+    timeout_ms: u64,
+) -> Result<Option<Value>, String> {
+    let until = std::time::Instant::now() + Duration::from_millis(duration_ms);
+    loop {
+        throw_if_cancelled(job_id)?;
+        if let Some(row) = local_output_ready_json(creation_id, kind) {
+            return Ok(Some(row));
+        }
+        if let Some(row) = catalog_wait_done_json(creation_id, kind) {
+            return Ok(Some(row));
+        }
+        if started.elapsed() > Duration::from_millis(timeout_ms) {
+            return Err(format!("Timed out waiting for creation {creation_id}"));
+        }
+        let now = std::time::Instant::now();
+        if now >= until {
+            return Ok(None);
+        }
+        let slice = until
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(WAIT_SLICE_MS));
+        tokio::time::sleep(slice).await;
+    }
+}
+
+async fn finish_wait_creation(
+    app: &AppHandle,
+    job_id: &str,
+    creation_id: &str,
+    row: &Value,
+    ingest: bool,
+    on_tick: impl Fn(&Value) -> Result<(), String>,
+) -> Result<Value, String> {
+    on_tick(row)?;
+    if ingest {
+        if !creation_is_terminal_status(row) {
+            let note = format!("Saving {creation_id} locally…");
+            let _ = with_conn(|conn| {
+                update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
+            });
+            let _ = load_and_emit(app, job_id);
+        }
+        ingest_and_cache_generation(app, row).await;
+    }
+    Ok(row.clone())
 }
 
 async fn wait_creation_loop(
     app: &AppHandle,
     job_id: &str,
     creation_id: &str,
-    timeout_ms: u64,
+    opts: WaitOpts,
     on_tick: impl Fn(&Value) -> Result<(), String>,
 ) -> Result<Value, String> {
     let started = std::time::Instant::now();
+    let kind = opts.kind;
+    let timeout_ms = opts.timeout_ms;
+    if let Some(initial) = &opts.initial {
+        if wait_is_done(initial, kind) {
+            return finish_wait_creation(app, job_id, creation_id, initial, true, on_tick).await;
+        }
+    }
+    let mut need_silence = opts.silence;
     loop {
         throw_if_cancelled(job_id)?;
-        if let Some(row) = local_wait_ready_json(creation_id) {
-            on_tick(&row)?;
-            return Ok(row);
+        if let Some(row) = local_output_ready_json(creation_id, kind) {
+            return finish_wait_creation(app, job_id, creation_id, &row, false, on_tick).await;
+        }
+        if let Some(row) = catalog_wait_done_json(creation_id, kind) {
+            return finish_wait_creation(app, job_id, creation_id, &row, true, on_tick).await;
+        }
+        if need_silence {
+            let slept = wait_sleep_cancellable(
+                job_id,
+                creation_id,
+                kind,
+                wait_silence_ms(kind),
+                started,
+                timeout_ms,
+            )
+            .await?;
+            need_silence = false;
+            if let Some(row) = slept {
+                let ingest = local_output_ready_json(creation_id, kind).is_none();
+                return finish_wait_creation(app, job_id, creation_id, &row, ingest, on_tick).await;
+            }
+            continue;
+        }
+        if let Some(cool) = super::parascene_api::api_cooling_down() {
+            if started.elapsed() > Duration::from_millis(timeout_ms) {
+                return Err(format!("Timed out waiting for creation {creation_id}"));
+            }
+            let note = format!("Parascene is busy, still waiting for {creation_id}…");
+            let _ = with_conn(|conn| {
+                update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
+            });
+            let _ = load_and_emit(app, job_id);
+            let slept = wait_sleep_cancellable(
+                job_id,
+                creation_id,
+                kind,
+                cool.as_millis() as u64,
+                started,
+                timeout_ms,
+            )
+            .await?;
+            if let Some(row) = slept {
+                let ingest = local_output_ready_json(creation_id, kind).is_none();
+                return finish_wait_creation(app, job_id, creation_id, &row, ingest, on_tick).await;
+            }
+            continue;
         }
         let row = match get_creation_poll(creation_id).await {
             Ok(row) => row,
@@ -362,63 +548,58 @@ async fn wait_creation_loop(
                     .max(15_000);
                 let note = format!("Parascene is busy, still waiting for {creation_id}…");
                 let _ = with_conn(|conn| {
-                    update_job_fields(
-                        conn,
-                        job_id,
-                        Some("waiting"),
-                        Some(&note),
-                        None,
-                        None,
-                        None,
-                    )
+                    update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
                 });
                 let _ = load_and_emit(app, job_id);
-                tokio::time::sleep(Duration::from_millis(cool_ms)).await;
+                let slept =
+                    wait_sleep_cancellable(job_id, creation_id, kind, cool_ms, started, timeout_ms)
+                        .await?;
+                if let Some(row) = slept {
+                    let ingest = local_output_ready_json(creation_id, kind).is_none();
+                    return finish_wait_creation(app, job_id, creation_id, &row, ingest, on_tick)
+                        .await;
+                }
                 continue;
             }
             Err(err) => return Err(err),
         };
-        on_tick(&row)?;
-        if !creation_is_in_flight(&row) {
-            let note = format!("Saving {creation_id} locally…");
-            let _ = with_conn(|conn| {
-                update_job_fields(
-                    conn,
-                    job_id,
-                    Some("waiting"),
-                    Some(&note),
-                    None,
-                    None,
-                    None,
-                )
-            });
-            let _ = load_and_emit(app, job_id);
-            ingest_and_cache_generation(app, &row).await;
-            return Ok(row);
+        if wait_is_done(&row, kind) {
+            return finish_wait_creation(app, job_id, creation_id, &row, true, on_tick).await;
         }
+        on_tick(&row)?;
         if started.elapsed() > Duration::from_millis(timeout_ms) {
             return Err(format!("Timed out waiting for creation {creation_id}"));
         }
-        tokio::time::sleep(Duration::from_millis(WAIT_POLL_MS)).await;
+        let slept = wait_sleep_cancellable(
+            job_id,
+            creation_id,
+            kind,
+            wait_poll_ms(kind),
+            started,
+            timeout_ms,
+        )
+        .await?;
+        if let Some(row) = slept {
+            let ingest = local_output_ready_json(creation_id, kind).is_none();
+            return finish_wait_creation(app, job_id, creation_id, &row, ingest, on_tick).await;
+        }
     }
 }
 
 fn payload_str(payload: &Value, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(|v| match v {
-            Value::String(s) => {
-                let t = s.trim();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t.to_string())
-                }
+    payload.get(key).and_then(|v| match v {
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
             }
-            Value::Number(n) => Some(n.to_string()),
-            Value::Null => None,
-            _ => None,
-        })
+        }
+        Value::Number(n) => Some(n.to_string()),
+        Value::Null => None,
+        _ => None,
+    })
 }
 
 fn payload_str_or_null(payload: &Value, key: &str) -> Option<Option<String>> {
@@ -775,9 +956,7 @@ async fn verify_live_group(
                 note(
                     app,
                     ctx,
-                    &format!(
-                        "{label}: stored group {id} is missing — recovering from catalog…"
-                    ),
+                    &format!("{label}: stored group {id} is missing — recovering from catalog…"),
                 )
                 .await?;
             }
@@ -844,8 +1023,12 @@ fn recover_cabinet_from_catalog(
         }
         // When the caller has a project id, match stamped meta only — never
         // party-name title (default titles like "Untitled project" collide).
-        let matches = match (want_id, stamped_project_id.as_deref(), party_title.as_deref(), want_title)
-        {
+        let matches = match (
+            want_id,
+            stamped_project_id.as_deref(),
+            party_title.as_deref(),
+            want_title,
+        ) {
             (Some(wid), Some(sid), _, _) => sid == wid,
             (Some(_), None, _, _) => false,
             (None, _, Some(pt), Some(wt)) => pt == wt,
@@ -890,10 +1073,7 @@ fn recover_cabinet_from_catalog(
             return Some(pref.to_string());
         }
     }
-    candidates.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| a.2.cmp(&b.2))
-    });
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
     candidates.into_iter().next().map(|(id, _, _)| id)
 }
 
@@ -1004,12 +1184,8 @@ async fn group_members(
         Vec::new()
     };
     let meta = desktop_cabinet_meta(project_id, kind);
-    let grouped = group_creations(
-        &ids,
-        Some(&party_name(project_title, kind)),
-        Some(&meta),
-    )
-    .await?;
+    let grouped =
+        group_creations(&ids, Some(&party_name(project_title, kind)), Some(&meta)).await?;
     let group_id = creation_id(&grouped).ok_or_else(|| "group response missing id".to_string())?;
     let full = get_creation(&group_id).await?;
     // Detail often omits meta.group — stamp expected membership for local Assets.
@@ -1027,20 +1203,17 @@ async fn group_members(
         .map(local_group_source_creations)
         .unwrap_or_default();
     extras.extend(new_member_rows.iter().cloned());
-    let stamped = stamp_group_membership_json(
-        &full,
-        &live,
-        project_id,
-        kind,
-        project_title,
-        &extras,
-    );
+    let stamped =
+        stamp_group_membership_json(&full, &live, project_id, kind, project_title, &extras);
     ingest_and_warm(app, &stamped).await;
     ingest_embedded_group_members(&stamped);
     Ok(group_id)
 }
 
-async fn create_image_seed(app: &AppHandle, ctx: &mut EnsureCtx) -> Result<String, String> {
+async fn create_image_seed(
+    app: &AppHandle,
+    ctx: &mut EnsureCtx,
+) -> Result<(String, String), String> {
     throw_if_cancelled(&ctx.job_id)?;
     note(
         app,
@@ -1068,22 +1241,42 @@ async fn create_image_seed(app: &AppHandle, ctx: &mut EnsureCtx) -> Result<Strin
     set_pending(app, ctx, Some(id.clone())).await?;
     note(app, ctx, &format!("Waiting for image {id}…")).await?;
     let job_id = ctx.job_id.clone();
-    let done = wait_creation_loop(app, &job_id, &id, 180_000, |row| {
-        // progress ticks without holding ctx mutably across await — update via patch
-        let status = creation_status(row);
-        let note = format!("Waiting for image {id} ({status}).");
-        let _ = with_conn(|conn| {
-            update_job_fields(conn, &job_id, Some("waiting"), Some(&note), None, None, None)
-        });
-        let _ = load_and_emit(app, &job_id);
-        Ok(())
-    })
+    let done = wait_creation_loop(
+        app,
+        &job_id,
+        &id,
+        WaitOpts {
+            kind: WaitKind::Image,
+            silence: true,
+            timeout_ms: 180_000,
+            initial: Some(started),
+        },
+        |row| {
+            let status = creation_status(row);
+            let note = format!("Waiting for image {id} ({status}).");
+            let _ = with_conn(|conn| {
+                update_job_fields(
+                    conn,
+                    &job_id,
+                    Some("waiting"),
+                    Some(&note),
+                    None,
+                    None,
+                    None,
+                )
+            });
+            let _ = load_and_emit(app, &job_id);
+            Ok(())
+        },
+    )
     .await?;
     if creation_status(&done) == "failed" {
         return Err(format!("Image seed failed ({id})"));
     }
+    let url = output_media_url(&done, WaitKind::Image)
+        .ok_or_else(|| format!("Image seed {id} has no output URL"))?;
     set_pending(app, ctx, None).await?;
-    Ok(id)
+    Ok((id, url))
 }
 
 async fn create_video_from_still(
@@ -1110,30 +1303,27 @@ async fn create_video_from_still(
     set_pending(app, ctx, Some(id.clone())).await?;
     note(app, ctx, &format!("Waiting for video {id}…")).await?;
     let job_id = ctx.job_id.clone();
-    let done = wait_creation_loop(app, &job_id, &id, 20 * 60_000, |_| Ok(())).await?;
+    let done = wait_creation_loop(
+        app,
+        &job_id,
+        &id,
+        WaitOpts {
+            kind: WaitKind::Video,
+            silence: true,
+            timeout_ms: wait_timeout_ms(WaitKind::Video),
+            initial: Some(started),
+        },
+        |_| Ok(()),
+    )
+    .await?;
     if creation_status(&done) == "failed" {
         return Err(format!(
             "Video seed failed ({id}). Check Parascene Blue / LTX is available."
         ));
     }
-    let full = get_creation(&id).await?;
-    let media_type = full
-        .get("media_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let has_video = media_type == "video"
-        || full.get("video_url").and_then(|v| v.as_str()).is_some()
-        || media_url(&full).is_some();
-    if !has_video && !media_type.is_empty() && media_type != "video" {
-        return Err(format!(
-            "Expected a video creation, got media_type={} id={id}",
-            full.get("media_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?")
-        ));
+    if output_media_url(&done, WaitKind::Video).is_none() {
+        return Err(format!("Expected a video creation, id={id}"));
     }
-    ingest_and_warm(app, &full).await;
     set_pending(app, ctx, None).await?;
     Ok(id)
 }
@@ -1157,39 +1347,27 @@ async fn create_text_video_seed(app: &AppHandle, ctx: &mut EnsureCtx) -> Result<
     set_pending(app, ctx, Some(id.clone())).await?;
     note(app, ctx, &format!("Waiting for text→video {id}…")).await?;
     let job_id = ctx.job_id.clone();
-    let done = wait_creation_loop(app, &job_id, &id, 20 * 60_000, |_| Ok(())).await?;
+    let done = wait_creation_loop(
+        app,
+        &job_id,
+        &id,
+        WaitOpts {
+            kind: WaitKind::Video,
+            silence: true,
+            timeout_ms: wait_timeout_ms(WaitKind::Video),
+            initial: Some(started),
+        },
+        |_| Ok(()),
+    )
+    .await?;
     if creation_status(&done) == "failed" {
         return Err(format!("Text→video seed failed ({id})"));
     }
-    let full = get_creation(&id).await?;
-    ingest_and_warm(app, &full).await;
+    if output_media_url(&done, WaitKind::Video).is_none() {
+        return Err(format!("Expected a video creation, id={id}"));
+    }
     set_pending(app, ctx, None).await?;
     Ok(id)
-}
-
-async fn wait_for_url(
-    app: &AppHandle,
-    job_id: &str,
-    id: &str,
-    timeout_ms: u64,
-) -> Result<Option<String>, String> {
-    let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_millis(timeout_ms) {
-        throw_if_cancelled(job_id)?;
-        let row = get_creation(id).await?;
-        if let Some(url) = media_url(&row) {
-            return Ok(Some(url));
-        }
-        let note = format!("Waiting for media URL on {id}…");
-        let _ = with_conn(|conn| {
-            update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
-        });
-        let _ = load_and_emit(app, job_id);
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
-    }
-    throw_if_cancelled(job_id)?;
-    let last = get_creation(id).await?;
-    Ok(media_url(&last))
 }
 
 async fn resolve_still_for_video(
@@ -1244,12 +1422,13 @@ async fn resolve_still_for_video(
         }
     }
 
-    note(app, ctx, "Videos: no still available — generating suite still…").await?;
-    let still_id = create_image_seed(app, ctx).await?;
-    let job_id = ctx.job_id.clone();
-    let image_url = wait_for_url(app, &job_id, &still_id, 60_000)
-        .await?
-        .ok_or_else(|| "Video seed still has no URL after create".to_string())?;
+    note(
+        app,
+        ctx,
+        "Videos: no still available — generating suite still…",
+    )
+    .await?;
+    let (still_id, image_url) = create_image_seed(app, ctx).await?;
     Ok((image_url, Some(still_id)))
 }
 
@@ -1462,7 +1641,9 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
     let do_images = mode == "images" || mode == "both";
     let do_videos = mode == "videos" || mode == "both";
     if !do_images && !do_videos {
-        return Err(format!("ensure mode must be images, videos, or both (got {mode})"));
+        return Err(format!(
+            "ensure mode must be images, videos, or both (got {mode})"
+        ));
     }
 
     if let Some(pending) = ctx.pending_creation_id.clone() {
@@ -1473,7 +1654,21 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
         )
         .await?;
         set_pending(app, &mut ctx, Some(pending.clone())).await?;
-        match wait_creation_loop(app, &ctx.job_id, &pending, 20 * 60_000, |_| Ok(())).await {
+        let wait_kind = catalog_wait_kind(&pending).unwrap_or(WaitKind::Video);
+        match wait_creation_loop(
+            app,
+            &ctx.job_id,
+            &pending,
+            WaitOpts {
+                kind: wait_kind,
+                silence: false,
+                timeout_ms: wait_timeout_ms(wait_kind),
+                initial: None,
+            },
+            |_| Ok(()),
+        )
+        .await
+        {
             Ok(done) => {
                 if creation_status(&done) != "failed" {
                     note(
@@ -1520,8 +1715,7 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
     if do_videos {
         if ctx.images_group_id.is_none() {
             return Err(
-                "Videos ensure requires an Images group first. Run Ensure Images group."
-                    .into(),
+                "Videos ensure requires an Images group first. Run Ensure Images group.".into(),
             );
         }
         let videos_to_verify = ctx.videos_group_id.clone();
@@ -1565,7 +1759,7 @@ async fn run_ensure_project_groups(app: &AppHandle, job: &Job) -> Result<Value, 
                 .await?;
             }
             match create_image_seed(app, &mut ctx).await {
-                Ok(member_id) => {
+                Ok((member_id, _)) => {
                     throw_if_cancelled(&ctx.job_id)?;
                     set_pending(app, &mut ctx, None).await?;
                     note(app, &mut ctx, "Images: grouping the one image…").await?;
@@ -1835,10 +2029,11 @@ async fn run_create_media(app: &AppHandle, job: &Job) -> Result<Value, String> {
         .get("wait")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let kind = wait_kind_from_payload(&payload).unwrap_or(WaitKind::Image);
     let timeout_ms = payload
         .get("timeoutMs")
         .and_then(|v| v.as_u64())
-        .unwrap_or(20 * 60_000);
+        .unwrap_or_else(|| wait_timeout_ms(kind));
 
     let started = create_media(CreateOpts {
         server_id,
@@ -1865,7 +2060,19 @@ async fn run_create_media(app: &AppHandle, job: &Job) -> Result<Value, String> {
         return Ok(json!({ "creationId": id, "status": creation_status(&started) }));
     }
 
-    let done = wait_creation_loop(app, &job.id, &id, timeout_ms, |_| Ok(())).await?;
+    let done = wait_creation_loop(
+        app,
+        &job.id,
+        &id,
+        WaitOpts {
+            kind,
+            silence: true,
+            timeout_ms,
+            initial: Some(started),
+        },
+        |_| Ok(()),
+    )
+    .await?;
     Ok(json!({
         "creationId": id,
         "status": creation_status(&done),
@@ -1878,10 +2085,11 @@ async fn run_wait_creation(app: &AppHandle, job: &Job) -> Result<Value, String> 
         serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
     let id = payload_str(&payload, "creationId")
         .ok_or_else(|| "wait_creation requires creationId".to_string())?;
+    let kind = resolve_wait_kind(&payload, Some(&id));
     let timeout_ms = payload
         .get("timeoutMs")
         .and_then(|v| v.as_u64())
-        .unwrap_or(20 * 60_000);
+        .unwrap_or_else(|| wait_timeout_ms(kind));
     let checkpoint = json!({ "pendingCreationId": id, "creationId": id });
     patch_job(
         app,
@@ -1892,7 +2100,19 @@ async fn run_wait_creation(app: &AppHandle, job: &Job) -> Result<Value, String> 
         None,
         None,
     )?;
-    let done = wait_creation_loop(app, &job.id, &id, timeout_ms, |_| Ok(())).await?;
+    let done = wait_creation_loop(
+        app,
+        &job.id,
+        &id,
+        WaitOpts {
+            kind,
+            silence: false,
+            timeout_ms,
+            initial: None,
+        },
+        |_| Ok(()),
+    )
+    .await?;
     Ok(json!({
         "creationId": id,
         "status": creation_status(&done),
@@ -1944,11 +2164,7 @@ fn local_files_map(payload: &Value) -> Option<std::collections::HashMap<String, 
     if obj.is_empty() {
         return None;
     }
-    Some(
-        obj.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    )
+    Some(obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
 }
 
 fn generate_target(payload: &Value) -> String {
@@ -1956,16 +2172,14 @@ fn generate_target(payload: &Value) -> String {
 }
 
 fn first_local_output_path(local_paths: &[String]) -> Option<String> {
-    local_paths
-        .iter()
-        .find_map(|p| {
-            let t = p.trim();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t.to_string())
-            }
-        })
+    local_paths.iter().find_map(|p| {
+        let t = p.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    })
 }
 
 async fn maybe_import_local_generate_output(
@@ -2037,12 +2251,8 @@ async fn run_blue_generate(app: &AppHandle, job: &Job) -> Result<Value, String> 
     throw_if_cancelled(&job.id)?;
     let payload: Value =
         serde_json::from_str(&job.payload_json).map_err(|e| format!("bad payload: {e}"))?;
-    let method =
-        payload_str(&payload, "method").ok_or_else(|| "blue_generate requires method")?;
-    let args = payload
-        .get("args")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let method = payload_str(&payload, "method").ok_or_else(|| "blue_generate requires method")?;
+    let args = payload.get("args").cloned().unwrap_or_else(|| json!({}));
     let files = local_files_map(&payload);
     let _ = patch_job(
         app,
@@ -2067,10 +2277,7 @@ async fn run_replicate_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     let owner =
         payload_str(&payload, "owner").ok_or_else(|| "replicate_generate requires owner")?;
     let name = payload_str(&payload, "name").ok_or_else(|| "replicate_generate requires name")?;
-    let input = payload
-        .get("input")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let input = payload.get("input").cloned().unwrap_or_else(|| json!({}));
     let files = local_files_map(&payload).unwrap_or_default();
     let required_file_fields: Vec<String> = payload
         .get("requiredFileFields")
@@ -2176,21 +2383,21 @@ fn parascene_generate_cabinet_kind(payload: &Value) -> &'static str {
     "images"
 }
 
-/// Catalog ids the project should keep after Generate: the new creation first,
-/// then the Images/Videos cover if filing succeeded.
+/// Catalog ids to file into the project folder after Generate: the Images/Videos
+/// cover when grouping succeeded. Members stay in group meta (Assets expands).
 fn generate_result_project_ids(creation_id: &str, group_id: Option<&str>) -> Vec<String> {
-    let mut ids = Vec::new();
-    let creation = creation_id.trim();
-    if !creation.is_empty() {
-        ids.push(creation.to_string());
-    }
     if let Some(gid) = group_id {
         let g = gid.trim();
-        if !g.is_empty() && !ids.iter().any(|x| x == g) {
-            ids.push(g.to_string());
+        if !g.is_empty() {
+            return vec![g.to_string()];
         }
     }
-    ids
+    let creation = creation_id.trim();
+    if creation.is_empty() {
+        Vec::new()
+    } else {
+        vec![creation.to_string()]
+    }
 }
 
 async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, String> {
@@ -2218,7 +2425,11 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     } else {
         images_group_id.as_deref()
     };
-    let noun = if cabinet == "videos" { "video" } else { "image" };
+    let noun = if cabinet == "videos" {
+        "video"
+    } else {
+        "image"
+    };
     let cabinet_label = if cabinet == "videos" {
         "Videos"
     } else {
@@ -2226,17 +2437,24 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     };
     let target = payload_str(&payload, "target").unwrap_or_else(|| "assets".into());
     if target != "assets" && target != "timeline" {
-        return Err(format!("parascene_generate target={target} is not supported"));
+        return Err(format!(
+            "parascene_generate target={target} is not supported"
+        ));
     }
     let token = payload_str(&payload, "creationToken").unwrap_or_else(new_creation_token);
+    let kind = if cabinet == "videos" {
+        WaitKind::Video
+    } else {
+        WaitKind::Image
+    };
     let timeout_ms = payload
         .get("timeoutMs")
         .and_then(|v| v.as_u64())
-        .unwrap_or(20 * 60_000);
+        .unwrap_or_else(|| wait_timeout_ms(kind));
 
     let resume_id = resume_creation_id(job, &payload);
 
-    let id = if let Some(existing) = resume_id {
+    let (id, initial, silence) = if let Some(existing) = resume_id {
         let _ = patch_job(
             app,
             &job.id,
@@ -2250,7 +2468,7 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
             None,
             None,
         );
-        existing
+        (existing, None, false)
     } else {
         let _ = patch_job(
             app,
@@ -2270,7 +2488,8 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
             group_id: payload.get("groupId").and_then(|v| v.as_i64()),
         })
         .await?;
-        creation_id(&started).ok_or_else(|| "create missing id".to_string())?
+        let id = creation_id(&started).ok_or_else(|| "create missing id".to_string())?;
+        (id, Some(started), true)
     };
     let checkpoint = json!({
         "name": "wait",
@@ -2288,28 +2507,39 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     )?;
 
     let job_id = job.id.clone();
-    let done = wait_creation_loop(app, &job_id, &id, timeout_ms, |row| {
-        let status = creation_status(row);
-        let note = format!("Waiting for {id} ({status})");
-        let cp = json!({
-            "name": "wait",
-            "pendingCreationId": id,
-            "creationId": id,
-        });
-        let _ = with_conn(|conn| {
-            update_job_fields(
-                conn,
-                &job_id,
-                Some("waiting"),
-                Some(&note),
-                Some(&serde_json::to_string(&cp).unwrap_or_else(|_| "{}".into())),
-                None,
-                None,
-            )
-        });
-        let _ = load_and_emit(app, &job_id);
-        Ok(())
-    })
+    let done = wait_creation_loop(
+        app,
+        &job_id,
+        &id,
+        WaitOpts {
+            kind,
+            silence,
+            timeout_ms,
+            initial,
+        },
+        |row| {
+            let status = creation_status(row);
+            let note = format!("Waiting for {id} ({status})");
+            let cp = json!({
+                "name": "wait",
+                "pendingCreationId": id,
+                "creationId": id,
+            });
+            let _ = with_conn(|conn| {
+                update_job_fields(
+                    conn,
+                    &job_id,
+                    Some("waiting"),
+                    Some(&note),
+                    Some(&serde_json::to_string(&cp).unwrap_or_else(|_| "{}".into())),
+                    None,
+                    None,
+                )
+            });
+            let _ = load_and_emit(app, &job_id);
+            Ok(())
+        },
+    )
     .await?;
     throw_if_cancelled(&job.id)?;
     if creation_status(&done) == "failed" {
@@ -2366,6 +2596,14 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
         Err(err) => return Err(err),
     };
 
+    if let (Some(pid), Some(gid)) = (project_id, group_id.as_deref()) {
+        if let Err(err) =
+            library_add_project_assets(app.clone(), pid.to_string(), vec![gid.to_string()], false)
+        {
+            eprintln!("[jobs] file {cabinet_label} cover {gid} into project folder failed: {err}");
+        }
+    }
+
     let mut out = json!({
         "creationId": id,
         "projectCreationIds": generate_result_project_ids(&id, group_id.as_deref()),
@@ -2414,8 +2652,8 @@ async fn run_merge_job(app: &AppHandle, job: &Job) -> Result<Value, String> {
         .get("clips")
         .cloned()
         .ok_or_else(|| "merge requires clips".to_string())?;
-    let clips: Vec<MergeTimelineClipInput> = serde_json::from_value(clips_value)
-        .map_err(|e| format!("merge clips invalid: {e}"))?;
+    let clips: Vec<MergeTimelineClipInput> =
+        serde_json::from_value(clips_value).map_err(|e| format!("merge clips invalid: {e}"))?;
     let _ = patch_job(
         app,
         &job.id,
@@ -2426,10 +2664,9 @@ async fn run_merge_job(app: &AppHandle, job: &Job) -> Result<Value, String> {
         None,
     );
     let app_for_block = app.clone();
-    let result =
-        tauri::async_runtime::spawn_blocking(move || run_merge(&app_for_block, clips))
-            .await
-            .map_err(|e| format!("Merge task failed: {e}"))?;
+    let result = tauri::async_runtime::spawn_blocking(move || run_merge(&app_for_block, clips))
+        .await
+        .map_err(|e| format!("Merge task failed: {e}"))?;
     throw_if_cancelled(&job.id)?;
     match result {
         Ok(creation) => Ok(json!({
@@ -2491,8 +2728,15 @@ async fn run_publisher_render_job(app: &AppHandle, job: &Job) -> Result<Value, S
 async fn run_job(app: &AppHandle, job: Job) {
     let id = job.id.clone();
     clear_cancel_request(&id);
-    if let Err(err) = patch_job(app, &id, Some("running"), Some("Starting…"), None, None, None)
-    {
+    if let Err(err) = patch_job(
+        app,
+        &id,
+        Some("running"),
+        Some("Starting…"),
+        None,
+        None,
+        None,
+    ) {
         eprintln!("[jobs] failed to mark running: {err}");
         return;
     }
@@ -2598,15 +2842,7 @@ async fn run_job(app: &AppHandle, job: Job) {
             clear_cancel_request(&id);
         }
         Err(err) => {
-            let _ = patch_job(
-                app,
-                &id,
-                Some("failed"),
-                Some(&err),
-                None,
-                None,
-                Some(&err),
-            );
+            let _ = patch_job(app, &id, Some("failed"), Some(&err), None, None, Some(&err));
             clear_cancel_request(&id);
         }
     }
@@ -2816,9 +3052,7 @@ pub fn jobs_list(
             }
         } else {
             let mut stmt = conn
-                .prepare(&format!(
-                    "{JOB_SELECT} ORDER BY created_at DESC LIMIT ?1"
-                ))
+                .prepare(&format!("{JOB_SELECT} ORDER BY created_at DESC LIMIT ?1"))
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(params![lim], row_from_query)
@@ -2908,10 +3142,7 @@ mod tests {
     fn resume_prefers_checkpoint_over_payload() {
         let job = job_with_checkpoint(Some(r#"{"pendingCreationId":"25622"}"#));
         let payload = json!({ "pendingCreationId": "other" });
-        assert_eq!(
-            resume_creation_id(&job, &payload).as_deref(),
-            Some("25622")
-        );
+        assert_eq!(resume_creation_id(&job, &payload).as_deref(), Some("25622"));
         let blank = job_with_checkpoint(None);
         assert_eq!(
             resume_creation_id(&blank, &payload).as_deref(),
@@ -2930,24 +3161,66 @@ mod tests {
     }
 
     #[test]
-    fn local_media_ends_wait_even_if_remote_status_lags() {
-        assert!(wait_row_if_local_media("26045", None, None, None, None).is_none());
-        let ready = wait_row_if_local_media(
-            "26045",
-            Some("/tmp/26045.jpg"),
-            None,
-            Some(r#"{"id":26045,"status":"creating"}"#),
-            Some("https://www.parascene.com/x.png"),
-        )
-        .expect("local thumb should end wait");
-        assert!(!creation_is_in_flight(&ready));
+    fn wait_cadence_matches_policy() {
+        assert_eq!(wait_silence_ms(WaitKind::Image), 8_000);
+        assert_eq!(wait_silence_ms(WaitKind::Video), 45_000);
+        assert_eq!(wait_poll_ms(WaitKind::Image), 8_000);
+        assert_eq!(wait_poll_ms(WaitKind::Video), 15_000);
+        assert_eq!(wait_timeout_ms(WaitKind::Image), 10 * 60_000);
+        assert_eq!(wait_timeout_ms(WaitKind::Video), 20 * 60_000);
     }
 
     #[test]
-    fn generate_result_keeps_member_and_cover() {
+    fn local_output_file_ends_wait_not_thumb() {
+        assert!(wait_row_if_local_output(
+            WaitKind::Image,
+            "26045",
+            None,
+            "image",
+            None,
+            None,
+            None,
+        )
+        .is_none());
+        assert!(wait_row_if_local_output(
+            WaitKind::Video,
+            "26053",
+            Some("/tmp/26053.jpg"),
+            "video",
+            Some(r#"{"id":26053,"status":"creating","url":"https://x/still.png"}"#),
+            Some("https://x/still.png"),
+            None,
+        )
+        .is_none());
+        let ready = wait_row_if_local_output(
+            WaitKind::Image,
+            "26045",
+            Some("/tmp/26045.png"),
+            "image",
+            Some(r#"{"id":26045,"status":"creating"}"#),
+            Some("https://www.parascene.com/x.png"),
+            None,
+        )
+        .expect("local image file should end wait");
+        assert!(wait_is_done(&ready, WaitKind::Image));
+        let video = wait_row_if_local_output(
+            WaitKind::Video,
+            "26053",
+            Some("/tmp/26053.mp4"),
+            "video",
+            None,
+            None,
+            Some("https://www.parascene.com/x.mp4"),
+        )
+        .expect("local video file should end wait");
+        assert!(wait_is_done(&video, WaitKind::Video));
+    }
+
+    #[test]
+    fn generate_result_files_cover_not_member() {
         assert_eq!(
             generate_result_project_ids("26053", Some("26040")),
-            vec!["26053".to_string(), "26040".to_string()]
+            vec!["26040".to_string()]
         );
         assert_eq!(
             generate_result_project_ids("26053", None),
@@ -2985,11 +3258,6 @@ mod tests {
         let sources = stamped["meta"]["group"]["source_creations"]
             .as_array()
             .expect("snapshots");
-        assert!(
-            sources
-                .iter()
-                .any(|s| s["filename"] == "26_26053_x.png")
-        );
+        assert!(sources.iter().any(|s| s["filename"] == "26_26053_x.png"));
     }
 }
-

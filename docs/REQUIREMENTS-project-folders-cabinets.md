@@ -153,9 +153,9 @@ Library delete of a creation is **item-scoped**: block only when that creation h
 ### 4.11 Add-asset generate
 
 - **When:** Editor Generate on timeline placeholders (may complete after Editor unmounts).
-- **Writes:** Filing via §4.8; store merge of returned creation/group ids; timeline swap; usage.
-- **Why:** Keep generations project-owned.
-- **Risk:** Double-apply must stay idempotent. Must not rehydrate as “file every cabinet member.”
+- **Writes:** Wait per [GUIDE-generate-wait.md](./GUIDE-generate-wait.md); then group append (new Creation only); **native `addProjectAssets` of the cabinet cover** into the project folder; collapse members out of `folder_items`; set `imagesGroupId` / `videosGroupId`; timeline swap; usage. `projectCreationIds` are covers, not members.
+- **Why:** Keep generations project-owned. Library shows the cover inside the project folder; Assets explodes members. A cover left at Library root is a filing bug.
+- **Risk:** Double-apply must stay idempotent. Must not rehydrate as “file every cabinet member.” Must not JSON-only `mergeCreationIds` without `folder_items`. Do not file before wait says the **output** media exists.
 
 ### 4.12 Editor cabinet display hydrate
 
@@ -277,7 +277,8 @@ Legacy flat projects are valid forever without cabinets. Cabinets are additive o
 | Area | Location |
 | --- | --- |
 | Native folder membership / provision / reconcile | `src-tauri/src/library/project_assets.rs`, `folders.rs` |
-| Ensure / cleanup jobs | `src-tauri/src/library/jobs.rs` |
+| Ensure / cleanup / Generate jobs | `src-tauri/src/library/jobs.rs` |
+| Generate wait (Parascene) | [GUIDE-generate-wait.md](./GUIDE-generate-wait.md) |
 | Desktop cabinet identity | `src/project/desktopProjectGroups.ts` |
 | Ownership (folder + cabinet members) | `src/project/projectOwnership.ts` |
 | Collapse cabinet members from folder | `src/project/cabinetFolderCollapse.ts` |

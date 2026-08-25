@@ -1,9 +1,9 @@
 use super::catalog::{
     default_paths, get_creation_by_id, get_creations_by_ids, ready_connection, Creation,
 };
+use super::crt_gpu::{self, apply_crt_preset_to_video};
 use super::ffmpeg::{self, resolve_ffmpeg};
 use super::lab_audio::extend_clip_on_disk;
-use super::crt_gpu::{self, apply_crt_preset_to_video};
 use super::looks::{build_look_video_filter, RenderLooks};
 use super::paths::ParascenePaths;
 use super::reverse::ensure_reversed_media;
@@ -183,26 +183,26 @@ fn manifest_lock() -> &'static Mutex<()> {
 }
 
 #[derive(Clone, Debug)]
-struct VideoSegment {
-    duration_sec: f64,
-    source: Option<VideoSource>,
+pub(crate) struct VideoSegment {
+    pub duration_sec: f64,
+    pub source: Option<VideoSource>,
 }
 
 #[derive(Clone, Debug)]
-struct VideoSource {
-    path: PathBuf,
-    in_sec: f64,
-    out_sec: f64,
-    is_image: bool,
-    framing: Framing,
+pub(crate) struct VideoSource {
+    pub path: PathBuf,
+    pub in_sec: f64,
+    pub out_sec: f64,
+    pub is_image: bool,
+    pub framing: Framing,
     /// Play the trimmed span backwards (ping-pong pong segments).
-    reverse_trim: bool,
+    pub reverse_trim: bool,
     /// Playback rate applied after trim (1 = realtime). Extend bakes are already retimed.
-    speed: f64,
+    pub speed: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Framing {
+pub(crate) enum Framing {
     Fit,
     Fill,
     Stretch,
@@ -219,7 +219,7 @@ struct AudioSegment {
     speed: f64,
 }
 
-fn safe_id(id: &str) -> String {
+pub(crate) fn safe_id(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -262,7 +262,7 @@ fn output_size(aspect_ratio: &str) -> (u32, u32) {
     }
 }
 
-fn aspect_parts(aspect_ratio: &str) -> (u32, u32) {
+pub(crate) fn aspect_parts(aspect_ratio: &str) -> (u32, u32) {
     match aspect_ratio.trim() {
         "1:1" => (1, 1),
         "9:16" => (9, 16),
@@ -272,7 +272,7 @@ fn aspect_parts(aspect_ratio: &str) -> (u32, u32) {
 }
 
 /// Largest even aw:ah box that fits inside max_w×max_h (editor `fitAspect`).
-fn fit_inside(max_w: u32, max_h: u32, aw: u32, ah: u32) -> (u32, u32) {
+pub(crate) fn fit_inside(max_w: u32, max_h: u32, aw: u32, ah: u32) -> (u32, u32) {
     if aw == 0 || ah == 0 {
         return (max_w & !1, max_h & !1);
     }
@@ -286,12 +286,12 @@ fn fit_inside(max_w: u32, max_h: u32, aw: u32, ah: u32) -> (u32, u32) {
 }
 
 /// Editor preview is always a 16:9 stage; project aspect is a centered matte crop.
-const PREVIEW_STAGE_W: u32 = 1920;
-const PREVIEW_STAGE_H: u32 = 1080;
+pub(crate) const PREVIEW_STAGE_W: u32 = 1920;
+pub(crate) const PREVIEW_STAGE_H: u32 = 1080;
 
 /// Export frame clock. Segments are CFR at this rate, so every cut has to land
 /// on this grid or the concat drifts off it.
-const RENDER_FPS: f64 = 30.0;
+pub(crate) const RENDER_FPS: f64 = 30.0;
 
 /// Interior video gaps under this length are closed instead of rendered black.
 /// The editor snaps clip edges to 0.1s, so a shorter gap is a rounding sliver
@@ -336,7 +336,10 @@ fn clip_extend_source_span(clip: &RenderTimelineClipInput) -> f64 {
     // Frozen span must never exceed the live trim — stale values (e.g. frozen at
     // outSec before an in-point raise) would space loop/pong tiles farther apart
     // than the atrim media they emit, leaving silence holes in the mix.
-    if let Some(span) = clip.extend_source_span_sec.filter(|v| v.is_finite() && *v > 0.0) {
+    if let Some(span) = clip
+        .extend_source_span_sec
+        .filter(|v| v.is_finite() && *v > 0.0)
+    {
         return span.min(trim).max(0.1);
     }
     trim
@@ -440,8 +443,9 @@ fn resolve_extend_bake_path(
         {
             let path = PathBuf::from(stored);
             if path.is_file() {
-                if let Some(cover) =
-                    clip.extend_bake_cover_sec.filter(|v| v.is_finite() && *v > 0.0)
+                if let Some(cover) = clip
+                    .extend_bake_cover_sec
+                    .filter(|v| v.is_finite() && *v > 0.0)
                 {
                     let needed = timeline_dur * clip_speed(clip);
                     if cover + 0.001 >= needed {
@@ -494,7 +498,7 @@ fn prepare_extend_bakes(
     Ok(map)
 }
 
-fn sequence_duration(clips: &[RenderTimelineClipInput]) -> f64 {
+pub(crate) fn sequence_duration(clips: &[RenderTimelineClipInput]) -> f64 {
     clips
         .iter()
         .map(|c| c.end_sec)
@@ -535,7 +539,7 @@ fn write_manifest(
     fs::rename(&temp_path, &path).map_err(|e| format!("Could not replace render manifest: {e}"))
 }
 
-fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
+pub(crate) fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
     let output = ffmpeg::command(ffmpeg)
         .args(args)
         .stdout(std::process::Stdio::null())
@@ -597,6 +601,9 @@ fn emit_progress_detail(
     render_id: &str,
     mut progress: RenderProgress,
 ) {
+    if render_id.starts_with('_') {
+        return;
+    }
     progress.project_id = project_id.into();
     progress.render_id = render_id.into();
     let _ = update_render(paths, project_id, render_id, |render| {
@@ -708,13 +715,13 @@ struct VideoRange {
 }
 
 /// Split the video lane into contiguous spans on the export frame grid.
-fn video_ranges(lane_clips: &[&RenderTimelineClipInput], total: f64) -> Vec<VideoRange> {
-    let mut cuts: Vec<f64> = vec![0.0, total];
+fn video_ranges(lane_clips: &[&RenderTimelineClipInput], from: f64, to: f64) -> Vec<VideoRange> {
+    let mut cuts: Vec<f64> = vec![from, to];
     for clip in lane_clips {
-        if clip.start_sec.is_finite() && clip.start_sec > 0.0 && clip.start_sec < total {
+        if clip.start_sec.is_finite() && clip.start_sec > from && clip.start_sec < to {
             cuts.push(clip.start_sec);
         }
-        if clip.end_sec.is_finite() && clip.end_sec > 0.0 && clip.end_sec < total {
+        if clip.end_sec.is_finite() && clip.end_sec > from && clip.end_sec < to {
             cuts.push(clip.end_sec);
         }
     }
@@ -730,7 +737,7 @@ fn video_ranges(lane_clips: &[&RenderTimelineClipInput], total: f64) -> Vec<Vide
             continue;
         }
         let mid = (start + end) * 0.5;
-        let clip_index = video_clip_covering_index(lane_clips, mid, total);
+        let clip_index = video_clip_covering_index(lane_clips, mid, to);
         if let Some(last) = ranges.last_mut() {
             if last.clip_index == clip_index {
                 last.end = end;
@@ -750,8 +757,7 @@ fn video_ranges(lane_clips: &[&RenderTimelineClipInput], total: f64) -> Vec<Vide
     let last_range_index = ranges.len().saturating_sub(1);
     let mut closed: Vec<VideoRange> = Vec::with_capacity(ranges.len());
     for (index, range) in ranges.into_iter().enumerate() {
-        let is_interior_gap =
-            range.clip_index.is_none() && index > 0 && index < last_range_index;
+        let is_interior_gap = range.clip_index.is_none() && index > 0 && index < last_range_index;
         if is_interior_gap && range.end - range.start < GAP_CLOSE_MAX_SEC {
             if let Some(prev) = closed.last_mut() {
                 prev.end = range.end;
@@ -765,7 +771,7 @@ fn video_ranges(lane_clips: &[&RenderTimelineClipInput], total: f64) -> Vec<Vide
     // count, so unsnapped cuts make each segment round in isolation and the
     // concat drifts off the timeline.
     let mut snapped: Vec<VideoRange> = Vec::with_capacity(closed.len());
-    let mut prev_end_frame: i64 = 0;
+    let mut prev_end_frame: i64 = (from * RENDER_FPS).round() as i64;
     for range in closed {
         let start_frame = prev_end_frame;
         let mut end_frame = (range.end * RENDER_FPS).round() as i64;
@@ -788,16 +794,21 @@ fn video_ranges(lane_clips: &[&RenderTimelineClipInput], total: f64) -> Vec<Vide
     snapped
 }
 
-fn build_video_segments(
+pub(crate) fn build_video_segments(
     clips: &[RenderTimelineClipInput],
     paths: &ParascenePaths,
     app: &AppHandle,
     project_id: &str,
     render_id: &str,
     aspect_ratio: &str,
+    window: Option<(f64, f64)>,
 ) -> Result<Vec<VideoSegment>, String> {
     let total = sequence_duration(clips);
-    if total <= 0.0 {
+    let (from, to) = window.unwrap_or((0.0, total));
+    if to - from <= 1e-6 {
+        return Err("Fragment window is empty".into());
+    }
+    if window.is_none() && total <= 0.0 {
         return Err("Timeline has no duration".into());
     }
 
@@ -805,6 +816,7 @@ fn build_video_segments(
     let lane_clips: Vec<&RenderTimelineClipInput> = clips
         .iter()
         .filter(|c| clip_lane(c.lane.as_deref()) == "video")
+        .filter(|c| c.end_sec > from && c.start_sec < to)
         .filter(|c| {
             let is_slideshow = c
                 .kind
@@ -824,7 +836,7 @@ fn build_video_segments(
         })
         .collect();
 
-    let ranges = video_ranges(&lane_clips, total);
+    let ranges = video_ranges(&lane_clips, from, to);
 
     let extend_bakes = prepare_extend_bakes(&lane_clips, paths)?;
     let prepare_total = ranges.len().max(1) as u32;
@@ -834,9 +846,7 @@ fn build_video_segments(
         project_id,
         render_id,
         RenderProgress {
-            message: Some(format!(
-                "Preparing clip sources (0 of {prepare_total})…"
-            )),
+            message: Some(format!("Preparing clip sources (0 of {prepare_total})…")),
             timeline_duration_sec: Some(total),
             ..RenderProgress::base(project_id, render_id, "prepare", 0, prepare_total)
         },
@@ -930,9 +940,7 @@ fn build_video_segments(
         let source_in = if clip
             .kind
             .as_deref()
-            .map(|k| {
-                k.eq_ignore_ascii_case("slideshow") || k.eq_ignore_ascii_case("image")
-            })
+            .map(|k| k.eq_ignore_ascii_case("slideshow") || k.eq_ignore_ascii_case("image"))
             .unwrap_or(false)
         {
             (in_sec + local_offset).min(out_sec)
@@ -942,9 +950,7 @@ fn build_video_segments(
         let source_out = if clip
             .kind
             .as_deref()
-            .map(|k| {
-                k.eq_ignore_ascii_case("slideshow") || k.eq_ignore_ascii_case("image")
-            })
+            .map(|k| k.eq_ignore_ascii_case("slideshow") || k.eq_ignore_ascii_case("image"))
             .unwrap_or(false)
         {
             (source_in + duration_sec).min(out_sec)
@@ -1065,7 +1071,11 @@ fn build_video_segments(
     Ok(segments)
 }
 
-fn audio_segment_reverse_trim(clip: &RenderTimelineClipInput, local_start: f64, local_end: f64) -> bool {
+fn audio_segment_reverse_trim(
+    clip: &RenderTimelineClipInput,
+    local_start: f64,
+    local_end: f64,
+) -> bool {
     let playthrough = clip_playthrough_unit(clip);
     if clip.extend_ping_pong != Some(true) || local_end <= playthrough + 1e-6 {
         return false;
@@ -1113,8 +1123,7 @@ fn clip_is_linked_video_audio(clip: &RenderTimelineClipInput) -> bool {
 }
 
 fn clip_uses_extended_audio(clip: &RenderTimelineClipInput) -> bool {
-    let extended =
-        clip_timeline_duration(clip) > clip_playthrough_unit(clip) + 1e-3;
+    let extended = clip_timeline_duration(clip) > clip_playthrough_unit(clip) + 1e-3;
     if !extended {
         return false;
     }
@@ -1325,6 +1334,188 @@ fn collect_audio_segments(
     Ok(out)
 }
 
+fn audio_segment_filter(idx: usize, segment: &AudioSegment) -> String {
+    let delay = segment.delay_ms;
+    // Inputs are already trimmed with -ss/-t; don't atrim from the file start.
+    let mut chain = format!("[{idx}:a]asetpts=PTS-STARTPTS");
+    if let Some(tempo) = atempo_filter_chain(segment.speed) {
+        chain.push(',');
+        chain.push_str(&tempo);
+    }
+    if segment.reverse_trim {
+        chain.push_str(",areverse");
+    }
+    chain.push_str(&format!(",adelay={delay}|{delay}[a{idx}]"));
+    chain
+}
+
+fn audio_mix_pad_filter(segment_count: usize, duration_sec: f64) -> String {
+    let pad = format!(
+        "aresample=22050,aformat=channel_layouts=mono,apad=whole_dur={duration:.3},atrim=0:{duration:.3},asetpts=PTS-STARTPTS[aout]",
+        duration = duration_sec
+    );
+    if segment_count <= 1 {
+        format!("[a0]{pad}")
+    } else {
+        let labels: String = (0..segment_count).map(|i| format!("[a{i}]")).collect();
+        format!("{labels}amix=inputs={segment_count}:duration=longest:dropout_transition=0,{pad}")
+    }
+}
+
+fn audio_only_filter_complex(segments: &[AudioSegment], duration_sec: f64) -> String {
+    let mut parts: Vec<String> = segments
+        .iter()
+        .enumerate()
+        .map(|(idx, segment)| audio_segment_filter(idx, segment))
+        .collect();
+    parts.push(audio_mix_pad_filter(segments.len(), duration_sec));
+    parts.join(";")
+}
+
+fn timeline_audio_dir(paths: &ParascenePaths, project_id: &str) -> PathBuf {
+    paths
+        .cache
+        .join("timeline-audio")
+        .join(safe_id(project_id))
+}
+
+fn write_timeline_audio_mix(
+    paths: &ParascenePaths,
+    clips: &[RenderTimelineClipInput],
+    dest: &Path,
+) -> Result<f64, String> {
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
+        "FFmpeg is required to bake timeline audio. Install with: brew install ffmpeg".to_string()
+    })?;
+    let duration_sec = sequence_duration(clips);
+    if duration_sec <= 0.0 {
+        return Err("Timeline has no clips to bake".into());
+    }
+    let audio_segments = collect_audio_segments(clips, paths)?;
+    if audio_segments.is_empty() {
+        return Err("No audio on the timeline to bake".into());
+    }
+
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-threads".into(),
+        "0".into(),
+    ];
+    for segment in &audio_segments {
+        let span = (segment.out_sec - segment.in_sec).max(0.001);
+        if segment.in_sec > 0.001 {
+            args.push("-ss".into());
+            args.push(format!("{:.3}", segment.in_sec));
+        }
+        args.push("-t".into());
+        args.push(format!("{span:.3}"));
+        args.push("-i".into());
+        args.push(segment.path.display().to_string());
+    }
+    args.push("-filter_complex".into());
+    args.push(audio_only_filter_complex(&audio_segments, duration_sec));
+    args.push("-map".into());
+    args.push("[aout]".into());
+    args.push("-vn".into());
+    args.push("-ac".into());
+    args.push("1".into());
+    args.push("-ar".into());
+    args.push("22050".into());
+    args.push("-c:a".into());
+    args.push("pcm_s16le".into());
+    args.push("-t".into());
+    args.push(format!("{duration_sec:.3}"));
+
+    let partial = dest.with_extension("partial.wav");
+    if partial.exists() {
+        let _ = fs::remove_file(&partial);
+    }
+    args.push(partial.display().to_string());
+    run_ffmpeg(&ffmpeg, &args)?;
+    if !partial.is_file() {
+        return Err("ffmpeg audio bake produced no output file".into());
+    }
+    if dest.exists() {
+        let _ = fs::remove_file(dest);
+    }
+    fs::rename(&partial, dest).map_err(|e| format!("Could not finalize audio bake: {e}"))?;
+    Ok(duration_sec)
+}
+
+fn prune_timeline_audio_dir(dir: &Path, keep: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path != keep {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineAudioBakeResult {
+    pub path: String,
+    pub duration_sec: f64,
+}
+
+#[tauri::command]
+pub async fn library_bake_timeline_audio(
+    project_id: String,
+    clips: Vec<RenderTimelineClipInput>,
+) -> Result<TimelineAudioBakeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = default_paths()?;
+        let dir = timeline_audio_dir(&paths, &project_id);
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create timeline audio cache: {e}"))?;
+        let stamp = Utc::now().timestamp_millis();
+        let dest = dir.join(format!("mix-{stamp}.wav"));
+        let duration_sec = write_timeline_audio_mix(&paths, &clips, &dest)?;
+        prune_timeline_audio_dir(&dir, &dest);
+        Ok(TimelineAudioBakeResult {
+            path: dest.display().to_string(),
+            duration_sec,
+        })
+    })
+    .await
+    .map_err(|e| format!("Timeline audio bake failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn library_delete_timeline_audio_bake(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = PathBuf::from(path.trim());
+        if file.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let paths = default_paths()?;
+        let cache_root = paths.cache.join("timeline-audio");
+        fs::create_dir_all(&cache_root)
+            .map_err(|e| format!("Could not resolve timeline audio cache: {e}"))?;
+        let cache_root = fs::canonicalize(&cache_root)
+            .map_err(|e| format!("Could not resolve timeline audio cache: {e}"))?;
+        let file = match fs::canonicalize(&file) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        if !file.starts_with(&cache_root) {
+            return Err("Refusing to delete a file outside the timeline audio cache".into());
+        }
+        if file.is_file() {
+            fs::remove_file(&file)
+                .map_err(|e| format!("Could not delete timeline audio bake: {e}"))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Delete timeline audio bake failed: {e}"))?
+}
+
 fn frame_filter(out_w: u32, out_h: u32, crop_w: u32, crop_h: u32, framing: Framing) -> String {
     // Browsers size by pixel dimensions (ignore SAR/DAR).
     // Always end with fps + yuv420p so concat segments share one format/timebase.
@@ -1370,7 +1561,7 @@ fn ffmpeg_command_line(ffmpeg: &Path, args: &[String]) -> String {
         .join(" ")
 }
 
-fn concat_demixer_line(path: &Path) -> String {
+pub(crate) fn concat_demixer_line(path: &Path) -> String {
     let raw = path.display().to_string();
     format!("file '{}'", raw.replace('\'', r"'\''"))
 }
@@ -1452,7 +1643,7 @@ fn render_timeline_file(
     }
 
     let video_segments =
-        build_video_segments(clips, paths, app, project_id, render_id, aspect_ratio)?;
+        build_video_segments(clips, paths, app, project_id, render_id, aspect_ratio, None)?;
     let audio_segments = collect_audio_segments(clips, paths)?;
 
     // Encode each visual span to its own CFR mp4, then concat + re-encode.
@@ -1607,9 +1798,7 @@ fn render_timeline_file(
             project_id,
             render_id,
             RenderProgress {
-                message: Some(format!(
-                    "Finished segment {seg_num} of {seg_total}"
-                )),
+                message: Some(format!("Finished segment {seg_num} of {seg_total}")),
                 segment_index: Some(seg_num),
                 segment_count: Some(seg_total),
                 segment_duration_sec: Some(segment.duration_sec),
@@ -1779,13 +1968,7 @@ fn render_timeline_file(
             look_enabled: Some(look_on),
             look_label: look_label.clone(),
             current_command: Some(concat_command),
-            ..RenderProgress::base(
-                project_id,
-                render_id,
-                "concat",
-                seg_total,
-                seg_total + 1,
-            )
+            ..RenderProgress::base(project_id, render_id, "concat", seg_total, seg_total + 1)
         },
     );
     run_ffmpeg(&ffmpeg, &args)?;
@@ -1822,13 +2005,7 @@ fn render_timeline_file(
                     "# GPU CRT Look ({}) via wgpu — FFmpeg concat finished",
                     preset.as_str()
                 )),
-                ..RenderProgress::base(
-                    project_id,
-                    render_id,
-                    "concat",
-                    seg_total,
-                    seg_total + 1,
-                )
+                ..RenderProgress::base(project_id, render_id, "concat", seg_total, seg_total + 1)
             },
         );
         let shaded = output_path.with_extension("crt-shaded.mp4");
@@ -1840,10 +2017,7 @@ fn render_timeline_file(
         let _ = fs::remove_file(output_path);
         fs::rename(&shaded, output_path)
             .map_err(|e| format!("Could not finalize GPU CRT output: {e}"))?;
-        logged_commands.push(format!(
-            "# GPU CRT Look ({}) via wgpu",
-            preset.as_str()
-        ));
+        logged_commands.push(format!("# GPU CRT Look ({}) via wgpu", preset.as_str()));
     }
 
     let _ = fs::remove_dir_all(&work_dir);
@@ -2028,8 +2202,8 @@ fn collect_render_asset_ids(clips: &[RenderTimelineClipInput]) -> Vec<String> {
     ids.into_iter().collect()
 }
 
-/// Download media if needed, create pending row, encode to completion.
-/// Used by `publisher.render` service job (Rust owns the full loop).
+/// Create pending row, encode to completion.
+/// Used by `publisher.render` service job. Does not download — files must already be local.
 pub(crate) async fn await_timeline_render(
     app: &AppHandle,
     project_id: String,
@@ -2039,7 +2213,6 @@ pub(crate) async fn await_timeline_render(
 ) -> Result<TimelineRender, String> {
     let ids = collect_render_asset_ids(&clips);
     if !ids.is_empty() {
-        let _ = super::download::library_download_ids(app.clone(), ids.clone()).await?;
         let paths = default_paths()?;
         let missing = {
             let conn = ready_connection(&paths)?;
@@ -2056,12 +2229,12 @@ pub(crate) async fn await_timeline_render(
         if !missing.is_empty() {
             return Err(if missing.len() == 1 {
                 format!(
-                    "Could not download local media for {}. Sync it in Library, then try again.",
+                    "No local file on disk for {}. Sync the library, then try again.",
                     missing[0]
                 )
             } else {
                 format!(
-                    "Could not download local media for {} assets ({}{}). Sync them in Library, then try again.",
+                    "No local files on disk for {} assets ({}{}). Sync the library, then try again.",
                     missing.len(),
                     missing.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
                     if missing.len() > 5 { "…" } else { "" }
@@ -2130,7 +2303,8 @@ pub async fn publisher_list_renders(project_id: String) -> Result<Vec<TimelineRe
         .map_err(|e| format!("List renders task failed: {e}"))??;
     // Heavy abandoned-job cleanup must not gate the tab open path.
     tauri::async_runtime::spawn(async move {
-        let _ = tauri::async_runtime::spawn_blocking(move || heal_abandoned_renders(&heal_id)).await;
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || heal_abandoned_renders(&heal_id)).await;
     });
     Ok(rows)
 }
@@ -2561,12 +2735,7 @@ pub async fn publisher_export_render(
         let render = ready_render_for_export(&paths, &project_id, &render_id)?;
 
         let default_name = default_export_name(&project_title, &render);
-        let Some(dest) = pick_export_destination(
-            "Save video",
-            &default_name,
-            "MP4 video",
-            "mp4",
-        )?
+        let Some(dest) = pick_export_destination("Save video", &default_name, "MP4 video", "mp4")?
         else {
             return Ok(ExportRenderResult {
                 cancelled: true,
@@ -2604,8 +2773,7 @@ pub async fn publisher_export_render_audio(
         })?;
 
         let default_name = default_export_audio_name(&project_title, &render);
-        let Some(dest) =
-            pick_export_destination("Save MP3", &default_name, "MP3 audio", "mp3")?
+        let Some(dest) = pick_export_destination("Save MP3", &default_name, "MP3 audio", "mp3")?
         else {
             return Ok(ExportRenderResult {
                 cancelled: true,
@@ -2651,9 +2819,7 @@ pub async fn publisher_export_render_audio(
                 || lower.contains("output file #0 does not contain any stream")
                 || lower.contains("stream map")
             {
-                return Err(
-                    "This render has no audio track to export as MP3.".into(),
-                );
+                return Err("This render has no audio track to export as MP3.".into());
             }
             return Err(format!("Could not export MP3: {err}"));
         }
@@ -2694,7 +2860,16 @@ mod tests {
 
     fn ranges_for(clips: &[RenderTimelineClipInput], total: f64) -> Vec<VideoRange> {
         let lane: Vec<&RenderTimelineClipInput> = clips.iter().collect();
-        video_ranges(&lane, total)
+        video_ranges(&lane, 0.0, total)
+    }
+
+    fn ranges_window(
+        clips: &[RenderTimelineClipInput],
+        from: f64,
+        to: f64,
+    ) -> Vec<VideoRange> {
+        let lane: Vec<&RenderTimelineClipInput> = clips.iter().collect();
+        video_ranges(&lane, from, to)
     }
 
     fn black_count(ranges: &[VideoRange]) -> usize {
@@ -2733,6 +2908,26 @@ mod tests {
         assert_eq!(ranges[0].clip_index, None);
         assert_eq!(ranges[1].clip_index, Some(0));
         assert_eq!(ranges[2].clip_index, None);
+    }
+
+    #[test]
+    fn windowed_ranges_start_on_the_requested_frame() {
+        let clips = [clip(0.0, 6.0)];
+        let ranges = ranges_window(&clips, 2.0, 4.0);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert!((ranges[0].start - 2.0).abs() < 1e-9);
+        assert!((ranges[0].end - 4.0).abs() < 1e-9);
+        assert_eq!(ranges[0].clip_index, Some(0));
+    }
+
+    #[test]
+    fn empty_window_is_still_independently_renderable_black() {
+        let clips: [RenderTimelineClipInput; 0] = [];
+        let ranges = ranges_window(&clips, 4.0, 6.0);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert_eq!(ranges[0].clip_index, None);
+        assert!((ranges[0].start - 4.0).abs() < 1e-9);
+        assert!((ranges[0].end - 6.0).abs() < 1e-9);
     }
 
     #[test]
@@ -2812,10 +3007,7 @@ mod tests {
                 "gap/overlap before tile local={} (cursor={cursor}, start={start})",
                 tile.local_start
             );
-            assert!(
-                (dur - ((end - start))).abs() < 1e-9,
-                "duration mismatch"
-            );
+            assert!((dur - (end - start)).abs() < 1e-9, "duration mismatch");
             // Media length must match timeline tile at speed.
             let expected_media = dur * tile.speed;
             assert!(
@@ -2960,6 +3152,51 @@ mod tests {
             let tiles = plan_clip_audio_tiles(&clip);
             assert_tiles_cover_clip_without_gaps(&clip, &tiles);
         }
+    }
+
+    #[test]
+    fn audio_only_mix_pads_and_mixes_two_inputs() {
+        let segments = vec![
+            AudioSegment {
+                path: PathBuf::from("/tmp/a.wav"),
+                in_sec: 0.0,
+                out_sec: 2.0,
+                delay_ms: 0,
+                reverse_trim: false,
+                speed: 1.0,
+            },
+            AudioSegment {
+                path: PathBuf::from("/tmp/b.wav"),
+                in_sec: 1.0,
+                out_sec: 3.0,
+                delay_ms: 4000,
+                reverse_trim: true,
+                speed: 0.5,
+            },
+        ];
+        let graph = audio_only_filter_complex(&segments, 10.0);
+        assert!(graph.contains("[0:a]asetpts=PTS-STARTPTS,adelay=0|0[a0]"));
+        assert!(graph.contains("[1:a]asetpts=PTS-STARTPTS,atempo=0.500000,areverse,adelay=4000|4000[a1]"));
+        assert!(graph.contains("[a0][a1]amix=inputs=2"));
+        assert!(graph.contains("aresample=22050"));
+        assert!(graph.contains("apad=whole_dur=10.000"));
+        assert!(graph.contains("[aout]"));
+    }
+
+    #[test]
+    fn audio_only_mix_skips_amix_for_one_input() {
+        let segments = vec![AudioSegment {
+            path: PathBuf::from("/tmp/a.wav"),
+            in_sec: 0.5,
+            out_sec: 2.5,
+            delay_ms: 1000,
+            reverse_trim: false,
+            speed: 1.0,
+        }];
+        let graph = audio_only_filter_complex(&segments, 4.0);
+        assert!(graph.contains("[a0]aresample=22050"));
+        assert!(graph.contains("apad=whole_dur=4.000"));
+        assert!(!graph.contains("amix="));
     }
 
     #[test]

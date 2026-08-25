@@ -56,10 +56,7 @@ pub(crate) fn desktop_folder_meta(
     if let Some(pid) = project_id.map(str::trim).filter(|id| !id.is_empty()) {
         desktop.insert("project_id".into(), json!(pid));
     }
-    if let Some(cid) = cover_creation_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
+    if let Some(cid) = cover_creation_id.map(str::trim).filter(|id| !id.is_empty()) {
         desktop.insert("cover_creation_id".into(), json!(cid));
     }
     if desktop.is_empty() {
@@ -98,7 +95,10 @@ fn cover_creation_id_from_meta(meta: &JsonValue) -> Option<String> {
 
 /// Last pending create/update that includes `meta` for this folder, if any.
 /// `Some(None)` means pending meta clears the cover; `None` means no meta intent.
-fn pending_cover_intent(conn: &Connection, folder_id: &str) -> Result<Option<Option<String>>, String> {
+fn pending_cover_intent(
+    conn: &Connection,
+    folder_id: &str,
+) -> Result<Option<Option<String>>, String> {
     let mut intent: Option<Option<String>> = None;
     for row in list_pending_ops(conn)? {
         let op_kind = row.op.get("op").and_then(|v| v.as_str());
@@ -1624,11 +1624,7 @@ pub async fn library_set_folder_cover(
 ) -> Result<LibraryFolder, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    let folder = set_folder_cover(
-        &conn,
-        &folder_id,
-        creation_id.as_deref(),
-    )?;
+    let folder = set_folder_cover(&conn, &folder_id, creation_id.as_deref())?;
     emit_folders_updated(&app, &list_folders(&conn)?);
     Ok(folder)
 }
@@ -2020,7 +2016,10 @@ mod tests {
                 .expect("convert");
         assert_eq!(released.kind, "regular");
         assert!(released.project_id.is_none());
-        assert_eq!(released.member_ids, vec!["101".to_string(), "102".to_string()]);
+        assert_eq!(
+            released.member_ids,
+            vec!["101".to_string(), "102".to_string()]
+        );
         let pending = list_pending_ops(&conn).expect("pending");
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[0].op["op"], "delete");
@@ -2081,9 +2080,10 @@ mod tests {
         assert_eq!(listed[0].kind, "regular");
         assert!(listed[0].project_id.is_none());
         assert_eq!(listed[0].title, "Untitled project");
-        assert!(list_pending_ops(&conn).unwrap().iter().any(|row| {
-            row.op["op"] == "update" && row.op["meta"] == json!({})
-        }));
+        assert!(list_pending_ops(&conn)
+            .unwrap()
+            .iter()
+            .any(|row| { row.op["op"] == "update" && row.op["meta"] == json!({}) }));
 
         let _ = fs::remove_dir_all(&root);
     }

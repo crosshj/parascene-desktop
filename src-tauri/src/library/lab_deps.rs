@@ -569,10 +569,7 @@ pub async fn library_install_demucs() -> Result<LabDepsStatus, String> {
 }
 
 fn resolve_python() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from("python3"),
-        PathBuf::from("python"),
-    ];
+    let mut candidates: Vec<PathBuf> = vec![PathBuf::from("python3"), PathBuf::from("python")];
     #[cfg(target_os = "windows")]
     {
         candidates.push(PathBuf::from("python.exe"));

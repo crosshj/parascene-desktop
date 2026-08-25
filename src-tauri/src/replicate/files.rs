@@ -165,16 +165,14 @@ async fn upload_file_bytes(
         if !(200..300).contains(&status) {
             return Err(format!("Replicate file upload HTTP {status}: {text}"));
         }
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|e| format!("Invalid upload JSON: {e}"))?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| format!("Invalid upload JSON: {e}"))?;
         let uri = value
             .pointer("/urls/get")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                format!("Replicate file upload response missing urls.get: {text}")
-            })?;
+            .ok_or_else(|| format!("Replicate file upload response missing urls.get: {text}"))?;
         return Ok(uri);
     }
 }
@@ -185,28 +183,23 @@ pub fn pick_local_file(kind: &str) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new();
     match kind.as_str() {
         "image" => {
-            dialog = dialog
-                .set_title("Choose image for Replicate")
-                .add_filter(
-                    "Images",
-                    &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff"],
-                );
+            dialog = dialog.set_title("Choose image for Replicate").add_filter(
+                "Images",
+                &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff"],
+            );
         }
         "audio" => {
-            dialog = dialog
-                .set_title("Choose audio for Replicate")
-                .add_filter(
-                    "Audio",
-                    &["mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "webm"],
-                );
+            dialog = dialog.set_title("Choose audio for Replicate").add_filter(
+                "Audio",
+                &[
+                    "mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "webm",
+                ],
+            );
         }
         "video" => {
             dialog = dialog
                 .set_title("Choose video for Replicate")
-                .add_filter(
-                    "Video",
-                    &["mp4", "mov", "webm", "mkv", "avi", "m4v"],
-                );
+                .add_filter("Video", &["mp4", "mov", "webm", "mkv", "avi", "m4v"]);
         }
         _ => {
             dialog = dialog

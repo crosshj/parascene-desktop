@@ -59,5 +59,5 @@ Generation results and intermediates should not automatically imply “store eve
 
 - Current create/generate endpoints and params (frames, duration, parent/relay IDs)
 - Auth scopes required for generation from the native public client
-- Async job status / webhook vs poll for desktop
+- Desktop wait/poll cadence is [GUIDE-generate-wait.md](./GUIDE-generate-wait.md) (Rust loop; no webhook yet)
 - Cost / rate limits that affect UX (queue UI, partial failures)

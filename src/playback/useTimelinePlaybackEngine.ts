@@ -5,6 +5,7 @@ import {
   type RefObject,
 } from "react";
 import type { BakeInfo } from "../library/slideshowMedia";
+import type { TimelineFragmentCache } from "../layouts/editor/timelineFragmentCache";
 import type { TimelineClip } from "../project/types";
 import {
   createTimelinePlaybackEngine,
@@ -22,6 +23,10 @@ export type TimelinePlaybackEngineHostProps = {
    */
   mediaSeekEpoch?: number;
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
+  /** Cached timeline mix; when set, monitor plays this instead of live clip audio. */
+  audioBakePath?: string | null;
+  /** Replaceable fMP4 preview fragments for MSE playback. */
+  fragmentCache?: TimelineFragmentCache | null;
   volume: number;
   stageW: number;
   stageH: number;
@@ -44,6 +49,8 @@ export function useTimelinePlaybackEngine(
     playing,
     mediaSeekEpoch = 0,
     bakeInfoByClipId,
+    audioBakePath = null,
+    fragmentCache = null,
     volume,
     stageW,
     stageH,
@@ -92,6 +99,14 @@ export function useTimelinePlaybackEngine(
   useEffect(() => {
     engineRef.current?.setBakeInfo(bakeInfoByClipId ?? null);
   }, [bakeInfoByClipId]);
+
+  useEffect(() => {
+    engineRef.current?.setAudioBakePath(audioBakePath ?? null);
+  }, [audioBakePath]);
+
+  useEffect(() => {
+    engineRef.current?.setFragmentCache(fragmentCache ?? null);
+  }, [fragmentCache]);
 
   useEffect(() => {
     engineRef.current?.setVolume(volume);

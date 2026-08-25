@@ -358,6 +358,16 @@ export function parasceneStillModelFamilies(
   }));
 }
 
+/** `<optgroup>`s for Generate still model selects (caps server + family order). */
+export function parasceneStillModelEnumGroups(
+  intentId: "text_to_image" | "image_to_image",
+): Array<{ label: string; values: string[] }> {
+  return parasceneStillModelFamilies(intentId).map((group) => ({
+    label: group.label,
+    values: group.models.map((m) => m.id),
+  }));
+}
+
 export function parasceneResolveStillModel(
   intentId: "text_to_image" | "image_to_image",
   modelId: string,

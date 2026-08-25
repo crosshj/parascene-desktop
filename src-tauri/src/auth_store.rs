@@ -112,15 +112,12 @@ async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
     }
 
     // Only serialize the rotating refresh itself.
-    let _guard = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        refresh_lock().lock(),
-    )
-    .await
-    .map_err(|_| {
-        "Session check timed out — another refresh is still running. Try again in a moment."
-            .to_string()
-    })?;
+    let _guard = tokio::time::timeout(std::time::Duration::from_secs(8), refresh_lock().lock())
+        .await
+        .map_err(|_| {
+            "Session check timed out — another refresh is still running. Try again in a moment."
+                .to_string()
+        })?;
 
     if refresh_invalidated().load(Ordering::SeqCst) {
         return Err(SESSION_EXPIRED_MSG.into());

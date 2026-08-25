@@ -25,8 +25,7 @@ pub fn blue_dir() -> Result<PathBuf, String> {
 
 pub fn runs_dir() -> Result<PathBuf, String> {
     let dir = blue_dir()?.join("runs");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create runs dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create runs dir: {e}"))?;
     Ok(dir)
 }
 
@@ -273,9 +272,7 @@ pub fn upsert_record(mut record: JobRecord) -> Result<JobRecord, String> {
     }
     record.updated_at = now;
     if record.run_dir.is_empty() {
-        record.run_dir = run_dir(&record.job_id)?
-            .to_string_lossy()
-            .to_string();
+        record.run_dir = run_dir(&record.job_id)?.to_string_lossy().to_string();
     }
     if record.owner.is_empty() {
         record.owner = "blue".into();
@@ -288,10 +285,7 @@ pub fn get_job(job_id: &str) -> Result<Option<JobDetail>, String> {
     Ok(read_record(job_id)?.map(|record| JobDetail { record }))
 }
 
-pub fn list_jobs(
-    status: Option<String>,
-    query: Option<String>,
-) -> Result<Vec<JobListRow>, String> {
+pub fn list_jobs(status: Option<String>, query: Option<String>) -> Result<Vec<JobListRow>, String> {
     let dir = runs_dir()?;
     let status_filter = status
         .as_ref()
@@ -314,41 +308,51 @@ pub fn list_jobs(
             None => continue,
         };
         let list_path = path.join("list.json");
-        let (owner, name, version, st, error, created_at, predict_time, total_time, local_paths, updated_at) =
-            if list_path.exists() {
-                let raw = std::fs::read_to_string(&list_path).unwrap_or_default();
-                match serde_json::from_str::<ListRecordFile>(&raw) {
-                    Ok(f) => (
-                        f.owner.unwrap_or_else(|| "blue".into()),
-                        f.name.unwrap_or_default(),
-                        f.version,
-                        f.status.unwrap_or_else(|| "unknown".into()),
-                        f.error,
-                        f.created_at,
-                        f.predict_time,
-                        f.total_time,
-                        f.local_paths,
-                        f.updated_at.unwrap_or(0),
-                    ),
-                    Err(_) => continue,
-                }
-            } else if let Ok(Some(rec)) = read_record(&job_id) {
-                let _ = write_list_sidecar(&rec);
-                (
-                    rec.owner,
-                    rec.name,
-                    rec.version,
-                    rec.status,
-                    rec.error,
-                    rec.created_at,
-                    rec.predict_time,
-                    rec.total_time,
-                    rec.local_paths,
-                    rec.updated_at,
-                )
-            } else {
-                continue;
-            };
+        let (
+            owner,
+            name,
+            version,
+            st,
+            error,
+            created_at,
+            predict_time,
+            total_time,
+            local_paths,
+            updated_at,
+        ) = if list_path.exists() {
+            let raw = std::fs::read_to_string(&list_path).unwrap_or_default();
+            match serde_json::from_str::<ListRecordFile>(&raw) {
+                Ok(f) => (
+                    f.owner.unwrap_or_else(|| "blue".into()),
+                    f.name.unwrap_or_default(),
+                    f.version,
+                    f.status.unwrap_or_else(|| "unknown".into()),
+                    f.error,
+                    f.created_at,
+                    f.predict_time,
+                    f.total_time,
+                    f.local_paths,
+                    f.updated_at.unwrap_or(0),
+                ),
+                Err(_) => continue,
+            }
+        } else if let Ok(Some(rec)) = read_record(&job_id) {
+            let _ = write_list_sidecar(&rec);
+            (
+                rec.owner,
+                rec.name,
+                rec.version,
+                rec.status,
+                rec.error,
+                rec.created_at,
+                rec.predict_time,
+                rec.total_time,
+                rec.local_paths,
+                rec.updated_at,
+            )
+        } else {
+            continue;
+        };
 
         if let Some(ref sf) = status_filter {
             if st.to_lowercase() != *sf {

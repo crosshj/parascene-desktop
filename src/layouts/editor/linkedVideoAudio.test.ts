@@ -6,6 +6,7 @@ import {
   isLinkedVideoAudioClip,
   removeClipsWithLinkedAudio,
   syncLinkedVideoAudio,
+  videoElementCarriesMonitorAudio,
   videoWantsLinkedAudio,
 } from "./linkedVideoAudio";
 
@@ -229,6 +230,84 @@ describe("helpers", () => {
           assetId: "x",
           includeAudio: false,
         }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("videoElementCarriesMonitorAudio", () => {
+  const visual = clip({
+    id: "v1",
+    startSec: 0,
+    endSec: 4,
+    kind: "video",
+    assetId: "take",
+    includeAudio: true,
+  });
+
+  it("uses the video buffer when A1 is the linked companion", () => {
+    expect(
+      videoElementCarriesMonitorAudio(
+        visual,
+        clip({
+          id: "linked",
+          startSec: 0,
+          endSec: 4,
+          lane: "audio",
+          kind: "audio",
+          assetId: "take",
+          linkedVideoClipId: "v1",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("uses the video buffer when A1 is empty and Include Audio is on", () => {
+    expect(videoElementCarriesMonitorAudio(visual, null)).toBe(true);
+  });
+
+  it("stays silent when A1 is empty and Include Audio is off", () => {
+    expect(
+      videoElementCarriesMonitorAudio(
+        { ...visual, includeAudio: false },
+        null,
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves A1 beds on the audio element (video stays muted)", () => {
+    expect(
+      videoElementCarriesMonitorAudio(
+        { ...visual, includeAudio: false },
+        clip({
+          id: "bed",
+          startSec: 0,
+          endSec: 10,
+          lane: "audio",
+          kind: "audio",
+          assetId: "song",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("uses the video buffer for off-speed Include Audio", () => {
+    expect(
+      videoElementCarriesMonitorAudio({ ...visual, speed: 0.5 }, null),
+    ).toBe(true);
+  });
+
+  it("does not use the video element for slideshow visuals", () => {
+    expect(
+      videoElementCarriesMonitorAudio(
+        clip({
+          id: "s1",
+          startSec: 0,
+          endSec: 4,
+          kind: "slideshow",
+          includeAudio: true,
+        }),
+        null,
       ),
     ).toBe(false);
   });

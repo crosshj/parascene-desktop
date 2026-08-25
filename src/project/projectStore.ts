@@ -120,6 +120,8 @@ export type StoredProject = {
   pendingStagedDraft?: unknown | null;
   /** Timeline zoom (0.5–3); omitted → 1. */
   timelineZoom?: number;
+  /** Cached mix of timeline audio; omitted → null. */
+  timelineAudioBakePath?: string | null;
   /** Preview follows timeline; omitted → false. */
   timelineMonitorActive?: boolean;
   /** Timeline playhead seconds; omitted → 0. */
@@ -1018,6 +1020,7 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
       ? null
       : (project.pendingStagedDraft ?? null),
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
+    timelineAudioBakePath: normalizeOptionalId(project.timelineAudioBakePath),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
@@ -1266,6 +1269,7 @@ export function createStoredProject(
     selectedAssetId: null,
     pendingStagedDraft: null,
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
+    timelineAudioBakePath: null,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
     imagesGroupId: null,
@@ -1711,6 +1715,19 @@ export function setStoredProjectTimelineZoom(
   };
 }
 
+export function setStoredProjectTimelineAudioBakePath(
+  project: StoredProject,
+  path: string | null,
+): StoredProject {
+  const next = normalizeOptionalId(path);
+  if (next === normalizeOptionalId(project.timelineAudioBakePath)) return project;
+  return {
+    ...project,
+    timelineAudioBakePath: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function setStoredProjectTimelineMonitorActive(
   project: StoredProject,
   active: boolean,
@@ -2132,6 +2149,7 @@ export function storedProjectToUi(project: StoredProject): Project {
       ? null
       : (project.pendingStagedDraft ?? null),
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
+    timelineAudioBakePath: normalizeOptionalId(project.timelineAudioBakePath),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     hookSuggestions: [],
@@ -2167,6 +2185,7 @@ export function emptyUiProject(): Project {
     pendingStagedDraft: null,
     libraryAssetPlaceholders: {},
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
+    timelineAudioBakePath: null,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
     hookSuggestions: [],

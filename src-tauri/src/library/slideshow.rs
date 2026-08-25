@@ -49,9 +49,7 @@ fn slideshow_gates() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
 }
 
 fn gate_for_key(key: &str) -> Arc<Mutex<()>> {
-    let mut map = slideshow_gates()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut map = slideshow_gates().lock().unwrap_or_else(|e| e.into_inner());
     map.entry(key.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -505,11 +503,7 @@ fn unique_partial(dest: &Path) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("slideshow");
-    let name = format!(
-        "{stem}.partial.{}.{}.mp4",
-        std::process::id(),
-        nanos
-    );
+    let name = format!("{stem}.partial.{}.{}.mp4", std::process::id(), nanos);
     dest.with_file_name(name)
 }
 
@@ -533,7 +527,10 @@ fn encode_slideshow(
     let random = input.random.unwrap_or(false);
     if random {
         let order = shuffled_indices(images.len(), input.seed.unwrap_or(0));
-        images = order.into_iter().map(|index| images[index].clone()).collect();
+        images = order
+            .into_iter()
+            .map(|index| images[index].clone())
+            .collect();
     }
     let image_paths: Vec<PathBuf> = images.iter().map(|img| img.path.clone()).collect();
     let image_energy: Vec<f32> = images.iter().map(|img| img.energy).collect();
@@ -566,9 +563,7 @@ fn encode_slideshow(
             audio_in,
         );
         if mapped.is_empty() {
-            return Err(
-                "No beats found in the overlapping audio range for this slideshow".into(),
-            );
+            return Err("No beats found in the overlapping audio range for this slideshow".into());
         }
         if !random && (mode == "beat_energy" || mode == "beat") {
             if let Ok((env, hz)) = ensure_energy(paths, audio_id) {

@@ -5,8 +5,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useShell } from "../../app/ShellProvider";
 import { fieldSchemasToInputFields } from "../../forms/fieldSchema";
-import { promptSchemaField } from "../../forms/schemaForm";
-import { WorkflowForm } from "../../forms/WorkflowForm";
+import {
+  enumGroupsFromColonLabels,
+  promptSchemaField,
+} from "../../forms/schemaForm";
+import { SchemaScalarField } from "../../forms/SchemaScalarField";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import { DEFAULT_PROJECT_ASPECT_RATIO } from "../../project/aspectRatios";
 import { serviceDescribe } from "../../services/serviceClient";
@@ -22,6 +25,7 @@ import {
 } from "./libraryAssetGenerationStore";
 import {
   parasceneResolveStillModel,
+  parasceneStillModelEnumGroups,
   parasceneStillModelFamilies,
 } from "./parasceneProductCaps";
 import type { GenerateServerId } from "./previewIntent";
@@ -56,6 +60,7 @@ type ModelOption = {
 function modelSelectField(
   options: ModelOption[],
   label: string,
+  groups?: Array<{ label: string; values: string[] }>,
 ): ReplicateInputField {
   return {
     name: "model",
@@ -63,6 +68,8 @@ function modelSelectField(
     typeName: "string",
     required: true,
     enumValues: options.map((m) => m.id),
+    enumLabels: Object.fromEntries(options.map((m) => [m.id, m.label])),
+    enumGroups: groups && groups.length > 0 ? groups : null,
     fileLike: false,
     arrayItemFileLike: false,
   };
@@ -84,10 +91,14 @@ export function useTextToImageForm(
   const { project } = useShell();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
 
-  const parasceneRoutes = useMemo(() => {
+  const parasceneFamilies = useMemo(() => {
     if (server !== "parascene_blue") return null;
-    return parasceneStillModelFamilies("text_to_image").flatMap((g) => g.models);
+    return parasceneStillModelFamilies("text_to_image");
   }, [server]);
+  const parasceneRoutes = useMemo(() => {
+    if (!parasceneFamilies) return null;
+    return parasceneFamilies.flatMap((g) => g.models);
+  }, [parasceneFamilies]);
   const parasceneModelOptions = useMemo(() => {
     if (!parasceneRoutes) return null;
     return parasceneRoutes.map((m) => ({
@@ -222,25 +233,39 @@ export function useTextToImageForm(
     }
   }
 
-  const schemaFields = useMemo(() => {
-    const modelField = describeFields.find((f) => f.name === "model");
-    const promptField =
-      describeFields.find((f) => f.name === "prompt") ?? promptSchemaField();
+  const { modelField, promptField } = useMemo(() => {
+    const describedModel = describeFields.find((f) => f.name === "model");
+    const describedPrompt = describeFields.find((f) => f.name === "prompt");
     const modelOptions = formModels ?? [];
-    const mergedModel: ReplicateInputField = modelField
+    const enumLabels: Record<string, string> = {
+      ...(describedModel?.enumLabels ?? {}),
+    };
+    for (const m of modelOptions) {
+      enumLabels[m.id] = m.label;
+    }
+    const enumGroups =
+      parasceneFamilies && parasceneFamilies.length > 0
+        ? parasceneStillModelEnumGroups("text_to_image")
+        : enumGroupsFromColonLabels(modelOptions);
+    const mergedModel: ReplicateInputField = describedModel
       ? {
-          ...modelField,
+          ...describedModel,
           enumValues:
             modelOptions.length > 0
               ? modelOptions.map((m) => m.id)
-              : modelField.enumValues,
+              : describedModel.enumValues,
+          enumLabels,
+          enumGroups: enumGroups ?? null,
         }
-      : modelSelectField(
-          modelOptions,
-          server === "blue_direct" ? "Blue model" : "Model",
-        );
-    return [mergedModel, promptField];
-  }, [describeFields, formModels, server]);
+      : modelSelectField(modelOptions, "Model", enumGroups);
+    return {
+      modelField: mergedModel,
+      promptField: {
+        ...(describedPrompt ?? promptSchemaField("prompt", { description: "" })),
+        description: "",
+      },
+    };
+  }, [describeFields, formModels, parasceneFamilies]);
 
   const lockedReviewKey = locked
     ? `${initialPrompt}\0${initialModelId ?? ""}`
@@ -318,40 +343,54 @@ export function useTextToImageForm(
     });
   };
 
-  const modelLabel =
-    server === "blue_direct"
-      ? "Blue model"
-      : server === "parascene_blue"
-        ? "Parascene model"
-        : "Model";
+  const onFieldChange = (name: string, value: string) => {
+    setValues((prev) => ({ ...prev, [name]: value }));
+    if (name === "model") setModelId(value || null);
+  };
 
   const fields = (
-    <WorkflowForm
+    <form
       className={`add-asset-workflow-form ${idPrefix}-form`}
-      fields={schemaFields}
-      values={values}
-      onChange={(name, value) => {
-        setValues((prev) => ({ ...prev, [name]: value }));
-        if (name === "model") setModelId(value || null);
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (fieldsLocked) return;
+        handleGenerate();
       }}
-      disabled={fieldsLocked}
-      onSubmit={() => handleGenerate()}
-      beforeFields={
-        modelsError ? (
-          <section className="add-asset-generate-section">
-            <p className="add-asset-generate-error">{modelsError}</p>
-          </section>
-        ) : formModels == null ? (
-          <section className="add-asset-generate-section">
-            <p className="muted">Loading {modelLabel.toLowerCase()}…</p>
-          </section>
-        ) : formModels.length === 0 ? (
-          <section className="add-asset-generate-section">
-            <p className="muted">No models available for this server.</p>
-          </section>
-        ) : null
-      }
-    />
+    >
+      {modelsError ? (
+        <section className="add-asset-generate-section">
+          <p className="add-asset-generate-error">{modelsError}</p>
+        </section>
+      ) : formModels == null ? (
+        <section className="add-asset-generate-section">
+          <p className="muted">Loading models…</p>
+        </section>
+      ) : formModels.length === 0 ? (
+        <section className="add-asset-generate-section">
+          <p className="muted">No models available for this server.</p>
+        </section>
+      ) : null}
+      <section className="add-asset-generate-section">
+        <h3>Model</h3>
+        <SchemaScalarField
+          field={modelField}
+          values={values}
+          onChange={onFieldChange}
+          disabled={fieldsLocked}
+          showFieldChrome={false}
+        />
+      </section>
+      <section className="add-asset-generate-section">
+        <h3>Prompt</h3>
+        <SchemaScalarField
+          field={promptField}
+          values={values}
+          onChange={onFieldChange}
+          disabled={fieldsLocked}
+          showFieldChrome={false}
+        />
+      </section>
+    </form>
   );
 
   const cloneAction =

@@ -38,7 +38,8 @@ pub async fn run_refresh_creations_by_id(
     let wanted = {
         let paths = default_paths()?;
         let conn = ready_connection(&paths)?;
-        let remaining = ids_needing_group_list_refresh(&conn, &wanted.into_iter().collect::<Vec<_>>())?;
+        let remaining =
+            ids_needing_group_list_refresh(&conn, &wanted.into_iter().collect::<Vec<_>>())?;
         remaining.into_iter().collect::<HashSet<_>>()
     };
     if wanted.is_empty() {

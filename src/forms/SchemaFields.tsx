@@ -12,6 +12,7 @@ export type SchemaFieldsProps = {
   onChange: (name: string, value: string) => void;
   disabled?: boolean;
   showAspectPreview?: boolean;
+  showFieldChrome?: boolean;
   /** Lab file/media slots — until shared media slot exists. */
   renderFileField?: (field: ReplicateInputField) => ReactNode;
 };
@@ -22,6 +23,7 @@ export function SchemaFields({
   onChange,
   disabled = false,
   showAspectPreview = false,
+  showFieldChrome = true,
   renderFileField,
 }: SchemaFieldsProps) {
   return (
@@ -42,6 +44,7 @@ export function SchemaFields({
             onChange={onChange}
             disabled={disabled}
             showAspectPreview={showAspectPreview}
+            showFieldChrome={showFieldChrome}
           />
         );
       })}

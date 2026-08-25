@@ -56,6 +56,28 @@ export function formatRunError(message: string): string {
   }
 }
 
+export type SchemaEnumGroup = { label: string; values: string[] };
+
+/** Group labels like `flux: flux1-dev` when more than one family is present. */
+export function enumGroupsFromColonLabels(
+  options: Array<{ id: string; label: string }>,
+): SchemaEnumGroup[] | undefined {
+  const grouped = new Map<string, string[]>();
+  const order: string[] = [];
+  for (const option of options) {
+    const colon = option.label.indexOf(": ");
+    const family = colon > 0 ? option.label.slice(0, colon).trim() : "";
+    const key = family || "Other";
+    if (!grouped.has(key)) {
+      order.push(key);
+      grouped.set(key, []);
+    }
+    grouped.get(key)!.push(option.id);
+  }
+  if (order.length < 2) return undefined;
+  return order.map((label) => ({ label, values: grouped.get(label) ?? [] }));
+}
+
 /** Shared prompt field for Generate still workflows. */
 export function promptSchemaField(
   name = "prompt",

@@ -104,9 +104,8 @@ fn source_path(
 ) -> Result<PathBuf, String> {
     if reverse {
         // Never bake reverse from a thumbnail request — wait for the Bake button.
-        let reversed = existing_reversed_media(paths, creation).ok_or_else(|| {
-            "Reversed media is not baked yet — hit Bake, then retry".to_string()
-        })?;
+        let reversed = existing_reversed_media(paths, creation)
+            .ok_or_else(|| "Reversed media is not baked yet — hit Bake, then retry".to_string())?;
         return Ok(PathBuf::from(reversed.path));
     }
     let local = creation
@@ -187,9 +186,9 @@ mod tests {
             center_x: 10.0,
             center_y: -5.0,
         });
-        assert!(filter.starts_with(
-            "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720"
-        ));
+        assert!(
+            filter.starts_with("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720")
+        );
         assert!(filter.contains("crop=1280:720"));
         assert!(filter.contains("crop=404:720:(iw-404)/2:(ih-720)/2"));
         assert!(filter.contains("-128.000"));
@@ -211,7 +210,11 @@ mod tests {
         let output = dir.join("output.jpg");
         let mut input = RgbImage::new(100, 100);
         for (x, _, pixel) in input.enumerate_pixels_mut() {
-            *pixel = if x < 50 { Rgb([240, 10, 10]) } else { Rgb([10, 10, 240]) };
+            *pixel = if x < 50 {
+                Rgb([240, 10, 10])
+            } else {
+                Rgb([10, 10, 240])
+            };
         }
         input.save(&source).unwrap();
         extract_frame(
@@ -291,12 +294,9 @@ fn extract_frame(
             "-frames:v",
             "1",
             "-vf",
-            &composition
-                .map(composition_filter)
-                .unwrap_or_else(|| {
-                    "scale=720:720:force_original_aspect_ratio=decrease,format=yuv420p"
-                        .into()
-                }),
+            &composition.map(composition_filter).unwrap_or_else(|| {
+                "scale=720:720:force_original_aspect_ratio=decrease,format=yuv420p".into()
+            }),
             "-q:v",
             "2",
             "-update",
@@ -404,7 +404,14 @@ pub async fn library_ensure_clip_thumb(
     center_y: Option<f64>,
 ) -> Result<String, String> {
     ensure_clip_thumb_path(
-        id, reverse, time_sec, framing, aspect_ratio, zoom, center_x, center_y,
+        id,
+        reverse,
+        time_sec,
+        framing,
+        aspect_ratio,
+        zoom,
+        center_x,
+        center_y,
     )
     .await
 }

@@ -7,6 +7,7 @@ import {
   clipExtendPongSegmentFractions,
   computeExtendBakeKey,
   computeExtendBakeTargetSec,
+  extendBakeSourceSec,
   mergeExtendBakeFields,
 } from "./clipExtendBake";
 
@@ -49,6 +50,20 @@ describe("clipExtendBake", () => {
     });
     // mediaNeeded = 19 → ceil(19/9)*9 = 27
     expect(computeExtendBakeTargetSec(fast)).toBe(27);
+  });
+
+  it("maps bake file time like a normal clip from in-point 0", () => {
+    const extended = clip({
+      id: "v1",
+      startSec: 10,
+      endSec: 20,
+      assetId: "a1",
+      inSec: 2,
+      outSec: 6,
+      speed: 2,
+    });
+    expect(extendBakeSourceSec(extended, 10)).toBe(0);
+    expect(extendBakeSourceSec(extended, 14)).toBe(8);
   });
 
   it("reuses bake when slowing down if cover still fits", () => {

@@ -1,7 +1,7 @@
 # Plan — Backend ownership (Rust vs frontend)
 
 **Status:** Direction settled; migration incremental  
-**Related:** [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [PLAN-library-sync.md](./PLAN-library-sync.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [PLAN-song-to-video.md](./PLAN-song-to-video.md)
+**Related:** [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [GUIDE-generate-wait.md](./GUIDE-generate-wait.md), [PLAN-library-sync.md](./PLAN-library-sync.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [PLAN-song-to-video.md](./PLAN-song-to-video.md)
 
 ## Goal
 

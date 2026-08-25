@@ -4,9 +4,8 @@
 //! fetch up to 2×50 newest pages → map → upsert → prune recent local ghosts.
 
 use super::catalog::{
-    apply_manifest, cloud_ids_since, default_paths, delete_creation_local,
-    existing_creation_ids, map_remote_creation_json, ready_connection, sync_status_for,
-    CreationUpsert,
+    apply_manifest, cloud_ids_since, default_paths, delete_creation_local, existing_creation_ids,
+    map_remote_creation_json, ready_connection, sync_status_for, CreationUpsert,
 };
 use super::parascene_api::{get_creation, list_my_creations};
 use chrono::{Duration, Utc};

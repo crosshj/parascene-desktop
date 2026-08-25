@@ -57,8 +57,8 @@ pub fn merge_local_files(
     if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
         return Ok(map);
     }
-    let parsed: HashMap<String, Value> = serde_json::from_str(trimmed)
-        .map_err(|e| format!("Invalid localFilesJson: {e}"))?;
+    let parsed: HashMap<String, Value> =
+        serde_json::from_str(trimmed).map_err(|e| format!("Invalid localFilesJson: {e}"))?;
     map = parsed;
     Ok(map)
 }
@@ -142,9 +142,23 @@ fn ext_from_url(url: &str) -> &str {
             e.len() <= 5
                 && matches!(
                     lower.as_str(),
-                    "mp4" | "mov" | "webm" | "m4v" | "mkv" | "avi" | "png"
-                        | "jpg" | "jpeg" | "webp" | "gif" | "wav" | "mp3"
-                        | "m4a" | "aac" | "flac" | "ogg"
+                    "mp4"
+                        | "mov"
+                        | "webm"
+                        | "m4v"
+                        | "mkv"
+                        | "avi"
+                        | "png"
+                        | "jpg"
+                        | "jpeg"
+                        | "webp"
+                        | "gif"
+                        | "wav"
+                        | "mp3"
+                        | "m4a"
+                        | "aac"
+                        | "flac"
+                        | "ogg"
                 )
         })
         .unwrap_or("")
@@ -371,8 +385,7 @@ pub async fn download_prediction_outputs(
         .unwrap_or_else(|| record.input.clone());
 
     let run_dir = history::runs_dir()?.join(&prediction_id);
-    std::fs::create_dir_all(&run_dir)
-        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    std::fs::create_dir_all(&run_dir).map_err(|e| format!("Could not create run dir: {e}"))?;
 
     emit_run(
         &app,
@@ -381,7 +394,10 @@ pub async fn download_prediction_outputs(
             owner: owner.clone(),
             name: name.clone(),
             status: "downloading".into(),
-            message: Some(format!("Retrying download of {} output(s)…", output_urls.len())),
+            message: Some(format!(
+                "Retrying download of {} output(s)…",
+                output_urls.len()
+            )),
             error: None,
             local_paths: Vec::new(),
             done: false,
@@ -518,9 +534,7 @@ pub async fn wait_prediction_outputs(
     let mut prediction = client::get_json(&token, &api_url).await?;
     let (owner, name) = owner_name_from_prediction(
         &prediction,
-        local
-            .as_ref()
-            .map(|r| (r.owner.as_str(), r.name.as_str())),
+        local.as_ref().map(|r| (r.owner.as_str(), r.name.as_str())),
     )?;
     let version = prediction
         .get("version")
@@ -689,9 +703,10 @@ pub async fn run_prediction(
 
     let detail = cache::get_model_local(&owner, &name)?
         .ok_or_else(|| format!("Model {owner}/{name} not found in local catalog"))?;
-    let version = detail.latest_version_id.clone().ok_or_else(|| {
-        format!("No cached version for {owner}/{name}. Use Update model first.")
-    })?;
+    let version = detail
+        .latest_version_id
+        .clone()
+        .ok_or_else(|| format!("No cached version for {owner}/{name}. Use Update model first."))?;
     if !detail.schema_cached {
         return Err(format!(
             "No schema cached for {owner}/{name}. Use Update model first."
@@ -750,8 +765,7 @@ pub async fn run_prediction(
         let mut upload_index = 0usize;
         let mut sorted: Vec<(String, Value)> = local_files.into_iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        let obj_keys_from_local: Vec<String> =
-            sorted.iter().map(|(k, _)| k.clone()).collect();
+        let obj_keys_from_local: Vec<String> = sorted.iter().map(|(k, _)| k.clone()).collect();
         let mut obj = input.as_object().cloned().unwrap_or_default();
 
         async fn upload_one(
@@ -871,9 +885,9 @@ pub async fn run_prediction(
         for field in obj_keys_from_local.iter() {
             let ok = match obj.get(field) {
                 Some(Value::String(s)) => !s.trim().is_empty(),
-                Some(Value::Array(arr)) => arr.iter().any(|v| {
-                    v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)
-                }),
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .any(|v| v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)),
                 _ => false,
             };
             if !ok {
@@ -889,9 +903,9 @@ pub async fn run_prediction(
     for field in &required_fields {
         let ok = match input.get(field) {
             Some(Value::String(s)) => !s.trim().is_empty(),
-            Some(Value::Array(arr)) => arr.iter().any(|v| {
-                v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)
-            }),
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .any(|v| v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)),
             _ => false,
         };
         if !ok {
@@ -1136,8 +1150,7 @@ pub async fn run_prediction(
     }
 
     let run_dir = history::runs_dir()?.join(&prediction_id);
-    std::fs::create_dir_all(&run_dir)
-        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    std::fs::create_dir_all(&run_dir).map_err(|e| format!("Could not create run dir: {e}"))?;
 
     // Persist raw output for text/JSON models (and as a sidecar for file models).
     if !output.is_null() {
@@ -1271,9 +1284,15 @@ mod tests {
     fn merge_prefers_hashmap_when_present() {
         let mut map = HashMap::new();
         map.insert("start_image".into(), json!("/tmp/a.jpg"));
-        let out = merge_local_files(Some(map), Some(r#"{"start_image":"/tmp/b.jpg"}"#.to_string()))
-            .expect("merge");
-        assert_eq!(out.get("start_image").and_then(|v| v.as_str()), Some("/tmp/a.jpg"));
+        let out = merge_local_files(
+            Some(map),
+            Some(r#"{"start_image":"/tmp/b.jpg"}"#.to_string()),
+        )
+        .expect("merge");
+        assert_eq!(
+            out.get("start_image").and_then(|v| v.as_str()),
+            Some("/tmp/a.jpg")
+        );
     }
 
     #[test]
@@ -1297,29 +1316,14 @@ mod tests {
 
     #[test]
     fn output_names_include_provider_model_and_iso() {
-        assert_eq!(
-            safe_filename_part("black-forest-labs"),
-            "black-forest-labs"
-        );
+        assert_eq!(safe_filename_part("black-forest-labs"), "black-forest-labs");
         assert_eq!(safe_filename_part("flux/dev"), "flux_dev");
         assert_eq!(
-            output_filename_stem(
-                "krea",
-                "flux",
-                "2026-07-29T16-57-00.123Z",
-                0,
-                1
-            ),
+            output_filename_stem("krea", "flux", "2026-07-29T16-57-00.123Z", 0, 1),
             "krea_flux_2026-07-29T16-57-00.123Z"
         );
         assert_eq!(
-            output_filename_stem(
-                "krea",
-                "flux",
-                "2026-07-29T16-57-00.123Z",
-                1,
-                2
-            ),
+            output_filename_stem("krea", "flux", "2026-07-29T16-57-00.123Z", 1, 2),
             "krea_flux_2026-07-29T16-57-00.123Z_1"
         );
     }

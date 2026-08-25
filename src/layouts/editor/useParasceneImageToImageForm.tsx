@@ -298,9 +298,9 @@ export function useParasceneImageToImageForm(
           </p>
         ) : (
           <label className="add-asset-generate-field">
-            <span>Parascene model</span>
             <select
               className="control"
+              aria-label="Model"
               value={modelId ?? ""}
               disabled={fieldsLocked}
               onChange={(e) => setModelId(e.target.value || null)}
@@ -321,16 +321,15 @@ export function useParasceneImageToImageForm(
       <section className="add-asset-generate-section">
         <h3>Prompt</h3>
         <label className="add-asset-generate-field">
-          <span className="sr-only">Prompt</span>
           <textarea
             ref={promptRef}
             id={`${idPrefix}-prompt`}
             className="control"
+            aria-label="Prompt"
             rows={3}
             value={prompt}
             disabled={fieldsLocked}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe the edit…"
           />
         </label>
       </section>

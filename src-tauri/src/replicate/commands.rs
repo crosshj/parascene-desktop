@@ -40,14 +40,7 @@ pub fn replicate_models_list_cached(
     offset: Option<u64>,
     limit: Option<u64>,
 ) -> Result<ModelListPage, String> {
-    cache::list_cached(
-        query,
-        features,
-        sort,
-        enabled,
-        offset.unwrap_or(0),
-        limit,
-    )
+    cache::list_cached(query, features, sort, enabled, offset.unwrap_or(0), limit)
 }
 
 #[tauri::command]

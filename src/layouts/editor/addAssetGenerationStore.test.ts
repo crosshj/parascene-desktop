@@ -35,6 +35,7 @@ import {
   clearAddAssetGenerationError,
   clearAddAssetGenerationIfClipMissing,
   getAddAssetGenerationSession,
+  generateFolderIdsToFile,
   isAddAssetGenerationInflight,
   reconcileAddAssetGenerations,
   startAddAssetGenerationJob,
@@ -43,6 +44,28 @@ import {
 
 const runMock = vi.mocked(runAddAssetGeneration);
 const resumeBlueMock = vi.mocked(resumeBlueDirectAddAssetWait);
+
+describe("generateFolderIdsToFile", () => {
+  it("files the Videos cover, not the generated member", () => {
+    expect(
+      generateFolderIdsToFile({
+        projectCreationIds: ["26053", "26040"],
+        videosGroupId: "26040",
+        imagesGroupId: "18842",
+      }),
+    ).toEqual(["26040", "18842"]);
+  });
+
+  it("files returned ids when there is no cabinet cover (local-only)", () => {
+    expect(
+      generateFolderIdsToFile({
+        projectCreationIds: ["local-vid"],
+        videosGroupId: null,
+        imagesGroupId: null,
+      }),
+    ).toEqual(["local-vid"]);
+  });
+});
 
 function makeRequest(): StartAddAssetGenerationRequest {
   return {
@@ -488,7 +511,7 @@ describe("addAssetGenerationStore", () => {
         creationId: "vid-1",
         startFrameAssetId: "still-creation-9",
         firstFrameSource: { kind: "asset", assetId: "still-creation-9" },
-        projectCreationIds: ["videos-group-1"],
+        projectCreationIds: ["videos-group-1", "images-group-1"],
         projectCreationIdsToRemove: ["local-bridge-extract"],
       }),
     );

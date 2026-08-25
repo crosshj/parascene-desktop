@@ -100,6 +100,30 @@ export function idsForGroupApiCall(
   return out;
 }
 
+/** Candidates that are not the cover and not already filed as members. */
+export function newIdsToAppendToGroup(
+  existingGroupId: string | null,
+  existingMemberIds: readonly string[],
+  candidateIds: readonly string[],
+): string[] {
+  const already = new Set<string>();
+  const remember = (raw: string | null | undefined) => {
+    const id = String(raw ?? "").trim();
+    if (id) already.add(id);
+  };
+  remember(existingGroupId);
+  for (const id of existingMemberIds) remember(id);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of candidateIds) {
+    const id = String(raw).trim();
+    if (!id || seen.has(id) || already.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Expected membership after a successful append (for local catalog stamp). */
 export function expectedMembersAfterAppend(
   existingMemberIds: readonly string[],
@@ -1902,12 +1926,21 @@ async function groupMembers(opts: {
   projectId: string;
   projectTitle: string;
 }): Promise<string> {
-  // For local stamp only — do not re-send these on the group POST.
+  // Already-filed members are hidden as standalone rows — resending them
+  // returns "Cannot group deleted creations".
   const existingMemberIds = opts.existingGroupId
     ? await loadExistingMemberIds(opts.existingGroupId)
     : [];
+  const toAppend = newIdsToAppendToGroup(
+    opts.existingGroupId,
+    existingMemberIds,
+    opts.memberIds,
+  );
+  if (toAppend.length === 0 && opts.existingGroupId) {
+    return opts.existingGroupId;
+  }
 
-  const ids = idsForGroupApiCall(opts.existingGroupId, opts.memberIds);
+  const ids = idsForGroupApiCall(opts.existingGroupId, toAppend);
   const expectedMembers = expectedMembersAfterAppend(
     existingMemberIds,
     opts.memberIds,

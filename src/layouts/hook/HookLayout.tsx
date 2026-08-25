@@ -17,8 +17,8 @@ import {
   exportTimelineRender,
   exportTimelineRenderAudio,
   listTimelineRenders,
-  collectRenderAssetIds,
-  renderTimeline,
+  ensureRenderMediaLocal,
+  startTimelineRender,
   timelineClipsToRenderInput,
   type RenderFinished,
   type RenderProgress,
@@ -107,6 +107,8 @@ export function HookLayout() {
   const [volume, setVolume] = useState(80);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playheadRef = useRef(0);
+  const focusVideoAfterRenderRef = useRef(false);
+  const openDetailsOnNextInProgressRef = useRef(false);
 
   const hasTimeline = project.timeline.length > 0;
   const renderInProgress = renders.some((render) => render.status === "rendering");
@@ -229,6 +231,13 @@ export function HookLayout() {
   }, [selectedRenderId, activeVideoSrc]);
 
   useEffect(() => {
+    if (!focusVideoAfterRenderRef.current) return;
+    if (viewerMode !== "player" || !activeVideoSrc) return;
+    focusVideoAfterRenderRef.current = false;
+    videoRef.current?.focus({ preventScroll: true });
+  }, [viewerMode, activeVideoSrc, selectedRenderId]);
+
+  useEffect(() => {
     const el = videoRef.current;
     if (el) el.volume = Math.max(0, Math.min(1, volume / 100));
   }, [volume, activeVideoSrc]);
@@ -282,7 +291,6 @@ export function HookLayout() {
           (render) => render.id === event.payload.renderId,
         );
         if (index < 0) {
-          // Pending row may exist in the manifest before this list has it.
           void refreshRenders();
           return current;
         }
@@ -292,12 +300,27 @@ export function HookLayout() {
             : render,
         );
       });
+      if (openDetailsOnNextInProgressRef.current && event.payload.renderId) {
+        openDetailsOnNextInProgressRef.current = false;
+        setSelectedRenderId(event.payload.renderId);
+        setViewerMode("details");
+        setPlaying(false);
+      }
     }).then((fn) => {
       unlistenProgress = fn;
     });
 
     void listen<RenderFinished>("publisher-render-finished", (event) => {
       if (event.payload.projectId !== project.id) return;
+      if (event.payload.ok && event.payload.renderId) {
+        focusVideoAfterRenderRef.current = true;
+        setSelectedRenderId(event.payload.renderId);
+        setViewerMode("player");
+        setPlaying(false);
+      } else if (event.payload.renderId) {
+        setSelectedRenderId(event.payload.renderId);
+        setViewerMode("details");
+      }
       void refreshRenders();
     }).then((fn) => {
       unlistenFinished = fn;
@@ -404,39 +427,37 @@ export function HookLayout() {
   const runRender = async () => {
     if (!hasTimeline) return;
     const clips = timelineClipsToRenderInput(project.timeline);
-    const mediaIds = collectRenderAssetIds(clips);
     const lookLabels = enabledLookLabels(project.looks);
-    setRenderModal({
-      phase: "running",
-      clipCount: project.timeline.length,
-      lookLabels,
-      progress:
-        mediaIds.length > 0
-          ? {
-              projectId: project.id,
-              renderId: "",
-              phase: "download",
-              done: 0,
-              total: mediaIds.length,
-            }
-          : null,
-    });
+    setRenderModal(null);
+    openDetailsOnNextInProgressRef.current = true;
     try {
-      const created = await renderTimeline(
+      await ensureRenderMediaLocal(clips);
+      await startTimelineRender(
         project.id,
         project.aspectRatio,
         clips,
         project.looks,
       );
-      setRenderModal(null);
-      setRenders((current) => [
-        created,
-        ...current.filter((render) => render.id !== created.id),
-      ]);
-      setSelectedRenderId(created.id);
-      setViewerMode("details");
-      setPlaying(false);
+      for (let i = 0; i < 30; i += 1) {
+        const rows = await listTimelineRenders(project.id);
+        const rendering = rows.find((row) => row.status === "rendering");
+        if (rendering) {
+          setRenders(rows);
+          if (openDetailsOnNextInProgressRef.current) {
+            openDetailsOnNextInProgressRef.current = false;
+            setSelectedRenderId(rendering.id);
+            setViewerMode("details");
+            setPlaying(false);
+          }
+          return;
+        }
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 200);
+        });
+      }
+      await refreshRenders();
     } catch (error) {
+      openDetailsOnNextInProgressRef.current = false;
       const message =
         error instanceof Error ? error.message : "Could not start timeline render.";
       setRenderModal({
@@ -575,6 +596,7 @@ export function HookLayout() {
                   src={activeVideoSrc}
                   playsInline
                   preload="auto"
+                  tabIndex={-1}
                   onTimeUpdate={(event) => {
                     const next = event.currentTarget.currentTime;
                     playheadRef.current = next;

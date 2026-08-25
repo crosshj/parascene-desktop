@@ -1,5 +1,5 @@
 /**
- * Publisher timeline render via service_invoke (Rust owns download + encode).
+ * Publisher timeline render via service_invoke (Rust owns encode from local files).
  */
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import type { ProjectLooks } from "../project/looks";

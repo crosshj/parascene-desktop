@@ -57,10 +57,7 @@ pub fn features_from_model(model: &Value) -> Vec<String> {
                 .to_lowercase();
             let blob = format!("{n} {title} {desc_f}");
 
-            let format = schema
-                .get("format")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let format = schema.get("format").and_then(|v| v.as_str()).unwrap_or("");
             let typ = schema.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
             if (format == "uri" || blob.contains("image") || n.contains("image"))
@@ -83,14 +80,10 @@ pub fn features_from_model(model: &Value) -> Vec<String> {
             {
                 tags.push("prompt".into());
             }
-            if (n.contains("mask") || blob.contains("mask"))
-                && !tags.iter().any(|t| t == "mask")
-            {
+            if (n.contains("mask") || blob.contains("mask")) && !tags.iter().any(|t| t == "mask") {
                 tags.push("mask".into());
             }
-            if (n.contains("seed") || blob.contains("seed"))
-                && !tags.iter().any(|t| t == "seed")
-            {
+            if (n.contains("seed") || blob.contains("seed")) && !tags.iter().any(|t| t == "seed") {
                 tags.push("seed".into());
             }
             if schema.get("enum").is_some() && !tags.iter().any(|t| t == "enum") {

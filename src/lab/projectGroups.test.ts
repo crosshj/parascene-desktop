@@ -8,6 +8,7 @@ import {
   findUnstampedCabinetDuplicates,
   idsForGroupApiCall,
   memberIdsFromRemoteGroup,
+  newIdsToAppendToGroup,
   pickCabinetKeeper,
   remainingMembersAfterRemoval,
   siblingProjectCabinetCoverIds,
@@ -77,6 +78,22 @@ describe("idsForGroupApiCall", () => {
       "18841",
       "18845",
     ]);
+  });
+});
+
+describe("newIdsToAppendToGroup", () => {
+  it("drops the cover and already-filed members", () => {
+    expect(
+      newIdsToAppendToGroup("18842", ["18841", "18845"], ["18842", "18845", "18846"]),
+    ).toEqual(["18846"]);
+  });
+
+  it("is empty when every candidate is already in the group", () => {
+    expect(newIdsToAppendToGroup("18842", ["25019"], ["25019"])).toEqual([]);
+  });
+
+  it("keeps all candidates when starting a new group", () => {
+    expect(newIdsToAppendToGroup(null, [], ["10", "11"])).toEqual(["10", "11"]);
   });
 });
 

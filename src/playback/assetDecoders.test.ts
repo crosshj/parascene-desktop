@@ -3,9 +3,12 @@ import type { TimelineClip } from "../project/types";
 import {
   assetDecoderKey,
   assetIdFromKey,
+  bufferWindowParkByKey,
+  bufferWindowVisualDecoders,
   isReverseKey,
   listVisualDecoders,
   parkSourceByKey,
+  visualDecoderMeta,
 } from "./assetDecoders";
 import { createTimelinePlaybackEngine } from "./timelinePlaybackEngine";
 
@@ -128,6 +131,118 @@ describe("listVisualDecoders", () => {
   });
 });
 
+describe("visualDecoderMeta", () => {
+  it("parks ordinary video at the clip in-point", () => {
+    expect(
+      visualDecoderMeta(
+        clip({
+          id: "c1",
+          startSec: 0,
+          endSec: 4,
+          assetId: "a1",
+          inSec: 3.25,
+          outSec: 7,
+        }),
+      )?.parkStartSec,
+    ).toBe(3.25);
+  });
+});
+
+describe("bufferWindowVisualDecoders", () => {
+  const clips = [
+    clip({ id: "c1", startSec: 0, endSec: 4, assetId: "a1" }),
+    clip({ id: "c2", startSec: 4, endSec: 8, assetId: "a2" }),
+    clip({ id: "c3", startSec: 8, endSec: 12, assetId: "a3" }),
+    clip({ id: "c4", startSec: 12, endSec: 16, assetId: "a4" }),
+  ];
+
+  it("keeps previous, current, and next around the playhead", () => {
+    expect(
+      bufferWindowVisualDecoders(clips, 0).map((d) => d.key),
+    ).toEqual(["a1:f", "a2:f"]);
+    expect(
+      bufferWindowVisualDecoders(clips, 5).map((d) => d.key).sort(),
+    ).toEqual(["a1:f", "a2:f", "a3:f"]);
+    expect(
+      bufferWindowVisualDecoders(clips, 13).map((d) => d.key).sort(),
+    ).toEqual(["a3:f", "a4:f"]);
+  });
+
+  it("dedupes when prev and next share an asset", () => {
+    const reuse = [
+      clip({ id: "c1", startSec: 0, endSec: 4, assetId: "a1" }),
+      clip({ id: "c2", startSec: 4, endSec: 8, assetId: "a2" }),
+      clip({ id: "c3", startSec: 8, endSec: 12, assetId: "a1" }),
+    ];
+    expect(
+      bufferWindowVisualDecoders(reuse, 5).map((d) => d.key).sort(),
+    ).toEqual(["a1:f", "a2:f"]);
+  });
+});
+
+describe("bufferWindowParkByKey", () => {
+  it("parks the upcoming clip at its in-point and the previous at last frame", () => {
+    const clips = [
+      clip({
+        id: "c1",
+        startSec: 0,
+        endSec: 4,
+        assetId: "a1",
+        inSec: 2,
+        outSec: 6,
+      }),
+      clip({
+        id: "c2",
+        startSec: 4,
+        endSec: 8,
+        assetId: "a2",
+        inSec: 10,
+        outSec: 14,
+      }),
+      clip({
+        id: "c3",
+        startSec: 8,
+        endSec: 12,
+        assetId: "a3",
+        inSec: 1.5,
+        outSec: 5,
+      }),
+    ];
+    const park = bufferWindowParkByKey(clips, 5);
+    expect(park.get("a3:f")).toBe(1.5);
+    expect(park.get("a1:f")).toBeCloseTo(6 - 1 / 60, 5);
+  });
+
+  it("parks extend bakes at bake time 0, not the original in-point", () => {
+    const bakeKey = JSON.stringify({
+      v: 7,
+      assetId: "a1",
+      inSec: 2,
+      outSec: 7,
+      pingPong: false,
+      reverse: false,
+    });
+    const clips = [
+      clip({ id: "c1", startSec: 0, endSec: 4, assetId: "a0" }),
+      clip({
+        id: "e1",
+        startSec: 4,
+        endSec: 24,
+        assetId: "a1",
+        inSec: 2,
+        outSec: 7,
+        extendBakeKey: bakeKey,
+        extendBakePath: "/tmp/extend.mp4",
+        extendBakeCoverSec: 20,
+      }),
+    ];
+    const park = bufferWindowParkByKey(clips, 1);
+    const extendKey = [...park.keys()].find((k) => k.startsWith("extend:"));
+    expect(extendKey).toBeTruthy();
+    expect(park.get(extendKey!)).toBe(0);
+  });
+});
+
 describe("parkSourceByKey", () => {
   it("parks each decoder on the earliest in-point for that key", () => {
     const clips = [
@@ -173,6 +288,31 @@ describe("parkSourceByKey", () => {
       }),
     ];
     expect(parkSourceByKey(clips).get("slideshow:s1:/tmp/s.mp4")).toBe(0);
+  });
+
+  it("parks extend bake decoders at 0", () => {
+    const bakeKey = JSON.stringify({
+      v: 7,
+      assetId: "a1",
+      inSec: 2,
+      outSec: 7,
+      pingPong: false,
+      reverse: false,
+    });
+    const clips = [
+      clip({
+        id: "e1",
+        startSec: 0,
+        endSec: 20,
+        assetId: "a1",
+        inSec: 2,
+        outSec: 7,
+        extendBakeKey: bakeKey,
+        extendBakePath: "/tmp/extend.mp4",
+        extendBakeCoverSec: 20,
+      }),
+    ];
+    expect(parkSourceByKey(clips).get(`extend:e1:${bakeKey}`)).toBe(0);
   });
 });
 

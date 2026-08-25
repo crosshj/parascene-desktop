@@ -96,7 +96,8 @@ pub fn library_transcribe_local(audio_path: String) -> Result<LocalTranscriptRes
         return Err("Whisper did not produce a JSON transcript.".into());
     }
 
-    let raw = fs::read_to_string(&json_path).map_err(|e| format!("Could not read whisper JSON: {e}"))?;
+    let raw =
+        fs::read_to_string(&json_path).map_err(|e| format!("Could not read whisper JSON: {e}"))?;
     parse_whisper_json(&raw)
 }
 

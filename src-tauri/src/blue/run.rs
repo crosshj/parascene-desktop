@@ -109,10 +109,7 @@ fn prepare_local_path_for_blue(path: &Path, field: &str) -> Result<PathBuf, Stri
     })?;
     let dir = env::temp_dir().join("parascene-blue-uploads");
     std::fs::create_dir_all(&dir).map_err(|e| format!("Blue upload cache dir: {e}"))?;
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("still");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("still");
     let safe: String = stem
         .chars()
         .map(|c| {
@@ -156,7 +153,14 @@ fn prepare_local_path_for_blue(path: &Path, field: &str) -> Result<PathBuf, Stri
         || dest.metadata().map(|m| m.len() == 0).unwrap_or(true)
     {
         let err = String::from_utf8_lossy(&output.stderr);
-        let tail: String = err.chars().rev().take(400).collect::<String>().chars().rev().collect();
+        let tail: String = err
+            .chars()
+            .rev()
+            .take(400)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         return Err(format!(
             "Could not prepare still for Blue upload ({field}). {tail}"
         ));
@@ -310,11 +314,7 @@ async fn poll_until_done(
             let msg = resp
                 .json()
                 .ok()
-                .and_then(|v| {
-                    v.get("error")
-                        .and_then(|e| e.as_str())
-                        .map(str::to_string)
-                })
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
                 .unwrap_or_else(|| "Output data removed (retention TTL expired).".into());
             return Err(msg);
         }
@@ -341,7 +341,11 @@ async fn poll_until_done(
             let err = data
                 .get("error")
                 .and_then(|e| e.as_str())
-                .or_else(|| data.get("result").and_then(|r| r.get("error")).and_then(|e| e.as_str()))
+                .or_else(|| {
+                    data.get("result")
+                        .and_then(|r| r.get("error"))
+                        .and_then(|e| e.as_str())
+                })
                 .unwrap_or("Blue job failed")
                 .to_string();
             return Err(err);

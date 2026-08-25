@@ -856,6 +856,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       const waited = await runParasceneWaitCreation({
         creationId: id,
         projectId: project.id,
+        mediaType: payload.pendingMediaType,
         onProgress,
       });
       setPendingCreation(payload.moduleId, null, null);

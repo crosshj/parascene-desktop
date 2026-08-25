@@ -110,6 +110,7 @@ import {
 } from "../../library/slideshowMedia";
 import { pendingDraftMatchesSelection } from "./editorSelection";
 import { TimelineMonitorHost } from "../../playback/TimelineMonitorHost";
+import type { TimelineFragmentCache } from "./timelineFragmentCache";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
 import { type StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import { AddAssetIntentPanel } from "./AddAssetIntentPanel";
@@ -247,6 +248,10 @@ type PreviewPaneProps = {
   bakeInfo?: BakeInfo | null;
   /** Runtime bake status for all slideshow clips (timeline monitor). */
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
+  /** Cached timeline audio mix used by the program monitor. */
+  audioBakePath?: string | null;
+  /** fMP4 fragment cache for MSE timeline playback. */
+  fragmentCache?: TimelineFragmentCache | null;
   /** Explicit slideshow bake (timeline clips only). */
   onSlideshowRender?: (() => void) | null;
   /** Bake an extended video clip when settings are stale. */
@@ -426,6 +431,8 @@ export function PreviewPane({
   onSourceDraftChange,
   bakeInfo = null,
   bakeInfoByClipId,
+  audioBakePath = null,
+  fragmentCache = null,
   onSlideshowRender = null,
   onExtendBake = null,
   needsExtendBake = false,
@@ -3338,6 +3345,8 @@ export function PreviewPane({
                 playing={timelinePlaying}
                 mediaSeekEpoch={mediaSeekEpoch}
                 bakeInfoByClipId={bakeInfoByClipId}
+                audioBakePath={audioBakePath}
+                fragmentCache={fragmentCache}
                 volume={volume}
                 stageW={stage.w}
                 stageH={stage.h}
@@ -3596,7 +3605,9 @@ export function PreviewPane({
             ) : null}
           </div>
 
-          {sourceLabelText && !showGenerateDual ? (
+          {sourceLabelText &&
+          !showGenerateDual &&
+          sourceKind !== "timeline" ? (
             <div className="editor-preview-source-row">
               <div
                 className="editor-preview-source-label"

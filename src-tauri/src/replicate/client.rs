@@ -48,9 +48,7 @@ async fn send_json(
             req = req.header(*k, *v);
         }
         if let Some(b) = body {
-            req = req
-                .header("Content-Type", "application/json")
-                .json(b);
+            req = req.header("Content-Type", "application/json").json(b);
         }
         let res = req
             .send()

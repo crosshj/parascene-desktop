@@ -4,8 +4,8 @@ use super::catalog::{
     list_creations, list_creations_page, mark_downloaded, ready_connection, set_download_state,
     set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
-use super::thumb_fill::fill_and_record_local_thumb;
 use super::folders::{emit_folders_updated, list_folders};
+use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -549,9 +549,7 @@ pub(crate) fn needs_download(c: &Creation) -> bool {
         return false;
     }
     // Cover-only A/V: remote is poster/cover art, not playable media.
-    if c.media_type.eq_ignore_ascii_case("audio")
-        || c.media_type.eq_ignore_ascii_case("video")
-    {
+    if c.media_type.eq_ignore_ascii_case("audio") || c.media_type.eq_ignore_ascii_case("video") {
         let local_is_image = c
             .local_path
             .as_deref()
@@ -636,10 +634,7 @@ fn should_prefer_local_fit_fill(c: &Creation) -> bool {
 
 /// After full media lands, build a native-aspect board thumb when needed.
 /// Covers audio covers, video first-frames, and stuck square image posters.
-fn try_fill_native_thumb_after_media(
-    paths: &super::paths::ParascenePaths,
-    creation_id: &str,
-) {
+fn try_fill_native_thumb_after_media(paths: &super::paths::ParascenePaths, creation_id: &str) {
     let Ok(conn) = ready_connection(paths) else {
         return;
     };
@@ -1203,12 +1198,7 @@ async fn download_batch(
                 });
                 {
                     let conn = ready_connection(paths)?;
-                    record_downloaded_media(
-                        &conn,
-                        &creation,
-                        &media_path,
-                        thumb.as_deref(),
-                    )?;
+                    record_downloaded_media(&conn, &creation, &media_path, thumb.as_deref())?;
                 }
                 try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
@@ -1436,12 +1426,7 @@ async fn download_media_batch(
                 };
                 {
                     let conn = ready_connection(paths)?;
-                    record_downloaded_media(
-                        &conn,
-                        &creation,
-                        &media_path,
-                        thumb.as_deref(),
-                    )?;
+                    record_downloaded_media(&conn, &creation, &media_path, thumb.as_deref())?;
                 }
                 try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
@@ -1633,16 +1618,14 @@ pub(crate) async fn cache_generation_files(app: &AppHandle, id: &str) -> Result<
     let paths = default_paths()?;
     let creation = {
         let conn = ready_connection(&paths)?;
-        get_creation_by_id(&conn, id)?
-            .ok_or_else(|| format!("Creation {id} not found"))?
+        get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?
     };
     if needs_thumb(&creation) {
         let _ = download_thumbs_only(app, &paths, vec![creation.clone()]).await;
     }
     let creation = {
         let conn = ready_connection(&paths)?;
-        get_creation_by_id(&conn, id)?
-            .ok_or_else(|| format!("Creation {id} not found"))?
+        get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?
     };
     if needs_download(&creation) {
         download_media_only(app, &paths, creation).await?;

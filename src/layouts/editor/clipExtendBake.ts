@@ -15,9 +15,8 @@ function roundBakeSec(sec: number): number {
 
 /**
  * Recipe fingerprint for an extend bake (trim, ping-pong, reverse, asset).
- * Speed is intentionally omitted: bakes are 1× loop/pong material; playback
- * maps `localSec * speed` into the bake so slowing down reuses cover and
- * speeding up only needs a rebake when cover is too short.
+ * Speed is omitted: the bake is ordinary 1× loop/pong video. Playback
+ * free-runs it with `playbackRate = clip speed` (same as any other clip).
  */
 export function computeExtendBakeKey(clip: TimelineClip): string | null {
   if (!clipIsTimelineExtended(clip)) return null;
@@ -55,6 +54,19 @@ export function computeExtendBakeTargetSec(clip: TimelineClip): number | null {
 /** 1× bake seconds that must be present to cover the timeline at current speed. */
 export function clipExtendBakeCoverNeededSec(clip: TimelineClip): number {
   return Math.round(clipTimelineDurationSec(clip) * clipSpeed(clip) * 1000) / 1000;
+}
+
+/**
+ * Playhead position inside the bake file. The bake starts at 0 and is 1×
+ * media; clip speed is applied via playbackRate, so bake time is
+ * `localSec × speed` (same mapping as a normal clip with in-point 0).
+ */
+export function extendBakeSourceSec(
+  clip: TimelineClip,
+  timelineSec: number,
+): number {
+  const local = Math.max(0, timelineSec - clip.startSec);
+  return local * clipSpeed(clip);
 }
 
 /** Current clip settings match the baked recipe and cached cover fits at speed. */

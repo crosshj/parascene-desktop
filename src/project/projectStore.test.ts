@@ -22,6 +22,7 @@ import {
   setStoredProjectPendingStagedDraft,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
+  setStoredProjectTimelineAudioBakePath,
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
   storedProjectToUi,
@@ -561,6 +562,17 @@ describe("projectStore", () => {
 
     const cleared = setStoredProjectTimeline(loaded, []);
     expect(cleared.selectedTimelineClipId).toBeNull();
+  });
+
+  it("persists timeline audio bake path", () => {
+    let a = createStoredProject("Demo", ["c1"]);
+    a = setStoredProjectTimelineAudioBakePath(a, "/tmp/mix.m4a");
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects()[0];
+    expect(loaded.timelineAudioBakePath).toBe("/tmp/mix.m4a");
+    expect(storedProjectToUi(loaded).timelineAudioBakePath).toBe("/tmp/mix.m4a");
+    const cleared = setStoredProjectTimelineAudioBakePath(loaded, null);
+    expect(cleared.timelineAudioBakePath).toBeNull();
   });
 
   it("persists selected asset and clears timeline selection", () => {

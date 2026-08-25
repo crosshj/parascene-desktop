@@ -68,18 +68,13 @@ pub(crate) fn image_ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
         return Some("jpg");
     }
-    if bytes.len() >= 8
-        && bytes[0..8] == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
-    {
+    if bytes.len() >= 8 && bytes[0..8] == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] {
         return Some("png");
     }
     if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
         return Some("gif");
     }
-    if bytes.len() >= 12
-        && bytes.starts_with(b"RIFF")
-        && &bytes[8..12] == b"WEBP"
-    {
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         return Some("webp");
     }
     None
@@ -149,13 +144,9 @@ fn validate_avatar_file(path: &Path) -> Result<(), String> {
         return Err("Avatar path is not a file".into());
     }
     if meta.len() < MIN_IMAGE_BYTES {
-        return Err(format!(
-            "Avatar file too small ({} bytes)",
-            meta.len()
-        ));
+        return Err(format!("Avatar file too small ({} bytes)", meta.len()));
     }
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("Avatar open failed: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Avatar open failed: {e}"))?;
     use std::io::Read;
     let mut header = [0u8; 16];
     let n = file
@@ -195,9 +186,7 @@ fn find_existing_valid(user_id: &str, picture_url: &str) -> Option<PathBuf> {
     None
 }
 
-async fn download_avatar_bytes(
-    url: &str,
-) -> Result<(Vec<u8>, Option<String>), String> {
+async fn download_avatar_bytes(url: &str) -> Result<(Vec<u8>, Option<String>), String> {
     let mut req = avatar_client().get(url);
     if let Ok(token) = auth_store::ensure_access_token().await {
         req = req.header("Authorization", format!("Bearer {token}"));
@@ -241,9 +230,7 @@ fn write_avatar_atomic(dest: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     let tmp = dest.with_extension(format!(
         "{}.part",
-        dest.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("img")
+        dest.extension().and_then(|e| e.to_str()).unwrap_or("img")
     ));
     {
         use std::io::Write;

@@ -268,6 +268,7 @@ export async function invokeParasceneWaitCreation(opts: {
   creationId: string;
   projectId?: string;
   timeoutMs?: number;
+  mediaType?: "image" | "video";
   label?: string;
 }): Promise<ServiceHandle> {
   return serviceInvoke({
@@ -277,6 +278,7 @@ export async function invokeParasceneWaitCreation(opts: {
     label: opts.label ?? `Wait ${opts.creationId}`,
     payload: {
       creationId: opts.creationId,
+      ...(opts.mediaType ? { mediaType: opts.mediaType } : {}),
       ...(typeof opts.timeoutMs === "number" ? { timeoutMs: opts.timeoutMs } : {}),
     },
   });
@@ -324,6 +326,7 @@ export async function runParasceneWaitCreation(opts: {
   creationId: string;
   projectId?: string;
   timeoutMs?: number;
+  mediaType?: "image" | "video";
   onProgress?: (note: string) => void;
 }): Promise<WaitCreationResult> {
   const handle = await invokeParasceneWaitCreation(opts);

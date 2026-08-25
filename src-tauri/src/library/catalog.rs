@@ -139,8 +139,7 @@ pub struct CatalogFilterCounts {
 }
 
 fn open_db(db_path: &Path) -> Result<Connection, String> {
-    let conn =
-        Connection::open(db_path).map_err(|e| format!("Could not open catalog DB: {e}"))?;
+    let conn = Connection::open(db_path).map_err(|e| format!("Could not open catalog DB: {e}"))?;
     // Fail fast under writer contention instead of hanging Sync/auth IPC.
     conn.busy_timeout(std::time::Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
@@ -676,8 +675,10 @@ fn count_board_creations(conn: &Connection, member_ids: &[String]) -> Result<i64
     let exclude = group_member_exclude_sql(member_ids.len());
     let sql = format!("SELECT COUNT(*) FROM creations {exclude}");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    stmt.query_row(rusqlite::params_from_iter(member_ids.iter()), |row| row.get(0))
-        .map_err(|e| e.to_string())
+    stmt.query_row(rusqlite::params_from_iter(member_ids.iter()), |row| {
+        row.get(0)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Dev/test seed only — not called from ready_connection (real catalog comes from sync).
@@ -761,8 +762,11 @@ pub(crate) fn list_creations(conn: &Connection) -> Result<Vec<Creation>, String>
         stmt.query_map([], map_creation_row)
             .map_err(|e| e.to_string())?
     } else {
-        stmt.query_map(rusqlite::params_from_iter(member_ids.iter()), map_creation_row)
-            .map_err(|e| e.to_string())?
+        stmt.query_map(
+            rusqlite::params_from_iter(member_ids.iter()),
+            map_creation_row,
+        )
+        .map_err(|e| e.to_string())?
     };
 
     let mut out = Vec::new();
@@ -790,22 +794,18 @@ pub(crate) fn list_all_creations(conn: &Connection) -> Result<Vec<Creation>, Str
 /// Predicates aligned with [`catalog_filter_counts`] for sparse sidebar filters.
 fn filter_listing_predicate(filter: &str) -> Result<&'static str, String> {
     match filter {
-        "audio" => Ok(
-            r#"
+        "audio" => Ok(r#"
             lower(media_type) = 'audio'
             AND NOT (
               lower(COALESCE(filename, '')) LIKE 'group/%'
               OR instr(COALESCE(remote_json, ''), '"kind":"group_creations"') > 0
               OR instr(COALESCE(remote_json, ''), '"kind": "group_creations"') > 0
             )
-            "#,
-        ),
-        "localOnly" => Ok(
-            r#"
+            "#),
+        "localOnly" => Ok(r#"
             (remote_url IS NULL OR remote_url = '')
             AND (remote_json IS NULL OR remote_json = '')
-            "#,
-        ),
+            "#),
         other => Err(format!("Unsupported filter listing: {other}")),
     }
 }
@@ -830,8 +830,11 @@ pub(crate) fn list_creations_for_filter(
         stmt.query_map([], map_creation_row)
             .map_err(|e| e.to_string())?
     } else {
-        stmt.query_map(rusqlite::params_from_iter(member_ids.iter()), map_creation_row)
-            .map_err(|e| e.to_string())?
+        stmt.query_map(
+            rusqlite::params_from_iter(member_ids.iter()),
+            map_creation_row,
+        )
+        .map_err(|e| e.to_string())?
     };
     let mut out = Vec::new();
     for row in rows {
@@ -849,9 +852,8 @@ pub(crate) fn list_creations_page(
     let member_ids = collect_group_member_ids(conn)?;
     let total = count_board_creations(conn, &member_ids)? as u32;
     let exclude = group_member_exclude_sql(member_ids.len());
-    let sql = format!(
-        "{CREATION_SELECT} {exclude} ORDER BY created_at DESC, title ASC LIMIT ? OFFSET ?"
-    );
+    let sql =
+        format!("{CREATION_SELECT} {exclude} ORDER BY created_at DESC, title ASC LIMIT ? OFFSET ?");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     // Bind exclude ids first, then limit/offset.
@@ -1057,9 +1059,8 @@ fn list_without_cloud_urls(conn: &Connection) -> Result<Vec<WithoutCloudUrl>, St
     // Matches unsyncableThumbCount ∪ unsyncableMediaCount. Cover-only Suno/YouTube
     // A/V are expected to stay on the host — don't list them as a Sync problem.
     let mut stmt = conn
-        .prepare(
-            &format!(
-                r#"
+        .prepare(&format!(
+            r#"
             SELECT id, title, filename FROM creations
             WHERE
               {CLOUD_BACKED}
@@ -1081,8 +1082,7 @@ fn list_without_cloud_urls(conn: &Connection) -> Result<Vec<WithoutCloudUrl>, St
             ORDER BY created_at DESC
             LIMIT ?1
             "#
-            ),
-        )
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![WITHOUT_CLOUD_URLS_LIMIT], |row| {
@@ -1565,8 +1565,11 @@ pub(crate) fn delete_creation_local(
     super::folders::remove_from_folder(conn, &[id.to_string()])?;
     // Drop folder/project artwork pointers that referenced this creation.
     super::folders::clear_folder_covers_for_creation(conn, id)?;
-    conn.execute("DELETE FROM project_assets WHERE creation_id = ?1", params![id])
-        .map_err(|e| format!("Delete project asset membership failed: {e}"))?;
+    conn.execute(
+        "DELETE FROM project_assets WHERE creation_id = ?1",
+        params![id],
+    )
+    .map_err(|e| format!("Delete project asset membership failed: {e}"))?;
     let n = conn
         .execute("DELETE FROM creations WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -1750,10 +1753,7 @@ fn derive_fit_thumbnail_url(
     if let Some(start) = u.find("variant=") {
         let mut s = u.to_string();
         let after = start + "variant=".len();
-        let end = s[after..]
-            .find('&')
-            .map(|i| after + i)
-            .unwrap_or(s.len());
+        let end = s[after..].find('&').map(|i| after + i).unwrap_or(s.len());
         s.replace_range(after..end, "fit");
         return Some(s);
     }
@@ -1801,9 +1801,7 @@ fn aspect_ratio_from_meta(meta: Option<&serde_json::Value>) -> Option<String> {
 /// - Synthesizes url/thumbnail from `file_path` when sparse (group source rows)
 /// - Derives `fit_thumbnail_url` from thumbnail/url when the API omits it
 /// - Stores an absolutized remote_json snapshot
-pub(crate) fn map_remote_creation_json(
-    raw: &serde_json::Value,
-) -> Result<CreationUpsert, String> {
+pub(crate) fn map_remote_creation_json(raw: &serde_json::Value) -> Result<CreationUpsert, String> {
     let id = raw
         .get("id")
         .and_then(json_id)
@@ -1813,11 +1811,8 @@ pub(crate) fn map_remote_creation_json(
     let mut url = json_opt_string(raw.get("url"))
         .or_else(|| json_opt_string(raw.get("image_url")))
         .or_else(|| file_path.clone());
-    let mut thumbnail_url = json_opt_string(raw.get("thumbnail_url")).or_else(|| {
-        file_path
-            .as_ref()
-            .map(|p| format!("{p}?variant=thumbnail"))
-    });
+    let mut thumbnail_url = json_opt_string(raw.get("thumbnail_url"))
+        .or_else(|| file_path.as_ref().map(|p| format!("{p}?variant=thumbnail")));
     let mut fit_thumbnail_url = json_opt_string(raw.get("fit_thumbnail_url"));
     let mut video_url = json_opt_string(raw.get("video_url"));
 
@@ -1934,10 +1929,7 @@ pub(crate) fn map_remote_creation_json(
                 None => serde_json::Value::Null,
             },
         );
-        obj.insert(
-            "status".into(),
-            serde_json::Value::String(status.clone()),
-        );
+        obj.insert("status".into(), serde_json::Value::String(status.clone()));
         obj.insert("published".into(), serde_json::Value::Bool(published));
         obj.insert(
             "published_at".into(),
@@ -2061,7 +2053,10 @@ pub fn library_existing_creation_ids(ids: Vec<String>) -> Result<Vec<String>, St
     existing_creation_ids(&conn, &ids)
 }
 
-pub(crate) fn existing_creation_ids(conn: &Connection, ids: &[String]) -> Result<Vec<String>, String> {
+pub(crate) fn existing_creation_ids(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<String>, String> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -2150,9 +2145,8 @@ pub(crate) fn ids_needing_group_list_refresh(
             .take(chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "SELECT id, filename, remote_json FROM creations WHERE id IN ({placeholders})"
-        );
+        let sql =
+            format!("SELECT id, filename, remote_json FROM creations WHERE id IN ({placeholders})");
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
@@ -2195,7 +2189,10 @@ pub fn library_cloud_ids_since(since_iso: String) -> Result<Vec<CreationIdAt>, S
     cloud_ids_since(&conn, &since_iso)
 }
 
-pub(crate) fn cloud_ids_since(conn: &Connection, since_iso: &str) -> Result<Vec<CreationIdAt>, String> {
+pub(crate) fn cloud_ids_since(
+    conn: &Connection,
+    since_iso: &str,
+) -> Result<Vec<CreationIdAt>, String> {
     let since = since_iso.trim();
     if since.is_empty() {
         return Ok(Vec::new());
@@ -2522,7 +2519,9 @@ mod tests {
             member_err.contains("Untitled project"),
             "unexpected error: {member_err}"
         );
-        assert!(get_creation_by_id(&conn, "member-1").expect("get").is_some());
+        assert!(get_creation_by_id(&conn, "member-1")
+            .expect("get")
+            .is_some());
 
         let _ = fs::remove_dir_all(&paths.root);
     }
@@ -2607,10 +2606,7 @@ mod tests {
         .expect("usage");
 
         let err = delete_creation_local(&conn, &paths, "cover-2").expect_err("blocked");
-        assert!(
-            err.contains("used by a project"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("used by a project"), "unexpected error: {err}");
         assert!(get_creation_by_id(&conn, "cover-2").expect("get").is_some());
 
         let _ = fs::remove_dir_all(&paths.root);
@@ -2709,7 +2705,13 @@ mod tests {
 
         let found = existing_creation_ids(
             &conn,
-            &["20".into(), "missing".into(), "10".into(), "20".into(), " ".into()],
+            &[
+                "20".into(),
+                "missing".into(),
+                "10".into(),
+                "20".into(),
+                " ".into(),
+            ],
         )
         .expect("lookup");
         assert_eq!(found, vec!["20".to_string(), "10".to_string()]);
@@ -2757,8 +2759,7 @@ mod tests {
         assert_eq!(mapped.prompt.as_deref(), Some("noir alley"));
         assert_eq!(mapped.download_state, "remote");
 
-        let snap: serde_json::Value =
-            serde_json::from_str(&mapped.remote_json).expect("snap");
+        let snap: serde_json::Value = serde_json::from_str(&mapped.remote_json).expect("snap");
         assert_eq!(
             snap.get("fit_thumbnail_url").and_then(|v| v.as_str()),
             Some("https://cdn.example/thumb.jpg?variant=fit")
@@ -2780,9 +2781,7 @@ mod tests {
         );
         assert_eq!(
             mapped.thumbnail_url.as_deref(),
-            Some(
-                "https://www.parascene.com/api/images/created/26_17804_x.png?variant=thumbnail"
-            )
+            Some("https://www.parascene.com/api/images/created/26_17804_x.png?variant=thumbnail")
         );
         assert_eq!(mapped.prompt.as_deref(), Some("member"));
     }

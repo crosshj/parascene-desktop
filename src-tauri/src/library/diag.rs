@@ -30,6 +30,7 @@ pub async fn library_append_diag_log(
         .open(&file_path)
         .map_err(|e| format!("Could not open {}: {e}", file_path.display()))?;
     let line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    writeln!(file, "{line}").map_err(|e| format!("Could not write {}: {e}", file_path.display()))?;
+    writeln!(file, "{line}")
+        .map_err(|e| format!("Could not write {}: {e}", file_path.display()))?;
     Ok(file_path.display().to_string())
 }
