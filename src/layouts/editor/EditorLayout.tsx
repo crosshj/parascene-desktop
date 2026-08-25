@@ -307,6 +307,8 @@ export function EditorLayout() {
     projectId: string;
     ids: Set<string>;
   } | null>(null);
+  /** Placeholder id → finished creation id, so selection can stay on the same slot. */
+  const placeholderCompletionRef = useRef<Map<string, string>>(new Map());
 
   const clearClipSelection = () => {
     setSelectedClipId(null);
@@ -784,32 +786,40 @@ export function EditorLayout() {
       if (!alive.has(id)) removed.push(id);
     }
     knownAssetIdsRef.current = { projectId: project.id, ids: alive };
-    /* eslint-enable react-hooks/refs */
 
     if (
       removed.length > 0 &&
       (selectedAssetIds.length > 0 || selectedAssetId)
     ) {
       const removeSet = new Set(removed);
-      const next = selectedAssetIds.filter((id) => !removeSet.has(id));
+      const replacements = placeholderCompletionRef.current;
+      const resolve = (id: string) => replacements.get(id) ?? id;
+      const next = selectedAssetIds
+        .map(resolve)
+        .filter((id) => alive.has(id) || !removeSet.has(id));
+      const nextUnique = [...new Set(next.filter((id) => alive.has(id)))];
+      const primaryResolved = selectedAssetId
+        ? resolve(selectedAssetId)
+        : null;
       const primaryStill =
-        selectedAssetId !== null && !removeSet.has(selectedAssetId)
-          ? selectedAssetId
-          : null;
+        primaryResolved && alive.has(primaryResolved) ? primaryResolved : null;
       const assetSelectionStale =
-        next.length !== selectedAssetIds.length ||
-        (selectedAssetId !== null && primaryStill === null);
+        nextUnique.length !== selectedAssetIds.length ||
+        selectedAssetIds.some((id, index) => nextUnique[index] !== id) ||
+        (selectedAssetId !== null && selectedAssetId !== primaryStill);
       if (assetSelectionStale) {
         const primary =
-          primaryStill && next.includes(primaryStill)
+          primaryStill && nextUnique.includes(primaryStill)
             ? primaryStill
-            : (next[next.length - 1] ?? null);
-        setSelectedAssetIds(next);
+            : (nextUnique[nextUnique.length - 1] ?? null);
+        setSelectedAssetIds(nextUnique);
         setSelectedAssetId(primary);
         setOpenProjectSelectedAssetId(primary);
       }
+      for (const id of removed) replacements.delete(id);
     }
   }
+  /* eslint-enable react-hooks/refs */
 
   useEffect(() => {
     let offProgress: (() => void) | undefined;
@@ -1040,6 +1050,7 @@ export function EditorLayout() {
       const placeholderId = detail?.placeholderId?.trim();
       const creationId = detail?.creationId?.trim();
       if (!placeholderId || !creationId) return;
+      placeholderCompletionRef.current.set(placeholderId, creationId);
       setSelectedAssetIds((ids) =>
         ids.map((id) => (id === placeholderId ? creationId : id)),
       );

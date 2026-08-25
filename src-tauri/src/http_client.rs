@@ -43,7 +43,7 @@ pub struct HttpJsonResult {
     pub retry_after_sec: Option<u64>,
 }
 
-fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+pub(crate) fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
     let trimmed = raw.trim();
     if let Ok(secs) = trimmed.parse::<u64>() {

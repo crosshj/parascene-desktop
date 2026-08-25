@@ -1,11 +1,9 @@
 import {
   memo,
-  useEffect,
   useLayoutEffect,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { ensureLocal } from "./catalogClient";
 import {
   creationCardTitle,
   isGroupCreation,
@@ -266,7 +264,7 @@ export const CreationCard = memo(function CreationCard({
 }) {
   const preview = creationPreviewUrl(creation);
   const unavailable = isParasceneUnavailable(creation);
-  const waitingOnDisk = !preview && !unavailable;
+  const waitingOnDisk = false;
   const [paintSrc, setPaintSrc] = useState<string | null>(() =>
     preview && isPreviewDecoded(preview) ? preview : null,
   );
@@ -306,11 +304,6 @@ export const CreationCard = memo(function CreationCard({
       cancelled = true;
     };
   }, [preview]);
-
-  useEffect(() => {
-    if (unavailable || !canFetchLocal(creation) || preview) return;
-    void ensureLocal([creation.id], { fullMedia: false });
-  }, [creation, unavailable, preview]);
 
   const showImage = Boolean(paintSrc && paintSrc === preview);
   // Audio rarely has a bitmap thumb — waveform once local (or disk-only import).

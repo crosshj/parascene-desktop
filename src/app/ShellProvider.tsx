@@ -551,8 +551,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   }, [publishStoredProjects, setChromeStatus]);
 
   // One-shot cleanup: strip ordinary group members flattened onto projects by
-  // an earlier reconcile that expanded every group. Must refresh covers first —
-  // detail/local rows often omit meta.group, so strip would no-op otherwise.
+  // an earlier reconcile that expanded every group. Local catalog only —
+  // paging Parascene for cover meta races generate and can trip Cloudflare.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -560,12 +560,6 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         const current = loadStoredProjects();
         if (current.length === 0) return;
 
-        const coverIds = await collectProjectGroupCoverIdsToRefresh(current);
-        if (cancelled) return;
-        if (coverIds.length > 0) {
-          await refreshCreationsFromListById(coverIds);
-        }
-        if (cancelled) return;
         await syncGroupMembersManifest();
         if (cancelled) return;
 
@@ -1612,6 +1606,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             progressNote: undefined,
             addAssetGeneration: undefined,
           });
+          // Select only when this row first becomes a placeholder.
+          if (existing) return withPlaceholder;
           return setStoredProjectSelectedAssetId(withPlaceholder, opts.id);
         });
       },
@@ -1628,23 +1624,19 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         );
       },
       completePlaceholder: ({ placeholderId, creationId }) => {
-        let wasSelected = false;
-        patchOpenProject((project) => {
-          wasSelected = project.selectedAssetId === placeholderId;
-          return completeStoredLibraryAssetPlaceholder(
+        patchOpenProject((project) =>
+          completeStoredLibraryAssetPlaceholder(
             project,
             placeholderId,
             creationId,
             { mergeCreationIntoProject: false },
-          );
-        });
-        if (wasSelected) {
-          window.dispatchEvent(
-            new CustomEvent("parascene-library-asset-completed", {
-              detail: { placeholderId, creationId },
-            }),
-          );
-        }
+          ),
+        );
+        window.dispatchEvent(
+          new CustomEvent("parascene-library-asset-completed", {
+            detail: { placeholderId, creationId },
+          }),
+        );
       },
       addCreations: async (creationIds) => {
         if (!openProjectId) return;

@@ -4,6 +4,7 @@ import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
+  shouldHoldGenerateDualChrome,
   shouldHoldGenerateDualFormSurface,
   shouldPreserveGenerateDualView,
   shouldShowGenerateDualChrome,
@@ -54,6 +55,49 @@ describe("generateDualView", () => {
       shouldPreserveGenerateDualView({
         prevHostKey: "ph:x",
         nextHostKey: "gen:a",
+      }),
+    ).toBe(false);
+  });
+
+  it("holds Result | Form chrome across gen→gen catalog load gaps", () => {
+    expect(
+      shouldHoldGenerateDualChrome({
+        hostKey: "gen:a",
+        showGenerateDualHost: false,
+        hasAssetId: true,
+        selectionSettled: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHoldGenerateDualChrome({
+        hostKey: "gen:a",
+        showGenerateDualHost: true,
+        hasAssetId: true,
+        selectionSettled: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHoldGenerateDualChrome({
+        hostKey: "gen:a",
+        showGenerateDualHost: false,
+        hasAssetId: true,
+        selectionSettled: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHoldGenerateDualChrome({
+        hostKey: "ph:x",
+        showGenerateDualHost: false,
+        hasAssetId: true,
+        selectionSettled: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHoldGenerateDualChrome({
+        hostKey: null,
+        showGenerateDualHost: false,
+        hasAssetId: true,
+        selectionSettled: false,
       }),
     ).toBe(false);
   });

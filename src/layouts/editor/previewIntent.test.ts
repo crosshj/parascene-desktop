@@ -5,6 +5,7 @@ import {
   SELECTION_INTENT_MODES,
   addAssetIntentAllowsLibraryGeneration,
   addAssetIntentAllowsTimelinePlacement,
+  intentOffersAssetsDestination,
   isIntentServerWired,
   makeAddAssetIntent,
   resolveAddAssetIntent,
@@ -67,6 +68,16 @@ describe("previewIntent catalog", () => {
         makeAddAssetIntent("text_to_image", "replicate", "timeline"),
       ),
     ).toBe(true);
+    expect(
+      addAssetIntentAllowsTimelinePlacement(
+        makeAddAssetIntent("text_to_image", "replicate"),
+      ),
+    ).toBe(false);
+    expect(
+      addAssetIntentAllowsTimelinePlacement(
+        makeAddAssetIntent("image_to_image", "parascene_blue"),
+      ),
+    ).toBe(false);
   });
 
   it("wires core video intents on Parascene and Direct to Blue", () => {
@@ -98,12 +109,11 @@ describe("previewIntent catalog", () => {
         makeAddAssetIntent("image_to_video", "replicate"),
       ),
     ).toBe(true);
-    // Stills: Timeline generate is wired for text to image.
     expect(
       addAssetIntentAllowsTimelinePlacement(
         makeAddAssetIntent("text_to_image", "replicate"),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       addAssetIntentAllowsTimelinePlacement(
         makeAddAssetIntent("image_to_image", "replicate"),
@@ -123,10 +133,24 @@ describe("previewIntent catalog", () => {
     expect(selectionModeAllowsTimelinePlacement("composite")).toBe(false);
   });
 
-  it("marks text to image as choose destination", () => {
+  it("marks still intents as assets-only", () => {
     const t2i = GENERATE_INTENTS.find((i) => i.id === "text_to_image");
-    expect(t2i?.destinationPolicy).toBe("choose");
+    const i2i = GENERATE_INTENTS.find((i) => i.id === "image_to_image");
+    expect(t2i?.destinationPolicy).toBe("assets_only");
+    expect(i2i?.destinationPolicy).toBe("assets_only");
     expect(t2i?.label).toBe("Text to Image");
+  });
+
+  it("offers Generate Assets only for stills", () => {
+    expect(intentOffersAssetsDestination("text_to_image")).toBe(true);
+    expect(intentOffersAssetsDestination("image_to_image")).toBe(true);
+    expect(intentOffersAssetsDestination("text_to_video")).toBe(false);
+    expect(intentOffersAssetsDestination("image_to_video")).toBe(false);
+    expect(intentOffersAssetsDestination("image_audio_to_video")).toBe(false);
+    expect(intentOffersAssetsDestination("video_to_video")).toBe(false);
+    expect(intentOffersAssetsDestination("reference_to_video")).toBe(false);
+    expect(intentOffersAssetsDestination("text_to_music")).toBe(false);
+    expect(intentOffersAssetsDestination("text_to_speech")).toBe(false);
   });
 
   it("wires Text to Image for library generation", () => {

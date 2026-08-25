@@ -285,8 +285,21 @@ function retryAfterMs(res: HttpJsonResult, attempt: number): number {
   return Math.min(60_000, 2000 * 2 ** attempt);
 }
 
+function isCloudflareBlocked(res: HttpJsonResult): boolean {
+  if (res.status !== 403) return false;
+  const body = (res.body || "").toLowerCase();
+  return (
+    body.includes("rate limit") ||
+    body.includes("too many requests") ||
+    body.includes("error code 1015") ||
+    body.includes("<html") ||
+    body.includes("cloudflare")
+  );
+}
+
 function isRateLimited(res: HttpJsonResult): boolean {
   if (res.status === 429 || res.status === 503) return true;
+  if (isCloudflareBlocked(res)) return false;
   try {
     const err = JSON.parse(res.body) as { message?: string; error?: string };
     const msg = `${err.message || ""} ${err.error || ""}`.toLowerCase();
@@ -410,6 +423,7 @@ async function postBearerOnceResilient(
 }
 
 function isUnauthorized(res: HttpJsonResult): boolean {
+  if (res.status === 403) return false;
   if (res.status === 401) return true;
   try {
     const err = JSON.parse(res.body) as { message?: string; error?: string };
@@ -450,6 +464,7 @@ async function postBearerResilient(
         continue;
       }
     }
+    if (isCloudflareBlocked(last)) return last;
     if (!isRateLimited(last)) return last;
     const wait = retryAfterMs(last, attempt);
     opts?.onWait?.(wait);
@@ -999,11 +1014,28 @@ export class ParasceneSdk {
       if (opts?.signal?.aborted) {
         throw new Error("Cancelled");
       }
-      const row = await this.getCreation(id);
-      opts?.onTick?.(row);
-      const status = String(row.status || "").toLowerCase();
-      if (status !== "creating" && status !== "pending") {
-        return row;
+      try {
+        const row = await this.getCreation(id);
+        opts?.onTick?.(row);
+        const status = String(row.status || "").toLowerCase();
+        if (status !== "creating" && status !== "pending") {
+          return row;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const lower = msg.toLowerCase();
+        const busy =
+          lower.includes("403") ||
+          lower.includes("429") ||
+          lower.includes("rate limit") ||
+          lower.includes("too many") ||
+          lower.includes("cooling down");
+        if (!busy) throw err;
+        if (Date.now() - started > timeoutMs) {
+          throw new Error(`Timed out waiting for creation ${id}`);
+        }
+        await sleep(Math.max(intervalMs, 15_000));
+        continue;
       }
       if (Date.now() - started > timeoutMs) {
         throw new Error(`Timed out waiting for creation ${id}`);

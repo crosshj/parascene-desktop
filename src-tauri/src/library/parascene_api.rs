@@ -6,8 +6,8 @@ use crate::auth_store::{ensure_access_token, force_refresh_access_token};
 use crate::http_client;
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const API_BASE: &str = "https://www.parascene.com";
 
@@ -28,7 +28,87 @@ async fn bearer_token() -> Result<String, String> {
     ensure_access_token().await
 }
 
+fn json_from_body(text: &str) -> Value {
+    if text.trim().is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(text).unwrap_or_else(|_| json!({ "raw": text }))
+    }
+}
+
+fn is_rate_limited(status: u16, value: &Value) -> bool {
+    if status == 429 || status == 503 {
+        return true;
+    }
+    let blob = value.to_string().to_ascii_lowercase();
+    let limited = blob.contains("rate limit")
+        || blob.contains("too many requests")
+        || blob.contains("error code 1015");
+    if status == 403 {
+        // Cloudflare WAF/HTML blocks — not a missing token.
+        return limited || blob.contains("<html") || blob.contains("cloudflare");
+    }
+    limited
+}
+
+struct RateGate {
+    until: Option<Instant>,
+    strikes: u32,
+}
+
+fn rate_gate() -> &'static Mutex<RateGate> {
+    static GATE: OnceLock<Mutex<RateGate>> = OnceLock::new();
+    GATE.get_or_init(|| Mutex::new(RateGate {
+        until: None,
+        strikes: 0,
+    }))
+}
+
+/// Remaining cooldown after a 429/403 storm, if any.
+pub fn api_cooling_down() -> Option<Duration> {
+    let gate = rate_gate().lock().ok()?;
+    let until = gate.until?;
+    until.checked_duration_since(Instant::now())
+}
+
+pub(crate) fn trip_rate_gate() {
+    if let Ok(mut gate) = rate_gate().lock() {
+        gate.strikes = gate.strikes.saturating_add(1).min(6);
+        let shift = gate.strikes.saturating_sub(1).min(4);
+        let secs = (15u64 << shift).min(300);
+        gate.until = Some(Instant::now() + Duration::from_secs(secs));
+        eprintln!(
+            "[parascene-api] cooling down {secs}s after rate limit (strike {})",
+            gate.strikes
+        );
+    }
+}
+
+fn note_api_ok() {
+    if let Ok(mut gate) = rate_gate().lock() {
+        gate.strikes = 0;
+        gate.until = None;
+    }
+}
+
+fn cooling_down_error() -> String {
+    let secs = api_cooling_down()
+        .map(|d| d.as_secs().max(1))
+        .unwrap_or(15);
+    format!(
+        "Rate limited (cooling down {secs}s). This computer is still blocked — not from this click."
+    )
+}
+
 async fn request_json(
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    request_json_limited(method, path, body).await
+}
+
+async fn request_json_limited(
     method: reqwest::Method,
     path: &str,
     body: Option<&Value>,
@@ -39,9 +119,11 @@ async fn request_json(
         format!("{API_BASE}{path}")
     };
 
-    let mut attempt = 0u8;
+    let mut auth_retried = false;
     loop {
-        attempt += 1;
+        if api_cooling_down().is_some() {
+            return Err(cooling_down_error());
+        }
         let token = bearer_token().await?;
         let mut req = client()
             .request(method.clone(), &url)
@@ -58,15 +140,21 @@ async fn request_json(
             .map_err(|e| http_client::map_request_error(&url, e))?;
         let status = res.status().as_u16();
         let text = res.text().await.map_err(|e| e.to_string())?;
-        if (status == 401 || status == 403) && attempt < 2 {
+        // Only 401 is "try a fresh token". Cloudflare 403 is a block — refreshing
+        // and immediately retrying is what turns a wait-loop into a request storm.
+        if status == 401 && !auth_retried {
+            auth_retried = true;
             let _ = force_refresh_access_token().await;
             continue;
         }
-        let value = if text.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }))
-        };
+        let value = json_from_body(&text);
+        if is_rate_limited(status, &value) {
+            trip_rate_gate();
+            return Err(cooling_down_error());
+        }
+        if status < 400 {
+            note_api_ok();
+        }
         return Ok((status, value));
     }
 }
@@ -85,6 +173,9 @@ async fn request_bytes_post(
 
     let mut attempt = 0u8;
     loop {
+        if api_cooling_down().is_some() {
+            return Err(cooling_down_error());
+        }
         attempt += 1;
         let token = bearer_token().await?;
         let mut req = client()
@@ -109,15 +200,18 @@ async fn request_bytes_post(
             .map_err(|e| http_client::map_request_error(&url, e))?;
         let status = res.status().as_u16();
         let text = res.text().await.map_err(|e| e.to_string())?;
-        if (status == 401 || status == 403) && attempt < 2 {
+        let value = json_from_body(&text);
+        if status == 401 && attempt < 2 {
             let _ = force_refresh_access_token().await;
             continue;
         }
-        let value = if text.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }))
-        };
+        if is_rate_limited(status, &value) {
+            trip_rate_gate();
+            return Err(cooling_down_error());
+        }
+        if status < 400 {
+            note_api_ok();
+        }
         return Ok((status, value));
     }
 }
@@ -147,11 +241,66 @@ pub fn creation_id(value: &Value) -> Option<String> {
 }
 
 pub fn creation_status(value: &Value) -> String {
-    value
-        .get("status")
+    let row = creation_row(value);
+    row.get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_lowercase()
+}
+
+/// `GET /api/create/images/:id` sometimes wraps the row (`creation` / `image` / `data`).
+pub fn creation_row(value: &Value) -> &Value {
+    for key in ["creation", "image", "data"] {
+        if let Some(inner) = value.get(key) {
+            if inner.is_object()
+                && (inner.get("id").is_some()
+                    || inner.get("status").is_some()
+                    || inner.get("url").is_some()
+                    || inner.get("file_path").is_some())
+            {
+                return inner;
+            }
+        }
+    }
+    value
+}
+
+fn owned_creation_row(value: Value) -> Value {
+    for key in ["creation", "image", "data"] {
+        if let Some(inner) = value.get(key).cloned() {
+            if inner.is_object()
+                && (inner.get("id").is_some()
+                    || inner.get("status").is_some()
+                    || inner.get("url").is_some()
+                    || inner.get("file_path").is_some())
+            {
+                return inner;
+            }
+        }
+    }
+    value
+}
+
+/// Still generating — no usable media yet. A public page can show the image
+/// while `status` is still `creating`; a media URL means wait is over.
+pub fn creation_is_in_flight(value: &Value) -> bool {
+    let row = creation_row(value);
+    let status = creation_status(row);
+    if matches!(
+        status.as_str(),
+        "failed" | "error" | "cancelled" | "canceled"
+    ) {
+        return false;
+    }
+    if media_url(row).is_some() {
+        return false;
+    }
+    status.is_empty()
+        || status == "creating"
+        || status == "pending"
+        || status == "queued"
+        || status == "processing"
+        || status.starts_with("creating")
 }
 
 pub fn group_member_ids(value: &Value) -> Vec<String> {
@@ -238,6 +387,7 @@ fn absolutize_media_path(raw: &str) -> Option<String> {
 
 /// Prefer full media, then fit thumb, then square thumb (for i2v / still resolve).
 pub fn media_url(value: &Value) -> Option<String> {
+    let value = creation_row(value);
     for key in ["url", "video_url", "fit_thumbnail_url", "thumbnail_url", "file_path"] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
             if let Some(abs) = absolutize_media_path(s) {
@@ -314,12 +464,21 @@ pub async fn repair_fit_thumbnails(ids: &[String], force: bool) -> Result<Value,
 }
 
 pub async fn get_creation(id: &str) -> Result<Value, String> {
+    get_creation_once(id).await
+}
+
+/// Wait-loop GET. Rate-limit/403 trips a process-wide cooldown; do not retry here.
+pub async fn get_creation_poll(id: &str) -> Result<Value, String> {
+    get_creation_once(id).await
+}
+
+async fn get_creation_once(id: &str) -> Result<Value, String> {
     let path = format!("/api/create/images/{}", urlencoding_path(id));
     let (status, value) = request_json(reqwest::Method::GET, &path, None).await?;
     if status >= 400 {
         return Err(api_error(status, &value, "get creation failed"));
     }
-    Ok(value)
+    Ok(owned_creation_row(value))
 }
 
 pub async fn delete_creation(id: &str) -> Result<(), String> {
@@ -582,4 +741,55 @@ fn urlencoding_path(id: &str) -> String {
             _ => format!("%{:02X}", c as u8),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn in_flight_until_media_exists() {
+        assert!(creation_is_in_flight(&json!({ "id": 26045, "status": "creating" })));
+        assert!(!creation_is_in_flight(&json!({
+            "id": 26045,
+            "status": "creating",
+            "url": "https://www.parascene.com/api/images/created/done.png",
+        })));
+        assert!(!creation_is_in_flight(&json!({
+            "id": 26045,
+            "status": "complete",
+            "file_path": "/api/images/created/done.png",
+        })));
+    }
+
+    #[test]
+    fn unwraps_nested_creation_rows() {
+        let wrapped = json!({
+            "creation": {
+                "id": 26045,
+                "status": "creating",
+                "url": "https://www.parascene.com/x.png",
+            }
+        });
+        assert!(!creation_is_in_flight(&wrapped));
+        assert_eq!(creation_row(&wrapped)["id"], 26045);
+    }
+
+    #[test]
+    fn cloudflare_403_counts_as_rate_limit_not_auth() {
+        assert!(is_rate_limited(
+            403,
+            &json!({ "error": "Rate limit exceeded" }),
+        ));
+        assert!(is_rate_limited(
+            403,
+            &json!({ "raw": "<html>cloudflare error code 1015</html>" }),
+        ));
+        assert!(!is_rate_limited(
+            403,
+            &json!({ "error": "forbidden" }),
+        ));
+        assert!(is_rate_limited(429, &json!({})));
+    }
 }

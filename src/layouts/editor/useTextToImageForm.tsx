@@ -9,7 +9,6 @@ import { promptSchemaField } from "../../forms/schemaForm";
 import { WorkflowForm } from "../../forms/WorkflowForm";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import { DEFAULT_PROJECT_ASPECT_RATIO } from "../../project/aspectRatios";
-import type { CreationTarget } from "../../services/types";
 import { serviceDescribe } from "../../services/serviceClient";
 import { serviceIdForGenerateServer } from "../../services/generateServerMap";
 import {
@@ -24,7 +23,6 @@ import {
 import {
   parasceneResolveStillModel,
   parasceneStillModelFamilies,
-  type ParasceneStillModelOption,
 } from "./parasceneProductCaps";
 import type { GenerateServerId } from "./previewIntent";
 import {
@@ -47,8 +45,6 @@ export type UseTextToImageFormOpts = {
   initialPrompt?: string;
   initialModelId?: string;
   placeholderId?: string;
-  /** Show Generate → Timeline when the intent allows it. */
-  allowTimelineTarget?: boolean;
 };
 
 type ModelOption = {
@@ -83,17 +79,26 @@ export function useTextToImageForm(
     initialPrompt = "",
     initialModelId = null,
     placeholderId,
-    allowTimelineTarget = false,
   } = opts;
 
   const { project } = useShell();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
 
+  const parasceneRoutes = useMemo(() => {
+    if (server !== "parascene_blue") return null;
+    return parasceneStillModelFamilies("text_to_image").flatMap((g) => g.models);
+  }, [server]);
+  const parasceneModelOptions = useMemo(() => {
+    if (!parasceneRoutes) return null;
+    return parasceneRoutes.map((m) => ({
+      id: m.id,
+      label: m.label,
+      hint: m.hint,
+    }));
+  }, [parasceneRoutes]);
+
   const [models, setModels] = useState<ModelOption[] | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [parasceneRoutes, setParasceneRoutes] = useState<
-    ParasceneStillModelOption[] | null
-  >(null);
   const [replicateModels, setReplicateModels] = useState<
     ReplicateTextToImageModelOption[] | null
   >(null);
@@ -137,21 +142,6 @@ export function useTextToImageForm(
     let cancelled = false;
 
     if (server === "parascene_blue") {
-      const families = parasceneStillModelFamilies("text_to_image");
-      const routes = families.flatMap((g) => g.models);
-      setParasceneRoutes(routes);
-      setModels(
-        routes.map((m) => ({ id: m.id, label: m.label, hint: m.hint })),
-      );
-      if (!(fieldsLocked && selectedModelId)) {
-        setModelId((prev) => {
-          const preferred = prev || initialModelId;
-          if (preferred && routes.some((m) => m.id === preferred)) {
-            return preferred;
-          }
-          return routes[0]?.id ?? null;
-        });
-      }
       return () => {
         cancelled = true;
       };
@@ -209,24 +199,34 @@ export function useTextToImageForm(
     };
   }, [server, fieldsLocked, selectedModelId, initialModelId, modelId]);
 
-  useEffect(() => {
-    if (!models?.length) return;
-    setValues((prev) => {
-      const nextModel =
-        prev.model && models.some((m) => m.id === prev.model)
-          ? prev.model
-          : modelId && models.some((m) => m.id === modelId)
-            ? modelId
-            : models[0]?.id ?? "";
-      return nextModel ? { ...prev, model: nextModel } : prev;
-    });
-  }, [models, modelId]);
+  const formModels = parasceneModelOptions ?? models;
+  if (formModels?.length && !(fieldsLocked && selectedModelId)) {
+    const preferred = modelId || initialModelId;
+    const nextModelId =
+      preferred && formModels.some((m) => m.id === preferred)
+        ? preferred
+        : formModels[0]?.id ?? null;
+    if (nextModelId && nextModelId !== modelId) {
+      setModelId(nextModelId);
+    }
+  }
+  if (formModels?.length) {
+    const nextModel =
+      values.model && formModels.some((m) => m.id === values.model)
+        ? values.model
+        : modelId && formModels.some((m) => m.id === modelId)
+          ? modelId
+          : formModels[0]?.id ?? "";
+    if (nextModel && nextModel !== values.model) {
+      setValues((prev) => ({ ...prev, model: nextModel }));
+    }
+  }
 
   const schemaFields = useMemo(() => {
     const modelField = describeFields.find((f) => f.name === "model");
     const promptField =
       describeFields.find((f) => f.name === "prompt") ?? promptSchemaField();
-    const modelOptions = models ?? [];
+    const modelOptions = formModels ?? [];
     const mergedModel: ReplicateInputField = modelField
       ? {
           ...modelField,
@@ -240,7 +240,7 @@ export function useTextToImageForm(
           server === "blue_direct" ? "Blue model" : "Model",
         );
     return [mergedModel, promptField];
-  }, [describeFields, models, server]);
+  }, [describeFields, formModels, server]);
 
   const lockedReviewKey = locked
     ? `${initialPrompt}\0${initialModelId ?? ""}`
@@ -261,14 +261,14 @@ export function useTextToImageForm(
     Boolean(prompt.trim()) &&
     Boolean(selectedModelId.trim()) &&
     Boolean(project.id) &&
-    Boolean(models?.length);
+    Boolean(formModels?.length);
 
   const handleGenerateNew = () => {
     setDoneLocked(false);
     onGenerateNew?.();
   };
 
-  const handleGenerate = (target: CreationTarget) => {
+  const handleGenerate = () => {
     if (!canGenerate || !project.id) return;
     const modelKey = selectedModelId.trim();
     if (!modelKey) return;
@@ -288,7 +288,7 @@ export function useTextToImageForm(
         modelId: route.id,
         route,
         placeholderId,
-        destination: target,
+        destination: "assets",
       });
       return;
     }
@@ -303,7 +303,7 @@ export function useTextToImageForm(
         prompt,
         model,
         placeholderId,
-        destination: target,
+        destination: "assets",
       });
       return;
     }
@@ -314,7 +314,7 @@ export function useTextToImageForm(
       prompt,
       modelId: modelKey,
       placeholderId,
-      destination: target,
+      destination: "assets",
     });
   };
 
@@ -335,17 +335,17 @@ export function useTextToImageForm(
         if (name === "model") setModelId(value || null);
       }}
       disabled={fieldsLocked}
-      onSubmit={() => handleGenerate("assets")}
+      onSubmit={() => handleGenerate()}
       beforeFields={
         modelsError ? (
           <section className="add-asset-generate-section">
             <p className="add-asset-generate-error">{modelsError}</p>
           </section>
-        ) : models == null ? (
+        ) : formModels == null ? (
           <section className="add-asset-generate-section">
             <p className="muted">Loading {modelLabel.toLowerCase()}…</p>
           </section>
-        ) : models.length === 0 ? (
+        ) : formModels.length === 0 ? (
           <section className="add-asset-generate-section">
             <p className="muted">No models available for this server.</p>
           </section>
@@ -363,22 +363,12 @@ export function useTextToImageForm(
 
   const generateAction =
     !doneLocked && !(locked && onGenerateNew) ? (
-      <>
-        <GenerateTargetButton
-          target="Assets"
-          disabled={!canGenerate}
-          running={false}
-          onClick={() => handleGenerate("assets")}
-        />
-        {allowTimelineTarget ? (
-          <GenerateTargetButton
-            target="Timeline"
-            disabled={!canGenerate}
-            running={false}
-            onClick={() => handleGenerate("timeline")}
-          />
-        ) : null}
-      </>
+      <GenerateTargetButton
+        target="Assets"
+        disabled={!canGenerate}
+        running={false}
+        onClick={() => handleGenerate()}
+      />
     ) : null;
 
   return { fields, generateAction, cloneAction };

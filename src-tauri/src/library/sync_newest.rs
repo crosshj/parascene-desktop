@@ -91,11 +91,20 @@ async fn prune_recent_remote_deletions(
     }
 
     let mut pruned = 0u32;
-    for (i, id) in candidates.iter().enumerate() {
-        on_tick(i + 1, candidates.len())?;
+    const PRUNE_CHECK_CAP: usize = 25;
+    for (i, id) in candidates.iter().take(PRUNE_CHECK_CAP).enumerate() {
+        on_tick(i + 1, candidates.len().min(PRUNE_CHECK_CAP))?;
         match get_creation(id).await {
             Ok(_) => { /* still remote — keep */ }
-            Err(_) => {
+            Err(err) => {
+                let lower = err.to_ascii_lowercase();
+                if lower.contains("rate limit")
+                    || lower.contains("cooling down")
+                    || lower.contains("403")
+                    || lower.contains("429")
+                {
+                    break;
+                }
                 if delete_local_best_effort(app, id) {
                     pruned += 1;
                 }

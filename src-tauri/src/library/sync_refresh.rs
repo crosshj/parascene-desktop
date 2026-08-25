@@ -3,7 +3,8 @@
 //! Mirrors `src/sync/manifestSync.ts` `refreshCreationsFromListById`.
 
 use super::catalog::{
-    apply_manifest, default_paths, map_remote_creation_json, ready_connection, CreationUpsert,
+    apply_manifest, default_paths, ids_needing_group_list_refresh, map_remote_creation_json,
+    ready_connection, CreationUpsert,
 };
 use super::parascene_api::{creation_id, list_my_creations};
 use serde_json::{json, Value};
@@ -28,6 +29,18 @@ pub async fn run_refresh_creations_by_id(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
         .collect();
+    if wanted.is_empty() {
+        return Ok(json!({ "refreshed": 0 }));
+    }
+
+    // Skip ids that already have group membership locally — the common case
+    // when switching to Editor. Avoid paging the entire remote catalog.
+    let wanted = {
+        let paths = default_paths()?;
+        let conn = ready_connection(&paths)?;
+        let remaining = ids_needing_group_list_refresh(&conn, &wanted.into_iter().collect::<Vec<_>>())?;
+        remaining.into_iter().collect::<HashSet<_>>()
+    };
     if wanted.is_empty() {
         return Ok(json!({ "refreshed": 0 }));
     }

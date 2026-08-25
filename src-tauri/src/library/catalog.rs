@@ -1634,13 +1634,28 @@ pub(crate) fn sync_status_for(paths: &ParascenePaths) -> Result<SyncStatus, Stri
 
 pub(crate) fn apply_manifest(conn: &Connection, rows: &[CreationUpsert]) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        upsert_creation(conn, row, &now)?;
+    conn.execute_batch("BEGIN")
+        .map_err(|e| format!("Begin catalog write: {e}"))?;
+    let result = (|| {
+        conn.execute("DELETE FROM creations WHERE id LIKE 'fixture-%'", [])
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            upsert_creation(conn, row, &now)?;
+        }
+        meta_set(conn, "last_sync_at", &now)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("Commit catalog write: {e}"))?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
     }
-    meta_set(conn, "last_sync_at", &now)?;
-    Ok(())
 }
 
 /// Site origin used when absolutizing relative Parascene asset paths.
@@ -1991,10 +2006,14 @@ pub fn library_ensure_ready() -> Result<SyncStatus, String> {
 }
 
 #[tauri::command]
-pub fn library_list_creations() -> Result<Vec<Creation>, String> {
-    let paths = default_paths()?;
-    let conn = ready_connection(&paths)?;
-    list_creations(&conn)
+pub async fn library_list_creations() -> Result<Vec<Creation>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let paths = default_paths()?;
+        let conn = ready_connection(&paths)?;
+        list_creations(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2012,8 +2031,8 @@ pub fn library_list_filter_creations(filter: String) -> Result<Vec<Creation>, St
     list_creations_for_filter(&conn, filter.trim())
 }
 
-/// Plain list (no side effects). Prefer `library::library_list_creations_page` for UI,
-/// which also kicks async thumb prefetch.
+/// Plain list (no side effects). UI paging uses `library::library_list_creations_page`
+/// which is also local SQLite only — Sync owns downloads.
 pub(crate) fn query_creations_page(limit: u32, offset: u32) -> Result<CreationPage, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
@@ -2080,6 +2099,85 @@ pub(crate) fn existing_creation_ids(conn: &Connection, ids: &[String]) -> Result
 
     // Preserve caller order among matches.
     Ok(unique.into_iter().filter(|id| found.contains(id)).collect())
+}
+
+fn remote_json_has_group_members(filename: Option<&str>, remote_json: Option<&str>) -> bool {
+    let is_group = filename
+        .map(|f| f.trim().to_ascii_lowercase().starts_with("group/"))
+        .unwrap_or(false)
+        || remote_json
+            .map(|raw| {
+                raw.contains("\"kind\":\"group_creations\"")
+                    || raw.contains("\"kind\": \"group_creations\"")
+            })
+            .unwrap_or(false);
+    if !is_group {
+        return true;
+    }
+    remote_json
+        .map(|raw| !group_member_ids_from_remote_json(raw).is_empty())
+        .unwrap_or(false)
+}
+
+/// Ids that still need a list-page refresh (missing locally, or group cover
+/// without source membership). Skip the rest so Editor open does not walk
+/// the remote catalog.
+pub(crate) fn ids_needing_group_list_refresh(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<String>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut unique: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        let trimmed = id.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        unique.push(trimmed.to_string());
+    }
+    if unique.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut by_id: std::collections::HashMap<String, (Option<String>, Option<String>)> =
+        std::collections::HashMap::new();
+    const CHUNK: usize = 400;
+    for chunk in unique.chunks(CHUNK) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, filename, remote_json FROM creations WHERE id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, filename, remote_json) = row.map_err(|e| e.to_string())?;
+            by_id.insert(id, (filename, remote_json));
+        }
+    }
+
+    Ok(unique
+        .into_iter()
+        .filter(|id| match by_id.get(id) {
+            None => true,
+            Some((filename, remote_json)) => {
+                !remote_json_has_group_members(filename.as_deref(), remote_json.as_deref())
+            }
+        })
+        .collect())
 }
 
 #[derive(Clone, Debug, Serialize)]

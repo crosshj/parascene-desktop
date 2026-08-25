@@ -8,9 +8,6 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { creationAspectCss } from "../../library/aspectRatio";
-import {
-  ensureLocal,
-} from "../../library/catalogClient";
 import { CreationCard } from "../../library/CreationCard";
 import {
   creationCardTitle,
@@ -21,7 +18,6 @@ import { FolderCard } from "../../library/FolderCard";
 import CompositionCard from "../../library/CompositionCard";
 import type { LibraryFolder } from "../../library/folderClient";
 import {
-  canFetchLocal,
   creationDetailUrl,
   creationPreviewUrl,
 } from "../../library/previewUrl";
@@ -474,13 +470,6 @@ export function AssetBrowserPane({
         if (cancelled) return;
 
         setCreationsById(next);
-
-        const needThumbs = Object.values(next)
-          .filter((c) => !creationPreviewUrl(c) && canFetchLocal(c))
-          .map((c) => c.id);
-        if (needThumbs.length > 0) {
-          void ensureLocal(needThumbs, { fullMedia: false });
-        }
       } catch {
         if (!cancelled) setCreationsById({});
       }

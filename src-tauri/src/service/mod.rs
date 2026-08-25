@@ -837,8 +837,8 @@ async fn run_sync_operation(service: &str, operation: &str, payload: &Value) -> 
 }
 
 #[tauri::command]
-pub fn service_get(id: String) -> Result<Option<Job>, String> {
-    jobs_get(id)
+pub async fn service_get(id: String) -> Result<Option<Job>, String> {
+    jobs_get(id).await
 }
 
 #[tauri::command]

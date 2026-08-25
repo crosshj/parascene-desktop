@@ -6904,8 +6904,12 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 
 .add-asset-generate-footer {
   flex: 0 0 auto;
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  width: max-content;
+  max-width: 100%;
+  margin-left: auto;
   gap: 0.5rem;
   padding-top: 0.55rem;
   margin-top: 0.15rem;
@@ -6996,12 +7000,6 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 .generate-dual-view-chrome .editor-preview-source-label {
   flex: 0 1 auto;
   min-width: 0;
-}
-
-.generate-dual-view-status {
-  margin: 0;
-  flex: 0 0 auto;
-  font-size: 0.8rem;
 }
 
 .generate-result-note--error {
@@ -7352,7 +7350,10 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 }
 
 .preview-intent-footer .editor-cartridge-grip {
-  flex: 0 0 auto;
+  width: 100%;
+  min-width: 8.75rem;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 .preview-intent-pane .editor-staging-controls {

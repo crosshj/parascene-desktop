@@ -4,7 +4,6 @@ import { runSyncFull, runSyncNewest } from "../services/syncCatalog";
 import { aspectRatioFromMeta } from "../library/aspectRatio";
 import {
   applyManifest,
-  downloadPending,
   getSyncStatus,
   listCreations,
 } from "../library/catalogClient";
@@ -12,7 +11,7 @@ import {
   groupEmbeddedSourceCreations,
   isGroupCreation,
 } from "../library/creationFlags";
-import { CREATIONS_PAGE_SIZE, type CreationUpsert, type SyncStatus } from "../library/types";
+import { type CreationUpsert, type SyncStatus } from "../library/types";
 import {
   absolutizeAssetUrl,
   deriveFitThumbnailUrl,
@@ -246,7 +245,6 @@ export async function syncGroupMembersManifest(): Promise<GroupMembersSyncResult
     };
   }
   const status = await applyManifest(additions);
-  kickWarmAheadPreviews();
   return { status, groups: groups.length, added: additions.length };
 }
 
@@ -335,18 +333,6 @@ function rethrowCatalogError(e: unknown): never {
   throw mapCatalogSyncError(e);
 }
 
-async function warmAheadPreviews(status?: SyncStatus): Promise<SyncStatus> {
-  const summary = await downloadPending(CREATIONS_PAGE_SIZE);
-  return summary.status ?? status ?? (await getSyncStatus());
-}
-
-/** Kick thumb warm-ahead without blocking the Sync button / UI. */
-function kickWarmAheadPreviews(): void {
-  void warmAheadPreviews().catch(() => {
-    /* background */
-  });
-}
-
 /** Metadata only (full image records) — no media downloads. */
 export async function syncCreationsMetadata(): Promise<SyncStatus> {
   const result = await runSyncFull();
@@ -379,7 +365,6 @@ export async function syncNewestCreationsManifest(opts?: {
       });
     },
   });
-  kickWarmAheadPreviews();
   return {
     status: result.status,
     added: result.added,
@@ -411,7 +396,6 @@ export async function syncFullCreationsManifest(): Promise<SyncStatus> {
   }
   await syncSessionUserAvatar();
   const result = await runSyncFull();
-  kickWarmAheadPreviews();
   return result.status;
 }
 
@@ -434,8 +418,7 @@ export async function refreshCreationsFromListById(
 }
 
 /**
- * Pull full creations metadata into SQLite, then kick backend thumb warm-ahead
- * (several pages). Media trails thumbs and must not block the board.
+ * Pull full creations metadata into SQLite.
  *
  * Alias for {@link syncFullCreationsManifest} (recovery / onboarding path).
  */

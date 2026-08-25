@@ -49,9 +49,9 @@ import {
   getCachedClipThumbnail,
 } from "../../library/clipThumbnail";
 import {
-  canFetchPlayableMedia,
   creationDetailUrl,
   creationPreviewUrl,
+  isParascenePending,
   isParasceneUnavailable,
 } from "../../library/previewUrl";
 import {
@@ -132,6 +132,7 @@ import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
+  shouldHoldGenerateDualChrome,
   shouldHoldGenerateDualFormSurface,
   shouldPreserveGenerateDualView,
   shouldShowGenerateDualChrome,
@@ -163,6 +164,7 @@ import {
   resolveLibraryAssetPlaceholder,
 } from "../../project/libraryAssetPlaceholder";
 import { libraryPlaceholderResultSteps } from "./libraryAssetGeneration";
+import { tryCompleteLibraryPlaceholderFromCatalog } from "./libraryAssetGenerationStore";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -445,6 +447,8 @@ export function PreviewPane({
     upsertOpenStillWorkstream,
   } = useShell();
   const [creation, setCreation] = useState<Creation | null>(null);
+  const [pendingLibraryCreation, setPendingLibraryCreation] =
+    useState<Creation | null>(null);
   const [generateDualView, setGenerateDualView] =
     useState<GenerateDualViewId>("form");
   const [pinnedReviewGeneration, setPinnedReviewGeneration] =
@@ -735,17 +739,6 @@ export function PreviewPane({
             }
             return prev;
           });
-          for (const id of classified.imageAssetIds) {
-            const row = byId.get(id);
-            if (
-              row &&
-              !creationDetailUrl(row) &&
-              canFetchPlayableMedia(row) &&
-              !isParasceneUnavailable(row)
-            ) {
-              void ensureLocal([row.id], { fullMedia: true, urgent: true });
-            }
-          }
         } else {
           setSelectionItems([]);
           setPickedImageIds([]);
@@ -801,16 +794,10 @@ export function PreviewPane({
       try {
         const row = await ensureCatalogCreation(assetId, {
           groupCoverIds: projectGroupCoverIds,
+          remote: false,
         });
         if (cancelled) return;
         setCreation(row);
-        if (
-          !creationDetailUrl(row) &&
-          canFetchPlayableMedia(row) &&
-          !isParasceneUnavailable(row)
-        ) {
-          void ensureLocal([row.id], { fullMedia: true, urgent: true });
-        }
       } catch {
         if (!cancelled) {
           setCreation(null);
@@ -873,8 +860,8 @@ export function PreviewPane({
     Boolean(creation) &&
     !detail &&
     !catalogThumb &&
-    canFetchPlayableMedia(creation!) &&
-    !unavailable;
+    !unavailable &&
+    isParascenePending(creation!);
   const cloudCaption =
     creationMatchesAsset && creation ? cloudHostCaption(creation) : null;
   const mediaType = String(
@@ -1414,12 +1401,80 @@ export function PreviewPane({
     project.libraryAssetPlaceholders,
     assetId,
   );
-  const selectedLibraryPlaceholderPhase =
-    libraryAssetPlaceholderPhase(selectedLibraryPlaceholder);
+  const pendingLibraryCreationId =
+    selectedLibraryPlaceholder?.addAssetDraft.generationJob?.pendingCreationId?.trim() ||
+    "";
+  const pendingLibraryPreviewUrl =
+    pendingLibraryCreation &&
+    pendingLibraryCreation.id === pendingLibraryCreationId
+      ? creationPreviewUrl(pendingLibraryCreation) ??
+        creationDetailUrl(pendingLibraryCreation)
+      : null;
+  const selectedLibraryPlaceholderPhase = libraryAssetPlaceholderPhase(
+    selectedLibraryPlaceholder,
+  );
+  useEffect(() => {
+    if (!pendingLibraryCreationId) return;
+    let cancelled = false;
+    void getCreation(pendingLibraryCreationId)
+      .then((row) => {
+        if (!cancelled && row) setPendingLibraryCreation(row);
+      })
+      .catch(() => {
+        if (!cancelled) setPendingLibraryCreation(null);
+      });
+    let unlisten: (() => void) | undefined;
+    void listen<Creation>("library-creation-updated", (event) => {
+      if (event.payload.id !== pendingLibraryCreationId) return;
+      setPendingLibraryCreation(event.payload);
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [pendingLibraryCreationId]);
+  const libraryPlaceholderId = selectedLibraryPlaceholder?.id ?? "";
+  const libraryPlaceholderStatus = selectedLibraryPlaceholder?.status;
+  const libraryPlaceholderPrompt =
+    selectedLibraryPlaceholder?.addAssetDraft.prompt ?? "";
+  const libraryPlaceholderDestination =
+    selectedLibraryPlaceholder?.addAssetDraft.generateDestination;
+  useEffect(() => {
+    if (
+      !libraryPlaceholderId ||
+      !pendingLibraryCreationId ||
+      !pendingLibraryPreviewUrl
+    ) {
+      return;
+    }
+    if (
+      libraryPlaceholderStatus === "error" ||
+      libraryPlaceholderStatus === "done"
+    ) {
+      return;
+    }
+    tryCompleteLibraryPlaceholderFromCatalog({
+      placeholderId: libraryPlaceholderId,
+      creationId: pendingLibraryCreationId,
+      prompt: libraryPlaceholderPrompt,
+      destination: libraryPlaceholderDestination,
+    });
+  }, [
+    libraryPlaceholderId,
+    libraryPlaceholderStatus,
+    libraryPlaceholderPrompt,
+    libraryPlaceholderDestination,
+    pendingLibraryCreationId,
+    pendingLibraryPreviewUrl,
+  ]);
   const showLibraryAssetPlaceholderDual =
     !addAssetSlotActive &&
     monitorMode === "source" &&
-    isActiveLibraryAssetPlaceholder(selectedLibraryPlaceholder);
+    isActiveLibraryAssetPlaceholder(selectedLibraryPlaceholder) &&
+    (selectedLibraryPlaceholderPhase === "running" ||
+      selectedLibraryPlaceholderPhase === "error");
   const resolvedLibraryIntent = showAddAssetIntent
     ? resolveAddAssetIntent(addAssetIntent ?? {})
     : selectedLibraryPlaceholder
@@ -1555,6 +1610,13 @@ export function PreviewPane({
     isAggregateSelection: isAggregateGenerateSelection,
     selectionSettled: generateDualSelectionSettled,
   });
+  const holdGenerateDualChrome = shouldHoldGenerateDualChrome({
+    hostKey: generateDualHostKey,
+    showGenerateDualHost,
+    hasAssetId: Boolean(assetId?.trim()),
+    selectionSettled: generateDualSelectionSettled,
+    isAggregateSelection: isAggregateGenerateSelection,
+  });
   if (showDoneGenerateDual && resolvedAddAssetGeneration) {
     const nextReviewId = reviewGenerationIdentity(resolvedAddAssetGeneration);
     if (
@@ -1619,8 +1681,10 @@ export function PreviewPane({
   }, [activeReviewGeneration, activeReviewPlacedClip]);
   // Remember Form vs Result across assets; non-form selections only hide chrome.
   const showGenerateDual =
-    showGenerateDualHost &&
-    (shouldShowGenerateDualChrome(generateDualPhase) || holdGenerateDualForm);
+    (showGenerateDualHost &&
+      (shouldShowGenerateDualChrome(generateDualPhase) ||
+        holdGenerateDualForm)) ||
+    holdGenerateDualChrome;
   const nextGenerateDualHostKey = showAddAssetGenerate
     ? `ph:${addAssetPlaceholderClip?.id ?? ""}`
     : showLibraryAssetPlaceholderDual
@@ -1673,6 +1737,12 @@ export function PreviewPane({
     } else if (generateDualPhase === "error" && prevPhase !== "error") {
       setGenerateDualView("result");
     }
+  } else if (
+    generateDualSelectionSettled &&
+    !showGenerateDualHost &&
+    generateDualHostKey
+  ) {
+    setGenerateDualHostKey(null);
   }
   const showSelectionIntent =
     !addAssetMode &&
@@ -2981,9 +3051,6 @@ export function PreviewPane({
                   <SourceLabelIcon kind={sourceKind} />
                   <span>{sourceLabelText}</span>
                 </div>
-              ) : null}
-              {generateDualPhase === "running" ? (
-                <p className="muted generate-dual-view-status">Generating…</p>
               ) : null}
             </div>
           ) : null}

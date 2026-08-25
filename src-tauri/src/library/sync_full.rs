@@ -34,7 +34,7 @@ pub async fn run_sync_full(
 
     let mut offset = 0u32;
     let mut pages = 0u32;
-    let mut remote_rows: Vec<CreationUpsert> = Vec::new();
+    let mut checked = 0u32;
     let mut added = 0u32;
 
     loop {
@@ -46,46 +46,44 @@ pub async fn run_sync_full(
             break;
         }
 
+        let mut page_rows: Vec<CreationUpsert> = Vec::new();
         for raw in &images {
             match map_remote_creation_json(raw) {
-                Ok(row) if is_syncable(&row) => remote_rows.push(row),
+                Ok(row) if is_syncable(&row) => page_rows.push(row),
                 Ok(_) => {}
                 Err(_) => continue,
             }
         }
 
-        let checked = remote_rows.len() as u32;
-        note(&format!("Checked {checked} creations…"))?;
+        checked += page_rows.len() as u32;
+        if !page_rows.is_empty() {
+            let ids: Vec<String> = page_rows.iter().map(|r| r.id.clone()).collect();
+            let existing = {
+                let paths = default_paths()?;
+                let conn = ready_connection(&paths)?;
+                existing_creation_ids(&conn, &ids)?
+                    .into_iter()
+                    .collect::<HashSet<_>>()
+            };
+            added += page_rows
+                .iter()
+                .filter(|r| !existing.contains(&r.id))
+                .count() as u32;
+            note(&format!("Saving page {pages} ({checked} checked)…"))?;
+            let paths = default_paths()?;
+            let conn = ready_connection(&paths)?;
+            apply_manifest(&conn, &page_rows)?;
+        } else {
+            note(&format!("Checked {checked} creations…"))?;
+        }
+
         offset += images.len() as u32;
         if !has_more {
             break;
         }
     }
 
-    if !remote_rows.is_empty() {
-        let ids: Vec<String> = remote_rows.iter().map(|r| r.id.clone()).collect();
-        let existing = {
-            let paths = default_paths()?;
-            let conn = ready_connection(&paths)?;
-            existing_creation_ids(&conn, &ids)?
-                .into_iter()
-                .collect::<HashSet<_>>()
-        };
-        added = remote_rows
-            .iter()
-            .filter(|r| !existing.contains(&r.id))
-            .count() as u32;
-
-        note(&format!(
-            "Saving {} creation(s) ({} new)…",
-            remote_rows.len(),
-            added
-        ))?;
-        cancel()?;
-        let paths = default_paths()?;
-        let conn = ready_connection(&paths)?;
-        apply_manifest(&conn, &remote_rows)?;
-    } else {
+    if checked == 0 {
         let paths = default_paths()?;
         let conn = ready_connection(&paths)?;
         apply_manifest(&conn, &[])?;
@@ -101,7 +99,7 @@ pub async fn run_sync_full(
 
     Ok(json!({
         "added": added,
-        "checked": remote_rows.len() as u32,
+        "checked": checked,
         "pages": pages,
         "status": status,
         "message": done_msg,

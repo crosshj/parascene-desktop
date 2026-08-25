@@ -8,6 +8,7 @@ import type { CreationTarget } from "../../services/types";
 import type { AddAssetDraft, AddAssetGeneration } from "../../project/types";
 import type { AddAssetGenerationJob } from "../../project/types";
 import { applyManifest, getCreation } from "../../library/catalogClient";
+import { hasLocalMedia } from "../../library/previewUrl";
 import {
   creationUpsertWithAddAssetGeneration,
   makeTextToImageGeneration,
@@ -50,6 +51,8 @@ export type StartLibraryParasceneTextToImageOpts = {
   destination?: CreationTarget;
   /** When omitted, a new placeholder id is reserved. */
   placeholderId?: string;
+  /** Resume wait for this Parascene creation instead of posting create again. */
+  pendingCreationId?: string;
   onPlaceholderReserved?: (assetId: string) => void;
 };
 
@@ -80,6 +83,7 @@ type LibraryAssetGenerationApplier = {
 
 let applier: LibraryAssetGenerationApplier | null = null;
 const inflight = new Set<string>();
+const completingPlaceholders = new Set<string>();
 
 export function bindLibraryAssetGenerationApplier(
   next: LibraryAssetGenerationApplier | null,
@@ -155,6 +159,9 @@ export async function retryLibraryAssetPlaceholder(
     ...base,
     modelId: route.id,
     route,
+    pendingCreationId:
+      placeholder.addAssetDraft.generationJob?.pendingCreationId?.trim() ||
+      undefined,
   });
 }
 
@@ -179,6 +186,7 @@ export function startLibraryParasceneTextToImage(
     throw new Error("Library asset generation is not ready.");
   }
   const placeholderId = opts.placeholderId?.trim() || newLibraryAssetPlaceholderId();
+  const isNewPlaceholder = !opts.placeholderId?.trim();
   if (inflight.has(placeholderId)) return placeholderId;
 
   const startedAt = new Date().toISOString();
@@ -201,11 +209,12 @@ export function startLibraryParasceneTextToImage(
         status: "starting",
         provider: "parascene_blue",
         startedAt,
+        pendingCreationId: opts.pendingCreationId?.trim() || undefined,
         model: opts.route.value,
       },
     },
   });
-  applier.onGenerationStarted(placeholderId);
+  if (isNewPlaceholder) applier.onGenerationStarted(placeholderId);
   opts.onPlaceholderReserved?.(placeholderId);
 
   inflight.add(placeholderId);
@@ -229,7 +238,9 @@ async function runLibraryParasceneTextToImage(
   if (!applier) return;
   const { placeholderId, startedAt } = opts;
   const destination = opts.destination ?? "assets";
-  let pendingCreationId: string | undefined;
+  let pendingCreationId: string | undefined =
+    opts.pendingCreationId?.trim() || undefined;
+  let serviceJobId: string | undefined;
 
   const patchJob = (
     note: string,
@@ -244,6 +255,7 @@ async function runLibraryParasceneTextToImage(
           provider: "parascene_blue",
           startedAt,
           pendingCreationId,
+          serviceJobId,
           model: opts.route.value,
         },
       },
@@ -270,8 +282,11 @@ async function runLibraryParasceneTextToImage(
       args,
       target: destination,
       clientRequestId: placeholderId,
+      creationToken: placeholderId,
+      pendingCreationId,
       label: opts.route.label || opts.route.method,
     });
+    if (handle.mode === "job") serviceJobId = handle.id;
 
     const applyRun = (run: ServiceRun) => {
       const note = run.progressNote?.trim() || "Working…";
@@ -287,6 +302,14 @@ async function runLibraryParasceneTextToImage(
             ? "starting"
             : "waiting";
       patchJob(note, status);
+      if (pendingCreationId) {
+        void finishPlaceholderIfCatalogHasMedia({
+          placeholderId,
+          creationId: pendingCreationId,
+          prompt: opts.prompt,
+          destination,
+        });
+      }
     };
 
     const result = await watchParasceneGenerateStill(handle, {
@@ -303,12 +326,30 @@ async function runLibraryParasceneTextToImage(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (completingPlaceholders.has(placeholderId)) return;
+    if (
+      await finishPlaceholderIfCatalogHasMedia({
+        placeholderId,
+        creationId: pendingCreationId,
+        prompt: opts.prompt,
+        destination,
+      })
+    ) {
+      return;
+    }
     applier.patchPlaceholder(placeholderId, {
       status: "error",
       progressNote: message,
       addAssetDraft: {
         lastError: message,
-        generationJob: undefined,
+        generationJob: {
+          status: pendingCreationId ? "waiting" : "starting",
+          provider: "parascene_blue",
+          startedAt,
+          pendingCreationId,
+          serviceJobId,
+          model: opts.route.value,
+        },
       },
     });
   }
@@ -367,6 +408,7 @@ function beginLibraryTextToImagePlaceholder(opts: {
   model: string;
   startedAt: string;
   destination: CreationTarget;
+  select?: boolean;
 }): void {
   if (!applier) throw new Error("Library asset generation is not ready.");
   const draft = makeLibraryAssetPlaceholderDraft({
@@ -390,7 +432,40 @@ function beginLibraryTextToImagePlaceholder(opts: {
       },
     },
   });
-  applier.onGenerationStarted(opts.placeholderId);
+  if (opts.select !== false) applier.onGenerationStarted(opts.placeholderId);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Poll until Generate's catalog row has local thumb or media. */
+export async function waitForCatalogLocalMedia(
+  creationId: string,
+  opts?: { timeoutMs?: number; pollMs?: number },
+): Promise<boolean> {
+  const id = creationId.trim();
+  if (!id) return false;
+  const timeoutMs = opts?.timeoutMs ?? 30_000;
+  const pollMs = opts?.pollMs ?? 250;
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const row = await getCreation(id);
+      if (hasLocalMedia(row)) return true;
+    } catch {
+      /* not in catalog yet */
+    }
+    await sleep(pollMs);
+  }
+  try {
+    const row = await getCreation(id);
+    return hasLocalMedia(row);
+  } catch {
+    return false;
+  }
 }
 
 async function finishLibraryTextToImagePlaceholder(opts: {
@@ -402,6 +477,7 @@ async function finishLibraryTextToImagePlaceholder(opts: {
   imagesGroupId?: string | null;
 }): Promise<void> {
   if (!applier) return;
+  await waitForCatalogLocalMedia(opts.creationId);
   if (opts.imagesGroupId) {
     applier.setImagesGroupId(opts.imagesGroupId);
   }
@@ -421,6 +497,49 @@ async function finishLibraryTextToImagePlaceholder(opts: {
   applier.completePlaceholder({
     placeholderId: opts.placeholderId,
     creationId: opts.creationId,
+  });
+}
+
+async function finishPlaceholderIfCatalogHasMedia(opts: {
+  placeholderId: string;
+  creationId: string | undefined;
+  prompt: string;
+  destination: CreationTarget;
+}): Promise<boolean> {
+  const creationId = opts.creationId?.trim();
+  if (!creationId || completingPlaceholders.has(opts.placeholderId)) return false;
+  try {
+    const row = await getCreation(creationId);
+    if (!hasLocalMedia(row)) return false;
+  } catch {
+    return false;
+  }
+  completingPlaceholders.add(opts.placeholderId);
+  try {
+    await finishLibraryTextToImagePlaceholder({
+      placeholderId: opts.placeholderId,
+      creationId,
+      prompt: opts.prompt,
+      destination: opts.destination,
+    });
+    return true;
+  } finally {
+    completingPlaceholders.delete(opts.placeholderId);
+  }
+}
+
+/** File a library generate as a normal asset once local media exists. */
+export function tryCompleteLibraryPlaceholderFromCatalog(opts: {
+  placeholderId: string;
+  creationId: string;
+  prompt: string;
+  destination?: CreationTarget;
+}): void {
+  void finishPlaceholderIfCatalogHasMedia({
+    placeholderId: opts.placeholderId,
+    creationId: opts.creationId,
+    prompt: opts.prompt,
+    destination: opts.destination ?? "assets",
   });
 }
 
@@ -444,6 +563,7 @@ export function startLibraryReplicateTextToImage(
     model: opts.model.id,
     startedAt,
     destination,
+    select: !opts.placeholderId?.trim(),
   });
   opts.onPlaceholderReserved?.(placeholderId);
 
@@ -558,6 +678,7 @@ export function startLibraryBlueDirectTextToImage(
     model: opts.modelId,
     startedAt,
     destination,
+    select: !opts.placeholderId?.trim(),
   });
   opts.onPlaceholderReserved?.(placeholderId);
 
@@ -671,6 +792,7 @@ export function startLibraryParasceneImageToImage(
     throw new Error("Library asset generation is not ready.");
   }
   const placeholderId = opts.placeholderId?.trim() || newLibraryAssetPlaceholderId();
+  const isNewPlaceholder = !opts.placeholderId?.trim();
   if (inflight.has(placeholderId)) return placeholderId;
 
   const startedAt = new Date().toISOString();
@@ -696,7 +818,7 @@ export function startLibraryParasceneImageToImage(
       },
     },
   });
-  applier.onGenerationStarted(placeholderId);
+  if (isNewPlaceholder) applier.onGenerationStarted(placeholderId);
   opts.onPlaceholderReserved?.(placeholderId);
 
   inflight.add(placeholderId);
@@ -767,11 +889,18 @@ async function runLibraryParasceneImageToImage(
           return;
         }
         patchJob(note, status);
+        void finishPlaceholderIfCatalogHasMedia({
+          placeholderId,
+          creationId: pendingCreationId,
+          prompt: opts.prompt,
+          destination: "assets",
+        });
       },
     });
 
     pendingCreationId = result.creationId;
-    patchJob(`Syncing ${result.creationId}…`, "importing");
+    patchJob(`Saving ${result.creationId} locally…`, "importing");
+    await waitForCatalogLocalMedia(result.creationId);
 
     if (result.imagesGroupId) {
       applier.setImagesGroupId(result.imagesGroupId);
@@ -788,6 +917,17 @@ async function runLibraryParasceneImageToImage(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (completingPlaceholders.has(placeholderId)) return;
+    if (
+      await finishPlaceholderIfCatalogHasMedia({
+        placeholderId,
+        creationId: pendingCreationId,
+        prompt: opts.prompt,
+        destination: "assets",
+      })
+    ) {
+      return;
+    }
     applier.patchPlaceholder(placeholderId, {
       status: "error",
       progressNote: message,

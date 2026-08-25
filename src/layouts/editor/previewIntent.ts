@@ -6,9 +6,9 @@ export type IntentPlacement = "timeline" | "library";
 export type GenerateDestination = "assets" | "timeline";
 
 /**
- * assets_only — stills / audio gen into the project library
+ * assets_only — stills / audio gen into Assets (no Place/Drag yet)
  * timeline_only — needs timeline context (e.g. clip audio / neighbors)
- * choose — user picks Assets vs Timeline
+ * choose — video: Place/Drag is the timeline path (no Generate Assets)
  */
 export type DestinationPolicy = "assets_only" | "timeline_only" | "choose";
 
@@ -108,7 +108,7 @@ export const GENERATE_INTENTS: readonly GenerateIntentDef[] = [
     label: "Text to Image",
     description: "Prompt → still",
     placement: "library",
-    destinationPolicy: "choose",
+    destinationPolicy: "assets_only",
     mediaSlots: ["prompt"],
   },
   {
@@ -116,7 +116,7 @@ export const GENERATE_INTENTS: readonly GenerateIntentDef[] = [
     label: "Image to Image",
     description: "Still → still",
     placement: "library",
-    destinationPolicy: "choose",
+    destinationPolicy: "assets_only",
     mediaSlots: ["prompt", "image"],
   },
   {
@@ -368,16 +368,11 @@ export function resolveDestination(
   return defaultDestinationForIntent(intent.intentId);
 }
 
-/** Policy offers an Assets landing (footer Generate / Assets form). */
+/** Footer Generate Assets — stills only. Video uses Place/Drag. */
 export function intentOffersAssetsDestination(
   intentId: GenerateIntentId | null | undefined,
 ): boolean {
-  if (!intentId) return false;
-  const def = findGenerateIntent(intentId);
-  return (
-    def?.destinationPolicy === "assets_only" ||
-    def?.destinationPolicy === "choose"
-  );
+  return intentId === "text_to_image" || intentId === "image_to_image";
 }
 
 /** Policy offers a Timeline landing (Place / Drag). */
@@ -393,7 +388,8 @@ export function intentOffersTimelineDestination(
 }
 
 /**
- * Timeline Place/Drag is visible but not wired yet (still-on-timeline generate).
+ * Timeline Place/Drag is visible but not wired yet.
+ * Stills stay assets_only until still-on-timeline is defined.
  */
 export function intentTimelinePlacementComingSoon(
   intentId: GenerateIntentId | null | undefined,

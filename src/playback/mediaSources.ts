@@ -1,10 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
-import { ensureLocal, getCreation } from "../library/catalogClient";
+import { getCreation } from "../library/catalogClient";
 import {
-  canFetchLocal,
   creationDetailUrl,
   creationPreviewUrl,
-  isParasceneUnavailable,
 } from "../library/previewUrl";
 import {
   ensureReversedMedia,
@@ -84,13 +82,7 @@ export function createMediaSources(): MediaSources {
       ? null
       : creationDetailUrl(creation);
     const thumb = creationPreviewUrl(creation);
-    const unavailable = isParasceneUnavailable(creation);
-    const waitingLocal =
-      !detail &&
-      !thumb &&
-      canFetchLocal(creation) &&
-      !unavailable;
-    return { detail, thumb, waitingLocal };
+    return { detail, thumb, waitingLocal: false };
   };
 
   const snapshotReverse = (assetId: string): ReverseMediaSnapshot => {
@@ -126,13 +118,6 @@ export function createMediaSources(): MediaSources {
       .then((row) => {
         if (destroyed) return;
         creations.set(id, row);
-        if (
-          !creationDetailUrl(row) &&
-          canFetchLocal(row) &&
-          !isParasceneUnavailable(row)
-        ) {
-          void ensureLocal([row.id], { fullMedia: true, urgent: true });
-        }
         notify();
       })
       .catch(() => {

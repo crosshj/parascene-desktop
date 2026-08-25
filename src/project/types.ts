@@ -214,7 +214,7 @@ export type AddAssetDraft = {
   };
   /** Project image asset id used as start frame instead of the prior timeline clip. */
   startFrameAssetId?: string;
-  /** Generate → Assets vs Generate → Timeline (library stills). */
+  /** Stills land in Assets. Timeline generate is unused (Place/Drag is the video path). */
   generateDestination?: "assets" | "timeline";
   /**
    * How start/bridge stills are mapped into the project frame before upload

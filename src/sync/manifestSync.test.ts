@@ -408,7 +408,7 @@ describe("manifestSync", () => {
     expect(status.total).toBe(1);
     expect(status.remote).toBe(1);
     expect(runSyncFull).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith(
+    expect(invoke).not.toHaveBeenCalledWith(
       "library_download_pending",
       expect.any(Object),
     );

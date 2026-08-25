@@ -1984,16 +1984,33 @@ export function completeStoredLibraryAssetPlaceholder(
     withCreation,
     placeholderKey,
   );
-  if (project.selectedAssetId !== placeholderKey) {
-    return cleared;
-  }
-  if (mergeCreation) {
-    return setStoredProjectSelectedAssetId(cleared, creationKey);
-  }
-  // Cabinet member — keep selection without flat-filing into creationIds.
+  // Placeholders render in front of creationIds. Keep that slot when filing.
+  const withoutPlaceholder = cleared.creationIds.filter(
+    (id) => id !== placeholderKey,
+  );
+  const rest = withoutPlaceholder.filter((id) => id !== creationKey);
+  const nextIds = withoutPlaceholder.includes(creationKey)
+    ? [creationKey, ...rest]
+    : withoutPlaceholder;
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    cleared.libraryAssetPlaceholders,
+  );
+  const nextSelected =
+    project.selectedAssetId === placeholderKey
+      ? creationKey
+      : project.selectedAssetId;
+  const extraSelectable = [
+    ...Object.keys(placeholders),
+    ...(nextSelected === creationKey ? [creationKey] : []),
+  ];
   return {
     ...cleared,
-    selectedAssetId: creationKey,
+    creationIds: nextIds,
+    selectedAssetId: normalizeSelectedAssetId(
+      nextSelected,
+      nextIds,
+      extraSelectable,
+    ),
     updatedAt: new Date().toISOString(),
   };
 }

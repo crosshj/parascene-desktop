@@ -94,20 +94,16 @@ pub use sync_refresh::run_refresh_creations_by_id;
 pub use thumb_fill::{library_fill_thumb, library_read_local_thumb_base64};
 
 use catalog::{query_creations_page, CreationPage};
-use download::spawn_scroll_ahead;
-use tauri::AppHandle;
 
-/// List a page from local SQLite, then warm thumbs several pages ahead of `offset`
-/// (high priority). Full media for the listed page is low priority only.
+/// List a page from local SQLite. No downloads — Sync / generate own the network.
 #[tauri::command]
 pub async fn library_list_creations_page(
-    app: AppHandle,
     limit: u32,
     offset: u32,
 ) -> Result<CreationPage, String> {
-    let page = query_creations_page(limit, offset)?;
-    spawn_scroll_ahead(app, limit, offset);
-    Ok(page)
+    tauri::async_runtime::spawn_blocking(move || query_creations_page(limit, offset))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(debug_assertions)]

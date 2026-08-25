@@ -432,9 +432,6 @@ export function AddAssetIntentPanel({
         placeholderId={libraryPlaceholderId ?? undefined}
         initialPrompt={t2iPrompt}
         initialModelId={t2iModelId}
-        allowTimelineTarget={Boolean(
-          intentId && intentOffersTimelineDestination(intentId),
-        )}
       >
         {({ fields, generateAction, cloneAction }) => (
           <div

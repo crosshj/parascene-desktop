@@ -58,6 +58,8 @@ export type InvokeParasceneGenerateOpts = {
   label?: string;
   clientRequestId?: string;
   creationToken?: string;
+  /** Resume wait for a create that already exists instead of posting again. */
+  pendingCreationId?: string;
   mutateOfId?: number;
 };
 
@@ -103,7 +105,14 @@ export async function invokeParasceneGenerate(
       projectTitle: opts.projectTitle,
       ...(opts.imagesGroupId ? { imagesGroupId: opts.imagesGroupId } : {}),
       ...(opts.videosGroupId ? { videosGroupId: opts.videosGroupId } : {}),
-      ...(opts.creationToken ? { creationToken: opts.creationToken } : {}),
+      ...(opts.creationToken || opts.clientRequestId
+        ? {
+            creationToken: opts.creationToken ?? opts.clientRequestId,
+          }
+        : {}),
+      ...(opts.pendingCreationId
+        ? { pendingCreationId: opts.pendingCreationId }
+        : {}),
       ...(typeof opts.mutateOfId === "number" && Number.isFinite(opts.mutateOfId)
         ? { mutateOfId: opts.mutateOfId }
         : {}),

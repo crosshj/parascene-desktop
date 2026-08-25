@@ -87,9 +87,9 @@ export function SettingsModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    void hydrateOpenAiApiKey().then((key) => setApiKey(key));
     // Intentional: reset the form to persisted values each time the modal opens.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void hydrateOpenAiApiKey().then((key) => setApiKey(key));
     setInstallNote(null);
     void refreshDeps();
     void refreshReplicate();

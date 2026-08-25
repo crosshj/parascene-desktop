@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cacheCompositionRun,
   deleteCompositionRun,
+  ensureCatalogCreation,
   existingCreationIds,
   importLocalPaths,
   isCatalogListFilterId,
@@ -11,9 +12,15 @@ import {
 import type { Creation } from "./types";
 
 const invoke = vi.fn();
+const getRemoteCreation = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
+}));
+
+vi.mock("../services/parasceneCatalog", () => ({
+  getRemoteCreation: (...args: unknown[]) => getRemoteCreation(...args),
+  uploadFitThumbnailToCloud: vi.fn(),
 }));
 
 function stubCreation(
@@ -182,5 +189,35 @@ describe("mergeCreationsById", () => {
     const merged = mergeCreationsById(page, page);
     expect(merged).toEqual(page);
     expect(merged).not.toBe(page);
+  });
+});
+
+describe("ensureCatalogCreation", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    getRemoteCreation.mockReset();
+  });
+
+  it("does not call Parascene unless remote is opted in", async () => {
+    invoke.mockRejectedValueOnce(new Error("not in catalog"));
+    getRemoteCreation.mockResolvedValue({ id: "x" });
+    await expect(ensureCatalogCreation("x")).rejects.toThrow(/not found/);
+    expect(getRemoteCreation).not.toHaveBeenCalled();
+  });
+
+  it("hydrates from Parascene when remote is true and the local row is missing", async () => {
+    const row = stubCreation({ id: "x" });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "library_get_creation") {
+        if (getRemoteCreation.mock.calls.length > 0) return row;
+        throw new Error("not in catalog");
+      }
+      if (cmd === "library_get_creations") return [];
+      if (cmd === "library_apply_manifest") return {};
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    getRemoteCreation.mockResolvedValue({ id: "x" });
+    await expect(ensureCatalogCreation("x", { remote: true })).resolves.toEqual(row);
+    expect(getRemoteCreation).toHaveBeenCalledWith("x");
   });
 });

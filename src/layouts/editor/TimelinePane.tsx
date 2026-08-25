@@ -9,8 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useShell } from "../../app/ShellProvider";
-import { ensureCatalogCreation, getCreations } from "../../library/catalogClient";
+import { getCreations } from "../../library/catalogClient";
 import {
   clipThumbnailKey,
   clipTimelineComposition,
@@ -693,14 +692,6 @@ export function TimelinePane({
   joinBusy = false,
   outsideReferenceIds = [],
 }: TimelinePaneProps) {
-  const { project } = useShell();
-  const projectGroupCoverIds = useMemo(
-    () =>
-      [project.imagesGroupId, project.videosGroupId]
-        .map((id) => (id ? String(id).trim() : ""))
-        .filter(Boolean),
-    [project.imagesGroupId, project.videosGroupId],
-  );
   const thumbAspectRatio = projectAspectCss(aspectRatio);
   const outsideIdSet = useMemo(
     () => new Set(outsideReferenceIds.map((id) => id.trim()).filter(Boolean)),
@@ -948,19 +939,11 @@ export function TimelinePane({
 
     const load = async () => {
       const next: Record<string, string> = {};
-      await Promise.all(
-        ids.map(async (id) => {
-          try {
-            const row = await ensureCatalogCreation(id, {
-              groupCoverIds: projectGroupCoverIds,
-            });
-            const url = creationPreviewUrl(row);
-            if (url) next[id] = url;
-          } catch {
-            // Missing catalog rows keep the stored clip.thumbUrl fallback.
-          }
-        }),
-      );
+      const rows = await getCreations(ids);
+      for (const row of rows) {
+        const url = creationPreviewUrl(row);
+        if (url) next[row.id] = url;
+      }
       if (!cancelled) setThumbByAssetId(next);
     };
 
@@ -989,7 +972,7 @@ export function TimelinePane({
       cancelled = true;
       unlisten?.();
     };
-  }, [clipAssetIdsKey, projectGroupCoverIds]);
+  }, [clipAssetIdsKey]);
 
   useEffect(() => {
     const requests = JSON.parse(clipThumbRequestsKey) as Array<{

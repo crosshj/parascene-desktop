@@ -1,8 +1,9 @@
 /**
  * Thin invoke wrappers over the local catalog (SQLite) and download workers.
  *
- * UI paints local disk paths only. Missing assets: `ensureLocal` → Rust saves
- * to disk → `library-creation-updated` → paint. Never load remote media URLs.
+ * Editor Assets paints local disk paths only. Library Sync may call
+ * `ensureLocal` → Rust saves to disk → `library-creation-updated` → paint.
+ * Never load remote media URLs in the UI.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { ensureAccessToken } from "../auth/session";
@@ -127,10 +128,10 @@ async function materializeMemberFromGroupCovers(
   return true;
 }
 
-/** Local catalog row; fetches remote or embedded group member metadata when missing. */
+/** Local catalog row; optionally hydrates from Parascene or embedded group JSON. */
 export async function ensureCatalogCreation(
   id: string,
-  opts?: { groupCoverIds?: readonly string[] },
+  opts?: { groupCoverIds?: readonly string[]; remote?: boolean },
 ): Promise<Creation> {
   const trimmed = id.trim();
   if (!trimmed) {
@@ -146,12 +147,14 @@ export async function ensureCatalogCreation(
     .map((value) => String(value).trim())
     .filter(Boolean);
 
-  try {
-    const remote = await getRemoteCreation(trimmed);
-    await applyManifest([mapRemoteCreation(remote)]);
-    return getCreation(trimmed);
-  } catch {
-    /* member may exist only on a group cover row */
+  if (opts?.remote === true) {
+    try {
+      const remote = await getRemoteCreation(trimmed);
+      await applyManifest([mapRemoteCreation(remote)]);
+      return getCreation(trimmed);
+    } catch {
+      /* member may exist only on a group cover row */
+    }
   }
 
   if (await materializeMemberFromGroupCovers(trimmed, coverIds)) {
@@ -165,6 +168,7 @@ export async function ensureCatalogCreation(
 export async function getCreationsHydrated(
   ids: string[],
   groupCoverIds: readonly string[] = [],
+  opts?: { remote?: boolean },
 ): Promise<Creation[]> {
   if (ids.length === 0) return [];
   const rows = await getCreations(ids);
@@ -175,7 +179,10 @@ export async function getCreationsHydrated(
   if (missing.length === 0) return rows;
   await Promise.all(
     missing.map((id) =>
-      ensureCatalogCreation(id, { groupCoverIds }).catch((error) => {
+      ensureCatalogCreation(id, {
+        groupCoverIds,
+        remote: opts?.remote,
+      }).catch((error) => {
         console.warn(`Could not hydrate creation ${id}`, error);
       }),
     ),

@@ -392,9 +392,6 @@ export function SelectionIntentPanel({
       <TextToImageFormLayout
         server={server}
         idPrefix={`selection-${server}-t2i`}
-        allowTimelineTarget={Boolean(
-          intentId && intentOffersTimelineDestination(intentId),
-        )}
       >
         {({ fields, generateAction }) => (
           <div
