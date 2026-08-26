@@ -8,6 +8,7 @@ import {
 import {
   bufferedIsContinuous,
   formatBufferedRanges,
+  nextBufferedSecAfter,
   timeRangesToArray,
 } from "./bufferedRanges";
 
@@ -77,6 +78,11 @@ export type MseFragmentPlayer = {
   isActive(): boolean;
   /** True when `sec` is inside a buffered range with `aheadSec` of future data. */
   covers(sec: number, aheadSec?: number): boolean;
+  /**
+   * If `sec` is in a short hole, the next buffered time to jump to.
+   * Null when already covered or the next data is too far.
+   */
+  skipHole(sec: number): number | null;
   /** How many fragments have been successfully appended this session. */
   appendedCount(): number;
   destroy(): void;
@@ -484,13 +490,25 @@ export function createMseFragmentPlayer(
         appended.delete(frag.index);
         enqueue({ kind: "remove", start: frag.startSec, end: fragEnd });
       }
-      if (appended.get(frag.index)?.fingerprint === frag.fingerprint) continue;
+      const haveNow = appended.get(frag.index);
+      if (haveNow?.fingerprint === frag.fingerprint) {
+        // Bookkeeping can claim success while SourceBuffer never actually
+        // covered this time (failed append, wrong tfdt, later trim).
+        const interior = frag.startSec + Math.min(0.12, frag.durationSec * 0.25);
+        if (coversRange(interior, 0)) continue;
+        appended.delete(frag.index);
+      }
       if (queuedHasAppend(frag.index, frag.fingerprint)) continue;
       void fetchBytes(frag.path).then((bytes) => {
         if (!bytes || destroyed || !warmed) return;
         // Re-check: parallel feed passes share one fetch promise, and each
         // resolution lands here — only the first may enqueue.
-        if (appended.get(frag.index)?.fingerprint === frag.fingerprint) return;
+        if (appended.get(frag.index)?.fingerprint === frag.fingerprint) {
+          const interior =
+            frag.startSec + Math.min(0.12, frag.durationSec * 0.25);
+          if (coversRange(interior, 0)) return;
+          appended.delete(frag.index);
+        }
         if (queuedHasAppend(frag.index, frag.fingerprint)) return;
         enqueue({ kind: "append", fragment: frag, bytes });
       });
@@ -564,6 +582,9 @@ export function createMseFragmentPlayer(
     },
     covers(sec, aheadSec = 0) {
       return coversRange(sec, aheadSec);
+    },
+    skipHole(sec) {
+      return nextBufferedSecAfter(timeRangesToArray(video.buffered), sec);
     },
     appendedCount() {
       return appended.size;

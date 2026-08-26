@@ -227,9 +227,21 @@ export function createTimelinePlaybackEngine(
   const maybeFailOpen = (now: number) => {
     if (!buffering || previewStreamDisabled) return;
     if (bufferingSinceMs <= 0) bufferingSinceMs = now;
-    if (now - bufferingSinceMs < PREVIEW_BUFFERING_FAIL_OPEN_MS) return;
-    // No appended picture after a few seconds — fall back to live decoders.
-    if (mse.appendedCount() > 0) return;
+    const waited = now - bufferingSinceMs;
+    // Disk cache is ready but this timestamp is a hole — skip ahead the way
+    // a manual scrub does, instead of sitting on "Waiting for preview…".
+    if (waited > 400) {
+      const jump = mse.skipHole(state.currentSec);
+      if (jump != null && jump > state.currentSec + 0.04) {
+        state.currentSec = jump;
+        stallFrames = 0;
+        setBuffering(false);
+        bumpSeekEpoch();
+        resync("seek");
+        return;
+      }
+    }
+    if (waited < PREVIEW_BUFFERING_FAIL_OPEN_MS) return;
     previewStreamDisabled = true;
     setBuffering(false);
     stallFrames = 0;

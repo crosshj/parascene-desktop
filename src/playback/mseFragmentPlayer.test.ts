@@ -57,6 +57,17 @@ describe("createMseFragmentPlayer", () => {
     host.remove();
   });
 
+  it("reports no hole jump when nothing is buffered", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const player = createMseFragmentPlayer(host);
+    player.show();
+    expect(player.skipHole(20.08)).toBeNull();
+    expect(player.appendedCount()).toBe(0);
+    player.destroy();
+    host.remove();
+  });
+
   it("does not roll from a stale position while a seek waits for data", () => {
     const play = vi
       .spyOn(HTMLMediaElement.prototype, "play")

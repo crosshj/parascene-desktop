@@ -40,3 +40,37 @@ export function bufferedIsContinuous(
   }
   return true;
 }
+
+/** True when some range contains `sec` (start slop covers a 1-frame hole). */
+export function bufferedCoversSec(
+  ranges: readonly BufferedRange[],
+  sec: number,
+  slopSec = 0.05,
+): boolean {
+  for (const range of ranges) {
+    if (range.start - slopSec <= sec && range.end >= sec) return true;
+  }
+  return false;
+}
+
+/**
+ * If `sec` sits in a hole, the start of the next buffered range — but only a
+ * short hop (one preview fragment). Otherwise null (already covered, or the
+ * next data is too far to skip silently).
+ */
+export function nextBufferedSecAfter(
+  ranges: readonly BufferedRange[],
+  sec: number,
+  maxJumpSec = 2.5,
+  slopSec = 0.05,
+): number | null {
+  if (bufferedCoversSec(ranges, sec, slopSec)) return null;
+  let best: number | null = null;
+  for (const range of ranges) {
+    if (range.end <= sec + slopSec) continue;
+    const jump = Math.max(range.start, sec);
+    if (jump - sec > maxJumpSec + 1e-9) continue;
+    if (best == null || jump < best) best = jump;
+  }
+  return best;
+}
