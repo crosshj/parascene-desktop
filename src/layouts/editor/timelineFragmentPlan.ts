@@ -1,4 +1,3 @@
-import { timelineSequenceDuration } from "./timelineCompose";
 import type { TimelineClip } from "../../project/types";
 import {
   DEFAULT_PREVIEW_QUALITY,
@@ -58,7 +57,42 @@ function rangesOverlap(
   return a0 < b1 && b0 < a1;
 }
 
-function visualClipKey(clip: TimelineClip): string {
+/**
+ * End of picture content on the timeline. Audio beds past this do not need
+ * preview fragments — the monitor goes black and audio keeps playing.
+ */
+export function timelineVideoExtentSec(clips: readonly TimelineClip[]): number {
+  let max = 0;
+  for (const clip of clips) {
+    if (clipLane(clip) !== "video") continue;
+    if (Number.isFinite(clip.endSec)) max = Math.max(max, clip.endSec);
+  }
+  return max;
+}
+
+/**
+ * Whether this clip can contribute real pixels to a preview bake.
+ * Placeholders and clips without media bake as black until they become ready;
+ * the readiness bit in the fingerprint re-dirties those fragments.
+ */
+export function clipPreviewMediaReady(
+  clip: TimelineClip,
+  localAssetIds?: ReadonlySet<string> | null,
+): boolean {
+  if (clip.isAddAssetPlaceholder === true) return false;
+  if (clip.bakePath?.trim()) return true;
+  if (clip.extendBakePath?.trim()) return true;
+  const assetId = clip.assetId?.trim();
+  if (!assetId) return false;
+  // Unknown locality: optimistic so a first plan matches existing clips.
+  if (!localAssetIds) return true;
+  return localAssetIds.has(assetId);
+}
+
+function visualClipKey(
+  clip: TimelineClip,
+  localAssetIds?: ReadonlySet<string> | null,
+): string {
   const slideshow = clip.slideshow;
   return [
     clip.id,
@@ -79,6 +113,7 @@ function visualClipKey(clip: TimelineClip): string {
     quantizeSec(clip.extendSourceSpanSec ?? 0),
     clip.bakePath ?? "",
     clip.extendBakePath ?? "",
+    clipPreviewMediaReady(clip, localAssetIds) ? "1" : "0",
     slideshow
       ? [
           slideshow.mode,
@@ -182,8 +217,9 @@ export function fragmentJobPriority(
 export function planTimelineFragments(
   clips: readonly TimelineClip[],
   aspectRatio: string,
-  durationSec = timelineSequenceDuration(clips),
+  durationSec = timelineVideoExtentSec(clips),
   quality: PreviewQuality = DEFAULT_PREVIEW_QUALITY,
+  localAssetIds?: ReadonlySet<string> | null,
 ): TimelineFragmentPlan {
   const totalFrames = sequenceFrameCount(durationSec);
   const fragmentCount =
@@ -208,7 +244,7 @@ export function planTimelineFragments(
         index,
         startFrame,
         endFrame,
-        ...contributors.map(visualClipKey),
+        ...contributors.map((c) => visualClipKey(c, localAssetIds)),
       ].join("/"),
     );
     fragments.push({

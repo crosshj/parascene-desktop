@@ -290,6 +290,7 @@ export function EditorLayout() {
   const [fragmentStatus, setFragmentStatus] = useState<TimelineFragmentStatus>(
     () => fragmentCache.status(),
   );
+  const [previewBuffering, setPreviewBuffering] = useState(false);
   const addAssetGenerationSession = useAddAssetGenerationSession(project.id);
   const prevAddAssetGenerationSessionRef = useRef(addAssetGenerationSession);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
@@ -566,6 +567,7 @@ export function EditorLayout() {
   const pauseTimelinePlayback = useCallback(() => {
     if (!timelinePlaying) return;
     setTimelinePlaying(false);
+    setPreviewBuffering(false);
     writeProjectPlayheadSec(livePlayheadRef.current);
   }, [timelinePlaying, setTimelinePlaying, writeProjectPlayheadSec]);
 
@@ -2682,6 +2684,7 @@ export function EditorLayout() {
         timelinePlaying={timelinePlaying && monitorMode === "timeline"}
         mediaSeekEpoch={mediaSeekEpoch}
         onTimelineTimeUpdate={onTimelineEngineTimeUpdate}
+        onPreviewBufferingChange={setPreviewBuffering}
         stagingSeed={
           monitorMode === "source" ? (clipStagingSeed?.draft ?? null) : null
         }
@@ -2806,6 +2809,7 @@ export function EditorLayout() {
         onBakeAudio={onBakeTimelineAudio}
         onRemoveAudioBake={onRemoveTimelineAudioBake}
         fragmentStatus={fragmentStatus}
+        previewBuffering={previewBuffering}
         onRefreshFragmentCache={() => fragmentCache?.refresh()}
         outsideReferenceIds={outsideReferenceIds}
       />

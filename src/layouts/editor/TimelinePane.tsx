@@ -149,6 +149,8 @@ type TimelinePaneProps = {
     error: string | null;
     playheadReady: boolean;
   };
+  /** Play is held while the preview picture buffers. */
+  previewBuffering?: boolean;
   onRefreshFragmentCache?: () => void;
   /** Creation ids referenced by the project but not in the project folder. */
   outsideReferenceIds?: readonly string[];
@@ -710,6 +712,7 @@ export function TimelinePane({
   onBakeAudio,
   onRemoveAudioBake,
   fragmentStatus,
+  previewBuffering = false,
   onRefreshFragmentCache,
   outsideReferenceIds = [],
 }: TimelinePaneProps) {
@@ -2057,6 +2060,28 @@ export function TimelinePane({
               />
             </svg>
           </button>
+          {(fragmentStatus?.error ||
+            previewBuffering ||
+            (fragmentStatus?.baking && !fragmentStatus.playheadReady)) && (
+            <span
+              className={[
+                "editor-timeline-preview-status",
+                fragmentStatus?.error ? "is-error" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              title={fragmentStatus?.error ?? undefined}
+              role={fragmentStatus?.error ? "alert" : "status"}
+            >
+              {fragmentStatus?.error
+                ? fragmentStatus.error
+                : previewBuffering
+                  ? fragmentStatus?.baking
+                    ? `Baking preview… ${fragmentStatus.ready}/${fragmentStatus.total}`
+                    : "Waiting for preview…"
+                  : `Baking preview… ${fragmentStatus?.ready ?? 0}/${fragmentStatus?.total ?? 0}`}
+            </span>
+          )}
           <button
             type="button"
             className="editor-timeline-tool"

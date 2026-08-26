@@ -221,6 +221,8 @@ type PreviewPaneProps = {
   mediaSeekEpoch?: number;
   /** Phase 3: engine-owned clock → throttled ruler updates. */
   onTimelineTimeUpdate?: (sec: number) => void;
+  /** True while timeline play is held waiting for the preview picture. */
+  onPreviewBufferingChange?: (buffering: boolean) => void;
   /** Staging fields when a timeline clip is selected. */
   stagingSeed?: StagedClipDraft | null;
   /** Clip id (or other key) so re-selecting refreshes seed even for same asset. */
@@ -422,6 +424,7 @@ export function PreviewPane({
   timelinePlaying = false,
   mediaSeekEpoch = 0,
   onTimelineTimeUpdate,
+  onPreviewBufferingChange,
   stagingSeed = null,
   stagingSeedKey = null,
   selectedClipAddAssetGeneration = null,
@@ -3353,6 +3356,7 @@ export function PreviewPane({
                 matteW={matte.w}
                 matteH={matte.h}
                 onTimeUpdate={onTimelineTimeUpdate}
+                onBufferingChange={onPreviewBufferingChange}
               />
             ) : showUnsupportedSelection && unsupportedSelection ? (
               <UnsupportedSelectionPanel

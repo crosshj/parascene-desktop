@@ -146,6 +146,62 @@ export function collectRenderAssetIds(
   return Array.from(ids);
 }
 
+export type RenderMediaLocality = {
+  /** Asset ids that have a localPath on disk. */
+  readyIds: string[];
+  /** Asset ids that are catalogued but not yet on disk. */
+  missingIds: string[];
+};
+
+/**
+ * Probe which render assets already have local files. Does not download.
+ */
+export async function probeRenderMediaLocal(
+  clips: readonly RenderTimelineClipInput[],
+): Promise<RenderMediaLocality> {
+  const ids = collectRenderAssetIds(clips);
+  if (ids.length === 0) {
+    return { readyIds: [], missingIds: [] };
+  }
+  const rows = await getCreations(ids);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const readyIds: string[] = [];
+  const missingIds: string[] = [];
+  for (const id of ids) {
+    if (byId.get(id)?.localPath?.trim()) readyIds.push(id);
+    else missingIds.push(id);
+  }
+  return { readyIds, missingIds };
+}
+
+/**
+ * Drop clips whose assets are not yet on disk. Placeholders / missing media
+ * become black gaps in the bake instead of failing the whole fragment.
+ */
+export async function filterRenderMediaLocal(
+  clips: readonly RenderTimelineClipInput[],
+): Promise<{
+  clips: RenderTimelineClipInput[];
+  readyIds: string[];
+  missingIds: string[];
+}> {
+  const { readyIds, missingIds } = await probeRenderMediaLocal(clips);
+  const ready = new Set(readyIds);
+  const filtered = clips.filter((clip) => {
+    const assetId = clip.assetId?.trim();
+    if (!assetId) {
+      // Slideshow / bake-path-only clips keep going; FFmpeg uses bakePath.
+      return Boolean(clip.bakePath?.trim() || clip.extendBakePath?.trim());
+    }
+    if (ready.has(assetId)) return true;
+    const slideshow = clip.slideshow;
+    if (!slideshow) return false;
+    // Keep slideshow if every image is local (audio optional for silent bake).
+    return slideshow.imageAssetIds.every((id) => ready.has(id.trim()));
+  });
+  return { clips: filtered, readyIds, missingIds };
+}
+
 /**
  * Confirm render assets already have local files. Does not download.
  * Generation and Sync own network; Publisher encode uses disk only.
@@ -168,10 +224,8 @@ export async function ensureRenderMediaLocal(
     ids: ids.slice(0, 8).join(","),
   });
 
-  const rows = await getCreations(ids);
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const missing = ids.filter((id) => !byId.get(id)?.localPath?.trim());
-  if (missing.length === 0) {
+  const { missingIds } = await probeRenderMediaLocal(clips);
+  if (missingIds.length === 0) {
     recordUiOpTrace({
       type: "render_media_ensure_ok",
       count: ids.length,
@@ -182,15 +236,15 @@ export async function ensureRenderMediaLocal(
 
   recordUiOpTrace({
     type: "render_media_ensure_fail",
-    count: missing.length,
-    ids: missing.slice(0, 8).join(","),
+    count: missingIds.length,
+    ids: missingIds.slice(0, 8).join(","),
     reason: "missing_local_path",
   });
 
   throw new Error(
-    missing.length === 1
-      ? `No local file on disk for ${missing[0]}. Sync the library, then try again.`
-      : `No local files on disk for ${missing.length} assets (${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}). Sync the library, then try again.`,
+    missingIds.length === 1
+      ? `No local file on disk for ${missingIds[0]}. Sync the library, then try again.`
+      : `No local files on disk for ${missingIds.length} assets (${missingIds.slice(0, 5).join(", ")}${missingIds.length > 5 ? "…" : ""}). Sync the library, then try again.`,
   );
 }
 

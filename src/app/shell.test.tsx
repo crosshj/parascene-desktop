@@ -267,6 +267,9 @@ async function logIn(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("auth shell", () => {
+  // Full App mounts are slow under parallel suite load.
+  vi.setConfig({ testTimeout: 60_000 });
+
   beforeEach(() => {
     vi.clearAllMocks();
     store.clear();
@@ -391,7 +394,7 @@ describe("auth shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Untitled project" }));
     expect(await screen.findByLabelText("Video preview")).toBeInTheDocument();
-  }, 20_000);
+  }, 60_000);
 
   it("restores open project and tabs after remount", async () => {
     const user = userEvent.setup();

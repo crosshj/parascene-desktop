@@ -7638,6 +7638,21 @@ body.is-timeline-clip-moving * {
   justify-self: end;
 }
 
+.editor-timeline-preview-status {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  color: var(--muted);
+}
+
+.editor-timeline-preview-status.is-error {
+  color: #f07178;
+  max-width: 18rem;
+}
+
 .editor-timeline-tool {
   position: relative;
   display: grid;

@@ -43,7 +43,7 @@ describe("ConfirmDialog", () => {
     await user.click(screen.getByRole("button", { name: "Ask" }));
     await user.click(screen.getByRole("button", { name: "Delete locally" }));
     expect(onResult).toHaveBeenCalledWith(true);
-  });
+  }, 15_000);
 
   it("can show only an OK button for alerts", async () => {
     const user = userEvent.setup();

@@ -37,6 +37,48 @@ describe("planTimelineFragments", () => {
     expect(plan.fragments[2].startSec).toBe(4);
   });
 
+  it("defaults plan duration to the video-lane extent, not a longer audio bed", () => {
+    const plan = planTimelineFragments(
+      [
+        clip({ id: "a", startSec: 0, endSec: 5, assetId: "v1" }),
+        clip({
+          id: "bed",
+          startSec: 0,
+          endSec: 334.7,
+          lane: "audio",
+          kind: "audio",
+          assetId: "a1",
+        }),
+      ],
+      "16:9",
+    );
+    expect(plan.durationSec).toBe(5);
+    expect(plan.fragmentCount).toBe(3);
+  });
+
+  it("changes fingerprint when a placeholder becomes ready media", () => {
+    const placeholder = planTimelineFragments(
+      [
+        clip({
+          id: "a",
+          startSec: 0,
+          endSec: 2,
+          isAddAssetPlaceholder: true,
+        }),
+      ],
+      "16:9",
+      2,
+    );
+    const ready = planTimelineFragments(
+      [clip({ id: "a", startSec: 0, endSec: 2, assetId: "v1" })],
+      "16:9",
+      2,
+    );
+    expect(placeholder.fragments[0].fingerprint).not.toBe(
+      ready.fragments[0].fingerprint,
+    );
+  });
+
   it("fingerprints only overlapping visual clips, including a 1-frame neighbor pad", () => {
     const clips = [
       clip({ id: "a", startSec: 0, endSec: 2, assetId: "v1" }),

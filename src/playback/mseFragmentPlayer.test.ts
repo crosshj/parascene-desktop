@@ -72,4 +72,37 @@ describe("createMseFragmentPlayer", () => {
     host.remove();
     play.mockRestore();
   });
+
+  it("reports fragment fetch failures instead of swallowing them", async () => {
+    const onFetchError = vi.fn();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("CSP blocked"));
+    vi.stubGlobal("fetch", fetchMock);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const player = createMseFragmentPlayer(host, { onFetchError });
+    player.show();
+    // Bypass convertFileSrc by feeding a path the helper already wrapped —
+    // mediaUrlForBakePath may throw in jsdom; the player must still report it.
+    player.sync(
+      0,
+      false,
+      [
+        {
+          index: 0,
+          startSec: 0,
+          durationSec: 2,
+          fingerprint: "abc",
+          path: "/tmp/frag.mp4",
+        },
+      ],
+      { feed: true },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onFetchError).toHaveBeenCalled();
+    expect(String(onFetchError.mock.calls[0]?.[0]).length).toBeGreaterThan(0);
+    player.destroy();
+    host.remove();
+    vi.unstubAllGlobals();
+  });
 });

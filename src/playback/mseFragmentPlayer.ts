@@ -77,7 +77,14 @@ export type MseFragmentPlayer = {
   isActive(): boolean;
   /** True when `sec` is inside a buffered range with `aheadSec` of future data. */
   covers(sec: number, aheadSec?: number): boolean;
+  /** How many fragments have been successfully appended this session. */
+  appendedCount(): number;
   destroy(): void;
+};
+
+export type MseFragmentPlayerOptions = {
+  /** Called when a fragment fetch fails (CSP, 4xx, corrupt fMP4). */
+  onFetchError?: (message: string) => void;
 };
 
 type AppendedRec = {
@@ -92,7 +99,10 @@ type AppendedRec = {
  * While playing, the element free-runs and IS the clock; the engine reads
  * getTime(). Seeks are pending-until-buffered so they are never lost.
  */
-export function createMseFragmentPlayer(surface: HTMLElement): MseFragmentPlayer {
+export function createMseFragmentPlayer(
+  surface: HTMLElement,
+  options: MseFragmentPlayerOptions = {},
+): MseFragmentPlayer {
   const video = document.createElement("video");
   video.className = "editor-preview-media timeline-mse-video";
   video.setAttribute("playsinline", "");
@@ -393,15 +403,40 @@ export function createMseFragmentPlayer(surface: HTMLElement): MseFragmentPlayer
   const fetchBytes = (path: string): Promise<Uint8Array | null> => {
     const existing = inflightFetch.get(path);
     if (existing) return existing;
-    const url = mediaUrlForBakePath(path);
+    let url: string;
+    try {
+      url = mediaUrlForBakePath(path);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : `Invalid media path: ${path}`;
+      options.onFetchError?.(message);
+      return Promise.resolve(null);
+    }
     const pending = fetch(url)
       .then(async (res) => {
-        if (!res.ok) return null;
+        if (!res.ok) {
+          options.onFetchError?.(
+            `Preview fragment fetch failed (${res.status}). Check that media:// is allowed in connect-src.`,
+          );
+          return null;
+        }
         const buf = new Uint8Array(await res.arrayBuffer());
-        if (!fmp4HasMediaFragment(buf)) return null;
+        if (!fmp4HasMediaFragment(buf)) {
+          options.onFetchError?.(
+            "Preview fragment is not a valid fMP4 media segment.",
+          );
+          return null;
+        }
         return buf;
       })
-      .catch(() => null)
+      .catch((err) => {
+        const detail =
+          err instanceof Error ? err.message : "network or CSP blocked";
+        options.onFetchError?.(
+          `Preview fragment fetch blocked: ${detail}`,
+        );
+        return null;
+      })
       .finally(() => {
         inflightFetch.delete(path);
       });
@@ -529,6 +564,9 @@ export function createMseFragmentPlayer(surface: HTMLElement): MseFragmentPlayer
     },
     covers(sec, aheadSec = 0) {
       return coversRange(sec, aheadSec);
+    },
+    appendedCount() {
+      return appended.size;
     },
     destroy() {
       if (destroyed) return;

@@ -224,4 +224,75 @@ describe("createTimelineFragmentCache", () => {
 
     cache.destroy();
   });
+
+  it("plans only through video content when audio is longer", async () => {
+    vi.useFakeTimers();
+    const baked: number[] = [];
+    const cache = createTimelineFragmentCache({
+      debounceMs: 0,
+      bake: async ({ fragment }) => {
+        baked.push(fragment.index);
+        return resultFor(fragment);
+      },
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [
+        clip({ id: "a", startSec: 0, endSec: 4, assetId: "v1" }),
+        clip({
+          id: "bed",
+          startSec: 0,
+          endSec: 100,
+          lane: "audio",
+          kind: "audio",
+          assetId: "a1",
+        }),
+      ],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.status().total).toBe(2);
+    expect(cache.videoExtentSec()).toBe(4);
+    expect(cache.hasContinuity(50)).toBe(true);
+    expect(cache.isWindowReady(50, 2)).toBe(true);
+    expect(baked.length).toBe(2);
+
+    cache.destroy();
+  });
+
+  it("backs off a failing fragment and continues baking others", async () => {
+    vi.useFakeTimers();
+    const attempts: number[] = [];
+    const errors: Array<string | null> = [];
+    const cache = createTimelineFragmentCache({
+      debounceMs: 0,
+      bake: async ({ fragment }) => {
+        attempts.push(fragment.index);
+        if (fragment.index === 0) {
+          throw new Error("bake failed");
+        }
+        return resultFor(fragment);
+      },
+    });
+    cache.subscribe(() => {
+      errors.push(cache.status().error);
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [clip({ id: "a", startSec: 0, endSec: 4, assetId: "v1" })],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(errors.some((e) => String(e ?? "").includes("bake failed"))).toBe(
+      true,
+    );
+    expect(cache.fragmentCovering(2)?.index).toBe(1);
+    expect(attempts.filter((i) => i === 0).length).toBe(1);
+    expect(attempts).toContain(1);
+
+    cache.destroy();
+  });
 });

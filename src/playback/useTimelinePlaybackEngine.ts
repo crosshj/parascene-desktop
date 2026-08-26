@@ -34,6 +34,8 @@ export type TimelinePlaybackEngineHostProps = {
   matteH: number;
   /** Throttled while playing; immediate on seek / pause. */
   onTimeUpdate?: (sec: number) => void;
+  /** True while play is held waiting for the preview picture. */
+  onBufferingChange?: (buffering: boolean) => void;
 };
 
 /**
@@ -57,15 +59,19 @@ export function useTimelinePlaybackEngine(
     matteW,
     matteH,
     onTimeUpdate,
+    onBufferingChange,
   }: TimelinePlaybackEngineHostProps,
 ): void {
   const engineRef = useRef<TimelinePlaybackEngine | null>(null);
   const onTimeUpdateRef = useRef(onTimeUpdate);
+  const onBufferingChangeRef = useRef(onBufferingChange);
   const playheadSecRef = useRef(playheadSec);
   const wasPlayingRef = useRef(playing);
   // Keep latest callbacks/values for effects without re-subscribing the engine.
   // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
   onTimeUpdateRef.current = onTimeUpdate;
+  // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
+  onBufferingChangeRef.current = onBufferingChange;
   // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
   playheadSecRef.current = playheadSec;
 
@@ -78,6 +84,8 @@ export function useTimelinePlaybackEngine(
       matteW,
       matteH,
       onTimeUpdate: (sec) => onTimeUpdateRef.current?.(sec),
+      onBufferingChange: (buffering) =>
+        onBufferingChangeRef.current?.(buffering),
     });
     engineRef.current = engine;
     return () => {
