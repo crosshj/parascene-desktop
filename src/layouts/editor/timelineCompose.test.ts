@@ -9,6 +9,7 @@ import {
   clipPlaythroughUnitSec,
   finalizeVideoResizeEndSec,
   peekNextVisualClip,
+  peekPrevVisualClip,
   resolveTimelineFrame,
   timelineSequenceDuration,
 } from "./timelineCompose";
@@ -270,6 +271,38 @@ describe("resolveTimelineFrame", () => {
     expect(frame.visual?.sourceSec).toBe(4);
   });
 
+  it("skips hairline clips so playback never seek+plays a sliver cut", () => {
+    const clips = [
+      clip({
+        id: "a",
+        startSec: 0,
+        endSec: 5.7,
+        assetId: "goblin",
+        kind: "video",
+        lane: "video",
+      }),
+      clip({
+        id: "sliver",
+        startSec: 5.7,
+        endSec: 5.74,
+        assetId: "crumb",
+        kind: "video",
+        lane: "video",
+      }),
+      clip({
+        id: "b",
+        startSec: 5.74,
+        endSec: 11.54,
+        assetId: "suit",
+        kind: "video",
+        lane: "video",
+      }),
+    ];
+    expect(resolveTimelineFrame(clips, 5.71).visual?.clip.id).toBe("b");
+    expect(peekNextVisualClip(clips, 5.0)?.id).toBe("b");
+    expect(peekPrevVisualClip(clips, 8)?.id).toBe("a");
+  });
+
   it("ranks linked video-audio above bed audio for the monitor mix", () => {
     const frame = resolveTimelineFrame(
       [
@@ -323,6 +356,32 @@ describe("peekNextVisualClip", () => {
 
   it("returns null when nothing follows", () => {
     expect(peekNextVisualClip(clips, 35)).toBeNull();
+  });
+});
+
+describe("peekPrevVisualClip", () => {
+  const clips: TimelineClip[] = [
+    clip({ id: "a", startSec: 0, endSec: 10, assetId: "1", kind: "video" }),
+    clip({ id: "b", startSec: 10, endSec: 20, assetId: "2", kind: "video" }),
+    clip({ id: "c", startSec: 30, endSec: 40, assetId: "3", kind: "video" }),
+    clip({
+      id: "music",
+      startSec: 0,
+      endSec: 50,
+      lane: "audio",
+      kind: "audio",
+      assetId: "m",
+    }),
+  ];
+
+  it("returns the clip that ended when the current one starts", () => {
+    expect(peekPrevVisualClip(clips, 3)).toBeNull();
+    expect(peekPrevVisualClip(clips, 10)?.id).toBe("a");
+    expect(peekPrevVisualClip(clips, 35)?.id).toBe("b");
+  });
+
+  it("returns the clip before a gap", () => {
+    expect(peekPrevVisualClip(clips, 25)?.id).toBe("b");
   });
 });
 

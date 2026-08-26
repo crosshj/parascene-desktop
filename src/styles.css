@@ -5547,6 +5547,17 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   object-fit: fill;
 }
 
+.timeline-playback-engine {
+  background: #000;
+}
+
+.timeline-mse-video,
+.timeline-preview-chunk {
+  z-index: 4;
+  background: #000;
+  pointer-events: none;
+}
+
 .editor-preview-thumb {
   z-index: 1;
 }
@@ -6283,7 +6294,7 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   overflow: hidden;
   box-sizing: border-box;
   /* Clear the teal source label (0.5rem + 22px badge + gap). */
-  padding: calc(0.5rem + 22px + 0.65rem) 1.1rem 0.85rem;
+  padding: calc(0.5rem + 22px + 0.65rem) 1.1rem 0;
 }
 
 .add-asset-generate-pane .add-asset-generate-body {
@@ -6321,6 +6332,22 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   line-height: 1.3;
 }
 
+.add-asset-generate-pane .add-asset-generate-body:has(.add-asset-generate-embedded) {
+  overflow: hidden;
+}
+
+.add-asset-generate-pane .add-asset-generate-section > .control,
+.add-asset-generate-embedded .add-asset-generate-section > .control {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.add-asset-generate-pane .add-asset-workflow-form .lab-replicate-run-field,
+.add-asset-generate-embedded .add-asset-workflow-form .lab-replicate-run-field,
+.lab-replicate-run-field.is-bare {
+  border-bottom: none;
+  padding-bottom: 0;
+}
 .add-asset-generate-pane .add-asset-generate-section h3,
 .add-asset-generate-embedded .add-asset-generate-section h3,
 .preview-intent-pane .add-asset-generate-section h3 {
@@ -6906,14 +6933,29 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  width: auto;
+  max-width: none;
+  margin-left: 0;
   gap: 0.5rem;
   padding-top: 0.55rem;
   margin-top: 0.15rem;
 }
 
+.add-asset-generate-pane .add-asset-generate-footer {
+  box-sizing: border-box;
+  margin-left: -1.1rem;
+  margin-right: -1.1rem;
+  margin-top: auto;
+  padding: 0.65rem 1.1rem 0.85rem;
+}
+
 .add-asset-generate-embedded {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   gap: 0.15rem;
   min-width: 0;
 }
@@ -6921,8 +6963,10 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 .add-asset-generate-embedded-body {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   gap: inherit;
-  min-width: 0;
 }
 
 .editor-cartridge-grip.is-soon,
@@ -6996,12 +7040,6 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 .generate-dual-view-chrome .editor-preview-source-label {
   flex: 0 1 auto;
   min-width: 0;
-}
-
-.generate-dual-view-status {
-  margin: 0;
-  flex: 0 0 auto;
-  font-size: 0.8rem;
 }
 
 .generate-result-note--error {
@@ -7352,7 +7390,10 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 }
 
 .preview-intent-footer .editor-cartridge-grip {
-  flex: 0 0 auto;
+  width: max-content;
+  min-width: 8.75rem;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 .preview-intent-pane .editor-staging-controls {
@@ -7598,6 +7639,7 @@ body.is-timeline-clip-moving * {
 }
 
 .editor-timeline-tool {
+  position: relative;
   display: grid;
   place-items: center;
   width: 1.65rem;
@@ -7631,6 +7673,35 @@ body.is-timeline-clip-moving * {
   color: var(--text);
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.editor-timeline-tool.is-baking {
+  color: var(--text);
+  opacity: 1;
+  cursor: wait;
+}
+
+.editor-timeline-tool.is-baking:disabled {
+  opacity: 1;
+  cursor: wait;
+}
+
+.editor-timeline-tool.is-baking:disabled:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.editor-timeline-tool.is-baking::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: editor-bake-spin 0.7s linear infinite;
 }
 
 .timeline-merge-dialog .timeline-merge-progress {
@@ -9689,6 +9760,22 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   margin: 1.25rem 0 0.35rem;
   font-size: 0.95rem;
   font-weight: 600;
+}
+
+.settings-quality-slider {
+  width: 100%;
+  max-width: 320px;
+  accent-color: var(--accent, #6c8cff);
+  margin: 0.25rem 0 0;
+}
+
+.settings-quality-scale {
+  display: flex;
+  justify-content: space-between;
+  max-width: 320px;
+  font-size: 0.75rem;
+  color: var(--muted, #a0a0ab);
+  margin-bottom: 0.35rem;
 }
 
 .settings-tool-list {

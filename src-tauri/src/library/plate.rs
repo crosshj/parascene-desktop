@@ -459,10 +459,20 @@ pub async fn library_bake_plate_still(input: PlateBakeInput) -> Result<PlateBake
 fn safe_cache_part(value: &str) -> String {
     let value: String = value
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
     let value = value.trim_matches('_');
-    if value.is_empty() { "composition".into() } else { value.into() }
+    if value.is_empty() {
+        "composition".into()
+    } else {
+        value.into()
+    }
 }
 
 /// Copy a generated still into composition-owned cache without creating a
@@ -482,7 +492,10 @@ pub fn library_cache_composition_run(
         .join("composition-runs")
         .join(safe_cache_part(&composition_id));
     fs::create_dir_all(&dir).map_err(|e| format!("composition cache dir: {e}"))?;
-    let ext = source.extension().and_then(|value| value.to_str()).unwrap_or("png");
+    let ext = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png");
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis())

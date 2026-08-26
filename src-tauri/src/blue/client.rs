@@ -71,10 +71,13 @@ pub async fn get_json(creds: &BlueCredentials, path: &str) -> Result<Value, Stri
     loop {
         attempt += 1;
         sleep(Duration::from_millis(MIN_INTERVAL_MS)).await;
-        let res = apply_auth(client().get(&url).header("Accept", "application/json"), creds)
-            .send()
-            .await
-            .map_err(|e| format!("Blue GET failed: {e}"))?;
+        let res = apply_auth(
+            client().get(&url).header("Accept", "application/json"),
+            creds,
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Blue GET failed: {e}"))?;
         let status = res.status().as_u16();
         if status == 429 || status == 503 {
             let wait = retry_after_secs(&res);
@@ -183,15 +186,9 @@ impl BlueHttpResponse {
 }
 
 /// Multipart upload; returns relative `/api/files/…` URL from Blue.
-pub async fn upload_file(
-    creds: &BlueCredentials,
-    path: &Path,
-) -> Result<String, String> {
+pub async fn upload_file(creds: &BlueCredentials, path: &Path) -> Result<String, String> {
     if !path.is_file() {
-        return Err(format!(
-            "Blue upload source missing: {}",
-            path.display()
-        ));
+        return Err(format!("Blue upload source missing: {}", path.display()));
     }
     let bytes = tokio::fs::read(path)
         .await
@@ -226,8 +223,7 @@ pub async fn upload_file(
         .map_err(|e| format!("Read upload body failed: {e}"))?;
     if status == 401 {
         return Err(
-            "Unauthorized: Blue token or Cloudflare Access credentials invalid or missing."
-                .into(),
+            "Unauthorized: Blue token or Cloudflare Access credentials invalid or missing.".into(),
         );
     }
     if !(200..300).contains(&status) {
@@ -235,7 +231,11 @@ pub async fn upload_file(
     }
     let data: Value =
         serde_json::from_str(&text).map_err(|e| format!("Invalid upload JSON: {e}"))?;
-    if let Some(u) = data.get("url").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(u) = data
+        .get("url")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
         return Ok(u.to_string());
     }
     if let Some(name) = data
@@ -352,9 +352,7 @@ pub async fn download_to_path(
                 .await
                 .map_err(|e| format!("Write file: {e}"))?;
         }
-        file.flush()
-            .await
-            .map_err(|e| format!("Flush file: {e}"))?;
+        file.flush().await.map_err(|e| format!("Flush file: {e}"))?;
         return Ok(());
     }
 }

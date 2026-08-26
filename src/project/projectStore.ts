@@ -120,6 +120,8 @@ export type StoredProject = {
   pendingStagedDraft?: unknown | null;
   /** Timeline zoom (0.5–3); omitted → 1. */
   timelineZoom?: number;
+  /** Cached mix of timeline audio; omitted → null. */
+  timelineAudioBakePath?: string | null;
   /** Preview follows timeline; omitted → false. */
   timelineMonitorActive?: boolean;
   /** Timeline playhead seconds; omitted → 0. */
@@ -841,6 +843,10 @@ function parseAddAssetGenerationJob(
     typeof row.blueJobId === "string" && row.blueJobId.trim()
       ? row.blueJobId.trim()
       : undefined;
+  const serviceJobId =
+    typeof row.serviceJobId === "string" && row.serviceJobId.trim()
+      ? row.serviceJobId.trim()
+      : undefined;
   const model =
     typeof row.model === "string" && row.model.trim()
       ? row.model.trim()
@@ -852,6 +858,7 @@ function parseAddAssetGenerationJob(
     replicatePredictionId,
     pendingCreationId,
     blueJobId,
+    serviceJobId,
     model,
   };
 }
@@ -1013,6 +1020,7 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
       ? null
       : (project.pendingStagedDraft ?? null),
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
+    timelineAudioBakePath: normalizeOptionalId(project.timelineAudioBakePath),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
@@ -1261,6 +1269,7 @@ export function createStoredProject(
     selectedAssetId: null,
     pendingStagedDraft: null,
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
+    timelineAudioBakePath: null,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
     imagesGroupId: null,
@@ -1706,6 +1715,19 @@ export function setStoredProjectTimelineZoom(
   };
 }
 
+export function setStoredProjectTimelineAudioBakePath(
+  project: StoredProject,
+  path: string | null,
+): StoredProject {
+  const next = normalizeOptionalId(path);
+  if (next === normalizeOptionalId(project.timelineAudioBakePath)) return project;
+  return {
+    ...project,
+    timelineAudioBakePath: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function setStoredProjectTimelineMonitorActive(
   project: StoredProject,
   active: boolean,
@@ -1979,16 +2001,33 @@ export function completeStoredLibraryAssetPlaceholder(
     withCreation,
     placeholderKey,
   );
-  if (project.selectedAssetId !== placeholderKey) {
-    return cleared;
-  }
-  if (mergeCreation) {
-    return setStoredProjectSelectedAssetId(cleared, creationKey);
-  }
-  // Cabinet member — keep selection without flat-filing into creationIds.
+  // Placeholders render in front of creationIds. Keep that slot when filing.
+  const withoutPlaceholder = cleared.creationIds.filter(
+    (id) => id !== placeholderKey,
+  );
+  const rest = withoutPlaceholder.filter((id) => id !== creationKey);
+  const nextIds = withoutPlaceholder.includes(creationKey)
+    ? [creationKey, ...rest]
+    : withoutPlaceholder;
+  const placeholders = normalizeLibraryAssetPlaceholders(
+    cleared.libraryAssetPlaceholders,
+  );
+  const nextSelected =
+    project.selectedAssetId === placeholderKey
+      ? creationKey
+      : project.selectedAssetId;
+  const extraSelectable = [
+    ...Object.keys(placeholders),
+    ...(nextSelected === creationKey ? [creationKey] : []),
+  ];
   return {
     ...cleared,
-    selectedAssetId: creationKey,
+    creationIds: nextIds,
+    selectedAssetId: normalizeSelectedAssetId(
+      nextSelected,
+      nextIds,
+      extraSelectable,
+    ),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -2110,6 +2149,7 @@ export function storedProjectToUi(project: StoredProject): Project {
       ? null
       : (project.pendingStagedDraft ?? null),
     timelineZoom: normalizeTimelineZoom(project.timelineZoom),
+    timelineAudioBakePath: normalizeOptionalId(project.timelineAudioBakePath),
     timelineMonitorActive,
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     hookSuggestions: [],
@@ -2145,6 +2185,7 @@ export function emptyUiProject(): Project {
     pendingStagedDraft: null,
     libraryAssetPlaceholders: {},
     timelineZoom: DEFAULT_TIMELINE_ZOOM,
+    timelineAudioBakePath: null,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
     hookSuggestions: [],

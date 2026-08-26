@@ -34,9 +34,7 @@ fn reverse_gates() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
 }
 
 fn gate_for_asset(id: &str) -> Arc<Mutex<()>> {
-    let mut map = reverse_gates()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut map = reverse_gates().lock().unwrap_or_else(|e| e.into_inner());
     map.entry(id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -133,15 +131,8 @@ fn partial_path(dest: &Path) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("reversed");
-    let ext = dest
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("mp4");
-    let name = format!(
-        "{stem}.partial.{}.{}.{ext}",
-        std::process::id(),
-        nanos
-    );
+    let ext = dest.extension().and_then(|s| s.to_str()).unwrap_or("mp4");
+    let name = format!("{stem}.partial.{}.{}.{ext}", std::process::id(), nanos);
     dest.with_file_name(name)
 }
 

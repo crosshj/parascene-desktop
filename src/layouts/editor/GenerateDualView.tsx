@@ -4,8 +4,6 @@ import type { GenerateDualViewId } from "./generateDualView";
 type GenerateDualViewProps = {
   view: GenerateDualViewId;
   onViewChange: (view: GenerateDualViewId) => void;
-  /** Optional status line under the toggle (phase hint). */
-  statusNote?: string | null;
   children: ReactNode;
 };
 
@@ -13,7 +11,6 @@ type GenerateDualViewProps = {
 export function GenerateDualView({
   view,
   onViewChange,
-  statusNote = null,
   children,
 }: GenerateDualViewProps) {
   return (
@@ -41,9 +38,6 @@ export function GenerateDualView({
             Form
           </button>
         </div>
-        {statusNote ? (
-          <p className="muted generate-dual-view-status">{statusNote}</p>
-        ) : null}
       </div>
       <div className="generate-dual-view-body">{children}</div>
     </div>

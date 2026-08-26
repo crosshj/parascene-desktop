@@ -51,7 +51,9 @@ fn save_to_disk(set: &BTreeSet<String>) -> Result<(), String> {
 }
 
 fn with_set<R>(f: impl FnOnce(&mut BTreeSet<String>) -> Result<R, String>) -> Result<R, String> {
-    let mut guard = store().lock().map_err(|_| "enabled models lock poisoned".to_string())?;
+    let mut guard = store()
+        .lock()
+        .map_err(|_| "enabled models lock poisoned".to_string())?;
     if guard.is_none() {
         *guard = Some(load_from_disk()?);
     }

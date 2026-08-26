@@ -11,7 +11,7 @@ import {
   type LabDepsStatus,
 } from "../lab/labDeps";
 import {
-  loadOpenAiApiKey,
+  hydrateOpenAiApiKey,
   saveOpenAiApiKey,
 } from "../lab/openaiClient";
 import {
@@ -21,9 +21,16 @@ import {
 } from "../replicate/replicateClient";
 import {
   notifyBlueCredentialsChanged,
-  notifyOpenAiKeyChanged,
   notifyReplicateTokenChanged,
 } from "./events";
+import {
+  DEFAULT_PREVIEW_QUALITY,
+  PREVIEW_QUALITY_LABELS,
+  PREVIEW_QUALITY_ORDER,
+  loadPreviewQuality,
+  savePreviewQuality,
+  type PreviewQuality,
+} from "./previewQuality";
 
 type Props = {
   open: boolean;
@@ -51,6 +58,9 @@ export function SettingsModal({ open, onClose }: Props) {
   const [depsError, setDepsError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installNote, setInstallNote] = useState<string | null>(null);
+  const [previewQuality, setPreviewQuality] = useState<PreviewQuality>(() =>
+    loadPreviewQuality(),
+  );
 
   const refreshDeps = async () => {
     setDepsError(null);
@@ -88,14 +98,22 @@ export function SettingsModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    void hydrateOpenAiApiKey().then((key) => setApiKey(key));
     // Intentional: reset the form to persisted values each time the modal opens.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setApiKey(loadOpenAiApiKey());
     setInstallNote(null);
+    setPreviewQuality(loadPreviewQuality());
     void refreshDeps();
     void refreshReplicate();
     void refreshBlue();
   }, [open]);
+
+  const onPreviewQualityChange = (index: number) => {
+    const next = PREVIEW_QUALITY_ORDER[index] ?? DEFAULT_PREVIEW_QUALITY;
+    setPreviewQuality(next);
+    // Live-apply: the editor re-fingerprints the preview cache immediately.
+    savePreviewQuality(next);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -112,8 +130,7 @@ export function SettingsModal({ open, onClose }: Props) {
   if (!open) return null;
 
   const save = async () => {
-    saveOpenAiApiKey(apiKey);
-    notifyOpenAiKeyChanged();
+    await saveOpenAiApiKey(apiKey);
     try {
       if (replicateToken.trim()) {
         await replicateTokenSet(replicateToken.trim());
@@ -271,6 +288,34 @@ export function SettingsModal({ open, onClose }: Props) {
               Clear Blue credentials
             </button>
           ) : null}
+
+          <h3 className="settings-section-title">Editor preview</h3>
+          <label htmlFor="settings-preview-quality">
+            Timeline preview quality:{" "}
+            <strong>{PREVIEW_QUALITY_LABELS[previewQuality]}</strong>
+          </label>
+          <input
+            id="settings-preview-quality"
+            className="settings-quality-slider"
+            type="range"
+            min={0}
+            max={PREVIEW_QUALITY_ORDER.length - 1}
+            step={1}
+            value={PREVIEW_QUALITY_ORDER.indexOf(previewQuality)}
+            aria-valuetext={PREVIEW_QUALITY_LABELS[previewQuality]}
+            onChange={(e) => onPreviewQualityChange(Number(e.target.value))}
+          />
+          <div className="settings-quality-scale" aria-hidden="true">
+            {PREVIEW_QUALITY_ORDER.map((q) => (
+              <span key={q}>{PREVIEW_QUALITY_LABELS[q]}</span>
+            ))}
+          </div>
+          <p className="muted settings-hint">
+            Resolution, bitrate, and frame rate of the timeline playback
+            preview (10 / 15 / 30 fps). Applies immediately — the preview
+            buffer re-renders at the new quality. Export quality is not
+            affected.
+          </p>
 
           <h3 className="settings-section-title">Local tools</h3>
           <p className="muted settings-hint">

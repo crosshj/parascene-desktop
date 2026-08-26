@@ -1,17 +1,55 @@
+/** True when the element is already sitting on `sec` (paused or playing). */
+export function mediaAtSec(
+  el: HTMLMediaElement,
+  sec: number,
+  slop = 0.04,
+): boolean {
+  const target = Math.max(0, sec);
+  return (
+    !el.ended &&
+    Number.isFinite(el.currentTime) &&
+    Math.abs(el.currentTime - target) < slop
+  );
+}
+
+function hasMediaSrc(el: HTMLMediaElement): boolean {
+  return Boolean(el.currentSrc || el.src || el.getAttribute("src"));
+}
+
+/** Seek is a no-op until duration/currentTime exist. */
+export function waitForMetadata(el: HTMLMediaElement): Promise<void> {
+  if (el.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    return Promise.resolve();
+  }
+  if (!hasMediaSrc(el)) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener("loadedmetadata", finish);
+      window.clearTimeout(fallback);
+      resolve();
+    };
+    const fallback = window.setTimeout(finish, 800);
+    el.addEventListener("loadedmetadata", finish);
+  });
+}
+
 /** Resolves true when a seek was issued, false when already at the target. */
-export function seekMedia(el: HTMLMediaElement, sec: number): Promise<boolean> {
+export async function seekMedia(
+  el: HTMLMediaElement,
+  sec: number,
+): Promise<boolean> {
+  await waitForMetadata(el);
   let target = Math.max(0, sec);
   // Stay off the exact EOF so we don't land in `ended` (WebKit then refuses
   // to advance until a fresh seek after loop/wrap).
   if (Number.isFinite(el.duration) && el.duration > 0) {
     target = Math.min(target, Math.max(0, el.duration - 0.05));
   }
-  if (
-    !el.ended &&
-    Number.isFinite(el.currentTime) &&
-    Math.abs(el.currentTime - target) < 0.04
-  ) {
-    return Promise.resolve(false);
+  if (mediaAtSec(el, target)) {
+    return false;
   }
   return new Promise((resolve) => {
     let settled = false;

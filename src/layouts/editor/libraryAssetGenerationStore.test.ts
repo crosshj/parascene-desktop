@@ -1,11 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Creation } from "../../library/types";
 import type { LibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
 import type { ParasceneStillModelOption } from "./parasceneProductCaps";
 import {
   bindLibraryAssetGenerationApplier,
   retryLibraryAssetPlaceholder,
   startLibraryParasceneImageToImage,
+  waitForCatalogLocalMedia,
 } from "./libraryAssetGenerationStore";
+
+const getCreation = vi.fn();
+
+vi.mock("../../library/catalogClient", () => ({
+  applyManifest: vi.fn(),
+  getCreation: (...args: unknown[]) => getCreation(...args),
+}));
 
 vi.mock("./runParasceneImageToImage", () => ({
   runParasceneImageToImage: vi.fn(async () => ({
@@ -68,6 +77,12 @@ function failedPlaceholder(
 
 describe("retryLibraryAssetPlaceholder", () => {
   beforeEach(() => {
+    getCreation.mockReset();
+    getCreation.mockResolvedValue({
+      id: "remote-99",
+      localPath: "/tmp/remote-99.png",
+      localThumbPath: "/tmp/remote-99.jpg",
+    } as Creation);
     bindLibraryAssetGenerationApplier({
       beginPlaceholder: vi.fn(),
       onGenerationStarted: vi.fn(),
@@ -78,8 +93,8 @@ describe("retryLibraryAssetPlaceholder", () => {
     });
   });
 
-  it("restarts image-to-image on the same placeholder id", () => {
-    const id = retryLibraryAssetPlaceholder({
+  it("restarts image-to-image on the same placeholder id", async () => {
+    const id = await retryLibraryAssetPlaceholder({
       placeholder: failedPlaceholder(),
       projectId: "project-1",
       projectTitle: "Demo",
@@ -116,5 +131,42 @@ describe("retryLibraryAssetPlaceholder", () => {
     expect(beginPlaceholder).toHaveBeenCalledWith(
       expect.objectContaining({ id: "placeholder-retry" }),
     );
+  });
+});
+
+describe("waitForCatalogLocalMedia", () => {
+  beforeEach(() => {
+    getCreation.mockReset();
+  });
+
+  it("returns true once the catalog row has local files", async () => {
+    getCreation
+      .mockRejectedValueOnce(new Error("not found"))
+      .mockResolvedValueOnce({
+        id: "26053",
+        localPath: null,
+        localThumbPath: null,
+      } as Creation)
+      .mockResolvedValueOnce({
+        id: "26053",
+        localPath: "/tmp/26053.png",
+        localThumbPath: "/tmp/26053.jpg",
+      } as Creation);
+
+    await expect(
+      waitForCatalogLocalMedia("26053", { timeoutMs: 1_000, pollMs: 10 }),
+    ).resolves.toBe(true);
+  });
+
+  it("returns false when files never land", async () => {
+    getCreation.mockResolvedValue({
+      id: "26053",
+      localPath: null,
+      localThumbPath: null,
+    } as Creation);
+
+    await expect(
+      waitForCatalogLocalMedia("26053", { timeoutMs: 40, pollMs: 10 }),
+    ).resolves.toBe(false);
   });
 });

@@ -15,11 +15,17 @@ import {
 } from "./manifestSync";
 
 const invoke = vi.fn();
-const listMyCreations = vi.fn();
-const getCreation = vi.fn();
+const runSyncFull = vi.fn();
+const runSyncNewest = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
+}));
+
+vi.mock("../services/syncCatalog", () => ({
+  runSyncFull: (...args: unknown[]) => runSyncFull(...args),
+  runSyncNewest: (...args: unknown[]) => runSyncNewest(...args),
+  refreshCreationsFromListById: vi.fn(),
 }));
 
 vi.mock("../auth/session", () => ({
@@ -32,10 +38,6 @@ vi.mock("../auth/session", () => ({
   }),
   ensureAccessToken: vi.fn(async () => "access-jwt"),
   getMemorySession: vi.fn(() => null),
-  createAuthedSdk: () => ({
-    listMyCreations: (...args: unknown[]) => listMyCreations(...args),
-    getCreation: (...args: unknown[]) => getCreation(...args),
-  }),
 }));
 
 const emptyStatus = {
@@ -120,22 +122,24 @@ function mockDownloadPending() {
 describe("manifestSync", () => {
   beforeEach(() => {
     invoke.mockReset();
-    listMyCreations.mockReset();
-    getCreation.mockReset();
-    getCreation.mockImplementation(async (id: string | number) => ({
-      id,
-      status: "completed",
-    }));
-    mockDownloadPending();
-    listMyCreations.mockImplementation(async ({ offset }: { offset: number }) => {
-      if (offset > 0) {
-        return { images: [], hasMore: false };
-      }
-      return {
-        images: [remoteImage(99, "Sunset")],
-        hasMore: false,
-      };
+    runSyncFull.mockReset();
+    runSyncNewest.mockReset();
+    runSyncFull.mockResolvedValue({
+      status: { ...emptyStatus, total: 1, remote: 1 },
+      added: 1,
+      checked: 1,
+      pages: 1,
+      message: "Done",
     });
+    runSyncNewest.mockResolvedValue({
+      status: { ...emptyStatus, total: 1, remote: 1 },
+      added: 1,
+      pruned: 0,
+      checked: 1,
+      target: NEWEST_SYNC_PAGE_SIZE * NEWEST_SYNC_MAX_PAGES,
+      message: "Done",
+    });
+    mockDownloadPending();
   });
 
   it("derives fit_thumbnail_url from square thumbnail when API omits it", () => {
@@ -399,172 +403,27 @@ describe("manifestSync", () => {
     );
   });
 
-  it("full sync paginates creations and applies the manifest", async () => {
+  it("full sync delegates to runSyncFull", async () => {
     const status = await syncFullCreationsManifest();
     expect(status.total).toBe(1);
     expect(status.remote).toBe(1);
-    expect(listMyCreations).toHaveBeenCalledWith({ limit: 100, offset: 0 });
-    expect(invoke).toHaveBeenCalledWith(
-      "library_apply_manifest",
-      expect.objectContaining({
-        creations: [
-          expect.objectContaining({
-            id: "99",
-            title: "Sunset",
-            prompt: "golden hour",
-            width: 1024,
-            height: 576,
-            aspectRatio: "16:9",
-            color: "#1a1a1a",
-            thumbnailUrl: "https://www.parascene.com/cdn/99.jpg?variant=thumbnail",
-          }),
-        ],
-      }),
+    expect(runSyncFull).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalledWith(
+      "library_download_pending",
+      expect.any(Object),
     );
-  });
-
-  it("full sync skips creations still in creating status", async () => {
-    listMyCreations.mockImplementation(async ({ offset }: { offset: number }) => {
-      if (offset > 0) return { images: [], hasMore: false };
-      return {
-        images: [
-          { ...remoteImage(1, "Ready"), status: "completed" },
-          { ...remoteImage(2, "WIP"), status: "creating" },
-          { ...remoteImage(3, "WIP video"), status: "creating_video" },
-        ],
-        hasMore: false,
-      };
-    });
-    const applied: string[][] = [];
-    invoke.mockImplementation(async (cmd: string, args?: { creations?: Array<{ id: string }> }) => {
-      if (cmd === "library_apply_manifest") {
-        applied.push((args?.creations ?? []).map((c) => c.id));
-        return { ...emptyStatus, total: args?.creations?.length ?? 0, remote: args?.creations?.length ?? 0 };
-      }
-      if (cmd === "library_download_pending") {
-        return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
-      }
-      if (cmd === "library_sync_status") return emptyStatus;
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    await syncFullCreationsManifest();
-    expect(applied).toEqual([["1"]]);
   });
 
   it("syncCreationsManifest aliases full sync", async () => {
     await syncCreationsManifest();
-    expect(listMyCreations).toHaveBeenCalledWith({ limit: 100, offset: 0 });
-    expect(invoke).toHaveBeenCalledWith("library_apply_manifest", expect.any(Object));
+    expect(runSyncFull).toHaveBeenCalledTimes(1);
   });
 
-  it("newest sync on empty local catalog applies the first page", async () => {
+  it("newest sync delegates to runSyncNewest", async () => {
     const result = await syncNewestCreationsManifest();
     expect(result.added).toBe(1);
     expect(result.pruned).toBe(0);
-    expect(listMyCreations).toHaveBeenCalledWith({
-      limit: NEWEST_SYNC_PAGE_SIZE,
-      offset: 0,
-    });
-    expect(invoke).toHaveBeenCalledWith("library_existing_creation_ids", {
-      ids: ["99"],
-    });
-    expect(invoke).toHaveBeenCalledWith(
-      "library_apply_manifest",
-      expect.objectContaining({
-        creations: [expect.objectContaining({ id: "99" })],
-      }),
-    );
-  });
-
-  it("newest sync refreshes existing rows when a complete page is already local", async () => {
-    const page = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(1000 + i),
-    );
-    listMyCreations.mockResolvedValueOnce({ images: page, hasMore: true });
-    const applied: string[][] = [];
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: Array<{ id: string }> }) => {
-      if (cmd === "library_existing_creation_ids") {
-        return args?.ids ?? [];
-      }
-      if (cmd === "library_apply_manifest") {
-        applied.push((args?.creations ?? []).map((c) => c.id));
-        return emptyStatus;
-      }
-      if (cmd === "library_download_pending") {
-        return {
-          downloaded: 0,
-          failed: 0,
-          skipped: 0,
-          status: emptyStatus,
-        };
-      }
-      if (cmd === "library_cloud_ids_since") {
-        return [];
-      }
-      if (cmd === "library_sync_status") {
-        return emptyStatus;
-      }
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    const result = await syncNewestCreationsManifest();
-    expect(result.added).toBe(0);
-    expect(listMyCreations).toHaveBeenCalledTimes(1);
-    expect(applied).toEqual([page.map((img) => String(img.id))]);
-  });
-
-  it("newest sync prunes local rows deleted remotely in the recent window", async () => {
-    const stillThere = remoteImage(10, "Keep");
-    listMyCreations.mockResolvedValueOnce({
-      images: [stillThere],
-      hasMore: false,
-    });
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[]; sinceIso?: string; id?: string }) => {
-      if (cmd === "library_existing_creation_ids") {
-        return args?.ids ?? [];
-      }
-      if (cmd === "library_apply_manifest") {
-        return {
-          ...emptyStatus,
-          total: Array.isArray(args?.creations) ? args.creations.length : 0,
-        };
-      }
-      if (cmd === "library_cloud_ids_since") {
-        return [
-          { id: "10", createdAt: stillThere.created_at },
-          { id: "11", createdAt: stillThere.created_at },
-        ];
-      }
-      if (cmd === "library_delete_local") {
-        expect(args?.id).toBe("11");
-        return emptyStatus;
-      }
-      if (cmd === "library_download_pending") {
-        return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
-      }
-      if (cmd === "library_sync_status") {
-        return { ...emptyStatus, total: 1 };
-      }
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-    getCreation.mockImplementation(async (id: string | number) => {
-      if (String(id) === "11") throw new Error("not found");
-      return { id, status: "completed" };
-    });
-
-    const result = await syncNewestCreationsManifest();
-    expect(result.pruned).toBe(1);
-    expect(invoke).toHaveBeenCalledWith("library_delete_local", { id: "11" });
+    expect(runSyncNewest).toHaveBeenCalledTimes(1);
   });
 
   it("recentPruneSinceIso never looks further back than a few hours", () => {
@@ -575,206 +434,5 @@ describe("manifestSync", () => {
     expect(recentPruneSinceIso("2026-07-19T17:00:00.000Z", now)).toBe(
       "2026-07-19T17:00:00.000Z",
     );
-  });
-
-  it("newest sync upserts known and unknown ids and continues past mixed pages", async () => {
-    const firstPage = [
-      remoteImage(1, "New A"),
-      remoteImage(2, "Known"),
-      remoteImage(3, "New B"),
-    ];
-    // Pad to complete-page size with known ids so the stop condition can fire later.
-    const secondPage = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(2000 + i),
-    );
-    listMyCreations
-      .mockResolvedValueOnce({ images: firstPage, hasMore: true })
-      .mockResolvedValueOnce({ images: secondPage, hasMore: true });
-
-    const known = new Set(["2", ...secondPage.map((img) => String(img.id))]);
-    const applied: string[][] = [];
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: Array<{ id: string }> }) => {
-      if (cmd === "library_existing_creation_ids") {
-        return (args?.ids ?? []).filter((id) => known.has(id));
-      }
-      if (cmd === "library_apply_manifest") {
-        applied.push((args?.creations ?? []).map((c) => c.id));
-        return {
-          ...emptyStatus,
-          total: args?.creations?.length ?? 0,
-          remote: args?.creations?.length ?? 0,
-        };
-      }
-      if (cmd === "library_download_pending") {
-        return {
-          downloaded: 0,
-          failed: 0,
-          skipped: 0,
-          status: emptyStatus,
-        };
-      }
-      if (cmd === "library_cloud_ids_since") {
-        return [];
-      }
-      if (cmd === "library_sync_status") {
-        return emptyStatus;
-      }
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    const result = await syncNewestCreationsManifest();
-    expect(listMyCreations).toHaveBeenCalledTimes(2);
-    expect(result.added).toBe(2);
-    expect(applied).toEqual([
-      ["1", "2", "3"],
-      secondPage.map((img) => String(img.id)),
-    ]);
-  });
-
-  it("newest sync refreshes known completed rows while skipping creating", async () => {
-    const page = [
-      { ...remoteImage(1, "WIP"), status: "creating" },
-      remoteImage(2, "Known"),
-      { ...remoteImage(3, "WIP video"), status: "creating_video" },
-    ];
-    listMyCreations.mockResolvedValueOnce({ images: page, hasMore: true });
-
-    const known = new Set(["2"]);
-    const applied: string[][] = [];
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: Array<{ id: string }> }) => {
-      if (cmd === "library_existing_creation_ids") {
-        return (args?.ids ?? []).filter((id) => known.has(id));
-      }
-      if (cmd === "library_apply_manifest") {
-        applied.push((args?.creations ?? []).map((c) => c.id));
-        return emptyStatus;
-      }
-      if (cmd === "library_download_pending") {
-        return { downloaded: 0, failed: 0, skipped: 0, status: emptyStatus };
-      }
-      if (cmd === "library_cloud_ids_since") {
-        return [];
-      }
-      if (cmd === "library_sync_status") {
-        return emptyStatus;
-      }
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    const result = await syncNewestCreationsManifest();
-    expect(result.added).toBe(0);
-    expect(applied).toEqual([["2"]]);
-    expect(listMyCreations).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith("library_existing_creation_ids", {
-      ids: ["2"],
-    });
-  });
-
-  it("newest sync pages through more than one page of new creations", async () => {
-    const page1 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(3000 + i),
-    );
-    const page2 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(4000 + i),
-    );
-    const page3 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(5000 + i),
-    );
-    listMyCreations
-      .mockResolvedValueOnce({ images: page1, hasMore: true })
-      .mockResolvedValueOnce({ images: page2, hasMore: true })
-      .mockResolvedValueOnce({ images: page3, hasMore: true });
-
-    const known = new Set(page3.map((img) => String(img.id)));
-    const appliedCounts: number[] = [];
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
-      if (cmd === "library_existing_creation_ids") {
-        return (args?.ids ?? []).filter((id) => known.has(id));
-      }
-      if (cmd === "library_apply_manifest") {
-        appliedCounts.push(Array.isArray(args?.creations) ? args.creations.length : 0);
-        return emptyStatus;
-      }
-      if (cmd === "library_download_pending") {
-        return {
-          downloaded: 0,
-          failed: 0,
-          skipped: 0,
-          status: emptyStatus,
-        };
-      }
-      if (cmd === "library_cloud_ids_since") {
-        return [];
-      }
-      if (cmd === "library_sync_status") {
-        return emptyStatus;
-      }
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    await syncNewestCreationsManifest();
-    // Hard-capped — must not walk the whole remote catalog.
-    expect(listMyCreations).toHaveBeenCalledTimes(NEWEST_SYNC_MAX_PAGES);
-    expect(appliedCounts).toEqual([
-      NEWEST_SYNC_PAGE_SIZE,
-      NEWEST_SYNC_PAGE_SIZE,
-    ]);
-  });
-
-  it("newest sync stops as soon as a page is fully local", async () => {
-    const page1 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(100 + i, i === 0 ? "New" : "Known"),
-    );
-    const page2 = Array.from({ length: NEWEST_SYNC_PAGE_SIZE }, (_, i) =>
-      remoteImage(2000 + i),
-    );
-    listMyCreations
-      .mockResolvedValueOnce({ images: page1, hasMore: true })
-      .mockResolvedValueOnce({ images: page2, hasMore: true });
-
-    // Only the first id on page1 is unknown; page2 is entirely known → stop.
-    const known = new Set([
-      ...page1.slice(1).map((img) => String(img.id)),
-      ...page2.map((img) => String(img.id)),
-    ]);
-
-    invoke.mockImplementation(async (cmd: string, args?: { ids?: string[]; creations?: unknown[] }) => {
-      if (cmd === "library_existing_creation_ids") {
-        return (args?.ids ?? []).filter((id) => known.has(id));
-      }
-      if (cmd === "library_apply_manifest") {
-        return emptyStatus;
-      }
-      if (cmd === "library_download_pending") {
-        return {
-          downloaded: 0,
-          failed: 0,
-          skipped: 0,
-          status: emptyStatus,
-        };
-      }
-      if (cmd === "library_cloud_ids_since") {
-        return [];
-      }
-      if (cmd === "library_sync_status") {
-        return emptyStatus;
-      }
-      if (cmd === "library_get_creations") {
-        return [];
-      }
-      throw new Error(`unexpected invoke: ${cmd}`);
-    });
-
-    await syncNewestCreationsManifest();
-    expect(listMyCreations).toHaveBeenCalledTimes(2);
   });
 });

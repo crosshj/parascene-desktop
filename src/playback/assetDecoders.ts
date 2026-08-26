@@ -1,6 +1,12 @@
 import type { TimelineClip } from "../project/types";
-import { clipHasFreshExtendBake } from "../layouts/editor/clipExtendBake";
-import { clipInSec } from "../layouts/editor/timelineCompose";
+import { clipHasFreshExtendBake, extendBakeSourceSec } from "../layouts/editor/clipExtendBake";
+import {
+  clipInSec,
+  clipSourceSec,
+  peekNextVisualClip,
+  peekPrevVisualClip,
+  resolveTimelineFrame,
+} from "../layouts/editor/timelineCompose";
 
 /** Unique decoder identity: one DOM media element per asset × direction. */
 export type AssetDecoderKey = string;
@@ -43,7 +49,38 @@ export type VisualDecoderMeta = {
   bakePath?: string | null;
   extendBakePath?: string | null;
   clipId?: string;
+  /** Upcoming-park target: source in-point, or 0 for bake files. */
+  parkStartSec?: number;
 };
+
+export function visualDecoderMeta(
+  clip: TimelineClip,
+): VisualDecoderMeta | null {
+  if (clip.lane === "audio" || clip.kind === "audio") return null;
+  if (clip.kind === "slideshow") {
+    const key = assetDecoderKey(clip);
+    return {
+      key,
+      kind: "slideshow",
+      bakePath: clip.bakePath ?? null,
+      parkStartSec: 0,
+    };
+  }
+  if (!clip.assetId?.trim()) return null;
+  if (clip.kind === "video" && clipHasFreshExtendBake(clip)) {
+    const key = assetDecoderKey(clip);
+    return {
+      key,
+      kind: "video",
+      extendBakePath: clip.extendBakePath ?? null,
+      clipId: clip.id,
+      parkStartSec: 0,
+    };
+  }
+  const kind = clip.kind === "image" ? "image" : "video";
+  const key = assetDecoderKey(clip);
+  return { key, kind, parkStartSec: clipInSec(clip) };
+}
 
 /** Every unique video/image backing asset on the video lane. */
 export function listVisualDecoders(
@@ -51,37 +88,86 @@ export function listVisualDecoders(
 ): VisualDecoderMeta[] {
   const byKey = new Map<AssetDecoderKey, VisualDecoderMeta>();
   for (const clip of clips) {
-    if (clip.lane === "audio") continue;
-    if (clip.kind === "audio") continue;
-    if (clip.kind === "slideshow") {
-      const key = assetDecoderKey(clip);
-      byKey.set(key, {
-        key,
-        kind: "slideshow",
-        bakePath: clip.bakePath ?? null,
-      });
-      continue;
-    }
-    if (!clip.assetId?.trim()) continue;
-    if (clip.kind === "video" && clipHasFreshExtendBake(clip)) {
-      const key = assetDecoderKey(clip);
-      byKey.set(key, {
-        key,
-        kind: "video",
-        extendBakePath: clip.extendBakePath ?? null,
-        clipId: clip.id,
-      });
-      continue;
-    }
-    const kind = clip.kind === "image" ? "image" : "video";
-    const key = assetDecoderKey(clip);
-    // Prefer video if the same key ever appears as both (shouldn't).
-    const prev = byKey.get(key);
-    if (!prev || (prev.kind === "image" && kind === "video")) {
-      byKey.set(key, { key, kind });
+    const meta = visualDecoderMeta(clip);
+    if (!meta) continue;
+    const prev = byKey.get(meta.key);
+    if (!prev || (prev.kind === "image" && meta.kind === "video")) {
+      byKey.set(meta.key, meta);
     }
   }
   return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+export type VisualBufferWindow = {
+  prev: TimelineClip | null;
+  current: TimelineClip | null;
+  next: TimelineClip | null;
+};
+
+/** Previous / covering / next video-lane clips around timeline time `t`. */
+export function visualBufferWindow(
+  clips: readonly TimelineClip[],
+  t: number,
+): VisualBufferWindow {
+  return {
+    prev: peekPrevVisualClip(clips, t),
+    current: resolveTimelineFrame(clips, t).visual?.clip ?? null,
+    next: peekNextVisualClip(clips, t),
+  };
+}
+
+/** Decoder metas for the playhead buffer window (prev / current / next). */
+export function bufferWindowVisualDecoders(
+  clips: readonly TimelineClip[],
+  t: number,
+): VisualDecoderMeta[] {
+  const { prev, current, next } = visualBufferWindow(clips, t);
+  const byKey = new Map<AssetDecoderKey, VisualDecoderMeta>();
+  for (const clip of [prev, current, next]) {
+    if (!clip) continue;
+    const meta = visualDecoderMeta(clip);
+    if (!meta) continue;
+    const existing = byKey.get(meta.key);
+    if (!existing || (existing.kind === "image" && meta.kind === "video")) {
+      byKey.set(meta.key, meta);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function parkSecForClip(clip: TimelineClip, at: "start" | "end"): number {
+  if (clip.kind === "slideshow") return 0;
+  if (clipHasFreshExtendBake(clip)) {
+    if (at === "start") return 0;
+    const endT = Math.max(clip.startSec, clip.endSec - 1 / 60);
+    return extendBakeSourceSec(clip, endT);
+  }
+  if (at === "start") return clipInSec(clip);
+  const endT = Math.max(clip.startSec, clip.endSec - 1 / 60);
+  return clipSourceSec(clip, endT);
+}
+
+/**
+ * Park standby decoders in the buffer window: upcoming clip at its in-point
+ * (bake time 0 for extend files), previous clip at its last source frame.
+ */
+export function bufferWindowParkByKey(
+  clips: readonly TimelineClip[],
+  t: number,
+): Map<AssetDecoderKey, number> {
+  const { prev, next } = visualBufferWindow(clips, t);
+  const map = new Map<AssetDecoderKey, number>();
+  if (next) {
+    const meta = visualDecoderMeta(next);
+    if (meta) map.set(meta.key, parkSecForClip(next, "start"));
+  }
+  if (prev) {
+    const meta = visualDecoderMeta(prev);
+    if (meta && !map.has(meta.key)) {
+      map.set(meta.key, parkSecForClip(prev, "end"));
+    }
+  }
+  return map;
 }
 
 /**
@@ -106,7 +192,12 @@ export function parkSourceByKey(
   for (const clip of videoClips) {
     const key = assetDecoderKey(clip);
     if (!map.has(key)) {
-      map.set(key, clip.kind === "slideshow" ? 0 : clipInSec(clip));
+      map.set(
+        key,
+        clip.kind === "slideshow" || clipHasFreshExtendBake(clip)
+          ? 0
+          : clipInSec(clip),
+      );
     }
   }
   return map;

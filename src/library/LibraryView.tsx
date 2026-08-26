@@ -1,9 +1,9 @@
 /**
  * Library UI contract
  * -------------------
- * Frontend: read SQLite pages, paint local disk paths only, show sync status.
- * Backend warms thumbs several pages ahead of scroll (highest priority); cards
- * only call `ensureLocal` as a visible bump. Never load remote media URLs.
+ * Frontend: read SQLite pages, paint local disk paths only.
+ * Network belongs on the Sync page (user-started) and on Generate.
+ * Looking at Library / groups never starts downloads.
  */
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -29,20 +29,24 @@ import {
   resolveLibraryGroupAddTarget,
 } from "./libraryGroupAddTarget";
 import { CreationsFilterEmpty, FolderEmpty } from "./CreationsFilterEmpty";
-import { runCloudLibraryRepair } from "../sync/cloudRepair";
+import { runCloudRepair as runCloudRepairService } from "../services/cloudRepair";
 import {
   folderConflictKindLabel,
   type FolderConflict,
   type FolderSyncResult,
 } from "../sync/folderSync";
 import {
-  syncCreationsMetadata,
-  syncFullCreationsManifest,
   syncGroupMembersManifest,
-  syncNewestCreationsManifest,
   NEWEST_SYNC_MAX_PAGES,
   NEWEST_SYNC_PAGE_SIZE,
 } from "../sync/manifestSync";
+import { runSyncFull, runSyncNewest } from "../services/syncCatalog";
+import {
+  catalogJobHeadline,
+  catalogJobMode,
+  useBackgroundCatalogJob,
+} from "./backgroundCatalogJob";
+import { syncSessionUserAvatar } from "../sync/avatarSync";
 import {
   applySyncItemEvent,
   clearFinishedSyncActivity,
@@ -80,7 +84,6 @@ import { LibraryPageSkeleton } from "./LibraryLoadingSkeleton";
 import {
   cacheMissingMedia,
   cacheMissingThumbs,
-  ensureLocal,
   getCatalogFilterCounts,
   getCreation,
   getCreations,
@@ -129,10 +132,6 @@ const SIDEBAR_WIDTH_KEY = "parascene.creationsSidebarWidth";
 const SIDEBAR_DEFAULT_WIDTH = 220;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 360;
-
-function hasLayoutAspect(c: Creation): boolean {
-  return Boolean(c.aspectRatio) || (Boolean(c.width) && Boolean(c.height));
-}
 
 type CatalogSyncMode = "newest" | "full";
 
@@ -258,7 +257,6 @@ function useCatalog(librarySurface: LibrarySurface) {
   const [syncingGroups, setSyncingGroups] = useState(false);
   const offsetRef = useRef(0);
   const creationsRef = useRef<Creation[]>([]);
-  const aspectBackfillStarted = useRef(false);
   const loadingMoreRef = useRef(false);
   const surfaceRef = useRef(librarySurface);
   // Keep a latest-value ref for async callbacks (read after commit, not during render).
@@ -348,27 +346,6 @@ function useCatalog(librarySurface: LibrarySurface) {
       cancelled = true;
     };
   }, [loadInitial]);
-
-  // One-shot metadata refresh if the local catalog predates aspect fields.
-  // Skip while Sync is focused — board layout isn't visible there.
-  useEffect(() => {
-    if (librarySurface === "sync") return;
-    if (!creations?.length || aspectBackfillStarted.current) return;
-    const missing = creations.filter((c) => !hasLayoutAspect(c)).length;
-    if (missing < creations.length * 0.5) return;
-    aspectBackfillStarted.current = true;
-    let cancelled = false;
-    void syncCreationsMetadata()
-      .then(async (next) => {
-        if (cancelled) return;
-        setStatus(next);
-        await loadInitial();
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [creations, librarySurface, loadInitial]);
 
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
@@ -556,42 +533,76 @@ function useCatalog(librarySurface: LibrarySurface) {
       });
       try {
         const beforeTotal = status?.total ?? 0;
-        const newest =
+        const syncResult =
           mode === "newest"
-            ? await syncNewestCreationsManifest({
-                onProgress: (p) => {
-                  const now = Date.now();
-                  const isTerminal = p.phase === "done";
-                  if (!isTerminal && now - lastProgressUiAt.current < 200) {
-                    return;
-                  }
-                  lastProgressUiAt.current = now;
-                  setSyncHeadline(p.message);
-                  setProgress({
-                    done: p.checked,
-                    total: p.target,
-                    currentId: p.message,
-                    failed: 0,
-                    phase: "catalog",
-                  });
-                  pushActivity({
-                    id: jobId,
-                    kind: "catalog",
-                    state: "active",
-                    title,
-                    detail: p.message,
-                  });
-                },
-              })
-            : null;
-        const next = newest
-          ? newest.status
-          : await syncFullCreationsManifest();
+            ? await (async () => {
+                try {
+                  await syncSessionUserAvatar();
+                } catch {
+                  /* avatar is best-effort before catalog work */
+                }
+                const result = await runSyncNewest({
+                  onProgress: (p) => {
+                    const now = Date.now();
+                    const isTerminal = p.phase === "done";
+                    if (!isTerminal && now - lastProgressUiAt.current < 200) {
+                      return;
+                    }
+                    lastProgressUiAt.current = now;
+                    setSyncHeadline(p.message);
+                    setProgress({
+                      done: p.checked ?? 0,
+                      total: p.target ?? newestTarget,
+                      currentId: p.message,
+                      failed: 0,
+                      phase: "catalog",
+                    });
+                    pushActivity({
+                      id: jobId,
+                      kind: "catalog",
+                      state: "active",
+                      title,
+                      detail: p.message,
+                    });
+                  },
+                });
+                return result;
+              })()
+            : await (async () => {
+                try {
+                  await syncSessionUserAvatar();
+                } catch {
+                  /* avatar is best-effort before catalog work */
+                }
+                const result = await runSyncFull({
+                  onProgress: (p) => {
+                    const now = Date.now();
+                    if (now - lastProgressUiAt.current < 200) return;
+                    lastProgressUiAt.current = now;
+                    setSyncHeadline(p.message);
+                    setProgress({
+                      done: p.checked ?? 0,
+                      total: p.checked ?? 0,
+                      currentId: p.message,
+                      failed: 0,
+                      phase: "catalog",
+                    });
+                    pushActivity({
+                      id: jobId,
+                      kind: "catalog",
+                      state: "active",
+                      title,
+                      detail: p.message,
+                    });
+                  },
+                });
+                return result;
+              })();
+        const next = syncResult.status;
         setStatus(next);
 
-        const added =
-          newest?.added ?? Math.max(0, next.total - beforeTotal);
-        const pruned = newest?.pruned ?? 0;
+        const added = Math.max(0, syncResult.added ?? next.total - beforeTotal);
+        const pruned = mode === "newest" && "pruned" in syncResult ? syncResult.pruned : 0;
         const detail =
           mode === "newest"
             ? [
@@ -601,7 +612,6 @@ function useCatalog(librarySurface: LibrarySurface) {
                 pruned > 0
                   ? `removed ${pruned.toLocaleString()} deleted locally`
                   : null,
-                "Previews may warm in the background.",
               ]
                 .filter(Boolean)
                 .join(" · ")
@@ -1020,61 +1030,30 @@ function useCatalog(librarySurface: LibrarySurface) {
       phase: "repair",
     });
     try {
-      const summary = await runCloudLibraryRepair({
-        onPhase: (phase) => {
-          const note =
-            phase === "local-fit-plan"
-              ? "Scanning local thumbs…"
-              : phase === "group-aspect"
-                ? "Updating group aspects…"
-                : phase === "local-fill"
-                  ? "Rebuilding mismatched thumbs…"
-                  : phase === "upload-existing-fit"
-                    ? "Uploading local fits…"
-                    : phase === "fit-thumbnails"
-                      ? "Cloud fit for items without media…"
-                      : phase === "resync"
-                        ? "Refreshing catalog…"
-                        : phase === "redownload-thumbs"
-                          ? "Refreshing previews…"
-                          : null;
+      const summary = await runCloudRepairService({
+        onProgress: (p) => {
+          const note = p.message;
           setProgress({
             done: 0,
             total: 0,
             currentId: note,
             failed: 0,
-            phase: phase === "redownload-thumbs" ? "thumbs" : "repair",
+            phase:
+              note.toLowerCase().includes("preview") ||
+              note.toLowerCase().includes("thumb")
+                ? "thumbs"
+                : "repair",
           });
-        },
-        onWait: (ms) => {
-          const secs = Math.max(1, Math.ceil(ms / 1000));
-          setProgress({
-            done: 0,
-            total: 0,
-            currentId: `Waiting ${secs}s for rate limit…`,
-            failed: 0,
-            phase: "repair",
-          });
-          window.setTimeout(() => {
-            setProgress((prev) =>
-              prev?.phase === "repair" &&
-              typeof prev.currentId === "string" &&
-              prev.currentId.startsWith("Waiting")
-                ? { ...prev, currentId: null }
-                : prev,
-            );
-          }, ms);
         },
         onItem: (event) => {
           setActivity((prev) => applySyncItemEvent(prev, event));
         },
       });
-      const next = await getSyncStatus();
-      setStatus(next);
+      setStatus(summary.status);
       await loadInitial();
       if (
-        summary.group.updated_count === 0 &&
-        summary.fit.updated_count === 0 &&
+        summary.groupUpdated === 0 &&
+        summary.fitUpdated === 0 &&
         summary.localFilled === 0 &&
         summary.uploadedOnly === 0
       ) {
@@ -1165,31 +1144,10 @@ function creationsChromeStatus(opts: {
   visibleCount: number;
   filterActive: boolean;
   total: number;
-  syncing: boolean;
-  loadingMore: boolean;
-  progress: DownloadProgress | null;
 }): string | null {
-  const {
-    creations,
-    visibleCount,
-    filterActive,
-    total,
-    syncing,
-    loadingMore,
-    progress,
-  } = opts;
+  const { creations, visibleCount, filterActive, total } = opts;
   if (creations === null) return "Loading catalog…";
   if (creations.length === 0) return null;
-  if (syncing && progress && progress.total > 0) {
-    const phase = progress.phase === "thumbs" ? "Previews" : "Media";
-    return `${phase} ${progress.done} of ${progress.total}…`;
-  }
-  if (syncing) return "Syncing from cloud…";
-  if (loadingMore) return "Loading more…";
-  if (progress && progress.total > 0) {
-    const phase = progress.phase === "thumbs" ? "previews" : "media";
-    return `Caching ${phase} ${progress.done} of ${progress.total}…`;
-  }
   if (filterActive) {
     return `Showing ${visibleCount} matching · ${creations.length} loaded of ${total}`;
   }
@@ -1201,7 +1159,6 @@ function CreationsPanel({
   total,
   error,
   syncing,
-  loadingMore,
   progress,
   onSync,
   onLoadMore,
@@ -2319,9 +2276,6 @@ function CreationsPanel({
         total: catalogListFilter
           ? (boardCreations?.length ?? total)
           : total,
-        syncing,
-        loadingMore: catalogListFilter ? false : loadingMore,
-        progress,
       }),
     );
     return () => setChromeStatus(null);
@@ -2332,10 +2286,7 @@ function CreationsPanel({
     creations,
     gridBlank,
     gridFilterKey,
-    loadingMore,
-    progress,
     setChromeStatus,
-    syncing,
     total,
     visibleCreations.length,
   ]);
@@ -2558,15 +2509,6 @@ function CreationsPanel({
                 boardColumnLayout={boardColumnLayout}
                 onOpen={(creation) => {
                   setActive(creation);
-                  if (
-                    creation.downloadState !== "local" ||
-                    !creation.localPath
-                  ) {
-                    void ensureLocal([creation.id], {
-                      fullMedia: true,
-                      urgent: true,
-                    });
-                  }
                 }}
                 onToggleSelect={onToggleSelect}
                 onOpenFolder={(next) => {
@@ -2767,13 +2709,33 @@ function SyncPanel({
   const [reconnecting, setReconnecting] = useState(false);
   const needsReauth = Boolean(error && isSessionReauthError(error));
   const folderPollTick = useRef(0);
+  const backgroundCatalogJob = useBackgroundCatalogJob();
+  const hadBackgroundCatalogJob = useRef(false);
+  const backgroundCatalogMode = catalogJobMode(
+    backgroundCatalogJob ? String(backgroundCatalogJob.kind) : "",
+  );
+  const backgroundCatalogLive =
+    backgroundCatalogJob != null &&
+    String(backgroundCatalogJob.status) !== "queued";
+
+  useEffect(() => {
+    if (hadBackgroundCatalogJob.current && !backgroundCatalogJob) {
+      onRefreshStatus();
+    }
+    hadBackgroundCatalogJob.current = backgroundCatalogJob != null;
+  }, [backgroundCatalogJob, onRefreshStatus]);
 
   useEffect(() => {
     onRefreshStatus();
     onRefreshFolderSync();
     // Idle Sync tab: slow poll. Active work: moderate — status is SQLite + cached disk size.
     const busy =
-      syncing || folderSyncing || repairing || syncingGroups || cachingKind != null;
+      syncing ||
+      folderSyncing ||
+      repairing ||
+      syncingGroups ||
+      cachingKind != null ||
+      backgroundCatalogJob != null;
     const ms = busy ? 5_000 : 30_000;
     const id = window.setInterval(() => {
       onRefreshStatus();
@@ -2788,6 +2750,7 @@ function SyncPanel({
     folderSyncing,
     onRefreshFolderSync,
     onRefreshStatus,
+    backgroundCatalogJob,
     repairing,
     syncing,
     syncingGroups,
@@ -2840,7 +2803,8 @@ function SyncPanel({
     folderConflicts.length > 0 &&
     folderConflicts.every((conflict) => folderResolutions[conflict.id]);
 
-  const catalogLocked = syncing || repairing || syncingGroups;
+  const catalogLocked =
+    syncing || repairing || syncingGroups || backgroundCatalogJob != null;
   const foldersLocked = folderSyncing || resolvingFolders || syncing;
   const cacheLocked =
     catalogLocked ||
@@ -2862,6 +2826,10 @@ function SyncPanel({
           : liveDownloads.length > 0
             ? `Warming ${liveDownloads.length.toLocaleString()} file(s)…`
             : null);
+  const backgroundHeadline = backgroundCatalogJob
+    ? catalogJobHeadline(backgroundCatalogJob)
+    : null;
+  const heroLive = Boolean(liveHeadline || backgroundHeadline);
 
   const diskLabel = status ? syncDiskSummary(status) : "";
   const diskParts = diskLabel.split(" · ");
@@ -2915,7 +2883,7 @@ function SyncPanel({
         <div className="sync-body">
           <header className="sync-hero">
             <div
-              className={`sync-now${liveHeadline ? " is-live" : ""}`}
+              className={`sync-now${heroLive ? " is-live" : ""}`}
               role="status"
               aria-live="polite"
             >
@@ -2951,6 +2919,21 @@ function SyncPanel({
                     ) : null}
                   </div>
                 </>
+              ) : backgroundHeadline ? (
+                <>
+                  <span className="sync-status-pulse" aria-hidden />
+                  <div className="sync-now-copy">
+                    <p className="sync-now-label">{backgroundHeadline.label}</p>
+                    <p className="sync-now-title">{backgroundHeadline.title}</p>
+                    <p className="sync-now-count muted">
+                      {String(backgroundCatalogJob?.status) === "queued"
+                        ? "Waiting for the jobs worker"
+                        : backgroundCatalogMode === "full"
+                          ? "Full catalog sync is already running"
+                          : "Newest catalog sync is already running"}
+                    </p>
+                  </div>
+                </>
               ) : (
                 <div>
                   <p className="sync-now-label">Ready</p>
@@ -2975,14 +2958,20 @@ function SyncPanel({
                 <CatalogSyncButton
                   mode="newest"
                   primary
-                  active={syncing && catalogSyncMode === "newest"}
+                  active={
+                    (syncing && catalogSyncMode === "newest") ||
+                    (backgroundCatalogLive && backgroundCatalogMode === "newest")
+                  }
                   disabled={catalogLocked}
                   onSync={onNewestSync}
                   progress={progress}
                 />
                 <CatalogSyncButton
                   mode="full"
-                  active={syncing && catalogSyncMode === "full"}
+                  active={
+                    (syncing && catalogSyncMode === "full") ||
+                    (backgroundCatalogLive && backgroundCatalogMode === "full")
+                  }
                   disabled={catalogLocked}
                   onSync={onFullSync}
                   progress={progress}

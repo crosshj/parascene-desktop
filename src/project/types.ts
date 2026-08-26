@@ -161,6 +161,8 @@ export type AddAssetGenerationJob = {
   pendingCreationId?: string;
   /** Direct to Blue job id once submitted. */
   blueJobId?: string;
+  /** service_invoke job id — prefer watching this over FE wait loops. */
+  serviceJobId?: string;
   /** Model id for resume/provenance (`owner/name` or `ltx_a2v`, …). */
   model?: string;
 };
@@ -212,6 +214,8 @@ export type AddAssetDraft = {
   };
   /** Project image asset id used as start frame instead of the prior timeline clip. */
   startFrameAssetId?: string;
+  /** Stills land in Assets. Timeline generate is unused (Place/Drag is the video path). */
+  generateDestination?: "assets" | "timeline";
   /**
    * How start/bridge stills are mapped into the project frame before upload
    * (Fit / Fill / Stretch). Defaults to Fit.
@@ -606,6 +610,8 @@ export type Project = {
   >;
   /** Timeline zoom multiplier (0.5–3). */
   timelineZoom: number;
+  /** Cached mix of timeline audio for monitor playback. */
+  timelineAudioBakePath: string | null;
   /** Preview follows the timeline (program monitor). */
   timelineMonitorActive: boolean;
   /** Timeline playhead position in seconds. */

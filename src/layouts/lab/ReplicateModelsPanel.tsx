@@ -24,8 +24,6 @@ import {
   listenReplicateRunProgress,
   replicateCacheStats,
   replicateModelGet,
-  replicateModelRun,
-  replicateModelRunCancel,
   replicateModelsCheckNew,
   replicateModelSetEnabled,
   replicateModelsCrawlCancel,
@@ -42,6 +40,11 @@ import {
   type ReplicateRunProgressEvent,
   type ReplicateRunResult,
 } from "../../replicate/replicateClient";
+import {
+  cancelLabGenerateJob,
+  invokeReplicateGenerate,
+  watchLabGenerate,
+} from "../../services/labGenerate";
 import { ReplicateLocalOutput } from "../../replicate/replicateLocalOutput";
 import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
 import {
@@ -51,7 +54,6 @@ import {
   isProjectAspectRatio,
 } from "../../project/aspectRatios";
 import { parseAspectRatioString } from "../../library/aspectRatio";
-import { AspectRatioChooser } from "../../ui/AspectRatioChooser";
 import { copyTextToClipboard } from "../../ui/clipboard";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import { ReplicateModelsVirtualList } from "./ReplicateModelsVirtualList";
@@ -65,15 +67,14 @@ import {
 import {
   buildRunInput,
   fileFieldKind,
-  formatDefaultLabel,
   formatRunError,
-  hasSliderRange,
   isAnyFileField,
   isFileArrayField,
   isFileField,
   runnableFields,
   type FileFieldKind,
 } from "./labSchemaForm";
+import { SchemaFields } from "../../forms/SchemaFields";
 
 type Props = {
   onOpenSettings?: () => void;
@@ -100,8 +101,6 @@ type SortId =
 type EnabledFilterId = "all" | "enabled" | "disabled";
 
 const BATCH_MAX = 20;
-const BATCH_STAGGER_MS = 600;
-const BATCH_MAX_IN_FLIGHT = 3;
 
 type RunSlotStatus = "pending" | "running" | "ready" | "error";
 
@@ -396,34 +395,6 @@ function defaultFormValue(field: ReplicateInputField): string {
   return String(d);
 }
 
-/** Slider when OpenAPI provides a finite, usable min/max (skip huge ranges like seed). */
-function sliderStep(field: ReplicateInputField): number {
-  if (field.typeName === "integer") return 1;
-  const min = field.minimum ?? 0;
-  const max = field.maximum ?? 1;
-  const span = Math.max(0.0001, max - min);
-  if (span <= 1) return 0.01;
-  if (span <= 20) return 0.1;
-  return 1;
-}
-
-function clampNumericString(
-  raw: string,
-  field: ReplicateInputField,
-): string {
-  if (!raw.trim()) return raw;
-  const n =
-    field.typeName === "integer"
-      ? Number.parseInt(raw, 10)
-      : Number(raw);
-  if (!Number.isFinite(n)) return raw;
-  let v = n;
-  if (field.minimum != null) v = Math.max(field.minimum, v);
-  if (field.maximum != null) v = Math.min(field.maximum, v);
-  if (field.typeName === "integer") return String(Math.round(v));
-  return String(v);
-}
-
 function replicateModelPageUrl(detail: {
   owner: string;
   name: string;
@@ -513,7 +484,7 @@ export function ReplicateModelsPanel({
     null,
   );
   const [activatingPath, setActivatingPath] = useState<string | null>(null);
-  const batchDoneRef = useRef(0);
+  const activeJobIdsRef = useRef<string[]>([]);
   const splitDragRef = useRef<{ startX: number; startWidth: number } | null>(
     null,
   );
@@ -1194,7 +1165,7 @@ export function ReplicateModelsPanel({
     setRunError(null);
     setRunBusy(true);
     setRunProgress(null);
-    batchDoneRef.current = 0;
+    activeJobIdsRef.current = [];
     const slots: RunSlot[] = Array.from({ length: count }, (_, id) => ({
       id,
       status: "pending" as const,
@@ -1228,6 +1199,10 @@ export function ReplicateModelsPanel({
         }
       }
 
+      const requiredFileFields = formFields
+        .filter((f) => isAnyFileField(f) && f.required)
+        .map((f) => f.name);
+
       const patchSlot = (id: number, patch: Partial<RunSlot>) => {
         setRunSlots((prev) =>
           prev.map((slot) => (slot.id === id ? { ...slot, ...patch } : slot)),
@@ -1235,58 +1210,41 @@ export function ReplicateModelsPanel({
       };
 
       const finals: RunSlot[] = slots.map((s) => ({ ...s }));
-      let nextIndex = 0;
-      let inFlight = 0;
-      let lastStartAt = 0;
+      const handles = [];
+      for (let slotId = 0; slotId < count; slotId += 1) {
+        const handle = await invokeReplicateGenerate({
+          owner: selected.owner,
+          name: selected.name,
+          input,
+          localFiles,
+          requiredFileFields,
+        });
+        if (handle.mode === "job") {
+          activeJobIdsRef.current = [
+            ...activeJobIdsRef.current,
+            handle.id,
+          ];
+        }
+        handles.push({ slotId, handle });
+        patchSlot(slotId, { status: "running", error: undefined });
+        finals[slotId] = { id: slotId, status: "running" };
+      }
 
-      await new Promise<void>((resolve) => {
-        const pump = () => {
-          while (inFlight < BATCH_MAX_IN_FLIGHT && nextIndex < count) {
-            const now = Date.now();
-            const wait = Math.max(0, BATCH_STAGGER_MS - (now - lastStartAt));
-            if (wait > 0 && inFlight > 0) {
-              window.setTimeout(pump, wait);
-              return;
-            }
-            const slotId = nextIndex;
-            nextIndex += 1;
-            inFlight += 1;
-            lastStartAt = Date.now();
-            finals[slotId] = { id: slotId, status: "running" };
-            patchSlot(slotId, { status: "running", error: undefined });
-            void replicateModelRun(
-              selected.owner,
-              selected.name,
-              input,
-              localFiles,
-            )
-              .then((result) => {
-                finals[slotId] = { id: slotId, status: "ready", result };
-                patchSlot(slotId, { status: "ready", result });
-              })
-              .catch((err) => {
-                const message = formatRunError(
-                  err instanceof Error ? err.message : String(err),
-                );
-                finals[slotId] = { id: slotId, status: "error", error: message };
-                patchSlot(slotId, { status: "error", error: message });
-              })
-              .finally(() => {
-                inFlight -= 1;
-                batchDoneRef.current += 1;
-                if (batchDoneRef.current >= count) {
-                  resolve();
-                  return;
-                }
-                pump();
-              });
+      await Promise.all(
+        handles.map(async ({ slotId, handle }) => {
+          try {
+            const result = await watchLabGenerate(handle);
+            finals[slotId] = { id: slotId, status: "ready", result };
+            patchSlot(slotId, { status: "ready", result });
+          } catch (err) {
+            const message = formatRunError(
+              err instanceof Error ? err.message : String(err),
+            );
+            finals[slotId] = { id: slotId, status: "error", error: message };
+            patchSlot(slotId, { status: "error", error: message });
           }
-          if (nextIndex >= count && inFlight === 0) {
-            resolve();
-          }
-        };
-        pump();
-      });
+        }),
+      );
 
       const failed = finals.filter((s) => s.status === "error");
       if (failed.length === finals.length && failed[0]?.error) {
@@ -1301,13 +1259,15 @@ export function ReplicateModelsPanel({
         formatRunError(err instanceof Error ? err.message : String(err)),
       );
     } finally {
+      activeJobIdsRef.current = [];
       setRunBusy(false);
     }
   };
 
   const onCancelRun = async () => {
     try {
-      await replicateModelRunCancel();
+      const ids = [...activeJobIdsRef.current];
+      await Promise.all(ids.map((id) => cancelLabGenerateJob(id)));
     } catch (err) {
       setRunError(
         formatRunError(err instanceof Error ? err.message : String(err)),
@@ -1327,6 +1287,304 @@ export function ReplicateModelsPanel({
   const selectedKey = selected
     ? `${selected.owner}/${selected.name}`
     : null;
+
+  const renderFileField = (field: ReplicateInputField) => {
+    const label = field.title || field.name;
+    const kind = isAnyFileField(field) ? fileFieldKind(field) : null;
+    if (!kind) return null;
+
+    if (isFileArrayField(field)) {
+      const list = runFileListPicks[field.name] ?? [];
+      return (
+        <div key={field.name} className="lab-replicate-run-field">
+          <div className="lab-replicate-run-field-head">
+            <span>
+              <span className="lab-replicate-run-field-name">{field.name}</span>
+              <span className="muted">
+                {" "}
+                {fileFieldLabel(kind)} array
+                {field.required ? " · required" : ""}
+              </span>
+            </span>
+          </div>
+          {label !== field.name ? (
+            <div className="muted lab-replicate-run-field-title">{label}</div>
+          ) : null}
+          <div className="lab-replicate-file-list">
+            {list.length === 0 ? (
+              <p className="muted lab-replicate-file-list-empty">No files added yet.</p>
+            ) : (
+              list.map((item, index) => {
+                const selectedCreation =
+                  item.kind === "creation"
+                    ? allPickerCreations.get(item.creationId)
+                    : undefined;
+                const thumb =
+                  selectedCreation &&
+                  (selectedCreation.mediaType === "image" ||
+                    selectedCreation.mediaType === "video")
+                    ? creationPreviewUrl(selectedCreation)
+                    : null;
+                const labelText = pickLabel(item, allPickerCreations);
+                return (
+                  <div key={`${field.name}-${index}`} className="lab-replicate-file-list-item">
+                    <span className="lab-replicate-image-chosen-thumb">
+                      {thumb ? (
+                        <img src={thumb} alt="" />
+                      ) : (
+                        <span className="muted">
+                          {kind === "audio" ? "♪" : kind === "video" ? "▶" : "…"}
+                        </span>
+                      )}
+                    </span>
+                    <span
+                      className="lab-replicate-image-chosen-label"
+                      title={item.kind === "path" ? item.path : labelText}
+                    >
+                      {labelText}
+                      {item.kind === "path" ? (
+                        <span className="muted"> · local</span>
+                      ) : null}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      disabled={runBusy}
+                      onClick={() => removeRunFileListItem(field.name, index)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <div className="lab-replicate-image-pick-row">
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={runBusy}
+              onClick={() =>
+                setLibraryPicker({ fieldName: field.name, mode: "append" })
+              }
+            >
+              Add from Library
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={runBusy}
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const path = await replicatePickLocalFile(kind);
+                    if (path) {
+                      appendRunFileListItem(field.name, { kind: "path", path });
+                    }
+                  } catch (err) {
+                    setRunError(
+                      formatRunError(
+                        err instanceof Error ? err.message : String(err),
+                      ),
+                    );
+                  }
+                })();
+              }}
+            >
+              Add local file…
+            </button>
+            {list.length > 0 ? (
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={runBusy}
+                onClick={() => setRunFileListForField(field.name, [])}
+              >
+                Clear all
+              </button>
+            ) : null}
+          </div>
+          {field.description ? (
+            <p className="muted lab-replicate-run-help">{field.description}</p>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (isFileField(field)) {
+      const pick = runFilePicks[field.name];
+      const selectedCreation =
+        pick?.kind === "creation"
+          ? allPickerCreations.get(pick.creationId)
+          : undefined;
+      const thumb =
+        selectedCreation &&
+        (selectedCreation.mediaType === "image" ||
+          selectedCreation.mediaType === "video")
+          ? creationPreviewUrl(selectedCreation)
+          : null;
+      const chosenLabel = pick
+        ? pick.kind === "path"
+          ? pathBasename(pick.path)
+          : selectedCreation
+            ? creationCardTitle(selectedCreation).text
+            : "Saved Library file"
+        : "";
+      return (
+        <div key={field.name} className="lab-replicate-run-field">
+          <div className="lab-replicate-run-field-head">
+            <span>
+              <span className="lab-replicate-run-field-name">{field.name}</span>
+              <span className="muted">
+                {" "}
+                {fileFieldLabel(kind)}
+                {field.required ? " · required" : ""}
+              </span>
+            </span>
+          </div>
+          {label !== field.name ? (
+            <div className="muted lab-replicate-run-field-title">{label}</div>
+          ) : null}
+          <div className="lab-replicate-image-pick-row">
+            {pick ? (
+              <div className="lab-replicate-image-chosen">
+                {kind === "image" || kind === "video" || kind === "any" ? (
+                  <button
+                    type="button"
+                    className="lab-replicate-image-chosen-thumb"
+                    disabled={runBusy}
+                    title="Choose another file"
+                    onClick={() =>
+                      setLibraryPicker({
+                        fieldName: field.name,
+                        mode: "single",
+                      })
+                    }
+                  >
+                    {thumb ? (
+                      <img src={thumb} alt="" />
+                    ) : (
+                      <span className="muted">
+                        {kind === "video" ? "▶" : "…"}
+                      </span>
+                    )}
+                  </button>
+                ) : (
+                  <span className="lab-replicate-image-chosen-thumb" aria-hidden>
+                    <span className="muted">♪</span>
+                  </span>
+                )}
+                <span
+                  className="lab-replicate-image-chosen-label"
+                  title={pick.kind === "path" ? pick.path : chosenLabel}
+                >
+                  {chosenLabel}
+                  {pick.kind === "path" ? (
+                    <span className="muted"> · local</span>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={runBusy}
+                  onClick={() =>
+                    setLibraryPicker({
+                      fieldName: field.name,
+                      mode: "single",
+                    })
+                  }
+                >
+                  Choose from Library
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={runBusy}
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const path = await replicatePickLocalFile(kind);
+                        if (path) {
+                          setRunFileForField(field.name, {
+                            kind: "path",
+                            path,
+                          });
+                        }
+                      } catch (err) {
+                        setRunError(
+                          formatRunError(
+                            err instanceof Error ? err.message : String(err),
+                          ),
+                        );
+                      }
+                    })();
+                  }}
+                >
+                  Choose local file…
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={runBusy}
+                  onClick={() => setRunFileForField(field.name, null)}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <div className="lab-replicate-image-chosen">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={runBusy}
+                  onClick={() =>
+                    setLibraryPicker({
+                      fieldName: field.name,
+                      mode: "single",
+                    })
+                  }
+                >
+                  Choose from Library
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={runBusy}
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const path = await replicatePickLocalFile(kind);
+                        if (path) {
+                          setRunFileForField(field.name, {
+                            kind: "path",
+                            path,
+                          });
+                        }
+                      } catch (err) {
+                        setRunError(
+                          formatRunError(
+                            err instanceof Error ? err.message : String(err),
+                          ),
+                        );
+                      }
+                    })();
+                  }}
+                >
+                  Choose local file…
+                </button>
+              </div>
+            )}
+          </div>
+          {field.description ? (
+            <p className="muted lab-replicate-run-help">{field.description}</p>
+          ) : null}
+        </div>
+      );
+    }
+
+    return null;
+  };
+
 
   return (
     <div className="lab-replicate" aria-label="Replicate models">
@@ -1655,605 +1913,18 @@ export function ReplicateModelsPanel({
                             void onRun();
                           }}
                         >
-                          {formFields.map((field) => {
-                            const label = field.title || field.name;
-                            const value = runValues[field.name] ?? "";
-                            const enums = field.enumValues ?? null;
-                            const setValue = (next: string) =>
+                          <SchemaFields
+                            fields={formFields}
+                            values={runValues}
+                            onChange={(name, value) =>
                               setRunValues((prev) => ({
                                 ...prev,
-                                [field.name]: next,
-                              }));
-                            const kind = isAnyFileField(field)
-                              ? fileFieldKind(field)
-                              : null;
-                            const isPromptLike =
-                              field.typeName === "string" &&
-                              !enums?.length &&
-                              !isAnyFileField(field) &&
-                              (field.name.toLowerCase().includes("prompt") ||
-                                (field.description?.length ?? 0) > 80);
-                            const showSlider = hasSliderRange(field);
-                            const defaultLabel = formatDefaultLabel(field);
-                            const rangeLabel =
-                              field.minimum != null && field.maximum != null
-                                ? `(minimum: ${field.minimum}, maximum: ${field.maximum})`
-                                : null;
-
-                            if (isFileArrayField(field) && kind) {
-                              const list = runFileListPicks[field.name] ?? [];
-                              return (
-                                <div
-                                  key={field.name}
-                                  className="lab-replicate-run-field"
-                                >
-                                  <div className="lab-replicate-run-field-head">
-                                    <span>
-                                      <span className="lab-replicate-run-field-name">
-                                        {field.name}
-                                      </span>
-                                      <span className="muted">
-                                        {" "}
-                                        {fileFieldLabel(kind)} array
-                                        {field.required ? " · required" : ""}
-                                      </span>
-                                    </span>
-                                  </div>
-                                  {label !== field.name ? (
-                                    <div className="muted lab-replicate-run-field-title">
-                                      {label}
-                                    </div>
-                                  ) : null}
-                                  <div className="lab-replicate-file-list">
-                                    {list.length === 0 ? (
-                                      <p className="muted lab-replicate-file-list-empty">
-                                        No files added yet.
-                                      </p>
-                                    ) : (
-                                      list.map((item, index) => {
-                                        const selectedCreation =
-                                          item.kind === "creation"
-                                            ? allPickerCreations.get(
-                                                item.creationId,
-                                              )
-                                            : undefined;
-                                        const thumb =
-                                          selectedCreation &&
-                                          (selectedCreation.mediaType ===
-                                            "image" ||
-                                            selectedCreation.mediaType ===
-                                              "video")
-                                            ? creationPreviewUrl(
-                                                selectedCreation,
-                                              )
-                                            : null;
-                                        const labelText = pickLabel(
-                                          item,
-                                          allPickerCreations,
-                                        );
-                                        return (
-                                          <div
-                                            key={`${field.name}-${index}`}
-                                            className="lab-replicate-file-list-item"
-                                          >
-                                            <span className="lab-replicate-image-chosen-thumb">
-                                              {thumb ? (
-                                                <img src={thumb} alt="" />
-                                              ) : (
-                                                <span className="muted">
-                                                  {kind === "audio"
-                                                    ? "♪"
-                                                    : kind === "video"
-                                                      ? "▶"
-                                                      : "…"}
-                                                </span>
-                                              )}
-                                            </span>
-                                            <span
-                                              className="lab-replicate-image-chosen-label"
-                                              title={
-                                                item.kind === "path"
-                                                  ? item.path
-                                                  : labelText
-                                              }
-                                            >
-                                              {labelText}
-                                              {item.kind === "path" ? (
-                                                <span className="muted">
-                                                  {" "}
-                                                  · local
-                                                </span>
-                                              ) : null}
-                                            </span>
-                                            <button
-                                              type="button"
-                                              className="btn ghost"
-                                              disabled={runBusy}
-                                              onClick={() =>
-                                                removeRunFileListItem(
-                                                  field.name,
-                                                  index,
-                                                )
-                                              }
-                                            >
-                                              Remove
-                                            </button>
-                                          </div>
-                                        );
-                                      })
-                                    )}
-                                  </div>
-                                  <div className="lab-replicate-image-pick-row">
-                                    <button
-                                      type="button"
-                                      className="btn ghost"
-                                      disabled={runBusy}
-                                      onClick={() =>
-                                        setLibraryPicker({
-                                          fieldName: field.name,
-                                          mode: "append",
-                                        })
-                                      }
-                                    >
-                                      Add from Library
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn ghost"
-                                      disabled={runBusy}
-                                      onClick={() => {
-                                        void (async () => {
-                                          try {
-                                            const path =
-                                              await replicatePickLocalFile(
-                                                kind,
-                                              );
-                                            if (path) {
-                                              appendRunFileListItem(
-                                                field.name,
-                                                { kind: "path", path },
-                                              );
-                                            }
-                                          } catch (err) {
-                                            setRunError(
-                                              formatRunError(
-                                                err instanceof Error
-                                                  ? err.message
-                                                  : String(err),
-                                              ),
-                                            );
-                                          }
-                                        })();
-                                      }}
-                                    >
-                                      Add local file…
-                                    </button>
-                                    {list.length > 0 ? (
-                                      <button
-                                        type="button"
-                                        className="btn ghost"
-                                        disabled={runBusy}
-                                        onClick={() =>
-                                          setRunFileListForField(field.name, [])
-                                        }
-                                      >
-                                        Clear all
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                  {field.description ? (
-                                    <p className="muted lab-replicate-run-help">
-                                      {field.description}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              );
+                                [name]: value,
+                              }))
                             }
-
-                            if (isFileField(field) && kind) {
-                              const pick = runFilePicks[field.name];
-                              const selectedCreation =
-                                pick?.kind === "creation"
-                                  ? allPickerCreations.get(pick.creationId)
-                                  : undefined;
-                              const thumb =
-                                selectedCreation &&
-                                (selectedCreation.mediaType === "image" ||
-                                  selectedCreation.mediaType === "video")
-                                  ? creationPreviewUrl(selectedCreation)
-                                  : null;
-                              const chosenLabel = pick
-                                ? pick.kind === "path"
-                                  ? pathBasename(pick.path)
-                                  : selectedCreation
-                                    ? creationCardTitle(selectedCreation).text
-                                    : "Saved Library file"
-                                : "";
-                              const chooseLibraryLabel = "Choose from Library";
-                              return (
-                                <div
-                                  key={field.name}
-                                  className="lab-replicate-run-field"
-                                >
-                                  <div className="lab-replicate-run-field-head">
-                                    <span>
-                                      <span className="lab-replicate-run-field-name">
-                                        {field.name}
-                                      </span>
-                                      <span className="muted">
-                                        {" "}
-                                        {fileFieldLabel(kind)}
-                                        {field.required ? " · required" : ""}
-                                      </span>
-                                    </span>
-                                  </div>
-                                  {label !== field.name ? (
-                                    <div className="muted lab-replicate-run-field-title">
-                                      {label}
-                                    </div>
-                                  ) : null}
-                                  <div className="lab-replicate-image-pick-row">
-                                    {pick ? (
-                                      <div className="lab-replicate-image-chosen">
-                                        {kind === "image" ||
-                                        kind === "video" ||
-                                        kind === "any" ? (
-                                          <button
-                                            type="button"
-                                            className="lab-replicate-image-chosen-thumb"
-                                            disabled={runBusy}
-                                            title="Choose another file"
-                                            onClick={() =>
-                                              setLibraryPicker({ fieldName: field.name, mode: "single" })
-                                            }
-                                          >
-                                            {thumb ? (
-                                              <img src={thumb} alt="" />
-                                            ) : (
-                                              <span className="muted">
-                                                {kind === "video" ? "▶" : "…"}
-                                              </span>
-                                            )}
-                                          </button>
-                                        ) : (
-                                          <span
-                                            className="lab-replicate-image-chosen-thumb"
-                                            aria-hidden
-                                          >
-                                            <span className="muted">♪</span>
-                                          </span>
-                                        )}
-                                        <span
-                                          className="lab-replicate-image-chosen-label"
-                                          title={
-                                            pick.kind === "path"
-                                              ? pick.path
-                                              : chosenLabel
-                                          }
-                                        >
-                                          {chosenLabel}
-                                          {pick.kind === "path" ? (
-                                            <span className="muted">
-                                              {" "}
-                                              · local
-                                            </span>
-                                          ) : null}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          className="btn ghost"
-                                          disabled={runBusy}
-                                          onClick={() =>
-                                            setLibraryPicker({ fieldName: field.name, mode: "single" })
-                                          }
-                                        >
-                                          {chooseLibraryLabel}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn ghost"
-                                          disabled={runBusy}
-                                          onClick={() => {
-                                            void (async () => {
-                                              try {
-                                                const path =
-                                                  await replicatePickLocalFile(
-                                                    kind,
-                                                  );
-                                                if (path) {
-                                                  setRunFileForField(
-                                                    field.name,
-                                                    { kind: "path", path },
-                                                  );
-                                                }
-                                              } catch (err) {
-                                                setRunError(
-                                                  formatRunError(
-                                                    err instanceof Error
-                                                      ? err.message
-                                                      : String(err),
-                                                  ),
-                                                );
-                                              }
-                                            })();
-                                          }}
-                                        >
-                                          Choose local file…
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn ghost"
-                                          disabled={runBusy}
-                                          onClick={() =>
-                                            setRunFileForField(field.name, null)
-                                          }
-                                        >
-                                          Clear
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <div className="lab-replicate-image-chosen">
-                                        <button
-                                          type="button"
-                                          className="btn ghost"
-                                          disabled={runBusy}
-                                          onClick={() =>
-                                            setLibraryPicker({ fieldName: field.name, mode: "single" })
-                                          }
-                                        >
-                                          {chooseLibraryLabel}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn ghost"
-                                          disabled={runBusy}
-                                          onClick={() => {
-                                            void (async () => {
-                                              try {
-                                                const path =
-                                                  await replicatePickLocalFile(
-                                                    kind,
-                                                  );
-                                                if (path) {
-                                                  setRunFileForField(
-                                                    field.name,
-                                                    { kind: "path", path },
-                                                  );
-                                                }
-                                              } catch (err) {
-                                                setRunError(
-                                                  formatRunError(
-                                                    err instanceof Error
-                                                      ? err.message
-                                                      : String(err),
-                                                  ),
-                                                );
-                                              }
-                                            })();
-                                          }}
-                                        >
-                                          Choose local file…
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                  {field.description ? (
-                                    <p className="muted lab-replicate-run-help">
-                                      {field.description}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              );
-                            }
-
-                            const aspectOptions =
-                              aspectChooserOptionsForField(field);
-                            if (aspectOptions.length > 0) {
-                              const aspectValue = pickAspectChooserValue(
-                                aspectOptions,
-                                value,
-                              );
-                              return (
-                                <div
-                                  key={field.name}
-                                  className="lab-replicate-run-field"
-                                >
-                                  <div className="lab-replicate-run-field-head">
-                                    <span>
-                                      <span className="lab-replicate-run-field-name">
-                                        {field.name}
-                                      </span>
-                                      <span className="muted">
-                                        {" "}
-                                        {field.typeName}
-                                        {field.required ? " · required" : ""}
-                                      </span>
-                                    </span>
-                                  </div>
-                                  <AspectRatioChooser
-                                    value={aspectValue}
-                                    options={aspectOptions}
-                                    disabled={runBusy}
-                                    onChange={setValue}
-                                  />
-                                  {field.description ? (
-                                    <p className="muted lab-replicate-run-help">
-                                      {field.description}
-                                    </p>
-                                  ) : null}
-                                  {defaultLabel != null ? (
-                                    <p className="muted lab-replicate-run-default">
-                                      Default: {defaultLabel}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              );
-                            }
-
-                            return (
-                              <div
-                                key={field.name}
-                                className="lab-replicate-run-field"
-                              >
-                                {field.typeName === "boolean" ? (
-                                  <label className="lab-replicate-run-check">
-                                    <input
-                                      type="checkbox"
-                                      checked={value === "true"}
-                                      disabled={runBusy}
-                                      onChange={(e) =>
-                                        setValue(
-                                          e.target.checked ? "true" : "false",
-                                        )
-                                      }
-                                    />
-                                    <span>
-                                      <span className="lab-replicate-run-field-name">
-                                        {field.name}
-                                      </span>
-                                      <span className="muted">
-                                        {" "}
-                                        {field.typeName}
-                                        {field.required ? " · required" : ""}
-                                      </span>
-                                    </span>
-                                  </label>
-                                ) : (
-                                  <>
-                                    <div className="lab-replicate-run-field-head">
-                                      <span>
-                                        <span className="lab-replicate-run-field-name">
-                                          {field.name}
-                                        </span>
-                                        <span className="muted">
-                                          {" "}
-                                          {field.typeName}
-                                          {field.required ? " · required" : ""}
-                                        </span>
-                                      </span>
-                                      {rangeLabel ? (
-                                        <span className="muted lab-replicate-run-range-label">
-                                          {rangeLabel}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                    {label !== field.name ? (
-                                      <div className="muted lab-replicate-run-field-title">
-                                        {label}
-                                      </div>
-                                    ) : null}
-
-                                    {enums && enums.length > 0 ? (
-                                      <select
-                                        className="control"
-                                        value={value}
-                                        disabled={runBusy}
-                                        onChange={(e) =>
-                                          setValue(e.target.value)
-                                        }
-                                      >
-                                        {!field.required && !value ? (
-                                          <option value="">(default)</option>
-                                        ) : null}
-                                        {enums.map((opt) => (
-                                          <option key={opt} value={opt}>
-                                            {opt}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    ) : isPromptLike ? (
-                                      <textarea
-                                        className="control"
-                                        rows={3}
-                                        value={value}
-                                        disabled={runBusy}
-                                        onChange={(e) =>
-                                          setValue(e.target.value)
-                                        }
-                                      />
-                                    ) : field.typeName === "integer" ||
-                                      field.typeName === "number" ? (
-                                      showSlider ? (
-                                        <div className="lab-replicate-run-slider-row">
-                                          <input
-                                            className="control lab-replicate-run-number"
-                                            type="number"
-                                            min={field.minimum ?? undefined}
-                                            max={field.maximum ?? undefined}
-                                            step={sliderStep(field)}
-                                            value={value}
-                                            disabled={runBusy}
-                                            onChange={(e) =>
-                                              setValue(
-                                                clampNumericString(
-                                                  e.target.value,
-                                                  field,
-                                                ),
-                                              )
-                                            }
-                                          />
-                                          <input
-                                            className="lab-replicate-run-range"
-                                            type="range"
-                                            min={field.minimum!}
-                                            max={field.maximum!}
-                                            step={sliderStep(field)}
-                                            value={
-                                              Number.isFinite(Number(value))
-                                                ? Number(value)
-                                                : (field.minimum ?? 0)
-                                            }
-                                            disabled={runBusy}
-                                            onChange={(e) =>
-                                              setValue(e.target.value)
-                                            }
-                                          />
-                                        </div>
-                                      ) : (
-                                        <input
-                                          className="control"
-                                          type="number"
-                                          min={field.minimum ?? undefined}
-                                          max={field.maximum ?? undefined}
-                                          step={
-                                            field.typeName === "integer"
-                                              ? 1
-                                              : "any"
-                                          }
-                                          value={value}
-                                          disabled={runBusy}
-                                          onChange={(e) =>
-                                            setValue(e.target.value)
-                                          }
-                                        />
-                                      )
-                                    ) : (
-                                      <input
-                                        className="control"
-                                        type="text"
-                                        value={value}
-                                        disabled={runBusy}
-                                        onChange={(e) =>
-                                          setValue(e.target.value)
-                                        }
-                                      />
-                                    )}
-                                  </>
-                                )}
-
-                                {field.description ? (
-                                  <p className="muted lab-replicate-run-help">
-                                    {field.description}
-                                  </p>
-                                ) : null}
-                                {defaultLabel != null ? (
-                                  <p className="muted lab-replicate-run-default">
-                                    Default: {defaultLabel}
-                                  </p>
-                                ) : null}
-                              </div>
-                            );
-                          })}
+                            disabled={runBusy}
+                            renderFileField={renderFileField}
+                          />
                           <div className="lab-replicate-run-actions">
                             <label className="lab-replicate-batch-count">
                               <span className="muted">Batch</span>

@@ -798,7 +798,7 @@ export function ClipDragHandle({
       aria-disabled={disabled || undefined}
     >
       <span className="editor-cartridge-grip-dots" aria-hidden />
-      <span className="editor-cartridge-grip-label">Drag clip</span>
+      <span className="editor-cartridge-grip-label">Drag</span>
       <span className="editor-cartridge-lane">{laneLabel}</span>
     </div>
   );

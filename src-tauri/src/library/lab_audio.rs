@@ -114,8 +114,7 @@ pub fn cached_full_vocals_path(source: &Path) -> Result<Option<PathBuf>, String>
 #[tauri::command]
 pub fn library_cached_full_vocals(source_path: String) -> Result<Option<String>, String> {
     let src = PathBuf::from(&source_path);
-    Ok(cached_full_vocals_path(&src)?
-        .map(|p| p.display().to_string()))
+    Ok(cached_full_vocals_path(&src)?.map(|p| p.display().to_string()))
 }
 
 /// Run Demucs on the **full** mix once; cache `{fingerprint}.full-vocals.wav`.
@@ -125,9 +124,8 @@ pub async fn library_separate_vocals(source_path: String) -> Result<String, Stri
     if !src.is_file() {
         return Err("Source audio file not found".into());
     }
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg = resolve_ffmpeg()
+        .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
     let demucs_bin = resolve_demucs().ok_or_else(|| {
         "demucs not found — install via Settings → Local tools, or see LOCAL_TOOLS.md".to_string()
     })?;
@@ -183,9 +181,8 @@ pub async fn library_slice_audio(
         return Err("outSec must be greater than inSec".into());
     }
     let dur = out_sec - in_sec;
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg = resolve_ffmpeg()
+        .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
     let key = hash_key(&[
         &source_path,
@@ -237,15 +234,13 @@ pub async fn library_audio_waveform_peaks(
         return Err("Audio file not found".into());
     }
     let n = buckets.unwrap_or(128).clamp(16, 512) as usize;
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg = resolve_ffmpeg()
+        .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
     let path_owned = src;
-    let result =
-        tokio::task::spawn_blocking(move || decode_peak_buckets(&ffmpeg, &path_owned, n))
-            .await
-            .map_err(|e| format!("Waveform task failed: {e}"))??;
+    let result = tokio::task::spawn_blocking(move || decode_peak_buckets(&ffmpeg, &path_owned, n))
+        .await
+        .map_err(|e| format!("Waveform task failed: {e}"))??;
     Ok(result)
 }
 
@@ -361,9 +356,8 @@ pub fn extend_clip_on_disk(
         .map(|v| v.clamp(0.25, 8.0))
         .unwrap_or(1.0);
     let mode = if ping_pong { "pingpong_v4" } else { "loop" };
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg = resolve_ffmpeg()
+        .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
     let in_s = in_sec.unwrap_or(0.0).max(0.0);
     let out_s = out_sec;
@@ -631,9 +625,8 @@ pub async fn library_extract_video_frame(
     if !src.is_file() {
         return Err("Source video file not found".into());
     }
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg = resolve_ffmpeg()
+        .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
     // Seek past EOF yields exit 234 / "Nothing was written" — clamp to the last readable frame.
     let duration = probe_media_duration_sec(&ffmpeg, &src)?;
@@ -726,13 +719,7 @@ fn fit_inside(max_w: u32, max_h: u32, aw: u32, ah: u32) -> (u32, u32) {
 const PREVIEW_STAGE_W: u32 = 1920;
 const PREVIEW_STAGE_H: u32 = 1080;
 
-fn still_framing_filter(
-    out_w: u32,
-    out_h: u32,
-    crop_w: u32,
-    crop_h: u32,
-    framing: &str,
-) -> String {
+fn still_framing_filter(out_w: u32, out_h: u32, crop_w: u32, crop_h: u32, framing: &str) -> String {
     match framing.trim().to_ascii_lowercase().as_str() {
         "fill" => format!(
             "setsar=1,scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,format=yuv420p"
@@ -758,9 +745,8 @@ pub async fn library_apply_image_framing(
     if !src.is_file() {
         return Err("Source image file not found".into());
     }
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
-        "FFmpeg is required. Install with: brew install ffmpeg".to_string()
-    })?;
+    let ffmpeg = resolve_ffmpeg()
+        .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
     let framing_key = match framing.trim().to_ascii_lowercase().as_str() {
         "fill" => "fill",
@@ -816,7 +802,11 @@ pub async fn library_apply_image_framing(
 fn probe_media_duration_sec(ffmpeg: &Path, source: &Path) -> Result<f64, String> {
     // `-i` alone exits non-zero after printing metadata — no full decode.
     let output = ffmpeg::command(ffmpeg)
-        .args(["-hide_banner", "-i", source.to_str().ok_or("bad source path")?])
+        .args([
+            "-hide_banner",
+            "-i",
+            source.to_str().ok_or("bad source path")?,
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()

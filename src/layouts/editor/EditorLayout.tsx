@@ -12,10 +12,14 @@ import { useShell } from "../../app/ShellProvider";
 import {
   deleteCompositionRun,
   getCreations,
-  mergeTimelineClips,
   type MergeProgress,
 } from "../../library/catalogClient";
-import { loadStoredProjectStrict } from "../../project/projectStore";
+import { runLocalMerge } from "../../services/localMerge";
+import {
+  loadStoredProjectStrict,
+  normalizeTimelinePlayheadSec,
+} from "../../project/projectStore";
+import { usePreviewQuality } from "../../settings/previewQuality";
 import { collectProjectReferencedCreationIds } from "../../project/projectUsage";
 import {
   collectCabinetMemberIdsFromCovers,
@@ -33,6 +37,14 @@ import {
   type BakeInfo,
 } from "../../library/slideshowMedia";
 import { bakeClipExtend, deleteExtendCacheFile } from "../../lab/audioTools";
+import {
+  bakeTimelineAudio,
+  deleteTimelineAudioBake,
+} from "./timelineAudioBake";
+import {
+  createTimelineFragmentCache,
+  type TimelineFragmentStatus,
+} from "./timelineFragmentCache";
 import { getCreation } from "../../library/catalogClient";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
 import { AssistantPane } from "./AssistantPane";
@@ -210,6 +222,7 @@ export function EditorLayout() {
     selectCreationsOnOpenProject,
     setOpenProjectPendingStagedDraft,
     setOpenProjectTimelineZoom,
+    setOpenProjectTimelineAudioBakePath,
     setOpenProjectTimelineMonitorActive,
     setOpenProjectTimelinePlayheadSec,
     removeOpenStillWorkstream,
@@ -270,6 +283,13 @@ export function EditorLayout() {
     ReturnType<typeof getJoinableTimelinePair>
   >(null);
   const joinBusyRef = useRef(false);
+  const [audioBakeBusy, setAudioBakeBusy] = useState(false);
+  const [audioBakeError, setAudioBakeError] = useState<string | null>(null);
+  const [fragmentCache] = useState(() => createTimelineFragmentCache());
+  const previewQuality = usePreviewQuality();
+  const [fragmentStatus, setFragmentStatus] = useState<TimelineFragmentStatus>(
+    () => fragmentCache.status(),
+  );
   const addAssetGenerationSession = useAddAssetGenerationSession(project.id);
   const prevAddAssetGenerationSessionRef = useRef(addAssetGenerationSession);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
@@ -307,6 +327,8 @@ export function EditorLayout() {
     projectId: string;
     ids: Set<string>;
   } | null>(null);
+  /** Placeholder id → finished creation id, so selection can stay on the same slot. */
+  const placeholderCompletionRef = useRef<Map<string, string>>(new Map());
 
   const clearClipSelection = () => {
     setSelectedClipId(null);
@@ -354,8 +376,10 @@ export function EditorLayout() {
   );
   /**
    * While playing, the playback engine owns the playhead RAF; React only
-   * receives throttled onTimeUpdate for the ruler. When paused, the persisted
-   * project playhead is the source of truth.
+   * receives throttled onTimeUpdate for the ruler. The UI always renders the
+   * live value — project persistence is async (patchOpenProject), so switching
+   * the display source on pause showed the stale pre-play position for a frame
+   * before the store caught up. The persisted value reconciles in below.
    */
   const [timelinePlaying, setTimelinePlaying] = useState(false);
   const [livePlayheadSec, setLivePlayheadSec] = useState(
@@ -366,9 +390,43 @@ export function EditorLayout() {
   const livePlayheadRef = useRef(project.timelinePlayheadSec);
   const wasTimelinePlayingRef = useRef(false);
   const toggleTimelinePlayingRef = useRef<() => void>(() => {});
-  const displayPlayheadSec = timelinePlaying
-    ? livePlayheadSec
-    : project.timelinePlayheadSec;
+  const displayPlayheadSec = livePlayheadSec;
+  /** Last playhead value we sent to the async project store, until it lands. */
+  const pendingPlayheadWriteRef = useRef<{ value: number; at: number } | null>(
+    null,
+  );
+  const writeProjectPlayheadSec = useCallback(
+    (sec: number) => {
+      pendingPlayheadWriteRef.current = {
+        value: normalizeTimelinePlayheadSec(sec),
+        at: performance.now(),
+      };
+      setOpenProjectTimelinePlayheadSec(sec);
+    },
+    [setOpenProjectTimelinePlayheadSec],
+  );
+  // Paused: adopt external playhead changes once the async store settles.
+  // While one of our own writes is in flight the store still echoes the old
+  // position — adopting that echo is what made the cursor snap back on pause.
+  // Pending writes expire (no-op writes never produce a store change).
+  useEffect(() => {
+    const pending = pendingPlayheadWriteRef.current;
+    if (pending != null) {
+      const landed = Math.abs(project.timelinePlayheadSec - pending.value) < 1e-6;
+      if (landed || performance.now() - pending.at > 2000) {
+        pendingPlayheadWriteRef.current = null;
+      }
+      if (!landed) return;
+    }
+    if (timelinePlaying) return;
+    // Within store rounding (10ms) of the live value — keep the more precise
+    // live position instead of nudging the engine by a rounding artifact.
+    if (Math.abs(project.timelinePlayheadSec - livePlayheadRef.current) < 0.011) {
+      return;
+    }
+    livePlayheadRef.current = project.timelinePlayheadSec;
+    setLivePlayheadSec(project.timelinePlayheadSec);
+  }, [project.timelinePlayheadSec, timelinePlaying]);
   const mergeSelection = useMemo(
     () => getMergeableTimelineSelection(project.timeline, selectedClipIds),
     [project.timeline, selectedClipIds],
@@ -508,18 +566,16 @@ export function EditorLayout() {
   const pauseTimelinePlayback = useCallback(() => {
     if (!timelinePlaying) return;
     setTimelinePlaying(false);
-    // Persist now so displayPlayheadSec (project playhead when paused) does not
-    // jump backward. Engine layout pause may refine via onTimeUpdate afterward.
-    setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
-  }, [timelinePlaying, setTimelinePlaying, setOpenProjectTimelinePlayheadSec]);
+    writeProjectPlayheadSec(livePlayheadRef.current);
+  }, [timelinePlaying, setTimelinePlaying, writeProjectPlayheadSec]);
 
   // Persist playhead after the engine emits its final time on pause.
   useEffect(() => {
     if (wasTimelinePlayingRef.current && !timelinePlaying) {
-      setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
+      writeProjectPlayheadSec(livePlayheadRef.current);
     }
     wasTimelinePlayingRef.current = timelinePlaying;
-  }, [timelinePlaying, setOpenProjectTimelinePlayheadSec]);
+  }, [timelinePlaying, writeProjectPlayheadSec]);
 
   /** Engine → React: throttled ruler updates while playing; accurate on pause. */
   const onTimelineEngineTimeUpdate = (sec: number) => {
@@ -532,7 +588,7 @@ export function EditorLayout() {
     const next = Math.max(0, Math.min(end, sec));
     livePlayheadRef.current = next;
     setLivePlayheadSec(next);
-    setOpenProjectTimelinePlayheadSec(next);
+    writeProjectPlayheadSec(next);
     // Stay in playback — jump media to the new point.
     if (timelinePlaying) setMediaSeekEpoch((n) => n + 1);
   };
@@ -552,7 +608,7 @@ export function EditorLayout() {
     livePlayheadRef.current = start;
     setLivePlayheadSec(start);
     if (start !== project.timelinePlayheadSec) {
-      setOpenProjectTimelinePlayheadSec(start);
+      writeProjectPlayheadSec(start);
     }
     setTimelinePlaying(true);
   };
@@ -784,32 +840,40 @@ export function EditorLayout() {
       if (!alive.has(id)) removed.push(id);
     }
     knownAssetIdsRef.current = { projectId: project.id, ids: alive };
-    /* eslint-enable react-hooks/refs */
 
     if (
       removed.length > 0 &&
       (selectedAssetIds.length > 0 || selectedAssetId)
     ) {
       const removeSet = new Set(removed);
-      const next = selectedAssetIds.filter((id) => !removeSet.has(id));
+      const replacements = placeholderCompletionRef.current;
+      const resolve = (id: string) => replacements.get(id) ?? id;
+      const next = selectedAssetIds
+        .map(resolve)
+        .filter((id) => alive.has(id) || !removeSet.has(id));
+      const nextUnique = [...new Set(next.filter((id) => alive.has(id)))];
+      const primaryResolved = selectedAssetId
+        ? resolve(selectedAssetId)
+        : null;
       const primaryStill =
-        selectedAssetId !== null && !removeSet.has(selectedAssetId)
-          ? selectedAssetId
-          : null;
+        primaryResolved && alive.has(primaryResolved) ? primaryResolved : null;
       const assetSelectionStale =
-        next.length !== selectedAssetIds.length ||
-        (selectedAssetId !== null && primaryStill === null);
+        nextUnique.length !== selectedAssetIds.length ||
+        selectedAssetIds.some((id, index) => nextUnique[index] !== id) ||
+        (selectedAssetId !== null && selectedAssetId !== primaryStill);
       if (assetSelectionStale) {
         const primary =
-          primaryStill && next.includes(primaryStill)
+          primaryStill && nextUnique.includes(primaryStill)
             ? primaryStill
-            : (next[next.length - 1] ?? null);
-        setSelectedAssetIds(next);
+            : (nextUnique[nextUnique.length - 1] ?? null);
+        setSelectedAssetIds(nextUnique);
         setSelectedAssetId(primary);
         setOpenProjectSelectedAssetId(primary);
       }
+      for (const id of removed) replacements.delete(id);
     }
   }
+  /* eslint-enable react-hooks/refs */
 
   useEffect(() => {
     let offProgress: (() => void) | undefined;
@@ -1040,6 +1104,7 @@ export function EditorLayout() {
       const placeholderId = detail?.placeholderId?.trim();
       const creationId = detail?.creationId?.trim();
       if (!placeholderId || !creationId) return;
+      placeholderCompletionRef.current.set(placeholderId, creationId);
       setSelectedAssetIds((ids) =>
         ids.map((id) => (id === placeholderId ? creationId : id)),
       );
@@ -1132,6 +1197,70 @@ export function EditorLayout() {
     clearPendingStagedDraft();
     setOpenProjectTimelineMonitorActive(true);
   };
+
+  const onBakeTimelineAudio = useCallback(() => {
+    if (audioBakeBusy || !project.id.trim()) return;
+    const clips = displayTimeline;
+    setAudioBakeBusy(true);
+    setAudioBakeError(null);
+    void (async () => {
+      try {
+        const result = await bakeTimelineAudio(project.id, clips);
+        setOpenProjectTimelineAudioBakePath(result.path);
+      } catch (error) {
+        setAudioBakeError(
+          error instanceof Error ? error.message : String(error),
+        );
+      } finally {
+        setAudioBakeBusy(false);
+      }
+    })();
+  }, [
+    audioBakeBusy,
+    displayTimeline,
+    project.id,
+    setOpenProjectTimelineAudioBakePath,
+  ]);
+
+  const onRemoveTimelineAudioBake = useCallback(() => {
+    const path = project.timelineAudioBakePath?.trim() || null;
+    setOpenProjectTimelineAudioBakePath(null);
+    setAudioBakeError(null);
+    if (!path) return;
+    void deleteTimelineAudioBake(path).catch(() => {});
+  }, [project.timelineAudioBakePath, setOpenProjectTimelineAudioBakePath]);
+
+  useEffect(() => {
+    const unsub = fragmentCache.subscribe(() => {
+      setFragmentStatus(fragmentCache.status());
+    });
+    // Do not destroy() here. React Strict Mode remounts this effect in dev and
+    // would leave the useState cache permanently dead — the rebuild button
+    // then does nothing.
+    return unsub;
+  }, [fragmentCache]);
+
+  useEffect(() => {
+    fragmentCache?.setClips({
+      projectId: project.id,
+      clips: displayTimeline,
+      aspectRatio: project.aspectRatio,
+      quality: previewQuality,
+    });
+  }, [
+    fragmentCache,
+    project.id,
+    project.aspectRatio,
+    displayTimeline,
+    previewQuality,
+  ]);
+
+  useEffect(() => {
+    fragmentCache?.setPlayhead(
+      displayPlayheadSec,
+      timelinePlaying && monitorMode === "timeline",
+    );
+  }, [fragmentCache, displayPlayheadSec, timelinePlaying, monitorMode]);
 
   const [bakeInfoByClipId, setBakeInfoByClipId] = useState<
     Map<string, BakeInfo>
@@ -1695,7 +1824,7 @@ export function EditorLayout() {
 
     const sourceSelection = mergeSelection;
     try {
-      const creation = await mergeTimelineClips(
+      const creation = await runLocalMerge(
         sourceSelection.clips.map((clip) => ({
           assetId: clip.assetId ?? "",
           inSec: clip.inSec ?? 0,
@@ -2452,7 +2581,7 @@ export function EditorLayout() {
           if (!id) return;
           const placeholder = project.libraryAssetPlaceholders?.[id];
           if (!placeholder) return;
-          retryLibraryAssetPlaceholder({
+          void retryLibraryAssetPlaceholder({
             placeholder,
             projectId: project.id,
             projectTitle: project.title,
@@ -2574,6 +2703,8 @@ export function EditorLayout() {
         }
         bakeInfo={clipStagingSeed ? (selectedBakeInfo ?? null) : null}
         bakeInfoByClipId={bakeInfoByClipId}
+        audioBakePath={project.timelineAudioBakePath}
+        fragmentCache={fragmentCache}
         onSlideshowRender={
           clipStagingSeed?.draft.kind === "slideshow"
             ? onSlideshowRender
@@ -2669,6 +2800,13 @@ export function EditorLayout() {
         canJoinSelected={Boolean(joinPair)}
         onJoinSelected={openJoinStudio}
         joinBusy={joinStudioOpen}
+        audioBakePath={project.timelineAudioBakePath}
+        audioBakeBusy={audioBakeBusy}
+        audioBakeError={audioBakeError}
+        onBakeAudio={onBakeTimelineAudio}
+        onRemoveAudioBake={onRemoveTimelineAudioBake}
+        fragmentStatus={fragmentStatus}
+        onRefreshFragmentCache={() => fragmentCache?.refresh()}
         outsideReferenceIds={outsideReferenceIds}
       />
 

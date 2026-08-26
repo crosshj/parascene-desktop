@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TimelineClip } from "../project/types";
-import {
-  decoderCommandedSourceSec,
-  decoderWantsClockSync,
-} from "./decoderPool";
+import { decoderCommandedSourceSec } from "./decoderPool";
 import { createTimelinePlaybackEngine } from "./timelinePlaybackEngine";
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -50,7 +47,7 @@ describe("decoderCommandedSourceSec", () => {
     expect(decoderCommandedSourceSec("video", false, null, 2.5)).toBe(2.5);
   });
 
-  it("maps extend bake through localSec × speed", () => {
+  it("seeks extend bakes like a normal video from 0 (localSec × speed)", () => {
     const layer = {
       clip: clip({
         id: "e1",
@@ -73,34 +70,6 @@ describe("decoderCommandedSourceSec", () => {
     };
     expect(decoderCommandedSourceSec("video", true, layer, 0)).toBe(3.2);
     expect(decoderCommandedSourceSec("slideshow", true, layer, 0)).toBe(3.2);
-  });
-});
-
-describe("decoderWantsClockSync", () => {
-  it("clock-syncs slideshow and extend always", () => {
-    expect(decoderWantsClockSync("slideshow", null)).toBe(true);
-    expect(decoderWantsClockSync("extend", null)).toBe(true);
-  });
-
-  it("clock-syncs video only when speed ≠ 1", () => {
-    const normal = {
-      clip: clip({ id: "c1", startSec: 0, endSec: 4, assetId: "a1" }),
-      localSec: 0,
-      sourceSec: 0,
-    };
-    const slow = {
-      clip: clip({
-        id: "c2",
-        startSec: 0,
-        endSec: 4,
-        assetId: "a1",
-        speed: 0.5,
-      }),
-      localSec: 0,
-      sourceSec: 0,
-    };
-    expect(decoderWantsClockSync("video", normal)).toBe(false);
-    expect(decoderWantsClockSync("video", slow)).toBe(true);
   });
 });
 
@@ -130,22 +99,55 @@ describe("createTimelinePlaybackEngine Phase 4", () => {
 
     const surface = host.querySelector(".timeline-playback-engine");
     expect(surface).toBeTruthy();
-    // One viewport per visual decoder (a1:f, a2:r, slideshow).
+    // Playhead at 0: current a1 + upcoming a2 (no previous).
+    expect(
+      surface!.querySelectorAll(".editor-preview-framing-viewport").length,
+    ).toBe(2);
+
+    engine.seek(5);
+    // On a2: previous a1, current a2, upcoming slideshow.
     expect(
       surface!.querySelectorAll(".editor-preview-framing-viewport").length,
     ).toBe(3);
-    // Slideshow bake has a video src immediately.
     expect(surface!.querySelectorAll("video").length).toBeGreaterThanOrEqual(1);
     // Magenta debug marker removed in Phase 4.
     expect(surface!.querySelector('[title="Playback engine"]')).toBeNull();
 
-    engine.seek(5);
     expect(engine.getCurrentTime()).toBe(5);
     engine.play();
     expect(engine.isPlaying()).toBe(true);
 
     engine.destroy();
     expect(host.querySelector(".timeline-playback-engine")).toBeNull();
+    host.remove();
+  });
+
+  it("does not keep decoders for clips outside prev/current/next", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    engine.setClips([
+      clip({ id: "c1", startSec: 0, endSec: 4, assetId: "a1" }),
+      clip({ id: "c2", startSec: 4, endSec: 8, assetId: "a2" }),
+      clip({ id: "c3", startSec: 8, endSec: 12, assetId: "a3" }),
+      clip({ id: "c4", startSec: 12, endSec: 16, assetId: "a4" }),
+    ]);
+    const surface = host.querySelector(".timeline-playback-engine")!;
+    const viewports = () =>
+      surface.querySelectorAll(".editor-preview-framing-viewport").length;
+
+    expect(viewports()).toBe(2);
+    engine.seek(6);
+    expect(viewports()).toBe(3);
+    engine.seek(14);
+    expect(viewports()).toBe(2);
+
+    engine.destroy();
     host.remove();
   });
 
@@ -236,6 +238,43 @@ describe("createTimelinePlaybackEngine Phase 4", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps the engine clock on a random seek while playing", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const rafCbs: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      rafCbs.push(cb);
+      return rafCbs.length;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    engine.setClips([
+      clip({ id: "c1", startSec: 0, endSec: 10, assetId: "a1" }),
+    ]);
+    engine.play();
+    now = 100;
+    rafCbs.shift()!(now);
+    expect(engine.getCurrentTime()).toBeCloseTo(0.1, 5);
+
+    engine.seek(6.5);
+    now = 116;
+    rafCbs.shift()!(now);
+    expect(engine.getCurrentTime()).toBeCloseTo(6.516, 3);
+
+    engine.destroy();
+    host.remove();
+    vi.restoreAllMocks();
+  });
+
   it("clears cut bookkeeping in a gap so the next clip can activate (gap-start)", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -295,6 +334,201 @@ describe("createTimelinePlaybackEngine Phase 4", () => {
     expect(diag).toHaveProperty("warmKeys");
     expect(diag).toHaveProperty("lastCutLatencyMs");
     expect(diag).toHaveProperty("stallReason");
+    engine.destroy();
+    host.remove();
+  });
+
+  it("plays Include Audio from the video element after muted play()", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    engine.setClips([
+      clip({
+        id: "v1",
+        startSec: 0,
+        endSec: 4,
+        assetId: "a1",
+        includeAudio: true,
+      }),
+      clip({
+        id: "linked",
+        startSec: 0,
+        endSec: 4,
+        lane: "audio",
+        kind: "audio",
+        assetId: "a1",
+        linkedVideoClipId: "v1",
+      }),
+      clip({ id: "v2", startSec: 4, endSec: 8, assetId: "a2" }),
+    ]);
+    const surface = host.querySelector(".timeline-playback-engine")!;
+    const videos = () =>
+      [...surface.querySelectorAll("video")] as HTMLVideoElement[];
+
+    expect(videos().every((v) => v.muted)).toBe(true);
+    expect(surface.querySelector(".editor-preview-audio-el")).toBeNull();
+
+    engine.play();
+    const live = videos().filter((v) => !v.muted);
+    expect(live).toHaveLength(1);
+    expect(surface.querySelector(".editor-preview-audio-el")).toBeNull();
+    const current = videos().find((v) => v.preload === "auto");
+    expect(current).toBeTruthy();
+    expect(current?.muted).toBe(false);
+    expect(videos().filter((v) => v.preload === "metadata").length).toBeGreaterThan(0);
+
+    engine.pause();
+    expect(videos().every((v) => v.muted)).toBe(true);
+    expect(videos().every((v) => v.preload === "metadata")).toBe(true);
+
+    engine.destroy();
+    host.remove();
+  });
+
+  it("keeps videos muted when A1 is a bed", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    engine.setClips([
+      clip({ id: "v1", startSec: 0, endSec: 4, assetId: "a1" }),
+      clip({
+        id: "bed",
+        startSec: 0,
+        endSec: 10,
+        lane: "audio",
+        kind: "audio",
+        assetId: "song",
+      }),
+    ]);
+    engine.play();
+    const surface = host.querySelector(".timeline-playback-engine")!;
+    expect(
+      [...surface.querySelectorAll("video")].every(
+        (v) => (v as HTMLVideoElement).muted,
+      ),
+    ).toBe(true);
+    engine.destroy();
+    host.remove();
+  });
+
+  it("sets playbackRate on off-speed video instead of clock-sync", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    engine.setClips([
+      clip({
+        id: "v1",
+        startSec: 0,
+        endSec: 4,
+        assetId: "a1",
+        speed: 0.5,
+        includeAudio: true,
+      }),
+    ]);
+    engine.play();
+    const surface = host.querySelector(".timeline-playback-engine")!;
+    const video = surface.querySelector("video") as HTMLVideoElement;
+    expect(video.playbackRate).toBe(0.5);
+    expect(video.muted).toBe(false);
+    expect(video.preload).toBe("auto");
+    engine.destroy();
+    host.remove();
+  });
+
+  it("free-runs extend bakes at clip playbackRate like ordinary video", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    const bakeKey = JSON.stringify({
+      v: 7,
+      assetId: "a1",
+      inSec: 0,
+      outSec: 5,
+      pingPong: false,
+      reverse: false,
+    });
+    engine.setClips([
+      clip({
+        id: "e1",
+        startSec: 0,
+        endSec: 20,
+        assetId: "a1",
+        inSec: 0,
+        outSec: 5,
+        speed: 2,
+        includeAudio: true,
+        extendBakeKey: bakeKey,
+        extendBakePath: "/tmp/extend.mp4",
+        extendBakeCoverSec: 40,
+      }),
+    ]);
+    engine.play();
+    const surface = host.querySelector(".timeline-playback-engine")!;
+    const video = surface.querySelector("video") as HTMLVideoElement;
+    expect(video.playbackRate).toBe(2);
+    expect(video.muted).toBe(false);
+    expect(surface.querySelector(".editor-preview-audio-el")).toBeNull();
+    engine.destroy();
+    host.remove();
+  });
+
+  it("plays baked timeline audio from one element and keeps videos muted", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+    });
+    engine.setAudioBakePath("/tmp/mix.m4a");
+    engine.setClips([
+      clip({
+        id: "v1",
+        startSec: 0,
+        endSec: 4,
+        assetId: "a1",
+        includeAudio: true,
+      }),
+      clip({
+        id: "linked",
+        startSec: 0,
+        endSec: 4,
+        lane: "audio",
+        kind: "audio",
+        assetId: "a1",
+        linkedVideoClipId: "v1",
+      }),
+    ]);
+    engine.play();
+    const surface = host.querySelector(".timeline-playback-engine")!;
+    const videos = [...surface.querySelectorAll("video")] as HTMLVideoElement[];
+    expect(videos.every((v) => v.muted)).toBe(true);
+    const audio = surface.querySelector(
+      ".editor-preview-audio-el",
+    ) as HTMLAudioElement | null;
+    expect(audio).toBeTruthy();
+    expect(audio?.getAttribute("src") ?? audio?.src).toContain("mix.m4a");
     engine.destroy();
     host.remove();
   });

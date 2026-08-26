@@ -230,17 +230,17 @@ mod tests {
         std::fs::create_dir_all(&paths.media).expect("media dir");
         let path = paths.media.join("_media_stream_test_fixture.mp3");
         // Minimal ID3-less MPEG frame payload is enough for protocol tests.
-        std::fs::write(&path, b"ID3\x03\x00\x00\x00\x00\x00\x00fake-mp3-body-bytes!!")
-            .expect("write fixture");
+        std::fs::write(
+            &path,
+            b"ID3\x03\x00\x00\x00\x00\x00\x00fake-mp3-body-bytes!!",
+        )
+        .expect("write fixture");
         path
     }
 
     fn get(path: &Path) -> Request<Vec<u8>> {
         Request::builder()
-            .uri(format!(
-                "https://media.localhost{}",
-                path.to_string_lossy()
-            ))
+            .uri(format!("https://media.localhost{}", path.to_string_lossy()))
             .body(Vec::new())
             .unwrap()
     }
@@ -252,10 +252,7 @@ mod tests {
         let response = media_response(get(&path)).expect("media_response");
         let _ = std::fs::remove_file(&path);
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get(CONTENT_TYPE).unwrap(),
-            "audio/mpeg"
-        );
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "audio/mpeg");
         assert_eq!(
             response
                 .headers()
@@ -275,10 +272,7 @@ mod tests {
     fn audio_with_range_returns_206() {
         let path = fixture_mp3();
         let request = Request::builder()
-            .uri(format!(
-                "https://media.localhost{}",
-                path.to_string_lossy()
-            ))
+            .uri(format!("https://media.localhost{}", path.to_string_lossy()))
             .header("range", "bytes=0-1")
             .body(Vec::new())
             .unwrap();
@@ -304,12 +298,20 @@ mod tests {
         let encoded = path
             .to_string_lossy()
             .bytes()
-            .flat_map(|b| {
-                match b {
-                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~'
-                    | b'*' | b'\'' | b'(' | b')' => vec![b],
-                    _ => format!("%{b:02X}").into_bytes(),
-                }
+            .flat_map(|b| match b {
+                b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'_'
+                | b'.'
+                | b'!'
+                | b'~'
+                | b'*'
+                | b'\''
+                | b'('
+                | b')' => vec![b],
+                _ => format!("%{b:02X}").into_bytes(),
             })
             .collect::<Vec<_>>();
         let encoded = String::from_utf8(encoded).unwrap();
@@ -322,5 +324,4 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body().len() as u64, len);
     }
-
 }

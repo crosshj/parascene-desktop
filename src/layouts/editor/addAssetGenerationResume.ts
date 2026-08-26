@@ -2,9 +2,13 @@
  * Resume in-flight add-asset generation after an app restart.
  */
 
-import { createAuthedSdk } from "../../auth/session";
 import { ingestRemoteCreation } from "../../lab/ingestCreation";
 import { fileCreationIntoProjectGroup } from "../../lab/projectGroups";
+import {
+  runParasceneWaitCreation,
+  watchParasceneGenerate,
+  type ParasceneGenerateResult,
+} from "../../services/generateStill";
 import type {
   AddAssetDraft,
   AddAssetGenerationJob,
@@ -41,7 +45,8 @@ export function findResumableAddAssetPlaceholders(
     const hasRemote =
       Boolean(job.replicatePredictionId?.trim()) ||
       Boolean(job.pendingCreationId?.trim()) ||
-      Boolean(job.blueJobId?.trim());
+      Boolean(job.blueJobId?.trim()) ||
+      Boolean(job.serviceJobId?.trim());
     // "starting" without a remote id cannot be resumed — surface as failure later.
     if (!hasRemote && job.status !== "starting") continue;
     out.push({ clip, job });
@@ -62,7 +67,9 @@ export function draftContinuityMode(
 }
 
 export type ResumeParasceneAddAssetOpts = {
-  pendingCreationId: string;
+  pendingCreationId?: string;
+  /** Prefer watching the durable service job when present. */
+  serviceJobId?: string;
   projectId: string;
   projectTitle: string;
   imagesGroupId: string | null;
@@ -97,21 +104,52 @@ export async function resumeParasceneAddAssetGeneration(
     opts.onSteps(steps);
   };
   setStep("generate", "active");
-  opts.onProgress(`Resuming wait for ${opts.pendingCreationId}…`);
-  const sdk = createAuthedSdk();
-  const done = await sdk.waitForCreation(opts.pendingCreationId, {
-    onTick: (row) =>
-      opts.onProgress(
-        `Waiting for ${opts.pendingCreationId} (${row.status || "…"})…`,
-      ),
+
+  const serviceJobId = opts.serviceJobId?.trim() || "";
+  if (serviceJobId) {
+    opts.onProgress(`Resuming service job ${serviceJobId}…`);
+    const result: ParasceneGenerateResult = await watchParasceneGenerate(
+      { mode: "job", id: serviceJobId },
+      {
+        onUpdate: (run) => {
+          const note = run.progressNote?.trim();
+          if (note) opts.onProgress(note);
+        },
+      },
+    );
+    setStep("generate", "done");
+    setStep("file", "done");
+    return {
+      creationId: result.creationId,
+      projectCreationIds: result.projectCreationIds,
+      videosGroupId: result.videosGroupId ?? opts.videosGroupId,
+      imagesGroupId: result.imagesGroupId ?? opts.imagesGroupId,
+      mode: opts.continuityMode,
+      model: opts.model,
+    };
+  }
+
+  const pendingCreationId = opts.pendingCreationId?.trim() || "";
+  if (!pendingCreationId) {
+    throw new Error("No remote job id available to resume generation.");
+  }
+
+  opts.onProgress(`Resuming wait for ${pendingCreationId}…`);
+  const waited = await runParasceneWaitCreation({
+    creationId: pendingCreationId,
+    projectId: opts.projectId,
+    mediaType: "video",
+    onProgress: opts.onProgress,
   });
-  if (String(done.status).toLowerCase() === "failed") {
-    throw new Error(`Video generation failed (${done.id})`);
+  if (String(waited.status).toLowerCase() === "failed") {
+    throw new Error(`Video generation failed (${waited.creationId})`);
   }
   setStep("generate", "done");
   setStep("file", "active");
   opts.onProgress("Syncing video to library…");
-  const creationId = await ingestRemoteCreation(done);
+  const creationId = await ingestRemoteCreation(
+    waited.creation as Parameters<typeof ingestRemoteCreation>[0],
+  );
   opts.onProgress("Filing video into project…");
   const filed = await fileCreationIntoProjectGroup({
     creationId,

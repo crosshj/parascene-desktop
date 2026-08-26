@@ -6,8 +6,8 @@ use crate::auth_store::{ensure_access_token, force_refresh_access_token};
 use crate::http_client;
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const API_BASE: &str = "https://www.parascene.com";
 
@@ -28,7 +28,87 @@ async fn bearer_token() -> Result<String, String> {
     ensure_access_token().await
 }
 
+fn json_from_body(text: &str) -> Value {
+    if text.trim().is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(text).unwrap_or_else(|_| json!({ "raw": text }))
+    }
+}
+
+fn is_rate_limited(status: u16, value: &Value) -> bool {
+    if status == 429 || status == 503 {
+        return true;
+    }
+    let blob = value.to_string().to_ascii_lowercase();
+    let limited = blob.contains("rate limit")
+        || blob.contains("too many requests")
+        || blob.contains("error code 1015");
+    if status == 403 {
+        // Cloudflare WAF/HTML blocks — not a missing token.
+        return limited || blob.contains("<html") || blob.contains("cloudflare");
+    }
+    limited
+}
+
+struct RateGate {
+    until: Option<Instant>,
+    strikes: u32,
+}
+
+fn rate_gate() -> &'static Mutex<RateGate> {
+    static GATE: OnceLock<Mutex<RateGate>> = OnceLock::new();
+    GATE.get_or_init(|| {
+        Mutex::new(RateGate {
+            until: None,
+            strikes: 0,
+        })
+    })
+}
+
+/// Remaining cooldown after a 429/403 storm, if any.
+pub fn api_cooling_down() -> Option<Duration> {
+    let gate = rate_gate().lock().ok()?;
+    let until = gate.until?;
+    until.checked_duration_since(Instant::now())
+}
+
+pub(crate) fn trip_rate_gate() {
+    if let Ok(mut gate) = rate_gate().lock() {
+        gate.strikes = gate.strikes.saturating_add(1).min(6);
+        let shift = gate.strikes.saturating_sub(1).min(4);
+        let secs = (15u64 << shift).min(300);
+        gate.until = Some(Instant::now() + Duration::from_secs(secs));
+        eprintln!(
+            "[parascene-api] cooling down {secs}s after rate limit (strike {})",
+            gate.strikes
+        );
+    }
+}
+
+fn note_api_ok() {
+    if let Ok(mut gate) = rate_gate().lock() {
+        gate.strikes = 0;
+        gate.until = None;
+    }
+}
+
+fn cooling_down_error() -> String {
+    let secs = api_cooling_down().map(|d| d.as_secs().max(1)).unwrap_or(15);
+    format!(
+        "Rate limited (cooling down {secs}s). This computer is still blocked — not from this click."
+    )
+}
+
 async fn request_json(
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    request_json_limited(method, path, body).await
+}
+
+async fn request_json_limited(
     method: reqwest::Method,
     path: &str,
     body: Option<&Value>,
@@ -39,9 +119,11 @@ async fn request_json(
         format!("{API_BASE}{path}")
     };
 
-    let mut attempt = 0u8;
+    let mut auth_retried = false;
     loop {
-        attempt += 1;
+        if api_cooling_down().is_some() {
+            return Err(cooling_down_error());
+        }
         let token = bearer_token().await?;
         let mut req = client()
             .request(method.clone(), &url)
@@ -58,15 +140,78 @@ async fn request_json(
             .map_err(|e| http_client::map_request_error(&url, e))?;
         let status = res.status().as_u16();
         let text = res.text().await.map_err(|e| e.to_string())?;
-        if (status == 401 || status == 403) && attempt < 2 {
+        // Only 401 is "try a fresh token". Cloudflare 403 is a block — refreshing
+        // and immediately retrying is what turns a wait-loop into a request storm.
+        if status == 401 && !auth_retried {
+            auth_retried = true;
             let _ = force_refresh_access_token().await;
             continue;
         }
-        let value = if text.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }))
-        };
+        let value = json_from_body(&text);
+        if is_rate_limited(status, &value) {
+            trip_rate_gate();
+            return Err(cooling_down_error());
+        }
+        if status < 400 {
+            note_api_ok();
+        }
+        return Ok((status, value));
+    }
+}
+
+async fn request_bytes_post(
+    path: &str,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &[(&str, &str)],
+) -> Result<(u16, Value), String> {
+    let url = if path.starts_with("http") {
+        path.to_string()
+    } else {
+        format!("{API_BASE}{path}")
+    };
+
+    let mut attempt = 0u8;
+    loop {
+        if api_cooling_down().is_some() {
+            return Err(cooling_down_error());
+        }
+        attempt += 1;
+        let token = bearer_token().await?;
+        let mut req = client()
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/json")
+            .header(
+                "Content-Type",
+                if content_type.trim().is_empty() {
+                    "application/octet-stream"
+                } else {
+                    content_type.trim()
+                },
+            )
+            .body(body.to_vec());
+        for (k, v) in extra_headers {
+            req = req.header(*k, *v);
+        }
+        let res = req
+            .send()
+            .await
+            .map_err(|e| http_client::map_request_error(&url, e))?;
+        let status = res.status().as_u16();
+        let text = res.text().await.map_err(|e| e.to_string())?;
+        let value = json_from_body(&text);
+        if status == 401 && attempt < 2 {
+            let _ = force_refresh_access_token().await;
+            continue;
+        }
+        if is_rate_limited(status, &value) {
+            trip_rate_gate();
+            return Err(cooling_down_error());
+        }
+        if status < 400 {
+            note_api_ok();
+        }
         return Ok((status, value));
     }
 }
@@ -96,11 +241,44 @@ pub fn creation_id(value: &Value) -> Option<String> {
 }
 
 pub fn creation_status(value: &Value) -> String {
-    value
-        .get("status")
+    let row = creation_row(value);
+    row.get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_lowercase()
+}
+
+/// `GET /api/create/images/:id` sometimes wraps the row (`creation` / `image` / `data`).
+pub fn creation_row(value: &Value) -> &Value {
+    for key in ["creation", "image", "data"] {
+        if let Some(inner) = value.get(key) {
+            if inner.is_object()
+                && (inner.get("id").is_some()
+                    || inner.get("status").is_some()
+                    || inner.get("url").is_some()
+                    || inner.get("file_path").is_some())
+            {
+                return inner;
+            }
+        }
+    }
+    value
+}
+
+fn owned_creation_row(value: Value) -> Value {
+    for key in ["creation", "image", "data"] {
+        if let Some(inner) = value.get(key).cloned() {
+            if inner.is_object()
+                && (inner.get("id").is_some()
+                    || inner.get("status").is_some()
+                    || inner.get("url").is_some()
+                    || inner.get("file_path").is_some())
+            {
+                return inner;
+            }
+        }
+    }
+    value
 }
 
 pub fn group_member_ids(value: &Value) -> Vec<String> {
@@ -186,8 +364,16 @@ fn absolutize_media_path(raw: &str) -> Option<String> {
 }
 
 /// Prefer full media, then fit thumb, then square thumb (for i2v / still resolve).
+/// Too broad for Generate wait — use `output_media_url`.
 pub fn media_url(value: &Value) -> Option<String> {
-    for key in ["url", "video_url", "fit_thumbnail_url", "thumbnail_url", "file_path"] {
+    let value = creation_row(value);
+    for key in [
+        "url",
+        "video_url",
+        "fit_thumbnail_url",
+        "thumbnail_url",
+        "file_path",
+    ] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
             if let Some(abs) = absolutize_media_path(s) {
                 return Some(abs);
@@ -197,13 +383,196 @@ pub fn media_url(value: &Value) -> Option<String> {
     None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitKind {
+    Image,
+    Video,
+}
+
+pub fn wait_kind_from_hints(
+    media_type: Option<&str>,
+    method: Option<&str>,
+    intent: Option<&str>,
+) -> WaitKind {
+    let blob = format!(
+        "{} {} {}",
+        media_type.unwrap_or(""),
+        method.unwrap_or(""),
+        intent.unwrap_or("")
+    )
+    .to_ascii_lowercase();
+    if blob.contains("video") {
+        WaitKind::Video
+    } else {
+        WaitKind::Image
+    }
+}
+
+pub fn url_looks_like_video(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    path.contains("/videos/")
+        || path.contains("/video/")
+        || path.ends_with(".mp4")
+        || path.ends_with(".webm")
+        || path.ends_with(".mov")
+        || path.ends_with(".m4v")
+}
+
+pub fn url_looks_like_image(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    path.contains("/images/")
+        || path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".webp")
+        || path.ends_with(".gif")
+        || path.ends_with(".avif")
+}
+
+fn json_url_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(absolutize_media_path)
+}
+
+pub fn creation_is_terminal_status(value: &Value) -> bool {
+    matches!(
+        creation_status(value).as_str(),
+        "failed" | "error" | "cancelled" | "canceled"
+    )
+}
+
+/// Output URL of the expected type. Thumbs, posters, and input stills do not count.
+pub fn output_media_url(value: &Value, kind: WaitKind) -> Option<String> {
+    let row = creation_row(value);
+    match kind {
+        WaitKind::Video => {
+            if let Some(url) = json_url_field(row, "video_url") {
+                return Some(url);
+            }
+            for key in ["url", "file_path"] {
+                if let Some(url) = json_url_field(row, key) {
+                    if url_looks_like_video(&url) {
+                        return Some(url);
+                    }
+                }
+            }
+            None
+        }
+        WaitKind::Image => {
+            for key in ["url", "image_url", "file_path"] {
+                if let Some(url) = json_url_field(row, key) {
+                    if !url_looks_like_video(&url) {
+                        return Some(url);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+pub fn wait_is_done(value: &Value, kind: WaitKind) -> bool {
+    creation_is_terminal_status(value) || output_media_url(value, kind).is_some()
+}
+
+pub fn local_path_is_output(kind: WaitKind, local_path: Option<&str>, media_type: &str) -> bool {
+    let Some(path) = local_path.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    match kind {
+        WaitKind::Video => {
+            url_looks_like_video(path)
+                || (media_type.eq_ignore_ascii_case("video") && !url_looks_like_image(path))
+        }
+        WaitKind::Image => !url_looks_like_video(path),
+    }
+}
+
+pub async fn list_my_creations(limit: u32, offset: u32) -> Result<(Vec<Value>, bool), String> {
+    let lim = limit.clamp(1, 200);
+    let off = offset;
+    let path = format!("/api/create/images?limit={lim}&offset={off}");
+    let (status, value) = request_json(reqwest::Method::GET, &path, None).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "list creations failed"));
+    }
+    let images = value
+        .get("images")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let has_more = value
+        .get("has_more")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok((images, has_more))
+}
+
+pub async fn upload_fit_thumbnail(id: &str, image_base64: &str) -> Result<Value, String> {
+    let path = format!("/api/create/images/{}/fit-thumbnail", urlencoding_path(id));
+    let body = json!({
+        "image_base64": image_base64,
+        "content_type": "image/jpeg",
+    });
+    let (status, value) = request_json(reqwest::Method::POST, &path, Some(&body)).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "upload fit thumb failed"));
+    }
+    Ok(value)
+}
+
+pub async fn repair_group_aspect(limit: u32) -> Result<Value, String> {
+    let body = json!({ "limit": limit });
+    let (status, value) = request_json(
+        reqwest::Method::POST,
+        "/api/create/images/repair-group-aspect",
+        Some(&body),
+    )
+    .await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "repair group aspect failed"));
+    }
+    Ok(value)
+}
+
+pub async fn repair_fit_thumbnails(ids: &[String], force: bool) -> Result<Value, String> {
+    let body = json!({
+        "ids": ids,
+        "limit": ids.len(),
+        "force": force,
+    });
+    let (status, value) = request_json(
+        reqwest::Method::POST,
+        "/api/create/images/repair-fit-thumbnails",
+        Some(&body),
+    )
+    .await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "repair fit thumbnails failed"));
+    }
+    Ok(value)
+}
+
 pub async fn get_creation(id: &str) -> Result<Value, String> {
+    get_creation_once(id).await
+}
+
+/// Wait-loop GET. Rate-limit/403 trips a process-wide cooldown; do not retry here.
+pub async fn get_creation_poll(id: &str) -> Result<Value, String> {
+    get_creation_once(id).await
+}
+
+async fn get_creation_once(id: &str) -> Result<Value, String> {
     let path = format!("/api/create/images/{}", urlencoding_path(id));
     let (status, value) = request_json(reqwest::Method::GET, &path, None).await?;
     if status >= 400 {
         return Err(api_error(status, &value, "get creation failed"));
     }
-    Ok(value)
+    Ok(owned_creation_row(value))
 }
 
 pub async fn delete_creation(id: &str) -> Result<(), String> {
@@ -216,6 +585,71 @@ pub async fn delete_creation(id: &str) -> Result<(), String> {
         return Err(api_error(status, &value, "delete creation failed"));
     }
     Ok(())
+}
+
+pub async fn ungroup_creations(id: &str) -> Result<Vec<String>, String> {
+    let path = format!("/api/create/images/{}/ungroup", urlencoding_path(id));
+    let (status, value) = request_json(reqwest::Method::POST, &path, Some(&json!({}))).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "ungroup failed"));
+    }
+    Ok(value
+        .get("restored_creation_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => {
+                        let t = s.trim();
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t.to_string())
+                        }
+                    }
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub async fn get_library_folders() -> Result<Value, String> {
+    let (status, value) = request_json(reqwest::Method::GET, "/api/library/folders", None).await?;
+    if status == 501 {
+        return Err("FOLDERS_UNAVAILABLE:Library folders are not available".into());
+    }
+    if status >= 400 {
+        return Err(api_error(status, &value, "list library folders failed"));
+    }
+    Ok(value)
+}
+
+pub async fn mutate_library_folders(
+    base_revision: u64,
+    operations: &Value,
+) -> Result<Value, String> {
+    let body = json!({
+        "base_revision": base_revision,
+        "operations": operations,
+    });
+    let (status, value) = request_json(
+        reqwest::Method::POST,
+        "/api/library/folders/mutate",
+        Some(&body),
+    )
+    .await?;
+    if status == 409 {
+        return Ok(json!({ "__conflict": true, "snapshot": value }));
+    }
+    if status == 501 {
+        return Err("FOLDERS_UNAVAILABLE:Library folders are not available".into());
+    }
+    if status >= 400 {
+        return Err(api_error(status, &value, "mutate library folders failed"));
+    }
+    Ok(value)
 }
 
 pub async fn create_media(opts: CreateOpts) -> Result<Value, String> {
@@ -260,8 +694,12 @@ pub async fn group_creations(
     if let Some(m) = meta {
         body["meta"] = m.clone();
     }
-    let (status, value) =
-        request_json(reqwest::Method::POST, "/api/create/images/group", Some(&body)).await?;
+    let (status, value) = request_json(
+        reqwest::Method::POST,
+        "/api/create/images/group",
+        Some(&body),
+    )
+    .await?;
     if status >= 400 {
         return Err(api_error(status, &value, "group failed"));
     }
@@ -286,6 +724,100 @@ pub struct CreateOpts {
     pub group_id: Option<i64>,
 }
 
+pub async fn get_credits() -> Result<Value, String> {
+    let (status, value) = request_json(reqwest::Method::GET, "/api/credits", None).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "credits failed"));
+    }
+    Ok(json!({
+        "balance": value.get("balance").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        "canClaim": value.get("canClaim").and_then(|v| v.as_bool())
+            .or_else(|| value.get("can_claim").and_then(|v| v.as_bool()))
+            .unwrap_or(false),
+        "lastClaimDate": value.get("lastClaimDate").and_then(|v| v.as_str())
+            .or_else(|| value.get("last_claim_date").and_then(|v| v.as_str())),
+    }))
+}
+
+pub async fn delete_audio_clip(id: &str) -> Result<(), String> {
+    let path = format!("/api/audio-clips/{}", urlencoding_path(id));
+    let (status, value) = request_json(reqwest::Method::DELETE, &path, None).await?;
+    if status == 404 || status == 410 {
+        return Ok(());
+    }
+    if status >= 400 {
+        return Err(api_error(status, &value, "delete audio clip failed"));
+    }
+    Ok(())
+}
+
+pub async fn record_audio_clip(
+    body: &[u8],
+    content_type: &str,
+    title: Option<&str>,
+    duration_sec: Option<f64>,
+    source_type: Option<&str>,
+) -> Result<Value, String> {
+    let mut owned_headers: Vec<(String, String)> = Vec::new();
+    if let Some(t) = title.map(str::trim).filter(|s| !s.is_empty()) {
+        owned_headers.push(("X-audio-clip-title".into(), t.to_string()));
+    }
+    if let Some(sec) = duration_sec.filter(|s| s.is_finite() && *s > 0.0) {
+        owned_headers.push(("X-audio-clip-duration-sec".into(), format!("{sec}")));
+    }
+    if let Some(st) = source_type.map(str::trim).filter(|s| !s.is_empty()) {
+        owned_headers.push(("X-audio-clip-source-type".into(), st.to_string()));
+    }
+    let header_refs: Vec<(&str, &str)> = owned_headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let (status, value) =
+        request_bytes_post("/api/audio-clips/record", body, content_type, &header_refs).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "audio clip upload failed"));
+    }
+    let item = value.get("item").unwrap_or(&value);
+    let id = creation_id(item).ok_or_else(|| "audio clip upload returned no id".to_string())?;
+    let audio_url = item
+        .get("audio_url")
+        .and_then(|v| v.as_str())
+        .and_then(absolutize_media_path);
+    Ok(json!({
+        "id": id,
+        "audioUrl": audio_url,
+        "title": item.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+        "durationSec": item.get("duration_sec").and_then(|v| v.as_f64()),
+    }))
+}
+
+pub async fn upload_generic_image(
+    body: &[u8],
+    content_type: &str,
+    filename: &str,
+) -> Result<Value, String> {
+    let name = if filename.trim().is_empty() {
+        "lab-seed.png"
+    } else {
+        filename.trim()
+    };
+    let headers = [("X-upload-kind", "generic"), ("X-upload-name", name)];
+    let (status, value) =
+        request_bytes_post("/api/images/generic", body, content_type, &headers).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "upload failed"));
+    }
+    let url = value
+        .get("url")
+        .and_then(|v| v.as_str())
+        .and_then(absolutize_media_path)
+        .ok_or_else(|| "upload succeeded but no url returned".to_string())?;
+    Ok(json!({
+        "url": url,
+        "key": value.get("key").and_then(|v| v.as_str()),
+    }))
+}
+
 fn urlencoding_path(id: &str) -> String {
     id.chars()
         .map(|c| match c {
@@ -293,4 +825,123 @@ fn urlencoding_path(id: &str) -> String {
             _ => format!("%{:02X}", c as u8),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unwraps_nested_creation_rows() {
+        let wrapped = json!({
+            "creation": {
+                "id": 26045,
+                "status": "creating",
+                "url": "https://www.parascene.com/x.png",
+            }
+        });
+        assert_eq!(creation_row(&wrapped)["id"], 26045);
+    }
+
+    #[test]
+    fn wait_image_ignores_thumbs_and_video() {
+        assert!(!wait_is_done(
+            &json!({
+                "id": 1,
+                "status": "creating",
+                "thumbnail_url": "https://www.parascene.com/t.jpg",
+                "fit_thumbnail_url": "https://www.parascene.com/fit.jpg",
+            }),
+            WaitKind::Image,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 1,
+                "status": "creating",
+                "url": "https://www.parascene.com/api/images/created/done.png",
+            }),
+            WaitKind::Image,
+        ));
+        assert!(!wait_is_done(
+            &json!({
+                "id": 1,
+                "status": "creating",
+                "url": "https://www.parascene.com/api/videos/created/video/x.mp4",
+            }),
+            WaitKind::Image,
+        ));
+    }
+
+    #[test]
+    fn wait_video_requires_video_output_not_poster() {
+        assert!(!wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "creating",
+                "url": "https://www.parascene.com/api/images/created/still.png",
+                "thumbnail_url": "https://www.parascene.com/t.jpg",
+                "file_path": "/api/images/created/still.png",
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "creating",
+                "video_url": "https://www.parascene.com/api/videos/created/video/x.mp4",
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "complete",
+                "url": "/api/videos/created/video/x.mp4",
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({ "id": 2, "status": "failed" }),
+            WaitKind::Video,
+        ));
+        assert!(!wait_is_done(
+            &json!({ "id": 2, "status": "" }),
+            WaitKind::Video,
+        ));
+    }
+
+    #[test]
+    fn local_poster_is_not_video_output() {
+        assert!(!local_path_is_output(
+            WaitKind::Video,
+            Some("/tmp/26053.jpg"),
+            "video",
+        ));
+        assert!(local_path_is_output(
+            WaitKind::Video,
+            Some("/tmp/26053.mp4"),
+            "video",
+        ));
+        assert!(local_path_is_output(
+            WaitKind::Image,
+            Some("/tmp/26045.png"),
+            "image",
+        ));
+        assert!(!local_path_is_output(WaitKind::Image, None, "image"));
+    }
+
+    #[test]
+    fn cloudflare_403_counts_as_rate_limit_not_auth() {
+        assert!(is_rate_limited(
+            403,
+            &json!({ "error": "Rate limit exceeded" }),
+        ));
+        assert!(is_rate_limited(
+            403,
+            &json!({ "raw": "<html>cloudflare error code 1015</html>" }),
+        ));
+        assert!(!is_rate_limited(403, &json!({ "error": "forbidden" }),));
+        assert!(is_rate_limited(429, &json!({})));
+    }
 }

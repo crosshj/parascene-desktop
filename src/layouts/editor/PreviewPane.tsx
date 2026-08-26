@@ -14,6 +14,7 @@ import {
   cacheCompositionRun,
   deleteCompositionRun,
   ensureLocal,
+  ensureCatalogCreation,
   getCreation,
   getCreations,
 } from "../../library/catalogClient";
@@ -48,9 +49,9 @@ import {
   getCachedClipThumbnail,
 } from "../../library/clipThumbnail";
 import {
-  canFetchPlayableMedia,
   creationDetailUrl,
   creationPreviewUrl,
+  isParascenePending,
   isParasceneUnavailable,
 } from "../../library/previewUrl";
 import {
@@ -109,6 +110,7 @@ import {
 } from "../../library/slideshowMedia";
 import { pendingDraftMatchesSelection } from "./editorSelection";
 import { TimelineMonitorHost } from "../../playback/TimelineMonitorHost";
+import type { TimelineFragmentCache } from "./timelineFragmentCache";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
 import { type StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import { AddAssetIntentPanel } from "./AddAssetIntentPanel";
@@ -131,6 +133,7 @@ import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
   selectionSupportsGenerateDualView,
+  shouldHoldGenerateDualChrome,
   shouldHoldGenerateDualFormSurface,
   shouldPreserveGenerateDualView,
   shouldShowGenerateDualChrome,
@@ -162,6 +165,7 @@ import {
   resolveLibraryAssetPlaceholder,
 } from "../../project/libraryAssetPlaceholder";
 import { libraryPlaceholderResultSteps } from "./libraryAssetGeneration";
+import { tryCompleteLibraryPlaceholderFromCatalog } from "./libraryAssetGenerationStore";
 
 type PreviewPaneProps = {
   assetId: string | null;
@@ -244,6 +248,10 @@ type PreviewPaneProps = {
   bakeInfo?: BakeInfo | null;
   /** Runtime bake status for all slideshow clips (timeline monitor). */
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
+  /** Cached timeline audio mix used by the program monitor. */
+  audioBakePath?: string | null;
+  /** fMP4 fragment cache for MSE timeline playback. */
+  fragmentCache?: TimelineFragmentCache | null;
   /** Explicit slideshow bake (timeline clips only). */
   onSlideshowRender?: (() => void) | null;
   /** Bake an extended video clip when settings are stale. */
@@ -423,6 +431,8 @@ export function PreviewPane({
   onSourceDraftChange,
   bakeInfo = null,
   bakeInfoByClipId,
+  audioBakePath = null,
+  fragmentCache = null,
   onSlideshowRender = null,
   onExtendBake = null,
   needsExtendBake = false,
@@ -444,6 +454,8 @@ export function PreviewPane({
     upsertOpenStillWorkstream,
   } = useShell();
   const [creation, setCreation] = useState<Creation | null>(null);
+  const [pendingLibraryCreation, setPendingLibraryCreation] =
+    useState<Creation | null>(null);
   const [generateDualView, setGenerateDualView] =
     useState<GenerateDualViewId>("form");
   const [pinnedReviewGeneration, setPinnedReviewGeneration] =
@@ -734,17 +746,6 @@ export function PreviewPane({
             }
             return prev;
           });
-          for (const id of classified.imageAssetIds) {
-            const row = byId.get(id);
-            if (
-              row &&
-              !creationDetailUrl(row) &&
-              canFetchPlayableMedia(row) &&
-              !isParasceneUnavailable(row)
-            ) {
-              void ensureLocal([row.id], { fullMedia: true, urgent: true });
-            }
-          }
         } else {
           setSelectionItems([]);
           setPickedImageIds([]);
@@ -781,6 +782,14 @@ export function PreviewPane({
       selectionClass?.type === "unsupportedMixed" ||
       selectionClass?.type === "compositeImages");
 
+  const projectGroupCoverIds = useMemo(
+    () =>
+      [project.imagesGroupId, project.videosGroupId]
+        .map((id) => (id ? String(id).trim() : ""))
+        .filter(Boolean),
+    [project.imagesGroupId, project.videosGroupId],
+  );
+
   useEffect(() => {
     if (!assetId) return;
     // Multi-select unsupported/composite paths own the preview surface.
@@ -790,16 +799,12 @@ export function PreviewPane({
 
     const load = async () => {
       try {
-        const row = await getCreation(assetId);
+        const row = await ensureCatalogCreation(assetId, {
+          groupCoverIds: projectGroupCoverIds,
+          remote: false,
+        });
         if (cancelled) return;
         setCreation(row);
-        if (
-          !creationDetailUrl(row) &&
-          canFetchPlayableMedia(row) &&
-          !isParasceneUnavailable(row)
-        ) {
-          void ensureLocal([row.id], { fullMedia: true, urgent: true });
-        }
       } catch {
         if (!cancelled) {
           setCreation(null);
@@ -824,7 +829,7 @@ export function PreviewPane({
       cancelled = true;
       unlisten?.();
     };
-  }, [assetId, selectionOwnsPreview]);
+  }, [assetId, projectGroupCoverIds, selectionOwnsPreview]);
 
   const creationMatchesAsset = Boolean(
     creation && assetId && creation.id === assetId,
@@ -862,8 +867,8 @@ export function PreviewPane({
     Boolean(creation) &&
     !detail &&
     !catalogThumb &&
-    canFetchPlayableMedia(creation!) &&
-    !unavailable;
+    !unavailable &&
+    isParascenePending(creation!);
   const cloudCaption =
     creationMatchesAsset && creation ? cloudHostCaption(creation) : null;
   const mediaType = String(
@@ -1403,12 +1408,80 @@ export function PreviewPane({
     project.libraryAssetPlaceholders,
     assetId,
   );
-  const selectedLibraryPlaceholderPhase =
-    libraryAssetPlaceholderPhase(selectedLibraryPlaceholder);
+  const pendingLibraryCreationId =
+    selectedLibraryPlaceholder?.addAssetDraft.generationJob?.pendingCreationId?.trim() ||
+    "";
+  const pendingLibraryPreviewUrl =
+    pendingLibraryCreation &&
+    pendingLibraryCreation.id === pendingLibraryCreationId
+      ? creationPreviewUrl(pendingLibraryCreation) ??
+        creationDetailUrl(pendingLibraryCreation)
+      : null;
+  const selectedLibraryPlaceholderPhase = libraryAssetPlaceholderPhase(
+    selectedLibraryPlaceholder,
+  );
+  useEffect(() => {
+    if (!pendingLibraryCreationId) return;
+    let cancelled = false;
+    void getCreation(pendingLibraryCreationId)
+      .then((row) => {
+        if (!cancelled && row) setPendingLibraryCreation(row);
+      })
+      .catch(() => {
+        if (!cancelled) setPendingLibraryCreation(null);
+      });
+    let unlisten: (() => void) | undefined;
+    void listen<Creation>("library-creation-updated", (event) => {
+      if (event.payload.id !== pendingLibraryCreationId) return;
+      setPendingLibraryCreation(event.payload);
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [pendingLibraryCreationId]);
+  const libraryPlaceholderId = selectedLibraryPlaceholder?.id ?? "";
+  const libraryPlaceholderStatus = selectedLibraryPlaceholder?.status;
+  const libraryPlaceholderPrompt =
+    selectedLibraryPlaceholder?.addAssetDraft.prompt ?? "";
+  const libraryPlaceholderDestination =
+    selectedLibraryPlaceholder?.addAssetDraft.generateDestination;
+  useEffect(() => {
+    if (
+      !libraryPlaceholderId ||
+      !pendingLibraryCreationId ||
+      !pendingLibraryPreviewUrl
+    ) {
+      return;
+    }
+    if (
+      libraryPlaceholderStatus === "error" ||
+      libraryPlaceholderStatus === "done"
+    ) {
+      return;
+    }
+    tryCompleteLibraryPlaceholderFromCatalog({
+      placeholderId: libraryPlaceholderId,
+      creationId: pendingLibraryCreationId,
+      prompt: libraryPlaceholderPrompt,
+      destination: libraryPlaceholderDestination,
+    });
+  }, [
+    libraryPlaceholderId,
+    libraryPlaceholderStatus,
+    libraryPlaceholderPrompt,
+    libraryPlaceholderDestination,
+    pendingLibraryCreationId,
+    pendingLibraryPreviewUrl,
+  ]);
   const showLibraryAssetPlaceholderDual =
     !addAssetSlotActive &&
     monitorMode === "source" &&
-    isActiveLibraryAssetPlaceholder(selectedLibraryPlaceholder);
+    isActiveLibraryAssetPlaceholder(selectedLibraryPlaceholder) &&
+    (selectedLibraryPlaceholderPhase === "running" ||
+      selectedLibraryPlaceholderPhase === "error");
   const resolvedLibraryIntent = showAddAssetIntent
     ? resolveAddAssetIntent(addAssetIntent ?? {})
     : selectedLibraryPlaceholder
@@ -1544,6 +1617,13 @@ export function PreviewPane({
     isAggregateSelection: isAggregateGenerateSelection,
     selectionSettled: generateDualSelectionSettled,
   });
+  const holdGenerateDualChrome = shouldHoldGenerateDualChrome({
+    hostKey: generateDualHostKey,
+    showGenerateDualHost,
+    hasAssetId: Boolean(assetId?.trim()),
+    selectionSettled: generateDualSelectionSettled,
+    isAggregateSelection: isAggregateGenerateSelection,
+  });
   if (showDoneGenerateDual && resolvedAddAssetGeneration) {
     const nextReviewId = reviewGenerationIdentity(resolvedAddAssetGeneration);
     if (
@@ -1608,8 +1688,10 @@ export function PreviewPane({
   }, [activeReviewGeneration, activeReviewPlacedClip]);
   // Remember Form vs Result across assets; non-form selections only hide chrome.
   const showGenerateDual =
-    showGenerateDualHost &&
-    (shouldShowGenerateDualChrome(generateDualPhase) || holdGenerateDualForm);
+    (showGenerateDualHost &&
+      (shouldShowGenerateDualChrome(generateDualPhase) ||
+        holdGenerateDualForm)) ||
+    holdGenerateDualChrome;
   const nextGenerateDualHostKey = showAddAssetGenerate
     ? `ph:${addAssetPlaceholderClip?.id ?? ""}`
     : showLibraryAssetPlaceholderDual
@@ -1662,6 +1744,12 @@ export function PreviewPane({
     } else if (generateDualPhase === "error" && prevPhase !== "error") {
       setGenerateDualView("result");
     }
+  } else if (
+    generateDualSelectionSettled &&
+    !showGenerateDualHost &&
+    generateDualHostKey
+  ) {
+    setGenerateDualHostKey(null);
   }
   const showSelectionIntent =
     !addAssetMode &&
@@ -2971,9 +3059,6 @@ export function PreviewPane({
                   <span>{sourceLabelText}</span>
                 </div>
               ) : null}
-              {generateDualPhase === "running" ? (
-                <p className="muted generate-dual-view-status">Generating…</p>
-              ) : null}
             </div>
           ) : null}
           <div
@@ -3260,6 +3345,8 @@ export function PreviewPane({
                 playing={timelinePlaying}
                 mediaSeekEpoch={mediaSeekEpoch}
                 bakeInfoByClipId={bakeInfoByClipId}
+                audioBakePath={audioBakePath}
+                fragmentCache={fragmentCache}
                 volume={volume}
                 stageW={stage.w}
                 stageH={stage.h}
@@ -3518,7 +3605,9 @@ export function PreviewPane({
             ) : null}
           </div>
 
-          {sourceLabelText && !showGenerateDual ? (
+          {sourceLabelText &&
+          !showGenerateDual &&
+          sourceKind !== "timeline" ? (
             <div className="editor-preview-source-row">
               <div
                 className="editor-preview-source-label"

@@ -112,15 +112,12 @@ async fn ensure_access_token_inner(force: bool) -> Result<String, String> {
     }
 
     // Only serialize the rotating refresh itself.
-    let _guard = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        refresh_lock().lock(),
-    )
-    .await
-    .map_err(|_| {
-        "Session check timed out — another refresh is still running. Try again in a moment."
-            .to_string()
-    })?;
+    let _guard = tokio::time::timeout(std::time::Duration::from_secs(8), refresh_lock().lock())
+        .await
+        .map_err(|_| {
+            "Session check timed out — another refresh is still running. Try again in a moment."
+                .to_string()
+        })?;
 
     if refresh_invalidated().load(Ordering::SeqCst) {
         return Err(SESSION_EXPIRED_MSG.into());
@@ -299,6 +296,40 @@ pub async fn auth_ensure_access_token(force: Option<bool>) -> Result<String, Str
                 .into(),
         ),
     }
+}
+
+/// Soft session presence for `auth.status` (no token refresh).
+pub async fn auth_session_status() -> Result<Value, String> {
+    let session = tokio::task::spawn_blocking(read_session_json)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(session) = session else {
+        return Ok(json!({
+            "status": "signed_out",
+            "configured": false,
+        }));
+    };
+    let has_access = access_from_session(&session).is_some();
+    let has_refresh = refresh_from_session(&session).is_some();
+    let user_id = session
+        .get("user")
+        .and_then(|u| u.get("id").or_else(|| u.get("sub")))
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .or_else(|| {
+            session
+                .get("sub")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+    Ok(json!({
+        "status": if has_access || has_refresh { "connected" } else { "signed_out" },
+        "configured": has_access || has_refresh,
+        "userId": user_id,
+    }))
 }
 
 #[tauri::command]

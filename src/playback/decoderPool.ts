@@ -7,10 +7,13 @@ import {
   videoStretchStyle,
   type StagedClipFraming,
 } from "../layouts/editor/stagedClip";
+import { extendBakeSourceSec } from "../layouts/editor/clipExtendBake";
 import {
-  clipInSec,
+  isLinkedVideoAudioClip,
+  videoElementCarriesMonitorAudio,
+} from "../layouts/editor/linkedVideoAudio";
+import {
   clipSpeed,
-  peekNextVisualClip,
   resolveTimelineFrame,
   type TimelineLayer,
 } from "../layouts/editor/timelineCompose";
@@ -18,16 +21,17 @@ import type { TimelineClip } from "../project/types";
 import {
   assetDecoderKey,
   assetIdFromKey,
+  bufferWindowParkByKey,
+  bufferWindowVisualDecoders,
   isReverseKey,
   isSlideshowKey,
-  listVisualDecoders,
-  parkSourceByKey,
   type AssetDecoderKey,
   type VisualDecoderMeta,
 } from "./assetDecoders";
 import type { MediaSources } from "./mediaSources";
 import {
   alignToSourceSec,
+  mediaAtSec,
   seekMedia,
   waitForCanPlay,
   waitForPaintedFrame,
@@ -69,6 +73,7 @@ type AudioSlot = {
   workGen: number;
   lastPlayClipId: string | null;
   lastSeekEpoch: number;
+  starting: boolean;
 };
 
 function slotKindFromMeta(meta: VisualDecoderMeta): SlotKind {
@@ -159,23 +164,32 @@ function commandedSourceSec(
 ): number {
   if (!active) return parkSec;
   if (kind === "extend") {
-    return (liveLayer?.localSec ?? 0) * clipSpeed(liveLayer?.clip ?? {});
+    if (!liveLayer) return 0;
+    return extendBakeSourceSec(
+      liveLayer.clip,
+      liveLayer.clip.startSec + liveLayer.localSec,
+    );
   }
   return liveLayer?.sourceSec ?? 0;
 }
 
-function wantsClockSync(
-  kind: SlotKind,
-  liveLayer: TimelineLayer | null,
-): boolean {
-  if (kind === "slideshow" || kind === "extend") return true;
-  if (kind !== "video" || !liveLayer) return false;
-  return Math.abs(clipSpeed(liveLayer.clip) - 1) >= 0.001;
+function applyPlaybackRate(video: HTMLVideoElement, rate: number): void {
+  if (Math.abs(video.playbackRate - rate) < 0.001) return;
+  try {
+    video.playbackRate = rate;
+  } catch {
+    // Some engines throw on unsupported rates; clipSpeed already clamps.
+  }
+}
+
+function applyVideoPreload(video: HTMLVideoElement, hungry: boolean): void {
+  const next = hungry ? "auto" : "metadata";
+  if (video.preload !== next) video.preload = next;
 }
 
 /**
- * Imperative decoder pool: one persistent element per asset×direction / bake,
- * with seek-then-show cut handoff.
+ * Imperative decoder pool: previous / current / next clips around the playhead,
+ * with seek-then-show cut handoff. Window is kept warm while paused and playing.
  */
 export type PlaybackDiagnostics = {
   warmKeys: string[];
@@ -188,8 +202,12 @@ export type PlaybackDiagnostics = {
 export type DecoderPool = {
   setStage(stageW: number, stageH: number, matteW: number, matteH: number): void;
   setBakeInfo(bakeInfoByClipId: ReadonlyMap<string, BakeInfo> | null): void;
+  setAudioBakePath(path: string | null): void;
+  setVisualSuppressed(suppressed: boolean): void;
   setVolume(volume: number): void;
   setMediaSeekEpoch(epoch: number): void;
+  /** Timeline seconds from the free-running bake/A1 element, or null. */
+  getMonitorTime(): number | null;
   /** Reconcile slots + handoff for the current playhead / transport. */
   sync(
     clips: readonly TimelineClip[],
@@ -207,6 +225,8 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
   let matteW = options.matteW;
   let matteH = options.matteH;
   let bakeInfoByClipId: ReadonlyMap<string, BakeInfo> | null = null;
+  let audioBakePath: string | null = null;
+  let visualSuppressed = false;
   let volume = 100;
   let mediaSeekEpoch = 0;
   let destroyed = false;
@@ -220,6 +240,9 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
   let lastCutStartedAt = 0;
   let lastCutLatencyMs: number | null = null;
   let stallReason: string | null = null;
+  let mixClips: readonly TimelineClip[] = [];
+  let mixSec = 0;
+  let mixPlaying = false;
 
   const setStatus = (message: string | null, wait = false) => {
     if (!message) {
@@ -286,7 +309,9 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     } else {
       const video = document.createElement("video");
       video.playsInline = true;
-      video.preload = "auto";
+      // metadata: one parked frame. auto on the playing clip only — preload=auto
+      // on standby videos is what blew WebKit to multiple GB.
+      video.preload = "metadata";
       video.muted = true;
       media = video;
     }
@@ -322,6 +347,14 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       slot.media.load();
     }
     slot.viewport.remove();
+  };
+
+  const clearVisualSlots = () => {
+    for (const slot of slots.values()) destroySlot(slot);
+    slots.clear();
+    visibleKey = null;
+    activeKey = null;
+    setStatus(null);
   };
 
   const resolveSrc = (
@@ -450,14 +483,31 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     if (opts.playAfter) {
       await waitForCanPlay(video);
       if (cancelled()) return false;
-      void video.play().catch(() => {});
+      playVideoElement(video);
     }
     return true;
   };
 
+  const landedAt = (slot: DecoderSlot, sec: number): boolean => {
+    const media = slot.media;
+    return media instanceof HTMLVideoElement && mediaAtSec(media, sec);
+  };
+
   const parkStandby = (slot: DecoderSlot, parkSec: number) => {
     if (!(slot.media instanceof HTMLVideoElement)) return;
-    if (!slot.warm || !slot.src) return;
+    if (!slot.src) return;
+    if (slot.warm && landedAt(slot, parkSec)) {
+      slot.lastParkSec = parkSec;
+      return;
+    }
+    if (
+      slot.lastParkSec != null &&
+      Math.abs(slot.lastParkSec - parkSec) < 0.04 &&
+      !landedAt(slot, parkSec)
+    ) {
+      // Recorded a park that never landed (seek-before-metadata). Retry.
+      slot.lastParkSec = null;
+    }
     if (
       slot.lastParkSec != null &&
       Math.abs(slot.lastParkSec - parkSec) < 0.04
@@ -473,6 +523,8 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       if (didSeek) await waitForPaintedFrame(video);
       if (destroyed || slot.workGen !== gen) return;
       video.pause();
+      if (!mediaAtSec(video, parkSec)) slot.lastParkSec = null;
+      else slot.warm = true;
     })();
   };
 
@@ -480,7 +532,6 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     slot: DecoderSlot,
     sourceSec: number,
     playing: boolean,
-    clockSync: boolean,
     clipId: string | null,
     onFailed?: () => void,
   ) => {
@@ -491,33 +542,31 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       return;
     }
 
-    if (clockSync) {
-      let target = Math.max(0, sourceSec);
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        target = Math.min(target, Math.max(0, video.duration - 0.05));
-      }
-      if (video.ended || Math.abs(video.currentTime - target) >= 0.04) {
-        try {
-          if (video.ended) video.pause();
-          video.currentTime = target;
-        } catch {
-          // ignore
-        }
-      }
-      if (!video.paused) video.pause();
-      slot.warm = true;
-      markReady(slot.key);
-      return;
-    }
-
     if (!playing) {
       void alignVideo(slot, sourceSec, {
         playAfter: false,
         requirePaint: true,
       }).then((ok) => {
-        if (ok) markReady(slot.key);
-        else onFailed?.();
+        if (ok && mediaAtSec(video, sourceSec)) markReady(slot.key);
+        else {
+          slot.lastParkSec = null;
+          if (!ok) onFailed?.();
+        }
       });
+      return;
+    }
+
+    // Upcoming clips are pre-seeked to their in-point; just play.
+    if (slot.warm && mediaAtSec(video, sourceSec, 0.12)) {
+      slot.lastPlayClipId = clipId;
+      markReady(slot.key);
+      if (video.paused) {
+        const parkedGen = slot.workGen;
+        void waitForCanPlay(video).then(() => {
+          if (destroyed || slot.workGen !== parkedGen) return;
+          playVideoElement(video);
+        });
+      }
       return;
     }
 
@@ -554,8 +603,133 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       markReady(slot.key);
       await waitForCanPlay(video);
       if (destroyed || slot.workGen !== gen) return;
-      void video.play().catch(() => {});
+      playVideoElement(video);
     })();
+  };
+
+  const releaseAudioSlot = () => {
+    if (!audioSlot) return;
+    audioSlot.workGen += 1;
+    audioSlot.el.pause();
+    audioSlot.el.remove();
+    audioSlot = null;
+    lastAudioKey = null;
+  };
+
+  const syncBakeAudio = (currentSec: number, playing: boolean) => {
+    const path = audioBakePath?.trim() || null;
+    if (!path) {
+      releaseAudioSlot();
+      return;
+    }
+    const src = mediaUrlForBakePath(path);
+    const audioKey = `bake:${path}`;
+    if (!audioSlot || lastAudioKey !== audioKey) {
+      audioSlot?.el.remove();
+      const el = document.createElement("audio");
+      el.className = "editor-preview-audio-el";
+      el.preload = "auto";
+      el.src = src;
+      surface.appendChild(el);
+      audioSlot = {
+        assetId: "bake",
+        reverse: false,
+        el,
+        workGen: 0,
+        lastPlayClipId: null,
+        lastSeekEpoch: -1,
+        starting: false,
+      };
+      lastAudioKey = audioKey;
+    } else if (audioSlot.el.getAttribute("src") !== src) {
+      audioSlot.el.src = src;
+      audioSlot.lastPlayClipId = null;
+    }
+
+    audioSlot.el.volume = Math.max(0, Math.min(1, volume / 100));
+
+    if (!playing) {
+      audioSlot.starting = false;
+      audioSlot.el.pause();
+      void seekMedia(audioSlot.el, currentSec);
+      audioSlot.lastPlayClipId = null;
+      return;
+    }
+
+    const needsSeek =
+      audioSlot.lastPlayClipId !== "bake" ||
+      audioSlot.lastSeekEpoch !== mediaSeekEpoch;
+    if (!needsSeek) {
+      if (audioSlot.el.paused && !audioSlot.starting) {
+        void audioSlot.el.play().catch(() => {});
+      }
+      return;
+    }
+
+    audioSlot.lastPlayClipId = "bake";
+    audioSlot.lastSeekEpoch = mediaSeekEpoch;
+    const gen = ++audioSlot.workGen;
+    const el = audioSlot.el;
+    const target = currentSec;
+    audioSlot.starting = true;
+    void (async () => {
+      await seekMedia(el, target);
+      if (destroyed || !audioSlot || audioSlot.workGen !== gen) return;
+      await waitForCanPlay(el);
+      if (destroyed || !audioSlot || audioSlot.workGen !== gen) return;
+      try {
+        await el.play();
+      } catch {
+        // ignore
+      }
+      if (audioSlot && audioSlot.workGen === gen) audioSlot.starting = false;
+    })();
+  };
+
+  const applyVideoSoundtrackMute = () => {
+    const frame = resolveTimelineFrame(mixClips, mixSec);
+    const liveKey =
+      mixPlaying &&
+      !audioBakePath &&
+      videoElementCarriesMonitorAudio(
+        frame.visual?.clip ?? null,
+        frame.audio[0]?.clip ?? null,
+      )
+        ? activeKey
+        : null;
+    const vol = Math.max(0, Math.min(1, volume / 100));
+    for (const slot of slots.values()) {
+      if (!(slot.media instanceof HTMLVideoElement)) continue;
+      const live = liveKey != null && slot.key === liveKey;
+      slot.media.muted = !live;
+      if (live) slot.media.volume = vol;
+    }
+  };
+
+  /** Always play muted. Unmuted play() deadlocks WKWebView on audio-session IPC. */
+  const playVideoElement = (video: HTMLVideoElement) => {
+    video.muted = true;
+    void video
+      .play()
+      .then(() => {
+        if (!destroyed) applyVideoSoundtrackMute();
+      })
+      .catch(() => {});
+  };
+
+  const applyHungryPreload = (playing: boolean) => {
+    for (const slot of slots.values()) {
+      if (!(slot.media instanceof HTMLVideoElement)) continue;
+      applyVideoPreload(slot.media, playing && slot.key === activeKey);
+    }
+  };
+
+  const applyClipPlaybackRate = (visualClip: TimelineClip | null) => {
+    const rate = visualClip ? clipSpeed(visualClip) : 1;
+    for (const slot of slots.values()) {
+      if (!(slot.media instanceof HTMLVideoElement)) continue;
+      applyPlaybackRate(slot.media, slot.key === activeKey ? rate : 1);
+    }
   };
 
   const syncAudio = (
@@ -563,18 +737,24 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     currentSec: number,
     playing: boolean,
   ) => {
+    if (audioBakePath?.trim()) {
+      syncBakeAudio(currentSec, playing);
+      return;
+    }
+
     const frame = resolveTimelineFrame(clips, currentSec);
     const layer = frame.audio[0] ?? null;
     const assetId = layer?.clip.assetId?.trim() || null;
 
     if (!layer || !assetId) {
-      if (audioSlot) {
-        audioSlot.workGen += 1;
-        audioSlot.el.pause();
-        audioSlot.el.remove();
-        audioSlot = null;
-        lastAudioKey = null;
-      }
+      releaseAudioSlot();
+      return;
+    }
+
+    // Linked Include Audio is the same file as the muted video — don't demux it
+    // a second time (that was a multi-GB WebKit spike).
+    if (isLinkedVideoAudioClip(layer.clip)) {
+      releaseAudioSlot();
       return;
     }
 
@@ -599,7 +779,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       audioSlot?.el.remove();
       const el = document.createElement("audio");
       el.className = "editor-preview-audio-el";
-      el.preload = "auto";
+      el.preload = playing ? "auto" : "metadata";
       el.src = src;
       surface.appendChild(el);
       audioSlot = {
@@ -609,6 +789,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         workGen: 0,
         lastPlayClipId: null,
         lastSeekEpoch: -1,
+        starting: false,
       };
       lastAudioKey = audioKey;
     } else if (audioSlot.el.getAttribute("src") !== src) {
@@ -617,26 +798,33 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     }
 
     audioSlot.el.volume = Math.max(0, Math.min(1, volume / 100));
+    audioSlot.el.preload = playing ? "auto" : "metadata";
 
     if (!playing) {
+      audioSlot.starting = false;
       audioSlot.el.pause();
       void seekMedia(audioSlot.el, layer.sourceSec);
       audioSlot.lastPlayClipId = null;
       return;
     }
 
-    // Free-run while playing: only re-seek on clip / epoch change (parity with AudioLayer).
-    const needsStart =
+    // Free-run while playing: only re-seek on clip / epoch change.
+    const needsSeek =
       audioSlot.lastPlayClipId !== layer.clip.id ||
-      audioSlot.lastSeekEpoch !== mediaSeekEpoch ||
-      audioSlot.el.paused;
-    if (!needsStart) return;
+      audioSlot.lastSeekEpoch !== mediaSeekEpoch;
+    if (!needsSeek) {
+      if (audioSlot.el.paused && !audioSlot.starting) {
+        void audioSlot.el.play().catch(() => {});
+      }
+      return;
+    }
 
     audioSlot.lastPlayClipId = layer.clip.id;
     audioSlot.lastSeekEpoch = mediaSeekEpoch;
     const gen = ++audioSlot.workGen;
     const el = audioSlot.el;
     const target = layer.sourceSec;
+    audioSlot.starting = true;
     void (async () => {
       await seekMedia(el, target);
       if (destroyed || !audioSlot || audioSlot.workGen !== gen) return;
@@ -647,6 +835,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       } catch {
         // ignore
       }
+      if (audioSlot && audioSlot.workGen === gen) audioSlot.starting = false;
     })();
   };
 
@@ -664,17 +853,52 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     setBakeInfo(next) {
       bakeInfoByClipId = next;
     },
+    setAudioBakePath(path) {
+      const next = path?.trim() || null;
+      if (next === audioBakePath) return;
+      audioBakePath = next;
+      lastAudioKey = null;
+    },
+    setVisualSuppressed(suppressed) {
+      if (suppressed === visualSuppressed) return;
+      visualSuppressed = suppressed;
+      if (suppressed) clearVisualSlots();
+      else lastPlaying = false;
+    },
     setVolume(next) {
       volume = Math.max(0, Math.min(100, next));
-      if (audioSlot) {
-        audioSlot.el.volume = Math.max(0, Math.min(1, volume / 100));
+      const vol = Math.max(0, Math.min(1, volume / 100));
+      if (audioSlot) audioSlot.el.volume = vol;
+      for (const slot of slots.values()) {
+        if (slot.media instanceof HTMLVideoElement && !slot.media.muted) {
+          slot.media.volume = vol;
+        }
       }
     },
     setMediaSeekEpoch(epoch) {
       mediaSeekEpoch = epoch;
     },
+    getMonitorTime() {
+      if (!audioBakePath?.trim() || !audioSlot || audioSlot.starting) return null;
+      const el = audioSlot.el;
+      if (el.paused || el.ended || el.seeking) return null;
+      const t = el.currentTime;
+      if (!Number.isFinite(t) || t < 0) return null;
+      return t;
+    },
     sync(clips, currentSec, playing) {
       if (destroyed) return;
+
+      mixClips = clips;
+      mixSec = currentSec;
+      mixPlaying = playing;
+
+      if (visualSuppressed) {
+        if (slots.size > 0) clearVisualSlots();
+        applyVideoSoundtrackMute();
+        syncAudio(clips, currentSec, playing);
+        return;
+      }
 
       const frame = resolveTimelineFrame(clips, currentSec);
       const visual = frame.visual;
@@ -690,22 +914,8 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         lastPlayClipIdForActive = null;
       }
 
-      const nextClip = peekNextVisualClip(clips, currentSec);
-      const prepByKey = parkSourceByKey(clips);
-      if (
-        nextClip &&
-        (nextClip.kind === "slideshow" || nextClip.assetId?.trim())
-      ) {
-        const key = assetDecoderKey(nextClip);
-        if (!activeKey || key !== activeKey) {
-          prepByKey.set(
-            key,
-            nextClip.kind === "slideshow" ? 0 : clipInSec(nextClip),
-          );
-        }
-      }
-
-      const wanted = listVisualDecoders(clips);
+      const prepByKey = bufferWindowParkByKey(clips, currentSec);
+      const wanted = bufferWindowVisualDecoders(clips, currentSec);
       const wantedKeys = new Set(wanted.map((m) => m.key));
 
       for (const [key, slot] of slots) {
@@ -736,9 +946,18 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       let activeWait = false;
 
       for (const slot of slots.values()) {
+        if (slot.key === activeKey) continue;
+        if (!(slot.media instanceof HTMLVideoElement)) continue;
+        slot.media.muted = true;
+        if (!slot.media.paused) slot.media.pause();
+      }
+
+      for (const slot of slots.values()) {
         const isActive = slot.key === activeKey;
         const isVisible = slot.key === visibleKey;
-        const parkSec = prepByKey.get(slot.key) ?? 0;
+        const parkSec =
+          prepByKey.get(slot.key) ??
+          (!isActive ? (slot.meta.parkStartSec ?? 0) : 0);
         const framing =
           isActive && visual?.clip
             ? normalizeFraming(visual.clip.framing)
@@ -777,7 +996,6 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         }
 
         const srcChanged = setVideoSrc(slot, resolved.src);
-        const clockSync = wantsClockSync(slot.kind, isActive ? visual : null);
         const sourceSec = commandedSourceSec(
           slot.kind,
           isActive,
@@ -790,8 +1008,9 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         applyMediaClass(slot.media, slot.paintedFraming, !show);
 
         if (isActive) {
-          slot.lastParkSec = null;
+          if (playing) slot.lastParkSec = null;
           const clipId = visual?.clip.id ?? null;
+          const video = slot.media as HTMLVideoElement;
           // Do NOT include !warm — while playing, seek() ticks every frame and
           // would cancel the in-flight align before the first frame paints.
           const cutOrEpoch =
@@ -800,12 +1019,27 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
             playStarted ||
             clipId !== lastPlayClipIdForActive;
 
-          if (clockSync || !playing || cutOrEpoch) {
-            if (playing && cutOrEpoch) {
-              lastCutStartedAt = performance.now();
+          if (!playing) {
+            if (slot.warm && mediaAtSec(video, sourceSec)) {
+              markReady(slot.key);
+            } else if (
+              srcChanged ||
+              epochChanged ||
+              slot.lastParkSec == null ||
+              Math.abs(slot.lastParkSec - sourceSec) >= 0.04
+            ) {
+              slot.lastParkSec = sourceSec;
+              lastPlayClipIdForActive = clipId;
+              activateVideo(slot, sourceSec, false, clipId, () => {
+                if (lastPlayClipIdForActive === clipId) {
+                  lastPlayClipIdForActive = null;
+                }
+              });
             }
+          } else if (cutOrEpoch) {
+            lastCutStartedAt = performance.now();
             lastPlayClipIdForActive = clipId;
-            activateVideo(slot, sourceSec, playing, clockSync, clipId, () => {
+            activateVideo(slot, sourceSec, true, clipId, () => {
               if (lastPlayClipIdForActive === clipId) {
                 lastPlayClipIdForActive = null;
               }
@@ -816,7 +1050,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
             if (video.paused) {
               void waitForCanPlay(video).then(() => {
                 if (!destroyed && playing && activeKey === slot.key) {
-                  void video.play().catch(() => {});
+                  playVideoElement(video);
                 }
               });
             }
@@ -840,15 +1074,18 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
           void alignVideo(slot, parkSec, {
             playAfter: false,
             requirePaint: true,
+          }).then((ok) => {
+            if (!ok || destroyed) return;
+            if (!landedAt(slot, parkSec)) {
+              slot.lastParkSec = null;
+              slot.warm = false;
+            }
           });
         }
       }
 
       if (!activeKey) {
-        setStatus(
-          frame.visual || frame.audio[0] ? null : "Timeline",
-          false,
-        );
+        setStatus(null);
       } else if (activeStatus) {
         stallReason = activeStatus;
         setStatus(activeStatus, activeWait);
@@ -856,6 +1093,9 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         setStatus(null);
       }
 
+      applyClipPlaybackRate(visual?.clip ?? null);
+      applyHungryPreload(playing);
+      applyVideoSoundtrackMute();
       syncAudio(clips, currentSec, playing);
     },
     getDiagnostics() {
@@ -876,12 +1116,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       destroyed = true;
       for (const slot of slots.values()) destroySlot(slot);
       slots.clear();
-      if (audioSlot) {
-        audioSlot.workGen += 1;
-        audioSlot.el.pause();
-        audioSlot.el.remove();
-        audioSlot = null;
-      }
+      releaseAudioSlot();
       statusEl?.remove();
       statusEl = null;
       visibleKey = null;
@@ -900,11 +1135,4 @@ export function decoderCommandedSourceSec(
   parkSec: number,
 ): number {
   return commandedSourceSec(kind, active, liveLayer, parkSec);
-}
-
-export function decoderWantsClockSync(
-  kind: "video" | "image" | "slideshow" | "extend",
-  liveLayer: TimelineLayer | null,
-): boolean {
-  return wantsClockSync(kind, liveLayer);
 }

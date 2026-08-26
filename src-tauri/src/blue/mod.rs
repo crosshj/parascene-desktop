@@ -6,6 +6,6 @@ mod client;
 mod commands;
 mod credentials;
 mod history;
-mod run;
+pub(crate) mod run;
 
 pub use commands::*;

@@ -1,5 +1,6 @@
 import { timelineSequenceDuration } from "../layouts/editor/timelineCompose";
 import type { BakeInfo } from "../library/slideshowMedia";
+import type { TimelineFragmentCache } from "../layouts/editor/timelineFragmentCache";
 import type { TimelineClip } from "../project/types";
 import {
   createDecoderPool,
@@ -7,6 +8,11 @@ import {
   type PlaybackDiagnostics,
 } from "./decoderPool";
 import { createMediaSources, type MediaSources } from "./mediaSources";
+import {
+  createMseFragmentPlayer,
+  timelineMseSupported,
+  type MseFragmentPlayer,
+} from "./mseFragmentPlayer";
 
 /** Ruler / React playhead updates while playing (engineering gate: not every frame). */
 export const PLAYBACK_TIME_UPDATE_HZ = 5;
@@ -27,6 +33,8 @@ export type { PlaybackDiagnostics };
 export type TimelinePlaybackEngine = {
   setClips(clips: readonly TimelineClip[]): void;
   setBakeInfo(bakeInfoByClipId: ReadonlyMap<string, BakeInfo> | null): void;
+  setAudioBakePath(path: string | null): void;
+  setFragmentCache(cache: TimelineFragmentCache | null): void;
   setStage(stageW: number, stageH: number, matteW: number, matteH: number): void;
   setVolume(volume: number): void;
   /** @deprecated Prefer seek() while playing — engine bumps epoch on discontinuities. */
@@ -52,33 +60,6 @@ type EngineState = {
   mediaSeekEpoch: number;
   sequenceDurationSec: number;
 };
-
-function collectPrewarmIds(clips: readonly TimelineClip[]): {
-  assetIds: string[];
-  reverseIds: string[];
-} {
-  const assetIds: string[] = [];
-  const reverseIds: string[] = [];
-  const seenAsset = new Set<string>();
-  const seenReverse = new Set<string>();
-  for (const clip of clips) {
-    const id = clip.assetId?.trim();
-    if (!id) continue;
-    if (!seenAsset.has(id)) {
-      seenAsset.add(id);
-      assetIds.push(id);
-    }
-    if (
-      clip.reverse &&
-      clip.kind === "video" &&
-      !seenReverse.has(id)
-    ) {
-      seenReverse.add(id);
-      reverseIds.push(id);
-    }
-  }
-  return { assetIds, reverseIds };
-}
 
 /**
  * Imperative timeline playback core.
@@ -112,6 +93,14 @@ export function createTimelinePlaybackEngine(
   let rafId = 0;
   let lastRafNow = 0;
   let lastEmittedAt = 0;
+  /** Playing, but the preview stream has no data at the playhead. Audio holds. */
+  let buffering = false;
+  let stallFrames = 0;
+  let lastVideoSnapAt = 0;
+  let hadMonitor = false;
+
+  /** Wrap slack: one frame at the coarsest preview rate (low = 10fps). */
+  const WRAP_EPSILON_SEC = 0.101;
 
   const mediaSources: MediaSources = createMediaSources();
   const pool: DecoderPool = createDecoderPool({
@@ -122,10 +111,50 @@ export function createTimelinePlaybackEngine(
     matteW: state.matteW,
     matteH: state.matteH,
   });
+  const mse: MseFragmentPlayer = createMseFragmentPlayer(surface);
+  let fragmentCache: TimelineFragmentCache | null = null;
+  let unsubFragments: (() => void) | null = null;
 
-  const resync = () => {
+  let lastMseFeedSec = -1;
+  let lastMseFeedAt = 0;
+
+  type ResyncKind = "tick" | "seek" | "transport" | "data";
+
+  const previewStreamActive = () =>
+    Boolean(fragmentCache) && timelineMseSupported();
+
+  const resync = (kind: ResyncKind = "data") => {
     if (destroyed) return;
-    pool.sync(state.clips, state.currentSec, state.playing);
+    const cache = fragmentCache;
+    const usePreviewStream = previewStreamActive();
+    if (usePreviewStream && cache) {
+      mse.warm();
+      mse.setDuration(state.sequenceDurationSec);
+      const nowMs = performance.now();
+      const moved = Math.abs(state.currentSec - lastMseFeedSec) >= 0.5;
+      // While buffering the playhead is frozen, so movement never re-feeds —
+      // retry on a throttle instead (covers transient fetch failures).
+      const stalledRetry = buffering && nowMs - lastMseFeedAt > 250;
+      const feed = kind !== "tick" || moved || stalledRetry;
+      if (feed) {
+        lastMseFeedSec = state.currentSec;
+        lastMseFeedAt = nowMs;
+      }
+      mse.sync(state.currentSec, state.playing, cache.readyFragments(), {
+        feed,
+        seek: kind === "seek",
+      });
+      mse.show();
+      pool.setVisualSuppressed(true);
+    } else {
+      mse.hide();
+      pool.setVisualSuppressed(false);
+    }
+    // While the preview stream buffers, hold audio too — the picture is the
+    // master clock, so nothing else may run ahead of it.
+    const effectivePlaying =
+      state.playing && !(usePreviewStream && buffering);
+    pool.sync(state.clips, state.currentSec, effectivePlaying);
   };
 
   const bumpSeekEpoch = () => {
@@ -147,6 +176,92 @@ export function createTimelinePlaybackEngine(
     }
   };
 
+  const wrapToStart = () => {
+    state.currentSec = 0;
+    buffering = false;
+    stallFrames = 0;
+    bumpSeekEpoch();
+    resync("seek");
+  };
+
+  const tickPreviewStream = (now: number, dt: number) => {
+    const end = state.sequenceDurationSec;
+    // Audio is the master clock — a light local file that never stalls, and
+    // touching a running audio element is always audible. While audio spins up
+    // (or there is no bake) the picture leads; a pending seek or buffering
+    // holds the playhead where the user put it.
+    const pendingSeek = mse.hasPendingSeek();
+    const monitor = pool.getMonitorTime();
+    if (!pendingSeek && !buffering) {
+      if (monitor != null) {
+        state.currentSec = monitor;
+      } else {
+        const videoTime = mse.getTime();
+        state.currentSec = videoTime > 0 ? videoTime : state.currentSec + dt;
+      }
+    }
+    if (mse.isEnded() || state.currentSec >= end - WRAP_EPSILON_SEC) {
+      hadMonitor = false;
+      wrapToStart();
+      return;
+    }
+    const covered = mse.covers(state.currentSec, 0.02);
+    if (pendingSeek || !covered) {
+      stallFrames += 1;
+    } else {
+      stallFrames = 0;
+    }
+    // The coarsest preview (low, 10fps) only moves currentTime every ~100ms,
+    // so require a real stall (~200ms uncovered) before declaring buffering;
+    // pending seeks into unbuffered land are buffering immediately.
+    const nextBuffering = pendingSeek || stallFrames > 12;
+    if (nextBuffering !== buffering) {
+      buffering = nextBuffering;
+      if (!buffering) {
+        // Resume from where the picture actually stopped so no content is
+        // skipped; the epoch bump re-seeks audio to that point.
+        const videoTime = mse.getTime();
+        if (videoTime > 0) state.currentSec = videoTime;
+        hadMonitor = false;
+        bumpSeekEpoch();
+      }
+    }
+    // Slave the picture to the clock. Audio is never nudged while running —
+    // snap the video instead, which is invisible at preview quality. Right
+    // after audio starts (seek latency puts it slightly behind the picture),
+    // align tightly once; in steady state only correct real drift.
+    let snapVideo = false;
+    if (!pendingSeek && !buffering && monitor != null) {
+      const drift = Math.abs(mse.getTime() - state.currentSec);
+      const limit = hadMonitor ? 0.35 : 0.12;
+      if (drift > limit && covered && now - lastVideoSnapAt > 500) {
+        lastVideoSnapAt = now;
+        snapVideo = true;
+      }
+      hadMonitor = true;
+    } else if (monitor == null) {
+      hadMonitor = false;
+    }
+    resync(snapVideo ? "seek" : "tick");
+  };
+
+  const tickLegacy = (dt: number) => {
+    const end = state.sequenceDurationSec;
+    const monitor = pool.getMonitorTime();
+    if (monitor != null) {
+      state.currentSec = monitor;
+    } else {
+      state.currentSec += dt;
+    }
+    if (state.currentSec >= end) {
+      state.currentSec = state.currentSec % end;
+      bumpSeekEpoch();
+      resync("seek");
+    } else {
+      resync("tick");
+    }
+  };
+
   const startClock = () => {
     stopClock();
     lastRafNow = performance.now();
@@ -155,15 +270,15 @@ export function createTimelinePlaybackEngine(
         rafId = 0;
         return;
       }
-      const dt = (now - lastRafNow) / 1000;
+      const dt = Math.max(0, (now - lastRafNow) / 1000);
       lastRafNow = now;
       const end = state.sequenceDurationSec;
       if (end > 0) {
-        const advanced = state.currentSec + dt;
-        const wrapped = advanced >= end;
-        state.currentSec = wrapped ? advanced % end : advanced;
-        if (wrapped) bumpSeekEpoch();
-        resync();
+        if (previewStreamActive()) {
+          tickPreviewStream(now, dt);
+        } else {
+          tickLegacy(dt);
+        }
         emitTimeUpdate(false);
       }
       rafId = requestAnimationFrame(tick);
@@ -172,7 +287,7 @@ export function createTimelinePlaybackEngine(
   };
 
   const unsubSources = mediaSources.subscribe(() => {
-    resync();
+    resync("data");
   });
 
   return {
@@ -180,15 +295,30 @@ export function createTimelinePlaybackEngine(
       if (destroyed) return;
       state.clips = clips;
       state.sequenceDurationSec = timelineSequenceDuration(clips);
-      const { assetIds, reverseIds } = collectPrewarmIds(clips);
-      mediaSources.prewarmAssets(assetIds);
-      mediaSources.prewarmReverse(reverseIds);
-      resync();
+      resync("data");
     },
     setBakeInfo(bakeInfoByClipId) {
       if (destroyed) return;
       pool.setBakeInfo(bakeInfoByClipId);
-      resync();
+      resync("data");
+    },
+    setAudioBakePath(path) {
+      if (destroyed) return;
+      pool.setAudioBakePath(path);
+      resync("data");
+    },
+    setFragmentCache(cache) {
+      if (destroyed) return;
+      unsubFragments?.();
+      unsubFragments = null;
+      fragmentCache = cache;
+      if (cache) {
+        unsubFragments = cache.subscribe(() => {
+          resync("data");
+        });
+      }
+      // Seek, not data: the stream may be mid-timeline while the video is at 0.
+      resync("seek");
     },
     setStage(stageW, stageH, matteW, matteH) {
       if (destroyed) return;
@@ -197,7 +327,7 @@ export function createTimelinePlaybackEngine(
       state.matteW = matteW;
       state.matteH = matteH;
       pool.setStage(stageW, stageH, matteW, matteH);
-      resync();
+      resync("data");
     },
     setVolume(volume) {
       if (destroyed) return;
@@ -208,33 +338,42 @@ export function createTimelinePlaybackEngine(
       if (destroyed) return;
       state.mediaSeekEpoch = epoch;
       pool.setMediaSeekEpoch(epoch);
-      resync();
+      resync("seek");
     },
     seek(sec) {
       if (destroyed) return;
       const next = Math.max(0, sec);
       const jumped = Math.abs(next - state.currentSec) > 1e-4;
       state.currentSec = next;
+      stallFrames = 0;
       // Scrub / loop handoff while free-running: re-prime decoders.
       if (state.playing && jumped) bumpSeekEpoch();
       emitTimeUpdate(true);
-      resync();
+      resync("seek");
     },
     play() {
       if (destroyed || state.playing) return;
       if (state.sequenceDurationSec <= 0) return;
       state.playing = true;
+      // Don't start audio into a black preview — hold until picture exists.
+      buffering =
+        previewStreamActive() && !mse.covers(state.currentSec, 0.02);
+      stallFrames = buffering ? 13 : 0;
+      hadMonitor = false;
       options.onPlayingChange?.(true);
-      resync();
+      resync("transport");
       startClock();
     },
     pause() {
       if (destroyed || !state.playing) return;
       stopClock();
       state.playing = false;
+      buffering = false;
+      stallFrames = 0;
+      hadMonitor = false;
       options.onPlayingChange?.(false);
       emitTimeUpdate(true);
-      resync();
+      resync("transport");
     },
     getCurrentTime() {
       return state.currentSec;
@@ -250,7 +389,11 @@ export function createTimelinePlaybackEngine(
       destroyed = true;
       state.playing = false;
       stopClock();
+      unsubFragments?.();
+      unsubFragments = null;
+      fragmentCache = null;
       unsubSources();
+      mse.destroy();
       pool.destroy();
       mediaSources.destroy();
       surface.remove();

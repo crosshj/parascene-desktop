@@ -51,6 +51,7 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     selectedAssetId: null,
     pendingStagedDraft: null,
     timelineZoom: 1,
+    timelineAudioBakePath: null,
     timelineMonitorActive: false,
     timelinePlayheadSec: 0,
     hookSuggestions: [],

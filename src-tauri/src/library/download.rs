@@ -4,21 +4,22 @@ use super::catalog::{
     list_creations, list_creations_page, mark_downloaded, ready_connection, set_download_state,
     set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
-use super::thumb_fill::fill_and_record_local_thumb;
 use super::folders::{emit_folders_updated, list_folders};
+use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 
 /// Pages of thumbs to warm ahead of the requested list offset (stay in front of scroll).
-const THUMB_AHEAD_PAGES: u32 = 14;
+const THUMB_AHEAD_PAGES: u32 = 4;
 /// Concurrent thumb HTTP fetches — keep modest to avoid CDN/API rate limits.
-const THUMB_CONCURRENCY: usize = 10;
+const THUMB_CONCURRENCY: usize = 3;
 /// Retry budget for transient HTTP failures (429 / 503).
 const DOWNLOAD_MAX_ATTEMPTS: u32 = 5;
 /// Base pacing between media GETs in bulk sync (grows after 429s).
@@ -26,8 +27,32 @@ const MEDIA_PACE_MS: u64 = 200;
 const MEDIA_PACE_MAX_MS: u64 = 15_000;
 /// Stop a bulk media run after this many consecutive download failures.
 const MEDIA_FAIL_STREAK_ABORT: u32 = 3;
-/// Auth / rate-limit failures abort sooner — the rest of the queue will look the same.
-const MEDIA_SYSTEMIC_FAIL_ABORT: u32 = 2;
+/// Auth / rate-limit failures abort on the first one — the rest of the queue will look the same.
+const MEDIA_SYSTEMIC_FAIL_ABORT: u32 = 1;
+
+/// Generate ingest holds this while saving the new creation's files so CDN GETs
+/// are not blocked by the browse/API cool-down (Generate is user-started).
+static GENERATION_CACHE_DEPTH: AtomicU32 = AtomicU32::new(0);
+
+struct GenerationCacheGuard;
+
+impl GenerationCacheGuard {
+    fn enter() -> Self {
+        GENERATION_CACHE_DEPTH.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for GenerationCacheGuard {
+    fn drop(&mut self) {
+        GENERATION_CACHE_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn downloads_paused_for_api_cool_down() -> bool {
+    GENERATION_CACHE_DEPTH.load(Ordering::SeqCst) == 0
+        && super::parascene_api::api_cooling_down().is_some()
+}
 
 fn is_systemic_download_err(err: &str) -> bool {
     err.contains("HTTP 401")
@@ -129,6 +154,8 @@ fn retry_after_delay(res: &reqwest::Response) -> Duration {
 fn format_http_err(status: u16) -> String {
     if status == 429 {
         "HTTP 429 (rate limited)".into()
+    } else if status == 403 {
+        "HTTP 403 (rate limited)".into()
     } else if status == 503 {
         "HTTP 503 (unavailable)".into()
     } else {
@@ -334,6 +361,11 @@ async fn download_url_once(
     stem: &str,
     bearer: Option<&str>,
 ) -> Result<PathBuf, DownloadAttemptErr> {
+    // Browse/Sync pause while the API gate is down. Generate ingest bypasses
+    // that pause so the creation just made is saved locally.
+    if downloads_paused_for_api_cool_down() {
+        return Err(DownloadAttemptErr::Fatal(format_http_err(403)));
+    }
     let mut req = http_client().get(url);
     if let Some(token) = bearer {
         req = req.header("Authorization", format!("Bearer {token}"));
@@ -349,6 +381,10 @@ async fn download_url_once(
             message: format_http_err(status.as_u16()),
             wait,
         });
+    }
+    if status.as_u16() == 403 {
+        note_media_rate_limited();
+        return Err(DownloadAttemptErr::Fatal(format_http_err(403)));
     }
     if !status.is_success() {
         return Err(DownloadAttemptErr::Fatal(format_http_err(status.as_u16())));
@@ -412,7 +448,7 @@ async fn download_url_authed_or_public(
                 return Err(DownloadAttemptErr::Retryable { message, wait });
             }
             Err(DownloadAttemptErr::Fatal(err)) => {
-                let auth_denied = err.contains("HTTP 401") || err.contains("HTTP 403");
+                let auth_denied = err.contains("HTTP 401");
                 if !auth_denied {
                     return Err(DownloadAttemptErr::Fatal(err));
                 }
@@ -513,9 +549,7 @@ pub(crate) fn needs_download(c: &Creation) -> bool {
         return false;
     }
     // Cover-only A/V: remote is poster/cover art, not playable media.
-    if c.media_type.eq_ignore_ascii_case("audio")
-        || c.media_type.eq_ignore_ascii_case("video")
-    {
+    if c.media_type.eq_ignore_ascii_case("audio") || c.media_type.eq_ignore_ascii_case("video") {
         let local_is_image = c
             .local_path
             .as_deref()
@@ -600,10 +634,7 @@ fn should_prefer_local_fit_fill(c: &Creation) -> bool {
 
 /// After full media lands, build a native-aspect board thumb when needed.
 /// Covers audio covers, video first-frames, and stuck square image posters.
-fn try_fill_native_thumb_after_media(
-    paths: &super::paths::ParascenePaths,
-    creation_id: &str,
-) {
+fn try_fill_native_thumb_after_media(paths: &super::paths::ParascenePaths, creation_id: &str) {
     let Ok(conn) = ready_connection(paths) else {
         return;
     };
@@ -1096,6 +1127,7 @@ async fn download_thumbs_only(
                         "[library] thumb batch abort after {auth_fail_streak} systemic failures · {}",
                         short_download_err(&err)
                     );
+                    clear_thumb_queue();
                     break;
                 }
             }
@@ -1166,12 +1198,7 @@ async fn download_batch(
                 });
                 {
                     let conn = ready_connection(paths)?;
-                    record_downloaded_media(
-                        &conn,
-                        &creation,
-                        &media_path,
-                        thumb.as_deref(),
-                    )?;
+                    record_downloaded_media(&conn, &creation, &media_path, thumb.as_deref())?;
                 }
                 try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
@@ -1399,12 +1426,7 @@ async fn download_media_batch(
                 };
                 {
                     let conn = ready_connection(paths)?;
-                    record_downloaded_media(
-                        &conn,
-                        &creation,
-                        &media_path,
-                        thumb.as_deref(),
-                    )?;
+                    record_downloaded_media(&conn, &creation, &media_path, thumb.as_deref())?;
                 }
                 try_fill_native_thumb_after_media(paths, &creation.id);
                 emit_creation_updated(app, &creation.id);
@@ -1524,6 +1546,22 @@ async fn run_media_job(app: &AppHandle, id: &str) -> Result<(), String> {
     }
 }
 
+fn clear_thumb_queue() {
+    let n = {
+        let Ok(mut q) = ensure_queue().lock() else {
+            return;
+        };
+        let n = q.thumbs_high.len() + q.thumbs_low.len();
+        q.thumbs_high.clear();
+        q.thumbs_low.clear();
+        q.thumbs_queued.clear();
+        n
+    };
+    if n > 0 {
+        eprintln!("[library] cleared {n} queued thumb jobs after CDN block");
+    }
+}
+
 fn clear_non_urgent_media_queue(app: &AppHandle, reason: &str) {
     let drained: Vec<String> = {
         let Ok(mut q) = ensure_queue().lock() else {
@@ -1572,6 +1610,29 @@ fn start_ensure_worker(app: AppHandle) {
     }
 }
 
+/// Persist thumb + media for a creation this Generate job just ingested.
+/// Awaits the files (does not use the browse queue) and does not wait out the
+/// API cool-down — this is user-started Generate, not Library scroll.
+pub(crate) async fn cache_generation_files(app: &AppHandle, id: &str) -> Result<(), String> {
+    let _guard = GenerationCacheGuard::enter();
+    let paths = default_paths()?;
+    let creation = {
+        let conn = ready_connection(&paths)?;
+        get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?
+    };
+    if needs_thumb(&creation) {
+        let _ = download_thumbs_only(app, &paths, vec![creation.clone()]).await;
+    }
+    let creation = {
+        let conn = ready_connection(&paths)?;
+        get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?
+    };
+    if needs_download(&creation) {
+        download_media_only(app, &paths, creation).await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn enqueue_thumbs(app: AppHandle, ids: Vec<String>, priority: bool) {
     if ids.is_empty() {
         return;
@@ -1611,6 +1672,15 @@ fn enqueue_media_urgent(app: AppHandle, ids: Vec<String>) {
 async fn ensure_worker(app: AppHandle) {
     let mut media_fail_streak = 0u32;
     loop {
+        if let Some(cool) = super::parascene_api::api_cooling_down() {
+            let wait = cool.min(Duration::from_secs(30));
+            eprintln!(
+                "[library] downloads paused, API cooling down {}s",
+                cool.as_secs()
+            );
+            tokio::time::sleep(wait).await;
+            continue;
+        }
         // 1) Lightbox click — utmost priority, ahead of all thumb warm work.
         let urgent_id = {
             let Ok(mut q) = ensure_queue().lock() else {
@@ -1889,6 +1959,9 @@ pub fn library_cache_missing_media(app: AppHandle) -> Result<DownloadSummary, St
  * Full media for only the immediate page is low priority and never cuts thumbs.
  */
 pub(crate) fn spawn_scroll_ahead(app: AppHandle, limit: u32, offset: u32) {
+    if super::parascene_api::api_cooling_down().is_some() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let Ok(paths) = default_paths() else {
             return;

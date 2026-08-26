@@ -2,7 +2,7 @@
 
 **Status:** Settled principles — implementation debt remains (see “Current flaw”)  
 **Audience:** Anyone changing Generate, frame extract/upload, Form review, catalog stamps, or sync  
-**Related:** [PLAN-generation-provenance.md](./PLAN-generation-provenance.md), [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [GUIDE-desktop-vs-web.md](./GUIDE-desktop-vs-web.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md)
+**Related:** [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md) (how to send a project still — hosted / grouped / target / video extract), [GUIDE-generate-wait.md](./GUIDE-generate-wait.md) (Parascene create wait), [PLAN-generation-provenance.md](./PLAN-generation-provenance.md), [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [GUIDE-desktop-vs-web.md](./GUIDE-desktop-vs-web.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md)
 
 ---
 
@@ -102,7 +102,7 @@ Locked Form review (I2I, I2V, and any gen that used start stills) resolves FIRST
 Parascene Image→Video must not leave a dual identity for the start still:
 
 1. Temp ffmpeg extract is upload transport only — **not** imported as `local-*` into the project.
-2. Uploaded still Creation is filed into the **Images group** only (cover stays on the project; member is not also flattened into the folder).
+2. A **new** uploaded still Creation is filed into the **Images group** (append the new id only). Never regroup the source still — especially not an Images member. See [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md).
 3. Success stamps `startFrameAssetId` / `firstFrameSource` to that **Creation id**.
 4. Read heal: `local-*` FIRST stamps clear when Parascene `meta.args.input_images` already names the still URL; Form shows that still (URL and/or matched Creation id via `matchCreationIdByRemoteUrl`).
 
@@ -112,7 +112,7 @@ Local-capable servers (`blue_direct` / `replicate`) still import local stills as
 
 ## Checklist before merging Generate / frame changes
 
-- [ ] Which server? (`parascene_blue` | `blue_direct` | `replicate`)
+- [ ] How is the source still sent? See [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md) (hosted / grouped / target / video extract). Never regroup an existing Images member.
 - [ ] What is the **durable** input the model sees? (Creation vs local)
 - [ ] Does Form / provenance show that durable input after success?
 - [ ] Are temp extracts excluded from project membership on the Parascene path?

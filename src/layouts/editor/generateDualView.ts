@@ -51,6 +51,35 @@ export function shouldPreserveGenerateDualView(opts: {
   return prev.startsWith("gen:") && next.startsWith("gen:");
 }
 
+function isDualHostKey(key: string | null | undefined): boolean {
+  const k = key?.trim() || "";
+  return (
+    k.startsWith("gen:") ||
+    k.startsWith("ph:") ||
+    k.startsWith("asset:") ||
+    k.startsWith("lib:")
+  );
+}
+
+/**
+ * Keep Result | Form mounted while the next asset's catalog row loads.
+ * Otherwise the overlay unmounts for a frame (label jumps to the other header)
+ * then remounts when provenance is known again.
+ */
+export function shouldHoldGenerateDualChrome(opts: {
+  hostKey: string | null | undefined;
+  showGenerateDualHost: boolean;
+  hasAssetId: boolean;
+  selectionSettled: boolean;
+  isAggregateSelection?: boolean;
+}): boolean {
+  if (opts.isAggregateSelection) return false;
+  if (!opts.hasAssetId) return false;
+  if (opts.showGenerateDualHost) return false;
+  if (opts.selectionSettled) return false;
+  return isDualHostKey(opts.hostKey);
+}
+
 /**
  * While Form is sticky across gen→gen asset clicks, the next creation may not
  * match yet. Hold Form (not Result media) so the image does not flash.

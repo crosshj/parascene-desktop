@@ -1,18 +1,18 @@
-import { createAuthedSdk } from "../auth/session";
 import { getCreations } from "../library/catalogClient";
 import type { TimelineClip } from "../project/types";
 import type {
   ProposedScene,
   StoryboardGenerationStep,
 } from "../project/types";
-import { ingestRemoteCreation, newCreationToken } from "./ingestCreation";
 import {
   extractVideoLastFrame,
   isolateVocalsRange,
   uploadLocalImageFile,
   uploadVocalsSliceClip,
 } from "./audioTools";
-import { fileCreationIntoProjectGroup, resolveLatestImagesGroupStill } from "./projectGroups";
+import { resolveLatestImagesGroupStill } from "./projectGroups";
+import { runLabParasceneGenerate } from "../services/labParasceneGenerate";
+import { buildLtxI2vCreateArgs } from "./ltxI2vGeneration";
 
 function remoteMediaUrl(c: {
   remoteUrl?: string | null;
@@ -73,10 +73,8 @@ async function resolveStillUrl(
       if (url) return url;
     }
   }
-  const sdk = createAuthedSdk();
   const still = await resolveLatestImagesGroupStill({
     imagesGroupId: ctx.imagesGroupId,
-    sdk,
   });
   return still.imageUrl;
 }
@@ -115,42 +113,28 @@ async function pullFrameFromVideoStep(
     filename: `mv-chain-frame-${step.sceneId ?? "scene"}.jpg`,
     contentType: "image/jpeg",
   });
-  const sdk = createAuthedSdk();
-  const started = await sdk.create({
-    serverId: 1,
-    method: "uploadImage",
-    creationToken: newCreationToken(),
-    args: {
-      image_url: uploaded.url,
-      aspect_ratio: ctx.aspectRatio,
-    },
-  });
-  ctx.onPendingCreation(String(started.id), "image");
-  ctx.onProgress(`Waiting for frame image ${started.id}…`);
-  const done = await sdk.waitForCreation(started.id, {
-    onTick: (row) =>
-      ctx.onProgress(`Waiting for ${started.id} (${row.status || "…"})`),
-  });
-  ctx.onPendingCreation(null, null);
-  if (String(done.status).toLowerCase() === "failed") {
-    throw new Error(`Frame upload failed (${done.id})`);
-  }
-  ctx.onProgress("Syncing frame to Library…");
-  const id = await ingestRemoteCreation(done);
-  ctx.onProgress("Filing frame into Images group…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId: id,
-    mediaType: "image",
+  const result = await runLabParasceneGenerate({
     projectId: ctx.projectId,
     projectTitle: ctx.projectTitle,
     imagesGroupId: ctx.imagesGroupId,
     videosGroupId: ctx.videosGroupId,
+    serverId: 1,
+    method: "uploadImage",
+    args: {
+      image_url: uploaded.url,
+      aspect_ratio: ctx.aspectRatio,
+    },
+    mediaType: "image",
+    intent: "text_to_image",
+    label: "uploadImage",
+    onProgress: ctx.onProgress,
+    onPendingCreation: ctx.onPendingCreation,
   });
   return {
-    creationId: id,
+    creationId: result.creationId,
     mediaType: "image",
-    projectCreationIds: filed.projectCreationIds,
-    message: `Last frame @ ${frame.timeSec.toFixed(2)}s — ${filed.message}`,
+    projectCreationIds: result.projectCreationIds,
+    message: `Last frame @ ${frame.timeSec.toFixed(2)}s — filed into Images`,
   };
 }
 
@@ -166,7 +150,6 @@ export async function executeBuildStep(
     return pullFrameFromVideoStep(step, ctx);
   }
 
-  const sdk = createAuthedSdk();
   const prompt = step.prompt?.trim() || "Music video scene";
 
   if (step.kind === "create_still") {
@@ -200,39 +183,25 @@ export async function executeBuildStep(
     ctx.onProgress(
       refUrl ? "Starting image create (with reference)…" : "Starting image create…",
     );
-    const started = await sdk.create({
-      serverId: 1,
-      method: "replicate",
-      creationToken: newCreationToken(),
-      mutateOfId,
-      args,
-    });
-    ctx.onPendingCreation(String(started.id), "image");
-    ctx.onProgress(`Waiting for image ${started.id}…`);
-    const done = await sdk.waitForCreation(started.id, {
-      onTick: (row) =>
-        ctx.onProgress(`Waiting for ${started.id} (${row.status || "…"})`),
-    });
-    ctx.onPendingCreation(null, null);
-    if (String(done.status).toLowerCase() === "failed") {
-      throw new Error(`Image create failed (${done.id})`);
-    }
-    ctx.onProgress("Syncing image to Library…");
-    const id = await ingestRemoteCreation(done);
-    ctx.onProgress("Filing into Images group…");
-    const filed = await fileCreationIntoProjectGroup({
-      creationId: id,
-      mediaType: "image",
+    const result = await runLabParasceneGenerate({
       projectId: ctx.projectId,
       projectTitle: ctx.projectTitle,
       imagesGroupId: ctx.imagesGroupId,
       videosGroupId: ctx.videosGroupId,
+      serverId: 1,
+      method: "replicate",
+      args,
+      mediaType: "image",
+      intent: refUrl ? "image_to_image" : "text_to_image",
+      mutateOfId,
+      onProgress: ctx.onProgress,
+      onPendingCreation: ctx.onPendingCreation,
     });
     return {
-      creationId: id,
+      creationId: result.creationId,
       mediaType: "image",
-      projectCreationIds: filed.projectCreationIds,
-      message: filed.message,
+      projectCreationIds: result.projectCreationIds,
+      message: `Filed into Images group ${result.groupId ?? "—"}`,
     };
   }
 
@@ -240,43 +209,29 @@ export async function executeBuildStep(
     ctx.onProgress("Resolving still for i2v…");
     const imageUrl = await resolveStillUrl(step, ctx);
     ctx.onProgress("Starting image→video…");
-    const started = await sdk.create({
-      serverId: 6,
-      method: "image2video",
-      creationToken: newCreationToken(),
-      args: {
-        prompt,
-        model: "ltx_i2v",
-        aspect_ratio: ctx.aspectRatio,
-        input_images: [imageUrl],
-      },
-    });
-    ctx.onPendingCreation(String(started.id), "video");
-    ctx.onProgress(`Waiting for video ${started.id}…`);
-    const done = await sdk.waitForCreation(started.id, {
-      onTick: (row) =>
-        ctx.onProgress(`Waiting for ${started.id} (${row.status || "…"})`),
-    });
-    ctx.onPendingCreation(null, null);
-    if (String(done.status).toLowerCase() === "failed") {
-      throw new Error(`Video create failed (${done.id})`);
-    }
-    ctx.onProgress("Syncing video to Library…");
-    const id = await ingestRemoteCreation(done);
-    ctx.onProgress("Filing into Videos group…");
-    const filed = await fileCreationIntoProjectGroup({
-      creationId: id,
-      mediaType: "video",
+    const args = buildLtxI2vCreateArgs({
+      prompt,
+      aspectRatio: ctx.aspectRatio,
+      imageUrl,
+    }) as unknown as Record<string, unknown>;
+    const result = await runLabParasceneGenerate({
       projectId: ctx.projectId,
       projectTitle: ctx.projectTitle,
       imagesGroupId: ctx.imagesGroupId,
       videosGroupId: ctx.videosGroupId,
+      serverId: 6,
+      method: "image2video",
+      args,
+      mediaType: "video",
+      intent: "image_to_video",
+      onProgress: ctx.onProgress,
+      onPendingCreation: ctx.onPendingCreation,
     });
     return {
-      creationId: id,
+      creationId: result.creationId,
       mediaType: "video",
-      projectCreationIds: filed.projectCreationIds,
-      message: filed.message,
+      projectCreationIds: result.projectCreationIds,
+      message: `Filed into Videos group ${result.groupId ?? "—"}`,
     };
   }
 
@@ -307,10 +262,13 @@ export async function executeBuildStep(
     ctx.onProgress("Resolving still for a2v…");
     const imageUrl = await resolveStillUrl(step, ctx);
     ctx.onProgress("Starting a2v…");
-    const started = await sdk.create({
+    const result = await runLabParasceneGenerate({
+      projectId: ctx.projectId,
+      projectTitle: ctx.projectTitle,
+      imagesGroupId: ctx.imagesGroupId,
+      videosGroupId: ctx.videosGroupId,
       serverId: 6,
       method: "audio2video",
-      creationToken: newCreationToken(),
       args: {
         prompt,
         model: "ltx_a2v",
@@ -318,33 +276,17 @@ export async function executeBuildStep(
         input_images: [imageUrl],
         audio_clip_id: Number(clipId),
       },
-    });
-    ctx.onPendingCreation(String(started.id), "video");
-    ctx.onProgress(`Waiting for a2v ${started.id}…`);
-    const done = await sdk.waitForCreation(started.id, {
-      onTick: (row) =>
-        ctx.onProgress(`Waiting for ${started.id} (${row.status || "…"})`),
-    });
-    ctx.onPendingCreation(null, null);
-    if (String(done.status).toLowerCase() === "failed") {
-      throw new Error(`a2v failed (${done.id})`);
-    }
-    ctx.onProgress("Syncing a2v to Library…");
-    const id = await ingestRemoteCreation(done);
-    ctx.onProgress("Filing into Videos group…");
-    const filed = await fileCreationIntoProjectGroup({
-      creationId: id,
       mediaType: "video",
-      projectId: ctx.projectId,
-      projectTitle: ctx.projectTitle,
-      imagesGroupId: ctx.imagesGroupId,
-      videosGroupId: ctx.videosGroupId,
+      intent: "image_to_video",
+      label: "ltx_a2v",
+      onProgress: ctx.onProgress,
+      onPendingCreation: ctx.onPendingCreation,
     });
     return {
-      creationId: id,
+      creationId: result.creationId,
       mediaType: "video",
-      projectCreationIds: filed.projectCreationIds,
-      message: filed.message,
+      projectCreationIds: result.projectCreationIds,
+      message: `Filed into Videos group ${result.groupId ?? "—"}`,
     };
   }
 

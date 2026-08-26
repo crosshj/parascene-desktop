@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub fn runs_dir() -> Result<PathBuf, String> {
     let dir = cache::replicate_dir()?.join("runs");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create runs dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create runs dir: {e}"))?;
     Ok(dir)
 }
 
@@ -245,16 +244,8 @@ fn list_row_from_meta(
     let saved_at = meta.saved_at.unwrap_or(0);
     let updated_at = meta.updated_at.unwrap_or(saved_at);
 
-    let thumb_path = meta
-        .local_paths
-        .iter()
-        .find(|p| is_image_path(p))
-        .cloned();
-    let audio_path = meta
-        .local_paths
-        .iter()
-        .find(|p| is_audio_path(p))
-        .cloned();
+    let thumb_path = meta.local_paths.iter().find(|p| is_image_path(p)).cloned();
+    let audio_path = meta.local_paths.iter().find(|p| is_audio_path(p)).cloned();
 
     Ok(Some(PredictionListRow {
         prediction_id,
@@ -281,8 +272,7 @@ fn list_row_from_meta(
 
 fn write_list_sidecar(row: &PredictionListRow, local_paths: &[String]) -> Result<(), String> {
     let dir = run_dir(&row.prediction_id)?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create run dir: {e}"))?;
     let paths: Vec<String> = if local_paths.is_empty() {
         row.thumb_path
             .iter()
@@ -337,8 +327,7 @@ fn write_list_sidecar_from_record(record: &PredictionRecord) -> Result<(), Strin
         "localPaths": record.local_paths,
     });
     let dir = run_dir(&record.prediction_id)?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create run dir: {e}"))?;
     let path = dir.join("list.json");
     let pretty = serde_json::to_string_pretty(&lean).map_err(|e| e.to_string())?;
     let tmp = dir.join(".list.json.tmp");
@@ -379,7 +368,12 @@ fn record_from_json(v: &Value, meta_file: &Path) -> Result<PredictionRecord, Str
     let mut status = v
         .get("status")
         .and_then(|x| x.as_str())
-        .or_else(|| prediction.as_ref().and_then(|p| p.get("status")).and_then(|x| x.as_str()))
+        .or_else(|| {
+            prediction
+                .as_ref()
+                .and_then(|p| p.get("status"))
+                .and_then(|x| x.as_str())
+        })
         .unwrap_or("unknown")
         .to_string();
     if status == "unknown" {
@@ -390,11 +384,7 @@ fn record_from_json(v: &Value, meta_file: &Path) -> Result<PredictionRecord, Str
     let input = v
         .get("input")
         .cloned()
-        .or_else(|| {
-            prediction
-                .as_ref()
-                .and_then(|p| p.get("input").cloned())
-        })
+        .or_else(|| prediction.as_ref().and_then(|p| p.get("input").cloned()))
         .unwrap_or(json!({}));
 
     let output_urls = v
@@ -423,9 +413,7 @@ fn record_from_json(v: &Value, meta_file: &Path) -> Result<PredictionRecord, Str
                 if let Ok(rd) = std::fs::read_dir(dir) {
                     for entry in rd.flatten() {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        if name == "prediction.json"
-                            || name == "list.json"
-                            || name.starts_with('.')
+                        if name == "prediction.json" || name == "list.json" || name.starts_with('.')
                         {
                             continue;
                         }
@@ -499,24 +487,18 @@ fn record_from_json(v: &Value, meta_file: &Path) -> Result<PredictionRecord, Str
                 .map(|s| s.to_string())
         });
 
-    let predict_time = v
-        .get("predictTime")
-        .and_then(|x| x.as_f64())
-        .or_else(|| {
-            prediction
-                .as_ref()
-                .and_then(|p| p.pointer("/metrics/predict_time"))
-                .and_then(|x| x.as_f64())
-        });
-    let total_time = v
-        .get("totalTime")
-        .and_then(|x| x.as_f64())
-        .or_else(|| {
-            prediction
-                .as_ref()
-                .and_then(|p| p.pointer("/metrics/total_time"))
-                .and_then(|x| x.as_f64())
-        });
+    let predict_time = v.get("predictTime").and_then(|x| x.as_f64()).or_else(|| {
+        prediction
+            .as_ref()
+            .and_then(|p| p.pointer("/metrics/predict_time"))
+            .and_then(|x| x.as_f64())
+    });
+    let total_time = v.get("totalTime").and_then(|x| x.as_f64()).or_else(|| {
+        prediction
+            .as_ref()
+            .and_then(|p| p.pointer("/metrics/total_time"))
+            .and_then(|x| x.as_f64())
+    });
 
     let version = v
         .get("version")
@@ -530,10 +512,7 @@ fn record_from_json(v: &Value, meta_file: &Path) -> Result<PredictionRecord, Str
                 .map(|s| s.to_string())
         });
 
-    let saved_at = v
-        .get("savedAt")
-        .and_then(|x| x.as_u64())
-        .unwrap_or(0);
+    let saved_at = v.get("savedAt").and_then(|x| x.as_u64()).unwrap_or(0);
     let updated_at = v
         .get("updatedAt")
         .and_then(|x| x.as_u64())
@@ -624,8 +603,7 @@ pub fn upsert_record(mut record: PredictionRecord) -> Result<PredictionRecord, S
     }
     record.updated_at = now;
     let dir = run_dir(&record.prediction_id)?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create run dir: {e}"))?;
     record.run_dir = dir.to_string_lossy().to_string();
     let path = dir.join("prediction.json");
     let pretty = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
@@ -694,11 +672,9 @@ pub fn upsert_from_prediction_with_preview(
         })
         .unwrap_or_else(|| "unknown".into());
 
-    let preview = output_preview.map(|s| s.to_string()).or_else(|| {
-        prediction
-            .get("output")
-            .and_then(preview_from_output)
-    });
+    let preview = output_preview
+        .map(|s| s.to_string())
+        .or_else(|| prediction.get("output").and_then(preview_from_output));
 
     let record = PredictionRecord {
         prediction_id,
@@ -813,8 +789,7 @@ pub fn get_prediction(prediction_id: &str) -> Result<Option<PredictionDetail>, S
 
 fn write_detail_sidecar(record: &PredictionRecord) -> Result<(), String> {
     let dir = run_dir(&record.prediction_id)?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create run dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create run dir: {e}"))?;
     let lean = PredictionRecord {
         prediction: None,
         input: redact_heavy_json(&record.input),
@@ -845,7 +820,10 @@ mod tests {
         });
         let out = redact_heavy_json(&input);
         assert_eq!(out["prompt"], "hello");
-        assert_eq!(out["style_reference_images"][1], "https://example.com/small.png");
+        assert_eq!(
+            out["style_reference_images"][1],
+            "https://example.com/small.png"
+        );
         let stub = out["style_reference_images"][0].as_str().unwrap();
         assert!(stub.contains("data-uri"), "{stub}");
         assert!(stub.contains("chars"), "{stub}");

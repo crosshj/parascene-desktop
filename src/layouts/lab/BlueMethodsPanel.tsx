@@ -9,14 +9,16 @@ import {
   blueCapabilities,
   blueCapabilitiesToListPage,
   blueCredentialsStatus,
-  blueMethodRun,
-  blueMethodRunCancel,
   blueMethodThumbColor,
   blueMethodThumbColors,
   blueMethodToDetail,
   listenBlueRunProgress,
   type BlueCapabilities,
 } from "../../blue/blueClient";
+import {
+  cancelLabGenerateJob,
+  runBlueGenerate,
+} from "../../services/labGenerate";
 import {
   ensureLocal,
   getCreation,
@@ -39,14 +41,6 @@ import type {
 import { ReplicateLocalOutput } from "../../replicate/replicateLocalOutput";
 import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
 import {
-  aspectChooserOptionsFromSupported,
-  pickAspectChooserValue,
-  projectAspectCss,
-  isProjectAspectRatio,
-} from "../../project/aspectRatios";
-import { parseAspectRatioString } from "../../library/aspectRatio";
-import { AspectRatioChooser } from "../../ui/AspectRatioChooser";
-import {
   LabLibraryFilePickerDialog,
   type LabRunFilePick,
 } from "./LabLibraryFilePicker";
@@ -61,23 +55,18 @@ import {
   saveLabSelection,
 } from "./labRunFormPersist";
 import {
-  aspectChooserOptionsForField,
   buildRunInput,
-  clampNumericString,
   defaultFormValue,
   fileFieldKind,
   fileFieldLabel,
-  formatDefaultLabel,
   formatRunError,
-  hasSliderRange,
   isAnyFileField,
-  isAspectRatioField,
   isFileArrayField,
   isFileField,
   resolveFormValue,
   runnableFields,
-  sliderStep,
 } from "./labSchemaForm";
+import { SchemaFields } from "../../forms/SchemaFields";
 import { REPLICATE_ROW_HEIGHT } from "./ReplicateModelsVirtualList";
 import { formatLabDuration } from "./labDuration";
 
@@ -165,15 +154,6 @@ type RunSlot = {
   error?: string;
 };
 
-function aspectCssFromRunValue(raw: string | null | undefined): string | null {
-  const value = raw?.trim() ?? "";
-  if (!value) return null;
-  if (isProjectAspectRatio(value)) return projectAspectCss(value);
-  const parts = parseAspectRatioString(value);
-  if (!parts) return null;
-  return `${parts.w} / ${parts.h}`;
-}
-
 export function BlueMethodsPanel({
   onOpenSettings,
   imageAssets = [],
@@ -218,6 +198,7 @@ export function BlueMethodsPanel({
   );
   const splitRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<string | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -568,6 +549,7 @@ export function BlueMethodsPanel({
     setRunBusy(true);
     setRunProgress(null);
     setRunSlots([{ id: 0, status: "running" }]);
+    activeJobIdRef.current = null;
 
     try {
       const input = buildRunInput(
@@ -592,7 +574,14 @@ export function BlueMethodsPanel({
           );
         }
       }
-      const result = await blueMethodRun(selected, input, localFiles);
+      const result = await runBlueGenerate({
+        method: selected,
+        args: input,
+        localFiles,
+        onJob: (jobId) => {
+          activeJobIdRef.current = jobId;
+        },
+      });
       setRunSlots([{ id: 0, status: "ready", result }]);
     } catch (err) {
       const message = formatRunError(
@@ -601,6 +590,7 @@ export function BlueMethodsPanel({
       setRunError(message);
       setRunSlots([{ id: 0, status: "error", error: message }]);
     } finally {
+      activeJobIdRef.current = null;
       setRunBusy(false);
     }
   };
@@ -619,22 +609,7 @@ export function BlueMethodsPanel({
 
   const renderField = (field: ReplicateInputField) => {
     const label = field.title || field.name;
-    const value = resolveFormValue(field, runValues);
-    const enums = field.enumValues ?? null;
-    const setValue = (next: string) =>
-      setRunValues((prev) => ({ ...prev, [field.name]: next }));
     const kind = isAnyFileField(field) ? fileFieldKind(field) : null;
-    const isPromptLike =
-      field.typeName === "string" &&
-      !enums?.length &&
-      !isAnyFileField(field) &&
-      (field.name.toLowerCase().includes("prompt") ||
-        (field.description?.length ?? 0) > 80);
-    const showSlider = hasSliderRange(field);
-    const defaultLabel = formatDefaultLabel(field);
-    const aspectOpts = isAspectRatioField(field)
-      ? aspectChooserOptionsFromSupported(field.enumValues)
-      : aspectChooserOptionsForField(field);
 
     if (isFileArrayField(field)) {
       const list = runFileListPicks[field.name] ?? [];
@@ -942,152 +917,7 @@ export function BlueMethodsPanel({
       );
     }
 
-    if (aspectOpts.length > 0) {
-      return (
-        <label key={field.name} className="lab-replicate-field">
-          <span>
-            {label}
-            {field.required ? " *" : ""}
-          </span>
-          <AspectRatioChooser
-            options={aspectOpts}
-            value={pickAspectChooserValue(aspectOpts, value)}
-            onChange={setValue}
-            disabled={runBusy}
-          />
-          {aspectCssFromRunValue(value) ? (
-            <span
-              className="lab-replicate-aspect-preview"
-              style={{ aspectRatio: aspectCssFromRunValue(value)! }}
-            />
-          ) : null}
-        </label>
-      );
-    }
-
-    if (field.typeName === "boolean") {
-      return (
-        <label key={field.name} className="lab-replicate-field">
-          <span>
-            {label}
-            {field.required ? " *" : ""}
-          </span>
-          <select
-            className="control"
-            value={value || "false"}
-            disabled={runBusy}
-            onChange={(e) => setValue(e.target.value)}
-          >
-            <option value="false">false</option>
-            <option value="true">true</option>
-          </select>
-        </label>
-      );
-    }
-
-    if (enums?.length) {
-      return (
-        <label key={field.name} className="lab-replicate-field">
-          <span>
-            {label}
-            {field.required ? " *" : ""}
-          </span>
-          <select
-            className="control"
-            value={value}
-            disabled={runBusy}
-            onChange={(e) => setValue(e.target.value)}
-          >
-            {!field.required ? <option value="">—</option> : null}
-            {enums.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
-          {defaultLabel ? (
-            <span className="muted">Default: {defaultLabel}</span>
-          ) : null}
-        </label>
-      );
-    }
-
-    if (showSlider) {
-      return (
-        <label key={field.name} className="lab-replicate-field">
-          <span>
-            {label}
-            {field.required ? " *" : ""}
-          </span>
-          <input
-            className="control"
-            type="range"
-            min={field.minimum ?? 0}
-            max={field.maximum ?? 1}
-            step={sliderStep(field)}
-            value={
-              value.trim() !== ""
-                ? value
-                : String(field.minimum ?? 0)
-            }
-            disabled={runBusy}
-            onChange={(e) =>
-              setValue(clampNumericString(e.target.value, field))
-            }
-          />
-          <input
-            className="control"
-            type="number"
-            value={value}
-            disabled={runBusy}
-            onChange={(e) =>
-              setValue(clampNumericString(e.target.value, field))
-            }
-          />
-          {defaultLabel ? (
-            <span className="muted">Default: {defaultLabel}</span>
-          ) : null}
-        </label>
-      );
-    }
-
-    if (isPromptLike) {
-      return (
-        <label key={field.name} className="lab-replicate-field">
-          <span>
-            {label}
-            {field.required ? " *" : ""}
-          </span>
-          <textarea
-            className="control"
-            rows={4}
-            value={value}
-            disabled={runBusy}
-            onChange={(e) => setValue(e.target.value)}
-          />
-        </label>
-      );
-    }
-
-    return (
-      <label key={field.name} className="lab-replicate-field">
-        <span>
-          {label}
-          {field.required ? " *" : ""}
-        </span>
-        <input
-          className="control"
-          type={
-            field.typeName === "number" || field.typeName === "integer"
-              ? "number"
-              : "text"
-          }
-          value={value}
-          disabled={runBusy}
-          onChange={(e) => setValue(e.target.value)}
-        />
-      </label>
-    );
+    return null;
   };
 
   return (
@@ -1259,7 +1089,19 @@ export function BlueMethodsPanel({
                             void onRun();
                           }}
                         >
-                          {formFields.map((f) => renderField(f))}
+                          <SchemaFields
+                            fields={formFields}
+                            values={runValues}
+                            onChange={(name, value) =>
+                              setRunValues((prev) => ({
+                                ...prev,
+                                [name]: value,
+                              }))
+                            }
+                            disabled={runBusy}
+                            showAspectPreview
+                            renderFileField={renderField}
+                          />
                           <div className="lab-replicate-run-actions">
                             <button
                               type="submit"
@@ -1272,7 +1114,10 @@ export function BlueMethodsPanel({
                               <button
                                 type="button"
                                 className="btn ghost"
-                                onClick={() => void blueMethodRunCancel()}
+                                onClick={() => {
+                                  const id = activeJobIdRef.current;
+                                  if (id) void cancelLabGenerateJob(id);
+                                }}
                               >
                                 Cancel
                               </button>

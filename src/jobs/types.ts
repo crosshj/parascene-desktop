@@ -14,7 +14,10 @@ export type JobKind =
   | "create_media"
   | "wait_creation"
   | "group_creations"
-  | "delete_creation";
+  | "delete_creation"
+  | "blue_generate"
+  | "replicate_generate"
+  | "parascene_generate";
 
 export type Job = {
   id: string;

@@ -8,20 +8,14 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { creationAspectCss, creationPackHeight } from "./aspectRatio";
-import { ensureLocal } from "./catalogClient";
 import { CreationCard } from "./CreationCard";
 import { FolderCard } from "./FolderCard";
 import { FolderCardSkeleton } from "./FolderCardSkeleton";
 import type { LibraryFolder } from "./folderClient";
 import { MASONRY_GAP_PX, useMasonryLayout, type BoardColumnLayoutOpts } from "./CreationsMasonry";
-import { canFetchLocal, creationPreviewUrl } from "./previewUrl";
 import type { Creation } from "./types";
 import { warmLocalPreviews } from "./warmPreviews";
 
-/** Ask Rust for missing thumbs near the viewport (not the whole board). */
-const ENSURE_AHEAD_PX = 1800;
-/** Max thumb ensure requests per scroll/layout pass. */
-const ENSURE_BATCH = 24;
 /** Keep this much padding above/below the viewport mounted. */
 const OVERSCAN_PX = 1200;
 /** Start paging when less than this much scroll runway remains (min; also ≥ 4 viewports). */
@@ -176,7 +170,6 @@ export function VirtualCreationsGrid({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(800);
   const nearEndSent = useRef(false);
-  const ensuredIds = useRef(new Set<string>());
   const [packState, setPackState] = useState(() => ({
     resetKey: layoutResetKey,
     columnCount: 0,
@@ -258,37 +251,6 @@ export function VirtualCreationsGrid({
         .map((card) => (card.item as { kind: "creation"; creation: Creation }).creation),
     );
   }, [visibleCards]);
-
-  // Pull missing thumbs near the viewport only (capped batch).
-  useEffect(() => {
-    const mid = scrollTop + viewportH / 2;
-    const missing = cards
-      .filter((card) => {
-        if (card.item.kind !== "creation") return false;
-        const creation = card.item.creation;
-        if (!canFetchLocal(creation)) return false;
-        if (creationPreviewUrl(creation)) return false;
-        const key = `${card.id}:thumb`;
-        if (ensuredIds.current.has(key)) return false;
-        if (card.top + card.height < scrollTop - ENSURE_AHEAD_PX) return false;
-        if (card.top > scrollTop + viewportH + ENSURE_AHEAD_PX) return false;
-        return true;
-      })
-      .sort(
-        (a, b) =>
-          Math.abs(a.top + a.height / 2 - mid) -
-          Math.abs(b.top + b.height / 2 - mid),
-      )
-      .slice(0, ENSURE_BATCH);
-    if (missing.length === 0) return;
-    const thumbIds: string[] = [];
-    for (const card of missing) {
-      const key = `${card.id}:thumb`;
-      ensuredIds.current.add(key);
-      thumbIds.push(card.id);
-    }
-    void ensureLocal(thumbIds, { fullMedia: false });
-  }, [cards, scrollTop, viewportH]);
 
   const checkNearEnd = useCallback(
     (el: HTMLDivElement) => {

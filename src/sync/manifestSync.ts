@@ -1,12 +1,9 @@
 import { mapCatalogSyncError } from "../auth/errors";
-import { createAuthedSdk, ensureAccessToken, getEnvConfig } from "../auth/session";
+import { ensureAccessToken, getEnvConfig } from "../auth/session";
+import { runSyncFull, runSyncNewest } from "../services/syncCatalog";
 import { aspectRatioFromMeta } from "../library/aspectRatio";
 import {
   applyManifest,
-  cloudIdsSince,
-  deleteLocal,
-  downloadPending,
-  existingCreationIds,
   getSyncStatus,
   listCreations,
 } from "../library/catalogClient";
@@ -14,7 +11,7 @@ import {
   groupEmbeddedSourceCreations,
   isGroupCreation,
 } from "../library/creationFlags";
-import { CREATIONS_PAGE_SIZE, type CreationUpsert, type SyncStatus } from "../library/types";
+import { type CreationUpsert, type SyncStatus } from "../library/types";
 import {
   absolutizeAssetUrl,
   deriveFitThumbnailUrl,
@@ -248,7 +245,6 @@ export async function syncGroupMembersManifest(): Promise<GroupMembersSyncResult
     };
   }
   const status = await applyManifest(additions);
-  kickWarmAheadPreviews();
   return { status, groups: groups.length, added: additions.length };
 }
 
@@ -337,244 +333,43 @@ function rethrowCatalogError(e: unknown): never {
   throw mapCatalogSyncError(e);
 }
 
-async function fetchAllRemoteCreations(): Promise<CreationUpsert[]> {
-  await ensureAccessToken();
-  await syncSessionUserAvatar();
-  const sdk = createAuthedSdk();
-  const pageSize = 100;
-  const all: RemoteCreateImage[] = [];
-  let offset = 0;
-
-  try {
-    for (;;) {
-      const page = await sdk.listMyCreations({ limit: pageSize, offset });
-      all.push(...page.images);
-      if (!page.hasMore || page.images.length === 0) break;
-      offset += page.images.length;
-    }
-  } catch (e: unknown) {
-    rethrowCatalogError(e);
-  }
-
-  return all.map(mapRemoteCreation).filter(isSyncableRemoteCreation);
-}
-
-async function warmAheadPreviews(status?: SyncStatus): Promise<SyncStatus> {
-  const summary = await downloadPending(CREATIONS_PAGE_SIZE);
-  return summary.status ?? status ?? (await getSyncStatus());
-}
-
-/** Kick thumb warm-ahead without blocking the Sync button / UI. */
-function kickWarmAheadPreviews(): void {
-  void warmAheadPreviews().catch(() => {
-    /* background */
-  });
-}
-
 /** Metadata only (full image records) — no media downloads. */
 export async function syncCreationsMetadata(): Promise<SyncStatus> {
-  const creations = await fetchAllRemoteCreations();
-  return applyManifest(creations);
+  const result = await runSyncFull();
+  return result.status;
 }
 
 /**
- * Newest-first catalog sync: fetch a small newest window (default 2×50),
- * upsert every syncable row in that window (so existing group covers refresh
- * membership), stop early once a page is already fully local.
- * Also drops local rows that should have appeared in that recent window but
- * are gone on Parascene (verified with getCreation) — capped to the last
- * {@link NEWEST_PRUNE_MAX_AGE_MS}. Older removals still need Sync full catalog.
+ * Newest-first catalog sync via Rust job. Prefer {@link runSyncNewest} from
+ * `src/services/syncCatalog.ts` in new code.
  */
 export async function syncNewestCreationsManifest(opts?: {
   onProgress?: (progress: NewestSyncProgress) => void;
 }): Promise<NewestSyncResult> {
   const target = NEWEST_SYNC_PAGE_SIZE * NEWEST_SYNC_MAX_PAGES;
-  let added = 0;
-  let pruned = 0;
-  const report = (
-    phase: NewestSyncProgress["phase"],
-    message: string,
-    checked: number,
-  ) => {
-    opts?.onProgress?.({
-      phase,
-      message,
-      checked,
-      target,
-      added,
-      pruned,
-    });
-  };
-
-  report("auth", "Checking session…", 0);
   try {
     await ensureAccessToken();
   } catch (e: unknown) {
     rethrowCatalogError(e);
   }
-  // Verify/cache chrome avatar before catalog work — never leave a broken img.
   await syncSessionUserAvatar();
-
-  report("fetch", "Fetching newest…", 0);
-  const sdk = createAuthedSdk();
-  let offset = 0;
-  let lastStatus: SyncStatus | null = null;
-  let pages = 0;
-  const remoteRows: CreationUpsert[] = [];
-
-  try {
-    for (;;) {
-      if (pages >= NEWEST_SYNC_MAX_PAGES) break;
-
-      const pageNum = pages + 1;
-      report(
-        "fetch",
-        `Fetching page ${pageNum} of ${NEWEST_SYNC_MAX_PAGES}…`,
-        remoteRows.length,
-      );
-      const page = await sdk.listMyCreations({
-        limit: NEWEST_SYNC_PAGE_SIZE,
-        offset,
+  const result = await runSyncNewest({
+    onProgress: (p) => {
+      opts?.onProgress?.({
+        phase: p.phase === "done" ? "done" : "fetch",
+        message: p.message,
+        checked: p.checked ?? 0,
+        target,
+        added: p.added ?? 0,
+        pruned: p.pruned ?? 0,
       });
-      pages += 1;
-      if (page.images.length === 0) break;
-
-      const upserts = page.images.map(mapRemoteCreation);
-      // Keep creating ids in the prune window so we do not treat them as deletions.
-      remoteRows.push(...upserts);
-      const checked = remoteRows.length;
-      report(
-        "fetch",
-        `Checked ${checked} of ~${target} newest…`,
-        checked,
-      );
-
-      // Skip in-flight Parascene creates — ingest waits until they leave creating.
-      const syncable = upserts.filter(isSyncableRemoteCreation);
-      const ids = syncable.map((c) => c.id);
-      const existing = new Set(await existingCreationIds(ids));
-      const newRows = syncable.filter((c) => !existing.has(c.id));
-
-      // Upsert the whole syncable page (not only unknown ids) so existing group
-      // covers refresh `meta.group` membership after web-side edits.
-      if (syncable.length > 0) {
-        report(
-          "apply",
-          newRows.length > 0
-            ? `Saving ${newRows.length} new creation(s) (${checked} of ~${target})…`
-            : `Refreshing ${syncable.length} creation(s) (${checked} of ~${target})…`,
-          checked,
-        );
-        lastStatus = await applyManifest(syncable);
-        added += newRows.length;
-        report(
-          "apply",
-          `Added ${added} so far · checked ${checked} of ~${target}`,
-          checked,
-        );
-      }
-
-      // Caught up: every syncable id on this page is already local.
-      // An all-creating page is not "caught up" — keep paging for completed rows.
-      const allKnown =
-        syncable.length > 0 && syncable.every((c) => existing.has(c.id));
-      if (allKnown) {
-        report(
-          "fetch",
-          `Caught up · checked ${checked} of ~${target}`,
-          checked,
-        );
-        break;
-      }
-      if (!page.hasMore || page.images.length === 0) break;
-
-      offset += page.images.length;
-    }
-  } catch (e: unknown) {
-    rethrowCatalogError(e);
-  }
-
-  if (remoteRows.length > 0) {
-    report(
-      "prune",
-      `Checking recent deletions (${remoteRows.length} of ~${target})…`,
-      remoteRows.length,
-    );
-    pruned = await pruneRecentRemoteDeletions(sdk, remoteRows, (done, total) => {
-      report(
-        "prune",
-        total > 0
-          ? `Removing deleted locally ${done} of ${total}…`
-          : "No recent deletions to clear",
-        remoteRows.length,
-      );
-    });
-  }
-
-  if (!lastStatus) {
-    // Touch sync timestamp so "last synced" updates on a no-op newest pass.
-    lastStatus = await applyManifest([]);
-  } else if (pruned > 0) {
-    lastStatus = await getSyncStatus();
-  }
-
-  report(
-    "done",
-    added > 0 || pruned > 0
-      ? `Done · added ${added}, removed ${pruned}`
-      : `Done · nothing new in newest ~${target}`,
-    remoteRows.length || target,
-  );
-  kickWarmAheadPreviews();
-  return { status: lastStatus, added, pruned };
-}
-
-/**
- * Remove local cloud rows that belong in the fetched newest window but are
- * missing remotely (deleted on Parascene recently).
- */
-async function pruneRecentRemoteDeletions(
-  sdk: ReturnType<typeof createAuthedSdk>,
-  remoteRows: CreationUpsert[],
-  onTick?: (done: number, total: number) => void,
-): Promise<number> {
-  const remoteIds = new Set(remoteRows.map((r) => r.id));
-  let oldestInWindow = remoteRows[0]?.createdAt ?? null;
-  for (const row of remoteRows) {
-    if (!oldestInWindow || row.createdAt < oldestInWindow) {
-      oldestInWindow = row.createdAt;
-    }
-  }
-  if (!oldestInWindow) return 0;
-
-  const sinceIso = recentPruneSinceIso(oldestInWindow);
-  const locals = await cloudIdsSince(sinceIso);
-  const candidates = locals
-    .map((row) => row.id)
-    .filter((id) => !remoteIds.has(id));
-  if (candidates.length === 0) {
-    onTick?.(0, 0);
-    return 0;
-  }
-
-  let pruned = 0;
-  let checked = 0;
-  for (const id of candidates) {
-    checked += 1;
-    onTick?.(checked, candidates.length);
-    try {
-      await sdk.getCreation(id);
-      // Still on Parascene (outside the pages we fetched, or race) — keep.
-    } catch {
-      try {
-        await deleteLocal(id);
-        pruned += 1;
-      } catch {
-        /* keep going */
-      }
-    }
-  }
-  return pruned;
+    },
+  });
+  return {
+    status: result.status,
+    added: result.added,
+    pruned: result.pruned,
+  };
 }
 
 /** Prefer the newest-page floor, but never look further back than a few hours. */
@@ -590,14 +385,18 @@ export function recentPruneSinceIso(
 }
 
 /**
- * Exhaustive catalog sync: fetch every creation page and upsert the full
- * manifest. Use for edits, removals, and recovery after newest-only sync.
+ * Exhaustive catalog sync via Rust job. Prefer {@link runSyncFull} from
+ * `src/services/syncCatalog.ts` in new code.
  */
 export async function syncFullCreationsManifest(): Promise<SyncStatus> {
-  const creations = await fetchAllRemoteCreations();
-  const status = await applyManifest(creations);
-  kickWarmAheadPreviews();
-  return status;
+  try {
+    await ensureAccessToken();
+  } catch (e: unknown) {
+    rethrowCatalogError(e);
+  }
+  await syncSessionUserAvatar();
+  const result = await runSyncFull();
+  return result.status;
 }
 
 /**
@@ -612,56 +411,14 @@ export async function refreshCreationsFromListById(
   ids: readonly string[],
   opts?: { maxPages?: number; pageSize?: number },
 ): Promise<number> {
-  const wanted = new Set(
-    ids.map((id) => String(id).trim()).filter(Boolean),
+  const { refreshCreationsFromListById: refreshViaService } = await import(
+    "../services/syncCatalog"
   );
-  if (wanted.size === 0) return 0;
-
-  try {
-    await ensureAccessToken();
-  } catch (e: unknown) {
-    rethrowCatalogError(e);
-  }
-
-  const sdk = createAuthedSdk();
-  const pageSize = opts?.pageSize ?? NEWEST_SYNC_PAGE_SIZE;
-  const maxPages = opts?.maxPages ?? 40;
-  const found = new Set<string>();
-  let offset = 0;
-  let refreshed = 0;
-
-  try {
-    for (let page = 0; page < maxPages && found.size < wanted.size; page += 1) {
-      const result = await sdk.listMyCreations({ limit: pageSize, offset });
-      if (result.images.length === 0) break;
-
-      const hits = result.images.filter((img) =>
-        wanted.has(String(img.id)),
-      );
-      if (hits.length > 0) {
-        const syncable = hits
-          .map(mapRemoteCreation)
-          .filter(isSyncableRemoteCreation);
-        if (syncable.length > 0) {
-          await applyManifest(syncable);
-          refreshed += syncable.length;
-          for (const row of syncable) found.add(row.id);
-        }
-      }
-
-      if (!result.hasMore) break;
-      offset += result.images.length;
-    }
-  } catch (e: unknown) {
-    rethrowCatalogError(e);
-  }
-
-  return refreshed;
+  return refreshViaService(ids, opts);
 }
 
 /**
- * Pull full creations metadata into SQLite, then kick backend thumb warm-ahead
- * (several pages). Media trails thumbs and must not block the board.
+ * Pull full creations metadata into SQLite.
  *
  * Alias for {@link syncFullCreationsManifest} (recovery / onboarding path).
  */

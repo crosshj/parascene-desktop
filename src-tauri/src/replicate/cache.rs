@@ -42,14 +42,10 @@ fn model_file(dir: &Path, owner: &str, name: &str) -> PathBuf {
 }
 
 fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Invalid path".to_string())?;
+    let parent = path.parent().ok_or_else(|| "Invalid path".to_string())?;
     let tmp = parent.join(format!(
         ".{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("tmp")
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp")
     ));
     std::fs::write(&tmp, contents).map_err(|e| format!("Write failed: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("Rename failed: {e}"))?;
@@ -276,7 +272,14 @@ fn ensure_sorted(cache: &mut IndexMemCache, sort_key: &str) -> u64 {
 
 fn cached_index(
     dir: &Path,
-) -> Result<(std::sync::MutexGuard<'static, Option<IndexMemCache>>, u64, bool), String> {
+) -> Result<
+    (
+        std::sync::MutexGuard<'static, Option<IndexMemCache>>,
+        u64,
+        bool,
+    ),
+    String,
+> {
     let path = index_path(dir);
     let mut guard = index_mem()
         .lock()
@@ -289,8 +292,7 @@ fn cached_index(
     if needs_load {
         let t0 = std::time::Instant::now();
         let rows = read_index_rows(dir)?;
-        let map: HashMap<String, ModelIndexRow> =
-            rows.into_iter().map(|r| (r.key(), r)).collect();
+        let map: HashMap<String, ModelIndexRow> = rows.into_iter().map(|r| (r.key(), r)).collect();
         let mut cache = IndexMemCache {
             path,
             map,
@@ -339,7 +341,9 @@ fn sort_rows(rows: &mut [ModelIndexRow], sort_key: &str) {
                 .cmp(&a.name.to_lowercase())
                 .then_with(|| a.owner.to_lowercase().cmp(&b.owner.to_lowercase()))
         }),
-        "owner_name_asc" => rows.sort_by(|a, b| a.key().to_lowercase().cmp(&b.key().to_lowercase())),
+        "owner_name_asc" => {
+            rows.sort_by(|a, b| a.key().to_lowercase().cmp(&b.key().to_lowercase()))
+        }
         // default: runs_desc
         _ => rows.sort_by(|a, b| {
             b.run_count
@@ -399,10 +403,7 @@ pub fn row_from_api_model(dir: &Path, model: &Value) -> Option<ModelIndexRow> {
             .get("description")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        run_count: model
-            .get("run_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
+        run_count: model.get("run_count").and_then(|v| v.as_u64()).unwrap_or(0),
         cover_image_url: model
             .get("cover_image_url")
             .and_then(|v| v.as_str())
@@ -521,11 +522,7 @@ pub fn list_cached(
             let mut rows: Vec<ModelIndexRow> = if q.is_none() && feat.is_empty() {
                 // Enabled-only filter: keep cached sort order, then retain.
                 let _ = ensure_sorted(cache, &sort_key);
-                cache
-                    .sorted
-                    .get(&sort_key)
-                    .cloned()
-                    .unwrap_or_default()
+                cache.sorted.get(&sort_key).cloned().unwrap_or_default()
             } else {
                 let mut rows: Vec<ModelIndexRow> = cache.map.values().cloned().collect();
                 rows.retain(|r| {
@@ -694,9 +691,7 @@ pub fn save_model_detail(owner: &str, name: &str, raw: &Value) -> Result<ModelDe
             .pointer("/latest_version/created_at")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        model_created_at: map
-            .get(&key)
-            .and_then(|r| r.model_created_at.clone()),
+        model_created_at: map.get(&key).and_then(|r| r.model_created_at.clone()),
         features: dto.features.clone(),
         schema_cached: true,
         url: dto.url.clone(),

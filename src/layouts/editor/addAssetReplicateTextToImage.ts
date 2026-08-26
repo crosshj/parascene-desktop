@@ -2,17 +2,14 @@
  * Replicate-backed text → image generation into project Assets.
  */
 
+import { listenReplicateRunProgress } from "../../replicate/replicateClient";
 import {
-  listenReplicateRunProgress,
-  replicateModelRun,
-} from "../../replicate/replicateClient";
-import { importLocalPathsForProject } from "../../project/projectAssetLanding";
+  invokeReplicateGenerateStill,
+  watchLocalGenerateStill,
+} from "../../services/generateStill";
 import type { ProjectAspectRatio } from "../../project/aspectRatios";
-import {
-  aspectChooserOptionsFromSupported,
-  pickAspectChooserValue,
-} from "../../project/aspectRatios";
 import type { ReplicateTextToImageModelOption } from "./replicateTextToImageModels";
+import { buildReplicateTextToImageInput } from "./textToImageInput";
 
 export type RunReplicateTextToImageOpts = {
   model: ReplicateTextToImageModelOption;
@@ -29,6 +26,7 @@ export type RunReplicateTextToImageResult = {
   localPath: string;
 };
 
+/** Direct invoke + watch (Lab-style). Prefer {@link startLibraryReplicateTextToImage} in Editor. */
 export async function runReplicateTextToImage(
   opts: RunReplicateTextToImageOpts,
 ): Promise<RunReplicateTextToImageResult> {
@@ -38,24 +36,11 @@ export async function runReplicateTextToImage(
   }
 
   const modelId = opts.model.id;
-  const input: Record<string, unknown> = {
-    [opts.model.promptField]: prompt,
-  };
-
-  if (opts.model.aspectRatioField) {
-    const field = opts.model.inputs.find(
-      (row) => row.name === opts.model.aspectRatioField,
-    );
-    const options = aspectChooserOptionsFromSupported(field?.enumValues);
-    if (options.length > 0) {
-      input[opts.model.aspectRatioField] = pickAspectChooserValue(
-        options,
-        opts.aspectRatio,
-      );
-    } else {
-      input[opts.model.aspectRatioField] = opts.aspectRatio;
-    }
-  }
+  const input = buildReplicateTextToImageInput({
+    model: opts.model,
+    prompt,
+    aspectRatio: opts.aspectRatio,
+  });
 
   opts.onProgress?.(`Running ${modelId}…`);
   let predictionId: string | null = null;
@@ -65,46 +50,31 @@ export async function runReplicateTextToImage(
     else if (ev.status) opts.onProgress?.(`${modelId}: ${ev.status}`);
   });
 
-  let result;
   try {
-    result = await replicateModelRun(
-      opts.model.owner,
-      opts.model.name,
+    const handle = await invokeReplicateGenerateStill({
+      owner: opts.model.owner,
+      name: opts.model.name,
       input,
-      {},
-      [],
-    );
+      localFiles: {},
+      requiredFileFields: [],
+      projectId: opts.projectId,
+      target: "assets",
+      label: modelId,
+    });
+    const result = await watchLocalGenerateStill(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (note) opts.onProgress?.(note);
+      },
+    });
+    const localPath = result.localPaths[0]?.trim() ?? "";
+    return {
+      creationId: result.creationId,
+      modelId,
+      predictionId: result.predictionId?.trim() || predictionId,
+      localPath,
+    };
   } finally {
     unlisten();
   }
-
-  if (result.error || result.status === "failed" || result.status === "canceled") {
-    throw new Error(
-      result.error?.trim() || `Replicate run ${result.status || "failed"}`,
-    );
-  }
-
-  const outputPath = result.localPaths.find((p) => p.trim())?.trim();
-  if (!outputPath) {
-    throw new Error("Replicate finished with no local output file.");
-  }
-
-  opts.onProgress?.("Importing image into Assets…");
-  const imported = await importLocalPathsForProject({
-    paths: [outputPath],
-    projectId: opts.projectId,
-  });
-  const created = imported.creations[0];
-  if (!created?.id) {
-    throw new Error(
-      "Import produced no Library creation. The Replicate run succeeded but the output could not be imported locally.",
-    );
-  }
-
-  return {
-    creationId: created.id,
-    modelId,
-    predictionId: result.predictionId?.trim() || predictionId,
-    localPath: outputPath,
-  };
 }

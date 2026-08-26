@@ -273,8 +273,7 @@ fn open_crt_device() -> Result<(wgpu::Device, wgpu::Queue, String), String> {
         backends: wgpu::Backends::PRIMARY,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let mut adapters =
-        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::PRIMARY));
+    let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::PRIMARY));
     if adapters.is_empty() {
         return Err("No GPU adapter for CRT Looks".into());
     }
@@ -289,21 +288,22 @@ fn open_crt_device() -> Result<(wgpu::Device, wgpu::Queue, String), String> {
     let mut last_err = String::from("No GPU adapter passed CRT readback probe");
     for adapter in adapters {
         let info = adapter.get_info();
-        let (device, queue) = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("crt-looks"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                .using_resolution(adapter.limits()),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: Default::default(),
-            trace: wgpu::Trace::Off,
-        })) {
-            Ok(dq) => dq,
-            Err(e) => {
-                last_err = format!("Could not open GPU device ({}): {e}", info.name);
-                continue;
-            }
-        };
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("crt-looks"),
+                required_features: wgpu::Features::empty(),
+                required_limits:
+                    wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    last_err = format!("Could not open GPU device ({}): {e}", info.name);
+                    continue;
+                }
+            };
         if !probe_buffer_readback(&device, &queue) {
             last_err = format!(
                 "GPU adapter '{}' failed CRT readback probe (skipping)",
@@ -639,9 +639,7 @@ fn probe_video(_ffmpeg: &Path, input: &Path) -> Result<(u32, u32, f64), String> 
         ])
         .output()
         .map_err(|e| {
-            format!(
-                "ffprobe failed ({e}). Install FFmpeg tools (ffprobe) alongside ffmpeg."
-            )
+            format!("ffprobe failed ({e}). Install FFmpeg tools (ffprobe) alongside ffmpeg.")
         })?;
     if !probe.status.success() {
         return Err(format!(
@@ -759,10 +757,7 @@ pub fn apply_crt_preset_to_video(
         .spawn()
         .map_err(|e| format!("Could not start encode: {e}"))?;
 
-    let mut dec_out = decoder
-        .stdout
-        .take()
-        .ok_or("Decode stdout missing")?;
+    let mut dec_out = decoder.stdout.take().ok_or("Decode stdout missing")?;
     let mut enc_in = encoder.stdin.take().ok_or("Encode stdin missing")?;
 
     let mut src = vec![0u8; frame_bytes];
@@ -813,8 +808,7 @@ pub fn apply_crt_preset_to_video(
     if output.exists() {
         let _ = std::fs::remove_file(output);
     }
-    std::fs::rename(&partial, output)
-        .map_err(|e| format!("Could not finalize CRT output: {e}"))?;
+    std::fs::rename(&partial, output).map_err(|e| format!("Could not finalize CRT output: {e}"))?;
     Ok(())
 }
 
@@ -833,16 +827,19 @@ pub fn apply_crt_preset_to_rgba(
     let gpu = shared_crt_gpu()?;
     let prev = vec![0u8; expected];
     let mut out = vec![0u8; expected];
-    gpu.process_frame(width, height, preset, &src_rgba[..expected], &prev, &mut out)?;
+    gpu.process_frame(
+        width,
+        height,
+        preset,
+        &src_rgba[..expected],
+        &prev,
+        &mut out,
+    )?;
     Ok(out)
 }
 
 /// First enabled CRT preset in catalog order, if any.
-pub fn first_enabled_crt_preset(
-    tv: bool,
-    afterglow: bool,
-    broadcast: bool,
-) -> Option<CrtPreset> {
+pub fn first_enabled_crt_preset(tv: bool, afterglow: bool, broadcast: bool) -> Option<CrtPreset> {
     if tv {
         Some(CrtPreset::Tv)
     } else if afterglow {

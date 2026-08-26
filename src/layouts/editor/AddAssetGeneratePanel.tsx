@@ -1,10 +1,6 @@
-import {
-  CloneButton,
-  DiscardButton,
-  GenerateTargetButton,
-  TryAgainButton,
-} from "./AddAssetIntentFooter";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { WorkflowForm } from "../../forms/WorkflowForm";
+import { promptSchemaField } from "../../forms/schemaForm";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
 import { getCreations } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
@@ -28,6 +24,7 @@ import {
   loadGenerationFramePreviews,
   resolveGenerationFramePreviews,
 } from "../../project/generationFramePreviews";
+import type { ReplicateInputField } from "../../replicate/replicateClient";
 import {
   PROJECT_ASPECT_OPTIONS,
   projectAspectCss,
@@ -90,12 +87,17 @@ import { parasceneVideoModelsForIntent } from "./parasceneProductCaps";
 import { resolveMotionReferenceVideoPath } from "./addAssetReplicateGenerate";
 import {
   discoverReplicateTweakFields,
-  hasAnyReplicateTweaks,
   normalizeReplicateTweaks,
   replicateTweaksEqual,
   type ReplicateTweakFields,
   type ReplicateVideoTweaks,
 } from "./replicateVideoTweaks";
+import {
+  CloneButton,
+  DiscardButton,
+  GenerateTargetButton,
+  TryAgainButton,
+} from "./AddAssetIntentFooter";
 
 export type StartAddAssetGenerationRequest = {
   clip: TimelineClip;
@@ -327,7 +329,7 @@ function GenerateActions({
   return (
     <div className="add-asset-generate-footer preview-intent-footer">
       <GenerateTargetButton
-        target="Video"
+        target="V1"
         disabled={generateDisabled || formLocked}
         onClick={onGenerate}
       />
@@ -550,7 +552,6 @@ export function AddAssetGeneratePanel({
   }, [draftLastSource, draftContinuity]);
   const startFrameAssetId = frameSourceAssetId(firstFrameSource);
   const [prompt, setPrompt] = useState(initial.prompt);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [audioMode, setAudioMode] = useState<AddAssetAudioMode>(
     initial.audioMode,
   );
@@ -598,12 +599,6 @@ export function AddAssetGeneratePanel({
   const [pickerTimelineLoading, setPickerTimelineLoading] = useState(false);
   const [pickerSlotSeen, setPickerSlotSeen] = useState(framePickerSlot);
 
-  useLayoutEffect(() => {
-    const el = promptRef.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [prompt]);
   const [loadedFrames, setLoadedFrames] = useState<{
     key: string;
     start: StartFramePreview | null;
@@ -778,6 +773,10 @@ export function AddAssetGeneratePanel({
     isBlueDirect,
   ]);
 
+  const useT2vWorkflowForm =
+    !isReplicate && currentIntentId === "text_to_video";
+  const useBlueWorkflowForm = !isReplicate;
+
   const resolvedBlueModel: string = (() => {
     if (isReplicate) return "ltx_i2v";
     if (isParasceneProductAdvanced && parasceneCapsModels.length > 0) {
@@ -807,6 +806,39 @@ export function AddAssetGeneratePanel({
     });
     return picked?.id ?? blueModel ?? "ltx_i2v";
   })();
+
+  const blueWorkflowModelFields = useMemo((): ReplicateInputField[] => {
+    if (!useBlueWorkflowForm) return [];
+    const options =
+      compatibleBlueModels.length > 0
+        ? compatibleBlueModels
+        : resolvedBlueModel
+          ? [{ id: resolvedBlueModel, label: resolvedBlueModel }]
+          : [];
+    const enumLabels: Record<string, string> = {};
+    for (const m of options) {
+      enumLabels[m.id] = m.label;
+    }
+    return [
+      {
+        name: "model",
+        title: "Blue model",
+        typeName: "string",
+        required: true,
+        enumValues: options.map((m) => m.id),
+        enumLabels,
+        fileLike: false,
+        arrayItemFileLike: false,
+      },
+    ];
+  }, [useBlueWorkflowForm, compatibleBlueModels, resolvedBlueModel]);
+
+  const generatePromptFields = useMemo(
+    (): ReplicateInputField[] => [
+      promptSchemaField("prompt", { description: "" }),
+    ],
+    [],
+  );
 
   const hasA2vModels = useMemo(() => {
     if (isReplicate || !blueModels) return false;
@@ -1838,7 +1870,7 @@ export function AddAssetGeneratePanel({
   }
 
   const showMotionMatch = resolvedContinuityMode === "motion_match";
-  const showImagesNone = !isReplicate && currentIntentId === "text_to_video";
+  const showImagesNone = useT2vWorkflowForm;
   const firstPreview = bridge?.first ?? startFrame;
   const lastPreview = bridge?.last ?? null;
 
@@ -1927,26 +1959,22 @@ export function AddAssetGeneratePanel({
           </section>
         ) : null}
 
-        {!isReplicate ? (
+        {useBlueWorkflowForm ? (
           <section className="add-asset-generate-section">
             <h3>Model</h3>
+            {useT2vWorkflowForm ? (
+              <div className="add-asset-generate-callout" role="note">
+                <p className="muted" style={{ margin: 0 }}>
+                  Text to Video — prompt only, no start image (
+                  {resolvedBlueModel}).
+                </p>
+              </div>
+            ) : null}
             {blueModelsError ? (
               <p className="add-asset-generate-error">{blueModelsError}</p>
             ) : null}
-            {!fieldsInteractive && blueModels == null ? (
-              <label className="add-asset-generate-field">
-                <span>Blue model</span>
-                <select
-                  className="control"
-                  value={resolvedBlueModel}
-                  disabled
-                >
-                  <option value={resolvedBlueModel}>
-                    {resolvedBlueModel}
-                  </option>
-                </select>
-              </label>
-            ) : blueModels == null ? (
+            {!fieldsInteractive && blueModels == null ? null : blueModels ==
+              null ? (
               <p className="muted">Loading Blue models…</p>
             ) : compatibleBlueModels.length === 0 ? (
               <p className="muted">
@@ -1955,36 +1983,21 @@ export function AddAssetGeneratePanel({
                   ? " (Parascene Creation supports Wan/LTX only — use Direct to Blue for MiniMax and more)."
                   : "."}
               </p>
-            ) : (
-              <label className="add-asset-generate-field">
-                <span>Blue model</span>
-                <select
-                  className="control"
-                  value={resolvedBlueModel}
-                  disabled={!fieldsInteractive}
-                  onChange={(event) => {
-                    const next = event.target.value.trim();
-                    if (next) selectBlueModel(next);
-                  }}
-                >
-                  {compatibleBlueModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </section>
-        ) : null}
-
-        {!isReplicate && currentIntentId === "text_to_video" ? (
-          <section className="add-asset-generate-section">
-            <div className="add-asset-generate-callout" role="note">
-              <p className="muted" style={{ margin: 0 }}>
-                Text to Video — prompt only, no start image ({resolvedBlueModel}).
-              </p>
-            </div>
+            ) : null}
+            {blueModels != null || !fieldsInteractive ? (
+              <WorkflowForm
+                className="add-asset-workflow-form"
+                fields={blueWorkflowModelFields}
+                values={{ model: resolvedBlueModel }}
+                disabled={!fieldsInteractive}
+                showFieldChrome={false}
+                onChange={(name, value) => {
+                  if (name !== "model") return;
+                  const next = value.trim();
+                  if (next) selectBlueModel(next);
+                }}
+              />
+            ) : null}
           </section>
         ) : null}
 
@@ -1996,9 +2009,9 @@ export function AddAssetGeneratePanel({
             ) : null}
             {!fieldsInteractive && replicateModels == null ? (
               <label className="add-asset-generate-field">
-                <span>Enabled model</span>
                 <select
                   className="control"
+                  aria-label="Model"
                   value={
                     replicateModelId ??
                     clip.addAssetDraft?.replicateModel ??
@@ -2031,9 +2044,9 @@ export function AddAssetGeneratePanel({
               </p>
             ) : (
               <label className="add-asset-generate-field">
-                <span>Enabled model</span>
                 <select
                   className="control"
+                  aria-label="Model"
                   value={selectedReplicateModel?.id ?? ""}
                   disabled={!fieldsInteractive}
                   onChange={(event) => {
@@ -2066,226 +2079,214 @@ export function AddAssetGeneratePanel({
           </section>
         ) : null}
 
-        {isReplicate && tweakFields && hasAnyReplicateTweaks(tweakFields) ? (
+        {isReplicate && tweakFields?.resolution?.enumValues?.length ? (
           <section className="add-asset-generate-section">
-            <h3>Model options</h3>
-            <div className="add-asset-generate-tweak-grid">
-              {tweakFields.resolution?.enumValues?.length ? (
-                <label className="add-asset-generate-field">
-                  <span>Resolution</span>
-                  <select
-                    className="control"
-                    value={normalizedTweaks.resolution ?? ""}
-                    disabled={!fieldsInteractive}
-                    onChange={(event) =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        resolution: event.target.value,
-                      }))
-                    }
-                  >
-                    {tweakFields.resolution.enumValues.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
+            <h3>Resolution</h3>
+            <select
+              className="control"
+              aria-label="Resolution"
+              value={normalizedTweaks.resolution ?? ""}
+              disabled={!fieldsInteractive}
+              onChange={(event) =>
+                setReplicateTweaks((prev) => ({
+                  ...prev,
+                  resolution: event.target.value,
+                }))
+              }
+            >
+              {tweakFields.resolution.enumValues.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </section>
+        ) : null}
 
-              {tweakFields.mode?.enumValues?.length ? (
-                <label className="add-asset-generate-field">
-                  <span>Quality</span>
-                  <select
-                    className="control"
-                    value={normalizedTweaks.mode ?? ""}
-                    disabled={!fieldsInteractive}
-                    onChange={(event) =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        mode: event.target.value,
-                      }))
-                    }
-                  >
-                    {tweakFields.mode.enumValues.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
+        {isReplicate && tweakFields?.mode?.enumValues?.length ? (
+          <section className="add-asset-generate-section">
+            <h3>Quality</h3>
+            <select
+              className="control"
+              aria-label="Quality"
+              value={normalizedTweaks.mode ?? ""}
+              disabled={!fieldsInteractive}
+              onChange={(event) =>
+                setReplicateTweaks((prev) => ({
+                  ...prev,
+                  mode: event.target.value,
+                }))
+              }
+            >
+              {tweakFields.mode.enumValues.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </section>
+        ) : null}
 
-              {tweakFields.audio ? (
-                <div
-                  className="add-asset-generate-audio-toggle"
-                  role="group"
-                  aria-label="Model audio"
-                >
-                  <button
-                    type="button"
-                    className={
-                      normalizedTweaks.generateAudio ? "" : "is-active"
-                    }
-                    disabled={!fieldsInteractive}
-                    onClick={() =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        generateAudio: false,
-                      }))
-                    }
-                    aria-pressed={!normalizedTweaks.generateAudio}
-                  >
-                    No model audio
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      normalizedTweaks.generateAudio ? "is-active" : ""
-                    }
-                    disabled={!fieldsInteractive}
-                    onClick={() =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        generateAudio: true,
-                      }))
-                    }
-                    aria-pressed={Boolean(normalizedTweaks.generateAudio)}
-                  >
-                    Generate audio
-                  </button>
-                </div>
-              ) : null}
-
-              {tweakFields.characterOrientation?.enumValues?.length ? (
-                <label className="add-asset-generate-field">
-                  <span>Character orientation</span>
-                  <select
-                    className="control"
-                    value={normalizedTweaks.characterOrientation ?? ""}
-                    disabled={!fieldsInteractive}
-                    onChange={(event) =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        characterOrientation: event.target.value,
-                      }))
-                    }
-                  >
-                    {tweakFields.characterOrientation.enumValues.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-
-              {tweakFields.keepOriginalSound ? (
-                <div
-                  className="add-asset-generate-audio-toggle"
-                  role="group"
-                  aria-label="Reference video sound"
-                >
-                  <button
-                    type="button"
-                    className={
-                      normalizedTweaks.keepOriginalSound ? "is-active" : ""
-                    }
-                    disabled={!fieldsInteractive}
-                    onClick={() =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        keepOriginalSound: true,
-                      }))
-                    }
-                    aria-pressed={Boolean(normalizedTweaks.keepOriginalSound)}
-                  >
-                    Keep ref sound
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      normalizedTweaks.keepOriginalSound ? "" : "is-active"
-                    }
-                    disabled={!fieldsInteractive}
-                    onClick={() =>
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        keepOriginalSound: false,
-                      }))
-                    }
-                    aria-pressed={!normalizedTweaks.keepOriginalSound}
-                  >
-                    Drop ref sound
-                  </button>
-                </div>
-              ) : null}
-
-              {tweakFields.seed ? (
-                <label className="add-asset-generate-field">
-                  <span>Seed (optional)</span>
-                  <input
-                    className="control"
-                    type="number"
-                    min={0}
-                    step={1}
-                    placeholder="Random"
-                    disabled={!fieldsInteractive}
-                    value={
-                      typeof normalizedTweaks.seed === "number"
-                        ? String(normalizedTweaks.seed)
-                        : ""
-                    }
-                    onChange={(event) => {
-                      const raw = event.target.value.trim();
-                      if (!raw) {
-                        setReplicateTweaks((prev) => ({
-                          ...prev,
-                          seed: null,
-                        }));
-                        return;
-                      }
-                      const n = Number(raw);
-                      setReplicateTweaks((prev) => ({
-                        ...prev,
-                        seed: Number.isFinite(n) ? Math.floor(n) : null,
-                      }));
-                    }}
-                  />
-                </label>
-              ) : null}
-            </div>
-
-            {tweakFields.negativePrompt ? (
-              <label
-                className="add-asset-generate-prompt-label"
-                htmlFor="add-asset-negative-prompt"
-                style={{ marginTop: 12, display: "block" }}
+        {isReplicate && tweakFields?.audio ? (
+          <section className="add-asset-generate-section">
+            <h3>Model audio</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Model audio"
+            >
+              <button
+                type="button"
+                className={normalizedTweaks.generateAudio ? "" : "is-active"}
+                disabled={!fieldsInteractive}
+                onClick={() =>
+                  setReplicateTweaks((prev) => ({
+                    ...prev,
+                    generateAudio: false,
+                  }))
+                }
+                aria-pressed={!normalizedTweaks.generateAudio}
               >
-                <span>Negative prompt</span>
-                <textarea
-                  id="add-asset-negative-prompt"
-                  className="control add-asset-generate-prompt"
-                  rows={2}
-                  disabled={!fieldsInteractive}
-                  value={normalizedTweaks.negativePrompt ?? ""}
-                  onChange={(event) =>
-                    setReplicateTweaks((prev) => ({
-                      ...prev,
-                      negativePrompt: event.target.value,
-                    }))
-                  }
-                  placeholder="Things to avoid in the video…"
-                />
-              </label>
-            ) : null}
+                Off
+              </button>
+              <button
+                type="button"
+                className={normalizedTweaks.generateAudio ? "is-active" : ""}
+                disabled={!fieldsInteractive}
+                onClick={() =>
+                  setReplicateTweaks((prev) => ({
+                    ...prev,
+                    generateAudio: true,
+                  }))
+                }
+                aria-pressed={Boolean(normalizedTweaks.generateAudio)}
+              >
+                On
+              </button>
+            </div>
+          </section>
+        ) : null}
 
-            {tweakFields.audio ? (
-              <p className="muted" style={{ margin: "8px 0 0" }}>
-                Model audio is off by default so it does not fight the timeline
-                song.
-              </p>
-            ) : null}
+        {isReplicate && tweakFields?.characterOrientation?.enumValues?.length ? (
+          <section className="add-asset-generate-section">
+            <h3>Character orientation</h3>
+            <select
+              className="control"
+              aria-label="Character orientation"
+              value={normalizedTweaks.characterOrientation ?? ""}
+              disabled={!fieldsInteractive}
+              onChange={(event) =>
+                setReplicateTweaks((prev) => ({
+                  ...prev,
+                  characterOrientation: event.target.value,
+                }))
+              }
+            >
+              {tweakFields.characterOrientation.enumValues.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </section>
+        ) : null}
+
+        {isReplicate && tweakFields?.keepOriginalSound ? (
+          <section className="add-asset-generate-section">
+            <h3>Reference sound</h3>
+            <div
+              className="add-asset-generate-audio-toggle"
+              role="group"
+              aria-label="Reference video sound"
+            >
+              <button
+                type="button"
+                className={
+                  normalizedTweaks.keepOriginalSound ? "is-active" : ""
+                }
+                disabled={!fieldsInteractive}
+                onClick={() =>
+                  setReplicateTweaks((prev) => ({
+                    ...prev,
+                    keepOriginalSound: true,
+                  }))
+                }
+                aria-pressed={Boolean(normalizedTweaks.keepOriginalSound)}
+              >
+                Keep
+              </button>
+              <button
+                type="button"
+                className={
+                  normalizedTweaks.keepOriginalSound ? "" : "is-active"
+                }
+                disabled={!fieldsInteractive}
+                onClick={() =>
+                  setReplicateTweaks((prev) => ({
+                    ...prev,
+                    keepOriginalSound: false,
+                  }))
+                }
+                aria-pressed={!normalizedTweaks.keepOriginalSound}
+              >
+                Drop
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {isReplicate && tweakFields?.seed ? (
+          <section className="add-asset-generate-section">
+            <h3>Seed</h3>
+            <input
+              className="control"
+              aria-label="Seed"
+              type="number"
+              min={0}
+              step={1}
+              placeholder="Random"
+              disabled={!fieldsInteractive}
+              value={
+                typeof normalizedTweaks.seed === "number"
+                  ? String(normalizedTweaks.seed)
+                  : ""
+              }
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                if (!raw) {
+                  setReplicateTweaks((prev) => ({
+                    ...prev,
+                    seed: null,
+                  }));
+                  return;
+                }
+                const n = Number(raw);
+                setReplicateTweaks((prev) => ({
+                  ...prev,
+                  seed: Number.isFinite(n) ? Math.floor(n) : null,
+                }));
+              }}
+            />
+          </section>
+        ) : null}
+
+        {isReplicate && tweakFields?.negativePrompt ? (
+          <section className="add-asset-generate-section">
+            <h3>Negative prompt</h3>
+            <textarea
+              id="add-asset-negative-prompt"
+              className="control add-asset-generate-prompt"
+              aria-label="Negative prompt"
+              rows={2}
+              disabled={!fieldsInteractive}
+              value={normalizedTweaks.negativePrompt ?? ""}
+              onChange={(event) =>
+                setReplicateTweaks((prev) => ({
+                  ...prev,
+                  negativePrompt: event.target.value,
+                }))
+              }
+            />
           </section>
         ) : null}
 
@@ -2513,30 +2514,28 @@ export function AddAssetGeneratePanel({
 
         <section className="add-asset-generate-section">
           <h3>Duration</h3>
-          <label className="add-asset-generate-field">
-            <span>Seconds</span>
-            <input
-              className="control"
-              type="number"
-              min={ADD_ASSET_MIN_DURATION_SEC}
-              max={ADD_ASSET_MAX_DURATION_SEC}
-              step={0.5}
-              value={durationDraft}
-              disabled={!fieldsInteractive}
-              onChange={(event) => {
-                setDurationDraft(event.target.value);
-                setUseNearestDuration(false);
-              }}
-              onBlur={commitDurationDraft}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitDurationDraft();
-                  (event.target as HTMLInputElement).blur();
-                }
-              }}
-            />
-          </label>
+          <input
+            className="control"
+            aria-label="Duration in seconds"
+            type="number"
+            min={ADD_ASSET_MIN_DURATION_SEC}
+            max={ADD_ASSET_MAX_DURATION_SEC}
+            step={0.5}
+            value={durationDraft}
+            disabled={!fieldsInteractive}
+            onChange={(event) => {
+              setDurationDraft(event.target.value);
+              setUseNearestDuration(false);
+            }}
+            onBlur={commitDurationDraft}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitDurationDraft();
+                (event.target as HTMLInputElement).blur();
+              }
+            }}
+          />
         </section>
 
         {isReplicate &&
@@ -2588,22 +2587,17 @@ export function AddAssetGeneratePanel({
         ) : null}
 
         <section className="add-asset-generate-section">
-          <label
-            className="add-asset-generate-prompt-label"
-            htmlFor="add-asset-prompt"
-          >
-            <span>Prompt</span>
-            <textarea
-              id="add-asset-prompt"
-              ref={promptRef}
-              className="add-asset-generate-prompt is-auto-size"
-              rows={2}
-              value={prompt}
-              disabled={!fieldsInteractive}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={`Describe what happens in these ${clipDurationSec.toFixed(1)} seconds…`}
-            />
-          </label>
+          <h3>Prompt</h3>
+          <WorkflowForm
+            className="add-asset-workflow-form"
+            fields={generatePromptFields}
+            values={{ prompt }}
+            disabled={!fieldsInteractive}
+            showFieldChrome={false}
+            onChange={(name, value) => {
+              if (name === "prompt") setPrompt(value);
+            }}
+          />
         </section>
       </div>
 

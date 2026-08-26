@@ -7,6 +7,7 @@ import {
   parasceneReplicateImageModels,
   parasceneResolveStillModel,
   parasceneServerIdForIntent,
+  parasceneStillModelEnumGroups,
   parasceneStillModelFamilies,
   parasceneStillModelsForIntent,
   parasceneVideoModels,
@@ -63,6 +64,10 @@ describe("parasceneProductCaps", () => {
       "PixelLab (0.2 credits)",
       "Blue (0.1 credits)",
     ]);
+    const groups = parasceneStillModelEnumGroups("text_to_image");
+    expect(groups.map((g) => g.label)).toEqual(families.map((f) => f.label));
+    expect(groups[0]?.values[0]).toBe(families[0]?.models[0]?.id);
+    expect(groups[groups.length - 1]?.values.length).toBeGreaterThan(1);
     expect(parasceneStillModelsForIntent("text_to_image")[0]?.family).toBe(
       "replicate",
     );

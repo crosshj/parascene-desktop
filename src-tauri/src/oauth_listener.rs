@@ -391,7 +391,10 @@ pub fn start_oauth_listener(app: AppHandle, port: u16) -> Result<u16, String> {
 /// FE polls this — reliable even when Tauri events are missed.
 #[tauri::command]
 pub fn oauth_take_callback() -> Option<OAuthCallbackPayload> {
-    pending_result().lock().ok().and_then(|mut slot| slot.take())
+    pending_result()
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
 }
 
 /// Unblock a waiting listener (e.g. user cancelled login).

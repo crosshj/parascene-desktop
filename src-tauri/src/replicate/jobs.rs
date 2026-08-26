@@ -1,6 +1,4 @@
-use crate::replicate::cache::{
-    self, CrawlCheckpoint, CrawlStatus, ModelDetailDto,
-};
+use crate::replicate::cache::{self, CrawlCheckpoint, CrawlStatus, ModelDetailDto};
 use crate::replicate::client;
 use crate::replicate::token;
 use serde::Serialize;
@@ -105,9 +103,9 @@ async fn wait_if_paused(app: &AppHandle, cp: &mut CrawlCheckpoint) -> Result<boo
 }
 
 pub async fn run_full_crawl(app: AppHandle, resume: bool) -> Result<(), String> {
-    let _guard = job_lock().try_lock().map_err(|_| {
-        "A Replicate catalog job is already running.".to_string()
-    })?;
+    let _guard = job_lock()
+        .try_lock()
+        .map_err(|_| "A Replicate catalog job is already running.".to_string())?;
     if RUNNING.swap(true, Ordering::SeqCst) {
         return Err("A Replicate catalog job is already running.".into());
     }
@@ -260,9 +258,9 @@ async fn run_full_crawl_inner(app: &AppHandle, resume: bool) -> Result<(), Strin
 }
 
 pub async fn run_check_new(app: AppHandle) -> Result<u64, String> {
-    let _guard = job_lock().try_lock().map_err(|_| {
-        "A Replicate catalog job is already running.".to_string()
-    })?;
+    let _guard = job_lock()
+        .try_lock()
+        .map_err(|_| "A Replicate catalog job is already running.".to_string())?;
     if RUNNING.swap(true, Ordering::SeqCst) {
         return Err("A Replicate catalog job is already running.".into());
     }
@@ -354,9 +352,7 @@ async fn run_check_new_inner(app: &AppHandle) -> Result<u64, String> {
                 fetched: results.len() as u64,
                 merged: total,
                 status: "running".into(),
-                message: Some(format!(
-                    "Checked page {pages} · catalog {total}"
-                )),
+                message: Some(format!("Checked page {pages} · catalog {total}")),
                 error: None,
                 done: false,
             },
@@ -399,7 +395,11 @@ async fn run_check_new_inner(app: &AppHandle) -> Result<u64, String> {
     Ok(added_or_changed)
 }
 
-pub async fn update_model(app: AppHandle, owner: String, name: String) -> Result<ModelDetailDto, String> {
+pub async fn update_model(
+    app: AppHandle,
+    owner: String,
+    name: String,
+) -> Result<ModelDetailDto, String> {
     let token = token::require_token()?;
     emit_progress(
         &app,

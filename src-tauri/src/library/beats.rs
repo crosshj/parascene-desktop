@@ -86,9 +86,7 @@ fn beat_gates() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
 }
 
 fn gate_for_asset(id: &str) -> Arc<Mutex<()>> {
-    let mut map = beat_gates()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut map = beat_gates().lock().unwrap_or_else(|e| e.into_inner());
     map.entry(id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -267,8 +265,8 @@ fn pick_onset_frames(flux: &[f32], std_mult: f32) -> Vec<usize> {
             / slice.len() as f32;
         let std = var.sqrt();
         let threshold = mean + std_mult * std;
-        let is_local_max = (i == 0 || flux[i] >= flux[i - 1])
-            && (i + 1 >= flux.len() || flux[i] >= flux[i + 1]);
+        let is_local_max =
+            (i == 0 || flux[i] >= flux[i - 1]) && (i + 1 >= flux.len() || flux[i] >= flux[i + 1]);
         if is_local_max && flux[i] > threshold && flux[i] > 1e-4 {
             if let Some(prev) = last_peak {
                 if i - prev < min_gap_frames {
@@ -495,7 +493,8 @@ fn write_cache(path: &Path, cache: &BeatCache) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Could not create beats cache: {e}"))?;
     }
-    let raw = serde_json::to_string(cache).map_err(|e| format!("Could not serialize beats: {e}"))?;
+    let raw =
+        serde_json::to_string(cache).map_err(|e| format!("Could not serialize beats: {e}"))?;
     let temp = path.with_extension("json.partial");
     fs::write(&temp, raw).map_err(|e| format!("Could not write beats cache: {e}"))?;
     fs::rename(&temp, path).map_err(|e| format!("Could not publish beats cache: {e}"))
@@ -515,8 +514,8 @@ fn ensure_cache(paths: &ParascenePaths, asset_id: &str) -> Result<BeatCache, Str
     }
 
     let conn = ready_connection(paths)?;
-    let creation = get_creation_by_id(&conn, id)?
-        .ok_or_else(|| format!("Creation not found: {id}"))?;
+    let creation =
+        get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation not found: {id}"))?;
     let local_path = creation
         .local_path
         .clone()
@@ -660,7 +659,11 @@ mod tests {
             i += period;
         }
         let beats = detect_beats_from_flux_for_test(&flux);
-        assert!(beats.len() > 10, "expected a full grid, got {}", beats.len());
+        assert!(
+            beats.len() > 10,
+            "expected a full grid, got {}",
+            beats.len()
+        );
         // Spacing should be close to the tempo period in seconds.
         let expected = frame_to_sec(period as f64);
         let gap = beats[5] - beats[4];

@@ -36,6 +36,7 @@ import {
   setStoredProjectPendingStagedDraft,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
+  setStoredProjectTimelineAudioBakePath,
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
   setStoredProjectGroupIds,
@@ -98,9 +99,11 @@ import {
 import {
   bindAddAssetGenerationApplier,
   reconcileAddAssetGenerations,
+  generateFolderIdsToFile,
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
 import { bindLibraryAssetGenerationApplier } from "../layouts/editor/libraryAssetGenerationStore";
+import { defaultStagedClipDraft } from "../layouts/editor/stagedClip";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
 import {
   applyManifest,
@@ -188,6 +191,8 @@ type ShellState = {
   setOpenProjectPendingStagedDraft: (draft: unknown | null) => void;
   /** Remember timeline zoom for the open project. */
   setOpenProjectTimelineZoom: (zoom: number) => void;
+  /** Remember the cached timeline audio mix path (null clears it). */
+  setOpenProjectTimelineAudioBakePath: (path: string | null) => void;
   /** Remember whether the preview follows the timeline. */
   setOpenProjectTimelineMonitorActive: (active: boolean) => void;
   /** Remember timeline playhead position (seconds). */
@@ -550,8 +555,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   }, [publishStoredProjects, setChromeStatus]);
 
   // One-shot cleanup: strip ordinary group members flattened onto projects by
-  // an earlier reconcile that expanded every group. Must refresh covers first —
-  // detail/local rows often omit meta.group, so strip would no-op otherwise.
+  // an earlier reconcile that expanded every group. Local catalog only —
+  // paging Parascene for cover meta races generate and can trip Cloudflare.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -559,12 +564,6 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         const current = loadStoredProjects();
         if (current.length === 0) return;
 
-        const coverIds = await collectProjectGroupCoverIdsToRefresh(current);
-        if (cancelled) return;
-        if (coverIds.length > 0) {
-          await refreshCreationsFromListById(coverIds);
-        }
-        if (cancelled) return;
         await syncGroupMembersManifest();
         if (cancelled) return;
 
@@ -593,6 +592,30 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     bindAddAssetGenerationApplier({
       applySuccess: async (result: AddAssetGenerationSuccess) => {
+        const folderIds = generateFolderIdsToFile(result);
+        if (folderIds.length > 0) {
+          try {
+            await mutateStoredProjectsWithNativeMutation(
+              async () => {
+                await addProjectAssets(result.projectId, folderIds);
+                return { folders: await listFolders() };
+              },
+              (current, payload) =>
+                mirrorProjectFolderMembership(current, payload.folders),
+              { allowLegacyOutsideTransition: true },
+            );
+            await collapseCabinetMembersFromProjectFolder({
+              projectId: result.projectId,
+              imagesGroupId: result.imagesGroupId ?? null,
+              videosGroupId: result.videosGroupId ?? null,
+            });
+          } catch (error) {
+            console.error(
+              "Failed to file generate output into project folder",
+              error,
+            );
+          }
+        }
         await updateStoredProjects((prev) =>
           prev.map((project) => {
             if (project.id !== result.projectId) return project;
@@ -606,7 +629,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             if (!placeholder) {
               return project;
             }
-            let next = mergeCreationIds(project, result.projectCreationIds);
+            let next = mergeCreationIds(project, folderIds);
             const removeIds = (result.projectCreationIdsToRemove ?? []).filter(
               (id) => id.trim().length > 0,
             );
@@ -1595,6 +1618,27 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [addCreationsToProject, openProjectId],
   );
 
+  // Cabinet covers belong in the project folder, not Library root.
+  useEffect(() => {
+    if (!openProjectId) return;
+    const project = storedProjects.find((row) => row.id === openProjectId);
+    if (!project) return;
+    const covers = [project.imagesGroupId, project.videosGroupId]
+      .map((id) => (id ? String(id).trim() : ""))
+      .filter(Boolean);
+    if (covers.length === 0) return;
+    const inFolder = new Set(project.creationIds.map((id) => String(id).trim()));
+    const missing = covers.filter((id) => !inFolder.has(id));
+    if (missing.length === 0) return;
+    void addCreationsToProject(openProjectId, missing).catch((error) => {
+      console.error("Failed to file cabinet covers into project folder", error);
+    });
+  }, [
+    openProjectId,
+    storedProjects,
+    addCreationsToProject,
+  ]);
+
   useEffect(() => {
     bindLibraryAssetGenerationApplier({
       beginPlaceholder: (opts) => {
@@ -1611,6 +1655,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             progressNote: undefined,
             addAssetGeneration: undefined,
           });
+          // Select only when this row first becomes a placeholder.
+          if (existing) return withPlaceholder;
           return setStoredProjectSelectedAssetId(withPlaceholder, opts.id);
         });
       },
@@ -1627,23 +1673,19 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         );
       },
       completePlaceholder: ({ placeholderId, creationId }) => {
-        let wasSelected = false;
-        patchOpenProject((project) => {
-          wasSelected = project.selectedAssetId === placeholderId;
-          return completeStoredLibraryAssetPlaceholder(
+        patchOpenProject((project) =>
+          completeStoredLibraryAssetPlaceholder(
             project,
             placeholderId,
             creationId,
             { mergeCreationIntoProject: false },
-          );
-        });
-        if (wasSelected) {
-          window.dispatchEvent(
-            new CustomEvent("parascene-library-asset-completed", {
-              detail: { placeholderId, creationId },
-            }),
-          );
-        }
+          ),
+        );
+        window.dispatchEvent(
+          new CustomEvent("parascene-library-asset-completed", {
+            detail: { placeholderId, creationId },
+          }),
+        );
       },
       addCreations: async (creationIds) => {
         if (!openProjectId) return;
@@ -1652,6 +1694,18 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setImagesGroupId: (imagesGroupId) => {
         patchOpenProject((project) =>
           setStoredProjectGroupIds(project, { imagesGroupId }),
+        );
+      },
+      placeTimelineClip: ({ creationId, label }) => {
+        const draft = defaultStagedClipDraft({
+          assetId: creationId,
+          label,
+          kind: "image",
+        });
+        window.dispatchEvent(
+          new CustomEvent("parascene-staged-clip-place", {
+            detail: { draft },
+          }),
         );
       },
     });
@@ -1966,6 +2020,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectTimelineAudioBakePath = useCallback(
+    (path: string | null) => {
+      patchOpenProject((p) => setStoredProjectTimelineAudioBakePath(p, path));
+    },
+    [patchOpenProject],
+  );
+
   const setOpenProjectTimelineMonitorActive = useCallback(
     (active: boolean) => {
       patchOpenProject((p) => setStoredProjectTimelineMonitorActive(p, active));
@@ -2065,6 +2126,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       selectCreationsOnOpenProject,
       setOpenProjectPendingStagedDraft,
       setOpenProjectTimelineZoom,
+      setOpenProjectTimelineAudioBakePath,
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
@@ -2125,6 +2187,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       selectCreationsOnOpenProject,
       setOpenProjectPendingStagedDraft,
       setOpenProjectTimelineZoom,
+      setOpenProjectTimelineAudioBakePath,
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,

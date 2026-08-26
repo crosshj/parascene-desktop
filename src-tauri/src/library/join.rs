@@ -1,8 +1,6 @@
 //! Join Studio: FFmpeg export-true seam preview + optional bake into a new Creation.
 
-use super::catalog::{
-    default_paths, get_creation_by_id, ready_connection, Creation,
-};
+use super::catalog::{default_paths, get_creation_by_id, ready_connection, Creation};
 use super::ffmpeg::{self, resolve_ffmpeg};
 use super::import_local::insert_local_creation;
 use super::paths::ParascenePaths;
@@ -10,8 +8,8 @@ use super::reverse::ensure_reversed_media;
 use super::thumb_fill::fill_and_record_local_thumb;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
 const JOIN_FPS: f64 = 30.0;
@@ -285,7 +283,12 @@ fn build_join_filter(
         let half = half.max(1.0 / JOIN_FPS);
         let a_start = (a.out_sec - half).max(a.in_sec);
         let b_end = (b.in_sec + half).min(b.out_sec);
-        (a_start, a.out_sec, b.in_sec, b_end.max(b.in_sec + 1.0 / JOIN_FPS))
+        (
+            a_start,
+            a.out_sec,
+            b.in_sec,
+            b_end.max(b.in_sec + 1.0 / JOIN_FPS),
+        )
     } else {
         (a.in_sec, a.out_sec, b.in_sec, b.out_sec)
     };
@@ -514,10 +517,7 @@ pub async fn library_join_preview(req: JoinPreviewRequest) -> Result<JoinPreview
 }
 
 #[tauri::command]
-pub async fn library_join_bake(
-    app: AppHandle,
-    req: JoinBakeRequest,
-) -> Result<Creation, String> {
+pub async fn library_join_bake(app: AppHandle, req: JoinBakeRequest) -> Result<Creation, String> {
     let app_for_block = app.clone();
     tauri::async_runtime::spawn_blocking(move || run_join_bake(&app_for_block, req))
         .await

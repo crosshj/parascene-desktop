@@ -5,18 +5,27 @@
  * watches job UUID status, and writes group ids into the project store.
  */
 
-import { createAuthedSdk } from "../auth/session";
+import { getEnvConfig } from "../auth/session";
 import {
-  cancelJob,
   checkpointFromJob,
   cleanupResultFromJob,
-  enqueueJob,
   ensureResultFromJob,
-  getJob,
   jobProgressMessages,
-  watchJob,
 } from "../jobs/jobsClient";
 import type { Job } from "../jobs/types";
+import {
+  deleteCreationViaService,
+  getRemoteCreation,
+  groupAppendCreations,
+  ungroupCreationsViaService,
+} from "../services/parasceneCatalog";
+import {
+  cancelProjectGroupsJobHandle,
+  getProjectGroupsJob,
+  invokeCleanupProjectGroups,
+  invokeEnsureProjectGroups,
+  watchProjectGroupsJob,
+} from "../services/projectGroupJobs";
 import {
   deleteLocal,
   downloadIds,
@@ -34,7 +43,7 @@ import {
   isProjectAspectRatio,
   type ProjectAspectRatio,
 } from "../project/aspectRatios";
-import type { ParasceneSdk, RemoteCreateImage } from "../sdk/parascene";
+import type { RemoteCreateImage } from "../sdk/parascene";
 import { absolutizeAssetUrl } from "../sdk/parascene";
 import {
   desktopCabinetProjectKey,
@@ -88,6 +97,30 @@ export function idsForGroupApiCall(
   };
   if (existingGroupId) push(existingGroupId);
   for (const id of newMemberIds) push(id);
+  return out;
+}
+
+/** Candidates that are not the cover and not already filed as members. */
+export function newIdsToAppendToGroup(
+  existingGroupId: string | null,
+  existingMemberIds: readonly string[],
+  candidateIds: readonly string[],
+): string[] {
+  const already = new Set<string>();
+  const remember = (raw: string | null | undefined) => {
+    const id = String(raw ?? "").trim();
+    if (id) already.add(id);
+  };
+  remember(existingGroupId);
+  for (const id of existingMemberIds) remember(id);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of candidateIds) {
+    const id = String(raw).trim();
+    if (!id || seen.has(id) || already.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
   return out;
 }
 
@@ -152,7 +185,6 @@ export async function removeMembersFromProjectGroup(opts: {
   memberIds: string[];
   onProgress?: (note: string) => void;
 }): Promise<RemoveGroupMembersResult> {
-  const sdk = createAuthedSdk();
   const groupId = String(opts.groupId).trim();
   const toRemove = [
     ...new Set(
@@ -163,7 +195,7 @@ export async function removeMembersFromProjectGroup(opts: {
     throw new Error("Nothing to remove from group.");
   }
 
-  const existingMembers = await loadExistingMemberIds(sdk, groupId);
+  const existingMembers = await loadExistingMemberIds(groupId);
   const unknown = toRemove.filter((id) => !existingMembers.includes(id));
   if (unknown.length > 0) {
     throw new Error(
@@ -184,7 +216,7 @@ export async function removeMembersFromProjectGroup(opts: {
   const partyName = desktopProjectGroupPartyName(opts.projectTitle, role);
 
   opts.onProgress?.(`Ungrouping ${groupId} on Parascene…`);
-  const { restoredCreationIds } = await sdk.ungroupCreations(groupId);
+  const { restoredCreationIds } = await ungroupCreationsViaService(groupId);
   const restoredSet = new Set(restoredCreationIds);
   for (const id of remainingMembersAfterRemoval(existingMembers, [], groupId)) {
     if (!restoredSet.has(id)) {
@@ -202,7 +234,7 @@ export async function removeMembersFromProjectGroup(opts: {
   for (const id of toRemove) {
     opts.onProgress?.(`Deleting ${id} on Parascene…`);
     try {
-      await sdk.deleteCreation(id);
+      await deleteCreationViaService(id);
       deletedMemberIds.push(id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -222,13 +254,13 @@ export async function removeMembersFromProjectGroup(opts: {
     opts.onProgress?.(
       `Regrouping ${remaining.length} remaining member${remaining.length === 1 ? "" : "s"}…`,
     );
-    const grouped = await sdk.groupCreations({
+    const grouped = await groupAppendCreations({
       ids: idsForGroupApiCall(null, remaining),
       partyName,
       meta: groupMeta,
     });
     finalGroupId = String(grouped.id);
-    const fresh = await sdk.getCreation(finalGroupId);
+    const fresh = await getRemoteCreation(finalGroupId);
     const liveMembers = memberIdsFromRemoteGroup(fresh);
     await ingestRemoteCreation(
       withGroupMembership(
@@ -388,13 +420,13 @@ function remoteStillUrlFromApiRow(
  */
 export async function resolveLatestImagesGroupStill(opts: {
   imagesGroupId: string | null;
-  sdk: ParasceneSdk;
 }): Promise<{ imageUrl: string; sourceId: string }> {
   const groupId = opts.imagesGroupId?.trim() || "";
   if (!groupId) {
     throw new Error("Images group not ready — run Project groups first.");
   }
 
+  const origin = getEnvConfig().baseUrl;
   let memberIds: string[] = [];
   let coverSourceId: string | null = null;
   let coverUrl: string | null = null;
@@ -419,11 +451,11 @@ export async function resolveLatestImagesGroupStill(opts: {
   }
 
   try {
-    const live = await opts.sdk.getCreation(groupId);
+    const live = await getRemoteCreation(groupId);
     const liveMembers = memberIdsFromRemoteGroup(live);
     if (liveMembers.length > 0) memberIds = liveMembers;
     coverSourceId = coverSourceIdFromRemoteGroup(live) ?? coverSourceId;
-    coverUrl = remoteStillUrlFromApiRow(live, opts.sdk.baseUrl) ?? coverUrl;
+    coverUrl = remoteStillUrlFromApiRow(live, origin) ?? coverUrl;
   } catch {
     /* keep local */
   }
@@ -436,8 +468,8 @@ export async function resolveLatestImagesGroupStill(opts: {
       const localUrl = remoteStillUrlFromCreation(byId.get(id) ?? {});
       if (localUrl) return { imageUrl: localUrl, sourceId: id };
       try {
-        const live = await opts.sdk.getCreation(id);
-        const url = remoteStillUrlFromApiRow(live, opts.sdk.baseUrl);
+        const live = await getRemoteCreation(id);
+        const url = remoteStillUrlFromApiRow(live, origin);
         if (url) return { imageUrl: url, sourceId: id };
       } catch {
         /* try next */
@@ -567,17 +599,26 @@ export async function ensureProjectGroups(opts: {
   let job: Job;
 
   if (opts.backendJobId) {
-    const existing = await getJob(opts.backendJobId);
+    const existing = await getProjectGroupsJob(opts.backendJobId);
     if (!existing) {
       opts.onProgress?.(
         `Backend job ${opts.backendJobId} missing — starting a fresh ensure.`,
       );
-      job = await enqueueJob({
-        kind: "ensure_project_groups",
+      const handle = await invokeEnsureProjectGroups({
         projectId: opts.projectId,
         label,
         payload,
       });
+      if (handle.mode !== "job") {
+        throw new Error("ensure_project_groups expected a job handle");
+      }
+      const fresh = await getProjectGroupsJob(handle.id);
+      if (!fresh) {
+        throw new Error("ensure_project_groups job missing after invoke");
+      }
+      job = fresh;
+      opts.onProgress?.(`Queued ensure as job ${job.id}.`);
+      opts.onCheckpoint?.({ backendJobId: job.id });
     } else {
       job = existing;
       opts.onProgress?.(
@@ -594,18 +635,25 @@ export async function ensureProjectGroups(opts: {
       }
     }
   } else {
-    job = await enqueueJob({
-      kind: "ensure_project_groups",
+    const handle = await invokeEnsureProjectGroups({
       projectId: opts.projectId,
       label,
       payload,
     });
+    if (handle.mode !== "job") {
+      throw new Error("ensure_project_groups expected a job handle");
+    }
+    const fresh = await getProjectGroupsJob(handle.id);
+    if (!fresh) {
+      throw new Error("ensure_project_groups job missing after invoke");
+    }
+    job = fresh;
     opts.onProgress?.(`Queued ensure as job ${job.id}.`);
     opts.onCheckpoint?.({ backendJobId: job.id });
   }
 
   try {
-    const finalJob = await watchJob(job.id, {
+    const finalJob = await watchProjectGroupsJob(job.id, {
       signal: opts.signal,
       // Cancel is explicit via cancelProjectGroupsJob — abort only detaches.
       cancelOnAbort: false,
@@ -656,10 +704,8 @@ export async function cleanupProjectGroups(opts: {
   /** Fired as soon as the backend job UUID exists (for Cancel). */
   onJobId?: (jobId: string) => void;
 }): Promise<CleanupGroupsResult> {
-  const job = await enqueueJob({
-    kind: "cleanup_project_groups",
+  const handle = await invokeCleanupProjectGroups({
     projectId: opts.projectId,
-    label: "Cleanup project groups",
     payload: {
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
@@ -667,10 +713,13 @@ export async function cleanupProjectGroups(opts: {
       memberIds: opts.memberIds ?? [],
     },
   });
-  opts.onJobId?.(job.id);
-  opts.onProgress?.(`Queued cleanup as job ${job.id}.`);
+  if (handle.mode !== "job") {
+    throw new Error("cleanup_project_groups expected a job handle");
+  }
+  opts.onJobId?.(handle.id);
+  opts.onProgress?.(`Queued cleanup as job ${handle.id}.`);
 
-  const finalJob = await watchJob(job.id, {
+  const finalJob = await watchProjectGroupsJob(handle.id, {
     signal: opts.signal,
     cancelOnAbort: false,
     onUpdate: (updated) => {
@@ -701,7 +750,7 @@ export async function cleanupProjectGroups(opts: {
 export async function cancelProjectGroupsJob(jobId: string | null | undefined): Promise<void> {
   if (!jobId) return;
   try {
-    await cancelJob(jobId);
+    await cancelProjectGroupsJobHandle(jobId);
   } catch {
     /* already gone */
   }
@@ -845,7 +894,6 @@ async function cabinetIdsOwnedByOtherProjects(
  * Returns null only when no cabinet exists yet (safe to create the first one).
  */
 export async function resolveProjectCabinetId(opts: {
-  sdk: ParasceneSdk;
   kind: ProjectGroupKind;
   projectId: string;
   projectTitle: string;
@@ -911,7 +959,7 @@ export async function resolveProjectCabinetId(opts: {
       );
     } else {
       try {
-        const row = await opts.sdk.getCreation(stored);
+        const row = await getRemoteCreation(stored);
         opts.onProgress?.(`${label}: verified ${stored} still on Parascene.`);
         return String(row.id);
       } catch {
@@ -948,7 +996,6 @@ export async function resolveProjectCabinetId(opts: {
 
 /** One Images or Videos cover in the project folder; unfile and ungroup extras. */
 async function keepSingleProjectCabinetCover(opts: {
-  sdk: ParasceneSdk;
   kind: ProjectGroupKind;
   projectId: string;
   projectTitle: string;
@@ -982,7 +1029,6 @@ async function keepSingleProjectCabinetCover(opts: {
     );
     for (const orphanId of orphans) {
       await ungroupAndMergeOrphan({
-        sdk: opts.sdk,
         orphanId,
         keeperId: opts.keeperId,
         kind: opts.kind,
@@ -1019,16 +1065,13 @@ export async function fileCreationIntoProjectGroup(opts: {
     opts.mediaType === "image" ? "images" : "videos";
   const stored =
     opts.mediaType === "image" ? opts.imagesGroupId : opts.videosGroupId;
-  const sdk = createAuthedSdk();
   const existing = await resolveProjectCabinetId({
-    sdk,
     kind,
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     storedGroupId: stored,
   });
   const groupId = await groupMembers({
-    sdk,
     kind,
     existingGroupId: existing,
     memberIds: [opts.creationId],
@@ -1036,7 +1079,6 @@ export async function fileCreationIntoProjectGroup(opts: {
     projectTitle: opts.projectTitle,
   });
   await keepSingleProjectCabinetCover({
-    sdk,
     kind,
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
@@ -1080,9 +1122,7 @@ export async function addMembersToProjectGroup(opts: {
     throw new Error("Choose at least one asset to add to the group.");
   }
   const onProgress = opts.onProgress ?? (() => {});
-  const sdk = createAuthedSdk();
   const existing = await resolveProjectCabinetId({
-    sdk,
     kind: opts.kind,
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
@@ -1097,7 +1137,6 @@ export async function addMembersToProjectGroup(opts: {
     } group…`,
   );
   const groupId = await groupMembers({
-    sdk,
     kind: opts.kind,
     existingGroupId: existing,
     memberIds,
@@ -1106,7 +1145,6 @@ export async function addMembersToProjectGroup(opts: {
   });
   onProgress("Updating project folder…");
   await keepSingleProjectCabinetCover({
-    sdk,
     kind: opts.kind,
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
@@ -1151,7 +1189,6 @@ export async function repairProjectCabinetFolderMembership(opts: {
   const onProgress = opts.onProgress ?? (() => {});
   const messages: string[] = [];
   const groupedIds: string[] = [];
-  const sdk = createAuthedSdk();
 
   let folderMemberIds: string[] = [];
   try {
@@ -1187,14 +1224,12 @@ export async function repairProjectCabinetFolderMembership(opts: {
   const byId = new Map(rows.map((row) => [row.id, row]));
 
   const imagesGroupId = await resolveProjectCabinetId({
-    sdk,
     kind: "images",
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
     storedGroupId: opts.imagesGroupId,
   });
   const videosGroupId = await resolveProjectCabinetId({
-    sdk,
     kind: "videos",
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
@@ -1238,7 +1273,6 @@ export async function repairProjectCabinetFolderMembership(opts: {
       `Filing ${candidates.length} ${media} file(s) into the ${kind} cabinet…`,
     );
     const groupId = await groupMembers({
-      sdk,
       kind,
       existingGroupId: coverId,
       memberIds: candidates,
@@ -1288,7 +1322,6 @@ export async function repairProjectCabinetFolderMembership(opts: {
   const unstamped = await mergeUnstampedCabinetDuplicates({
     catalog,
     keepers,
-    sdk,
     messages,
     onProgress,
   });
@@ -1455,7 +1488,6 @@ function collectCabinetKeepers(opts: {
 }
 
 async function ungroupAndMergeOrphan(opts: {
-  sdk: ParasceneSdk;
   orphanId: string;
   keeperId: string;
   kind: ProjectGroupKind;
@@ -1468,7 +1500,7 @@ async function ungroupAndMergeOrphan(opts: {
   opts.onProgress(`Ungrouping orphan ${opts.orphanId}…`);
   let restored: string[] = [];
   try {
-    const result = await opts.sdk.ungroupCreations(opts.orphanId);
+    const result = await ungroupCreationsViaService(opts.orphanId);
     restored = result.restoredCreationIds;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1499,7 +1531,6 @@ async function ungroupAndMergeOrphan(opts: {
   );
   try {
     await groupMembers({
-      sdk: opts.sdk,
       kind: opts.kind,
       existingGroupId: opts.keeperId,
       memberIds: members,
@@ -1519,7 +1550,6 @@ async function ungroupAndMergeOrphan(opts: {
 async function mergeUnstampedCabinetDuplicates(opts: {
   catalog: readonly Creation[];
   keepers: readonly CabinetKeeperRef[];
-  sdk: ParasceneSdk;
   messages: string[];
   onProgress: (note: string) => void;
 }): Promise<{ mergedOrphanIds: string[] }> {
@@ -1538,7 +1568,6 @@ async function mergeUnstampedCabinetDuplicates(opts: {
       duplicate.keeperId,
     );
     const removed = await ungroupAndMergeOrphan({
-      sdk: opts.sdk,
       orphanId: duplicate.orphanId,
       keeperId: duplicate.keeperId,
       kind: projectGroupKindForRole(duplicate.role),
@@ -1651,7 +1680,6 @@ export async function dedupeDesktopProjectCabinets(opts?: {
     `Found ${buckets.length} cabinet bucket(s); ${duplicateBuckets.length} with duplicates.`,
   );
 
-  const sdk = createAuthedSdk();
   const byId = new Map(catalog.map((c) => [c.id, c]));
 
   if (duplicateBuckets.length === 0) {
@@ -1691,7 +1719,6 @@ export async function dedupeDesktopProjectCabinets(opts?: {
 
       for (const orphan of orphans) {
         const removed = await ungroupAndMergeOrphan({
-          sdk,
           orphanId: orphan,
           keeperId: keeper,
           kind,
@@ -1728,7 +1755,6 @@ export async function dedupeDesktopProjectCabinets(opts?: {
   const unstamped = await mergeUnstampedCabinetDuplicates({
     catalog,
     keepers,
-    sdk,
     messages,
     onProgress,
   });
@@ -1832,13 +1858,10 @@ async function persistProjectCabinetUpdates(
   messages.push(`Updated group ids on ${byProject.size} project(s).`);
 }
 
-async function loadExistingMemberIds(
-  sdk: ParasceneSdk,
-  groupId: string,
-): Promise<string[]> {
+async function loadExistingMemberIds(groupId: string): Promise<string[]> {
   const fromApi: string[] = [];
   try {
-    fromApi.push(...memberIdsFromRemoteGroup(await sdk.getCreation(groupId)));
+    fromApi.push(...memberIdsFromRemoteGroup(await getRemoteCreation(groupId)));
   } catch {
     // Detail endpoint may 404 mid-race; local catalog is the fallback.
   }
@@ -1897,25 +1920,33 @@ export function withGroupMembership(
 }
 
 async function groupMembers(opts: {
-  sdk: ParasceneSdk;
   kind: ProjectGroupKind;
   existingGroupId: string | null;
   memberIds: string[];
   projectId: string;
   projectTitle: string;
 }): Promise<string> {
-  // For local stamp only — do not re-send these on the group POST.
+  // Already-filed members are hidden as standalone rows — resending them
+  // returns "Cannot group deleted creations".
   const existingMemberIds = opts.existingGroupId
-    ? await loadExistingMemberIds(opts.sdk, opts.existingGroupId)
+    ? await loadExistingMemberIds(opts.existingGroupId)
     : [];
+  const toAppend = newIdsToAppendToGroup(
+    opts.existingGroupId,
+    existingMemberIds,
+    opts.memberIds,
+  );
+  if (toAppend.length === 0 && opts.existingGroupId) {
+    return opts.existingGroupId;
+  }
 
-  const ids = idsForGroupApiCall(opts.existingGroupId, opts.memberIds);
+  const ids = idsForGroupApiCall(opts.existingGroupId, toAppend);
   const expectedMembers = expectedMembersAfterAppend(
     existingMemberIds,
     opts.memberIds,
   );
   const role = roleForProjectGroupKind(opts.kind);
-  const grouped = await opts.sdk.groupCreations({
+  const grouped = await groupAppendCreations({
     ids,
     partyName: desktopProjectGroupPartyName(opts.projectTitle, role),
     meta: desktopProjectGroupMeta({
@@ -1927,7 +1958,7 @@ async function groupMembers(opts: {
 
   // Re-fetch + ingest so Editor Assets expands the updated member list.
   // GET /api/create/images/:id often omits meta.group (same gap as fit thumbs).
-  const fresh = await opts.sdk.getCreation(groupId);
+  const fresh = await getRemoteCreation(groupId);
   const liveMembers = memberIdsFromRemoteGroup(fresh);
   if (liveMembers.length > 0) {
     const missing = opts.memberIds.filter((id) => !liveMembers.includes(id));

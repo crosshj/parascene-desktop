@@ -104,6 +104,7 @@ export function libraryAssetPlaceholderIdsInList(
   return assetIds.filter((id) => Boolean(map[id.trim()]));
 }
 
+/** Result-pane phase. Finished generations drop the placeholder and use the normal asset preview. */
 export function libraryAssetPlaceholderPhase(
   placeholder: LibraryAssetPlaceholder | null | undefined,
 ): "pre_gen" | "running" | "done" | "error" {

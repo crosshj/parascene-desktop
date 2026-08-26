@@ -24,9 +24,7 @@ pub fn get_token() -> Result<Option<String>, String> {
 }
 
 pub fn require_token() -> Result<String, String> {
-    get_token()?.ok_or_else(|| {
-        "Replicate API token not set. Add it in Settings.".to_string()
-    })
+    get_token()?.ok_or_else(|| "Replicate API token not set. Add it in Settings.".to_string())
 }
 
 pub fn set_token(token: String) -> Result<(), String> {

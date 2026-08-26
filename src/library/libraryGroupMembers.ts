@@ -1,4 +1,7 @@
-import { createAuthedSdk } from "../auth/session";
+import {
+  getRemoteCreation,
+  groupAppendCreations,
+} from "../services/parasceneCatalog";
 import { ingestRemoteCreation } from "../lab/ingestCreation";
 import {
   idsForGroupApiCall,
@@ -31,13 +34,12 @@ export async function appendMembersToGroupCover(opts: {
     throw new Error("Choose at least one asset to add to the group.");
   }
   const onProgress = opts.onProgress ?? (() => {});
-  const sdk = createAuthedSdk();
   onProgress(`Adding ${memberIds.length} file(s) to the group…`);
   const ids = idsForGroupApiCall(groupId, memberIds);
-  const grouped = await sdk.groupCreations({ ids });
+  const grouped = await groupAppendCreations({ ids });
   const nextGroupId = String(grouped.id);
 
-  const fresh = await sdk.getCreation(nextGroupId);
+  const fresh = await getRemoteCreation(nextGroupId);
   const liveMembers = memberIdsFromRemoteGroup(fresh);
   await ingestRemoteCreation(fresh);
   await downloadIds([nextGroupId]);

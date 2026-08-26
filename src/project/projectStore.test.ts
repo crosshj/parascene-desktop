@@ -22,6 +22,7 @@ import {
   setStoredProjectPendingStagedDraft,
   setStoredProjectTimeline,
   setStoredProjectTimelineZoom,
+  setStoredProjectTimelineAudioBakePath,
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
   storedProjectToUi,
@@ -563,6 +564,17 @@ describe("projectStore", () => {
     expect(cleared.selectedTimelineClipId).toBeNull();
   });
 
+  it("persists timeline audio bake path", () => {
+    let a = createStoredProject("Demo", ["c1"]);
+    a = setStoredProjectTimelineAudioBakePath(a, "/tmp/mix.m4a");
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects()[0];
+    expect(loaded.timelineAudioBakePath).toBe("/tmp/mix.m4a");
+    expect(storedProjectToUi(loaded).timelineAudioBakePath).toBe("/tmp/mix.m4a");
+    const cleared = setStoredProjectTimelineAudioBakePath(loaded, null);
+    expect(cleared.timelineAudioBakePath).toBeNull();
+  });
+
   it("persists selected asset and clears timeline selection", () => {
     let a = createStoredProject("Demo", ["c1", "c2"]);
     a = setStoredProjectTimeline(a, [
@@ -968,7 +980,7 @@ describe("projectStore", () => {
       "creation-99",
     );
 
-    expect(completed.creationIds).toEqual(["c1", "creation-99"]);
+    expect(completed.creationIds).toEqual(["creation-99", "c1"]);
     expect(completed.libraryAssetPlaceholders?.["placeholder-1"]).toBeUndefined();
     expect(completed.selectedAssetId).toBe("c1");
   });
@@ -1002,7 +1014,7 @@ describe("projectStore", () => {
 
     expect(completed.selectedAssetId).toBe("creation-99");
     expect(storedProjectToUi(completed).assets.map((asset) => asset.id)).toEqual(
-      ["c1", "creation-99"],
+      ["creation-99", "c1"],
     );
   });
 
@@ -1036,6 +1048,47 @@ describe("projectStore", () => {
 
     expect(completed.creationIds).toEqual(["images-group"]);
     expect(completed.selectedAssetId).toBe("creation-99");
+  });
+
+  it("moves an already-filed creation into the placeholder slot", () => {
+    const project = createStoredProject("Demo", ["c1", "creation-99"]);
+    const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
+      id: "placeholder-1",
+      kind: "image",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: {
+        prompt: "sunset",
+        intentId: "text_to_image",
+        server: "parascene_blue",
+        provider: "parascene_blue",
+        methodId: "text_to_image",
+        generationJob: {
+          status: "waiting",
+          provider: "parascene_blue",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          pendingCreationId: "creation-99",
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const selected = setStoredProjectSelectedAssetId(
+      withPlaceholder,
+      "placeholder-1",
+    );
+    const completed = completeStoredLibraryAssetPlaceholder(
+      selected,
+      "placeholder-1",
+      "creation-99",
+      { mergeCreationIntoProject: false },
+    );
+
+    expect(completed.creationIds).toEqual(["creation-99", "c1"]);
+    expect(completed.selectedAssetId).toBe("creation-99");
+    expect(storedProjectToUi(completed).assets.map((asset) => asset.id)).toEqual(
+      ["creation-99", "c1"],
+    );
   });
 
   it("removes library asset placeholders without creation ids", () => {

@@ -12,10 +12,8 @@ import { AudioWaveform } from "./AudioWaveform";
 import {
   applyManifest,
   deleteLocal,
-  ensureLocal,
   fillThumb,
   fillThumbAndPushToCloud,
-  getCreation,
   getCreations,
 } from "./catalogClient";
 import {
@@ -28,11 +26,9 @@ import { CloudHostNote } from "./CloudHostNote";
 import { cloudPlayAction, parseCloudImport } from "./cloudImport";
 import {
   canFetchLocal,
-  canFetchPlayableMedia,
   creationDetailUrl,
   creationPreviewUrl,
   isCoverOnlyCloudAv,
-  isParasceneUnavailable,
 } from "./previewUrl";
 import type { Creation } from "./types";
 
@@ -99,18 +95,12 @@ export function CreationLightbox({
   const detail = creationDetailUrl(displayedCreation);
   const thumb = creationPreviewUrl(displayedCreation);
   const aspectCss = creationAspectCss(displayedCreation);
-  const unavailable = isParasceneUnavailable(displayedCreation);
   const canOpenOnWeb = canFetchLocal(creation);
   const mediaType = String(displayedCreation.mediaType ?? "")
     .trim()
     .toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
-  // Cover-only cloud A/V (Suno/YouTube poster PNG) has nothing playable to cache.
-  const waiting =
-    !detail &&
-    canFetchPlayableMedia(displayedCreation) &&
-    !unavailable;
   const cloudImport = parseCloudImport(displayedCreation);
   const cloudPlay = cloudPlayAction(displayedCreation);
   const showCloudHost =
@@ -196,17 +186,6 @@ export function CreationLightbox({
         .filter((row): row is Creation => Boolean(row));
       setLoadedGroup({ ownerId: creation.id, members: ordered });
       setGroupIndex(0);
-      void ensureLocal(
-        ordered
-          .filter(
-            (row) =>
-              !creationDetailUrl(row) &&
-              canFetchLocal(row) &&
-              !isParasceneUnavailable(row),
-          )
-          .map((row) => row.id),
-        { fullMedia: true, urgent: true },
-      );
     };
     void load().catch(() => {
       if (!cancelled) {
@@ -241,18 +220,6 @@ export function CreationLightbox({
     return () => unlisten?.();
   }, [creation.id, groupIds]);
 
-  // Utmost priority: jump the download queue the moment the lightbox opens.
-  // Skip cover-only cloud A/V — remote_url is a PNG, not a playable track/movie.
-  useEffect(() => {
-    if (detail || unavailable || !canFetchPlayableMedia(displayedCreation)) {
-      return;
-    }
-    void ensureLocal([displayedCreation.id], {
-      fullMedia: true,
-      urgent: true,
-    });
-  }, [detail, displayedCreation, unavailable]);
-
   async function onFillThumb() {
     if (busy) return;
     const ok = await confirm({
@@ -267,18 +234,10 @@ export function CreationLightbox({
     setBusyKind("fill");
     setActionError(null);
     try {
-      let row = liveCreation;
-      if (!row.localPath) {
-        await ensureLocal([row.id], { fullMedia: true, urgent: true });
-        for (let i = 0; i < 40; i += 1) {
-          await new Promise((r) => window.setTimeout(r, 250));
-          row = await getCreation(row.id);
-          if (row.localPath) break;
-        }
-      }
+      const row = liveCreation;
       if (!row.localPath) {
         throw new Error(
-          "Local media is not ready yet. Wait for the download, then try again.",
+          "Full media is not on this machine. Use Sync → Cache media, then try again.",
         );
       }
       const updated = isLocalOnlyCreation(row)
@@ -458,9 +417,7 @@ export function CreationLightbox({
                   />
                 ) : (
                   <p className="creation-lightbox-wait muted">
-                    {waiting
-                      ? "Saving locally…"
-                      : "No local audio file to play."}
+                    No local audio file to play.
                   </p>
                 )}
               </div>
@@ -500,13 +457,6 @@ export function CreationLightbox({
                     creation={displayedCreation}
                     className="cloud-host-note creation-lightbox-cloud"
                   />
-                ) : waiting ? (
-                  <>
-                    <span className="creation-lightbox-shimmer" aria-hidden />
-                    <p className="creation-lightbox-wait muted">
-                      Saving locally…
-                    </p>
-                  </>
                 ) : (
                   <p className="creation-lightbox-wait muted">
                     No local media available.

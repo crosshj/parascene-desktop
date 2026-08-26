@@ -157,6 +157,18 @@ export function clipTimelineDurationSec(clip: TimelineClip): number {
   return Math.max(0.1, clip.endSec - clip.startSec);
 }
 
+/**
+ * Narrower than two 30fps frames. Playing these still calls seek+play() then
+ * immediately cuts, which deadlocks WKWebView at that boundary.
+ */
+export const PLAYBACK_SLIVER_SEC = 2 / 30;
+
+export function clipIsPlaybackSliver(
+  clip: Pick<TimelineClip, "startSec" | "endSec">,
+): boolean {
+  return clip.endSec - clip.startSec < PLAYBACK_SLIVER_SEC - 1e-9;
+}
+
 export function clipSourceSec(clip: TimelineClip, timelineSec: number): number {
   const inSec = clipInSec(clip);
   const outSec = clipOutSec(clip);
@@ -205,17 +217,39 @@ function clipCovering(
   t: number,
   sequenceEnd: number,
 ): TimelineClip | null {
-  let hit: TimelineClip | null = null;
+  let covering: TimelineClip | null = null;
   for (const c of laneClips) {
-    if (t >= c.startSec && t < c.endSec) hit = c;
+    if (t >= c.startSec && t < c.endSec) covering = c;
   }
-  if (hit) return hit;
-  if (sequenceEnd > 0 && t >= sequenceEnd) {
-    for (const c of laneClips) {
-      if (c.endSec === sequenceEnd && t >= c.startSec) hit = c;
+  if (covering && !clipIsPlaybackSliver(covering)) return covering;
+
+  const real = laneClips
+    .filter((c) => !clipIsPlaybackSliver(c))
+    .slice()
+    .sort((a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id));
+
+  for (const c of real) {
+    if (t >= c.startSec && t < c.endSec) return c;
+  }
+
+  if (covering && clipIsPlaybackSliver(covering)) {
+    const sliverStart = covering.startSec;
+    for (const c of real) {
+      if (c.startSec + 1e-6 >= sliverStart) return c;
+    }
+    for (let i = real.length - 1; i >= 0; i--) {
+      if (real[i].startSec <= t) return real[i];
     }
   }
-  return hit;
+
+  if (sequenceEnd > 0 && t >= sequenceEnd) {
+    let hit: TimelineClip | null = null;
+    for (const c of real) {
+      if (Math.abs(c.endSec - sequenceEnd) < 1e-6 && t >= c.startSec) hit = c;
+    }
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /**
@@ -233,6 +267,7 @@ export function resolveTimelineFrame(
 
   const visualClip = clipCovering(videoClips, time, sequenceEnd);
   const audioHits = audioClips.filter((c) => {
+    if (clipIsPlaybackSliver(c)) return false;
     if (time >= c.startSec && time < c.endSec) return true;
     return (
       sequenceEnd > 0 &&
@@ -274,10 +309,45 @@ export function peekNextVisualClip(
   const gate = current ? current.endSec : time;
 
   for (const c of videoClips) {
+    if (clipIsPlaybackSliver(c)) continue;
     if (current && c.id === current.id) continue;
     if (c.startSec + 1e-6 >= gate) return c;
   }
   return null;
+}
+
+/**
+ * Video-lane clip that ends at or before the visual covering `t` (or before `t`
+ * when in a gap). Used for look-behind priming of the program monitor.
+ */
+export function peekPrevVisualClip(
+  clips: readonly TimelineClip[],
+  t: number,
+): TimelineClip | null {
+  const time = Number.isFinite(t) && t > 0 ? t : 0;
+  const sequenceEnd = timelineSequenceDuration(clips);
+  const videoClips = clipsOnLane(clips, "video")
+    .slice()
+    .sort((a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id));
+  if (videoClips.length === 0) return null;
+
+  const current = clipCovering(videoClips, time, sequenceEnd);
+  const gate = current ? current.startSec : time;
+
+  let prev: TimelineClip | null = null;
+  for (const c of videoClips) {
+    if (clipIsPlaybackSliver(c)) continue;
+    if (current && c.id === current.id) continue;
+    if (c.endSec > gate + 1e-6) continue;
+    if (
+      !prev ||
+      c.endSec > prev.endSec ||
+      (c.endSec === prev.endSec && c.startSec > prev.startSec)
+    ) {
+      prev = c;
+    }
+  }
+  return prev;
 }
 
 /** Layer at a clip's timeline start (source in-point) for standby priming. */
