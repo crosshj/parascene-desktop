@@ -16,6 +16,7 @@ type Props = {
     queued?: number;
     error: string | null;
     playheadReady: boolean;
+    depwait?: boolean;
   };
   onRetryPreview?: () => void;
 };
@@ -26,6 +27,9 @@ function phaseHeadline(
 ): string {
   if (fragmentStatus?.error) return "Preview error";
   if (previewStatus?.phase === "blocked") return "Preview blocked";
+  if (previewStatus?.phase === "depwait" || fragmentStatus?.depwait) {
+    return "Waiting for source media";
+  }
   if (previewStatus?.phase === "loading") return "Loading preview";
   if (previewStatus?.phase === "baking" || fragmentStatus?.baking) {
     return "Baking preview";
@@ -38,6 +42,12 @@ function phaseDetail(
   fragmentStatus?: Props["fragmentStatus"],
 ): string {
   if (fragmentStatus?.error) return fragmentStatus.error;
+  if (previewStatus?.phase === "depwait" || fragmentStatus?.depwait) {
+    return (
+      previewStatus?.message ??
+      "Preview is holding the last frame until source media is available locally."
+    );
+  }
   if (previewStatus?.message) return previewStatus.message;
   if (fragmentStatus?.baking) {
     return `Baking preview fragments… ${fragmentStatus.ready}/${fragmentStatus.total}${

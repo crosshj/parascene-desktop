@@ -4,6 +4,11 @@ import {
   timelineMseSupported,
 } from "./mseFragmentPlayer";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+  convertFileSrc: (path: string) => `media://localhost/${encodeURIComponent(path)}`,
+}));
+
 describe("createMseFragmentPlayer", () => {
   it("mounts a single muted video element and tears it down", () => {
     const host = document.createElement("div");
@@ -91,6 +96,7 @@ describe("createMseFragmentPlayer", () => {
     document.body.appendChild(host);
     const player = createMseFragmentPlayer(host, { onFetchError });
     player.show();
+    player.warm();
     player.sync(
       0,
       false,
@@ -105,10 +111,45 @@ describe("createMseFragmentPlayer", () => {
       ],
       { feed: true },
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(onFetchError).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(onFetchError).toHaveBeenCalled();
+    });
     expect(String(onFetchError.mock.calls[0]?.[0]).length).toBeGreaterThan(0);
+    player.destroy();
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it("signals missing fragments on fetch 404", async () => {
+    const onFragmentMissing = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const player = createMseFragmentPlayer(host, { onFragmentMissing });
+    player.show();
+    player.warm();
+    player.sync(
+      0,
+      false,
+      [
+        {
+          index: 0,
+          startSec: 0,
+          durationSec: 2,
+          fingerprint: "abc",
+          path: "/tmp/missing-frag.mp4",
+        },
+      ],
+      { feed: true },
+    );
+    await vi.waitFor(() => {
+      expect(onFragmentMissing).toHaveBeenCalledWith("/tmp/missing-frag.mp4");
+    });
     player.destroy();
     host.remove();
     vi.unstubAllGlobals();

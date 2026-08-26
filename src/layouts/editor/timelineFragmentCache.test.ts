@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import type { TimelineClip } from "../../project/types";
 import { createTimelineFragmentCache } from "./timelineFragmentCache";
 import type { TimelineFragmentBakeResult } from "./timelineFragmentCache";
 import type { TimelineFragmentSpec } from "./timelineFragmentPlan";
+import { planTimelineFragments, PREVIEW_ENCODE_TAG } from "./timelineFragmentPlan";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
 
 function clip(
   partial: Partial<TimelineClip> &
@@ -28,6 +34,7 @@ function resultFor(fragment: TimelineFragmentSpec): TimelineFragmentBakeResult {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.mocked(invoke).mockReset();
 });
 
 describe("createTimelineFragmentCache", () => {
@@ -321,6 +328,109 @@ describe("createTimelineFragmentCache", () => {
     expect(cache.fragmentCovering(2)?.index).toBe(1);
     expect(attempts.filter((i) => i === 0).length).toBe(1);
     expect(attempts).toContain(1);
+
+    cache.destroy();
+  });
+
+  it("hydrates ready fragments from disk snapshot without baking", async () => {
+    const baked: number[] = [];
+    const clips = [clip({ id: "a", startSec: 0, endSec: 2, assetId: "v1" })];
+    const planned = planTimelineFragments(clips, "16:9", undefined, "low");
+    const spec = planned.fragments[0]!;
+    const cache = createTimelineFragmentCache({
+      debounceMs: 750,
+      bake: async ({ fragment }) => {
+        baked.push(fragment.index);
+        return resultFor(fragment);
+      },
+    });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd !== "library_read_timeline_preview_snapshot") {
+        throw new Error(`unexpected invoke ${cmd}`);
+      }
+      return {
+        encodeTag: PREVIEW_ENCODE_TAG,
+        aspectRatio: "16:9",
+        quality: "low",
+        fragments: [
+          {
+            index: spec.index,
+            startSec: spec.startSec,
+            durationSec: spec.durationSec,
+            fingerprint: spec.fingerprint,
+            path: "/cache/restored.mp4",
+          },
+        ],
+      };
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      quality: "low",
+      clips,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(baked).toEqual([]);
+    expect(cache.status().ready).toBe(1);
+    expect(cache.fragmentCovering(0)?.path).toBe("/cache/restored.mp4");
+
+    cache.destroy();
+  });
+
+  it("marks depwait when source media is not local", async () => {
+    vi.useFakeTimers();
+    const cache = createTimelineFragmentCache({
+      debounceMs: 0,
+      bake: async () => {
+        throw Object.assign(new Error("Waiting for local source media"), {
+          depwait: true,
+        });
+      },
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [clip({ id: "a", startSec: 0, endSec: 4, assetId: "v1" })],
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cache.status().depwait).toBe(true);
+    expect(cache.status().error).toBeNull();
+    expect(cache.isDepwaitAt(0)).toBe(true);
+    expect(cache.fragmentCovering(0)).toBeNull();
+
+    cache.destroy();
+  });
+
+  it("drops a ready entry and rebakes when a fragment path is invalidated", async () => {
+    vi.useFakeTimers();
+    const baked: number[] = [];
+    const cache = createTimelineFragmentCache({
+      debounceMs: 0,
+      bake: async ({ fragment }) => {
+        baked.push(fragment.index);
+        return resultFor(fragment);
+      },
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [clip({ id: "a", startSec: 0, endSec: 4, assetId: "v1" })],
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cache.fragmentCovering(0)).not.toBeNull();
+    expect(baked).toEqual([0, 1]);
+
+    const missingPath = cache.fragmentCovering(0)!.path;
+    baked.length = 0;
+    cache.invalidateFragmentAtPath(missingPath);
+    expect(cache.fragmentCovering(0)).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(baked).toContain(0);
 
     cache.destroy();
   });

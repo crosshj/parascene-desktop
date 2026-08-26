@@ -1,5 +1,9 @@
 import { mediaUrlForBakePath } from "../library/slideshowMedia";
 import {
+  acquirePreviewLeases,
+  releasePreviewLeases,
+} from "./previewFragmentLeases";
+import {
   fmp4HasMediaFragment,
   formatTrackRange,
   inspectFragmentTimestamps,
@@ -107,6 +111,8 @@ export type MseFragmentPlayer = {
 export type MseFragmentPlayerOptions = {
   /** Called when a fragment fetch fails (CSP, 4xx, corrupt fMP4). */
   onFetchError?: (message: string) => void;
+  /** Called when a ready fragment path 404s — producer should rebake (F11). */
+  onFragmentMissing?: (path: string) => void;
   onBlocked?: (reason: string) => void;
 };
 
@@ -581,11 +587,18 @@ export function createMseFragmentPlayer(
       options.onFetchError?.(message);
       return Promise.resolve(null);
     }
-    const pending = fetch(url, { signal })
-      .then(async (res) => {
+    const pending = (async () => {
+      await acquirePreviewLeases([path]);
+      try {
+        const res = await fetch(url, { signal });
         if (!res.ok) {
+          if (res.status === 404) {
+            options.onFragmentMissing?.(path);
+          }
           options.onFetchError?.(
-            `Preview fragment fetch failed (${res.status}). Check that media:// is allowed in connect-src.`,
+            res.status === 404
+              ? "Preview fragment missing on disk — rebaking…"
+              : `Preview fragment fetch failed (${res.status}). Check that media:// is allowed in connect-src.`,
           );
           return null;
         }
@@ -597,17 +610,18 @@ export function createMseFragmentPlayer(
           return null;
         }
         return buf;
-      })
-      .catch((err) => {
+      } catch (err) {
         if (signal.aborted) return null;
         const detail =
           err instanceof Error ? err.message : "network or CSP blocked";
         options.onFetchError?.(`Preview fragment fetch blocked: ${detail}`);
         return null;
-      })
-      .finally(() => {
-        inflightFetch.delete(path);
-      });
+      } finally {
+        await releasePreviewLeases([path]);
+      }
+    })().finally(() => {
+      inflightFetch.delete(path);
+    });
     inflightFetch.set(path, pending);
     return pending;
   };

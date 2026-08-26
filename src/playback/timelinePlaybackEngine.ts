@@ -28,7 +28,7 @@ const TIME_UPDATE_MS = 1000 / PLAYBACK_TIME_UPDATE_HZ;
 export type PreviewPlaybackStatus = {
   /** True while playhead is held waiting for verified picture. */
   holding: boolean;
-  phase: "idle" | "loading" | "baking" | "blocked";
+  phase: "idle" | "loading" | "baking" | "depwait" | "blocked";
   message?: string;
   retryable?: boolean;
 };
@@ -158,6 +158,9 @@ export function createTimelinePlaybackEngine(
     onFetchError: (message) => {
       fragmentCache?.reportError(message);
     },
+    onFragmentMissing: (path) => {
+      fragmentCache?.invalidateFragmentAtPath(path);
+    },
     onBlocked: (reason) => {
       setPreviewStatus({
         holding: true,
@@ -213,6 +216,14 @@ export function createTimelinePlaybackEngine(
     const cache = fragmentCache;
     if (!cache) {
       setPreviewStatus(IDLE_STATUS);
+      return;
+    }
+    if (cache.isDepwaitAt(state.currentSec)) {
+      setPreviewStatus({
+        holding: true,
+        phase: "depwait",
+        message: "Waiting for local source media…",
+      });
       return;
     }
     const covering = cache.fragmentCovering(state.currentSec);

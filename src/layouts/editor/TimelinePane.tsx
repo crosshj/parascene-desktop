@@ -150,6 +150,7 @@ type TimelinePaneProps = {
     queued?: number;
     error: string | null;
     playheadReady: boolean;
+    depwait?: boolean;
   };
   /** Play is held while the preview picture buffers. */
   previewBuffering?: boolean;
@@ -173,6 +174,9 @@ function resolvePreviewHealth(args: {
   }
   if (previewStatus?.phase === "blocked") {
     return { tone: "error", label: "Preview blocked" };
+  }
+  if (previewStatus?.phase === "depwait" || fragmentStatus?.depwait) {
+    return { tone: "warning", label: "Waiting for source media" };
   }
   if (previewStatus?.phase === "loading" || previewBuffering) {
     return { tone: "warning", label: "Loading preview" };

@@ -15,6 +15,7 @@ import {
   fragmentJobPriority,
   fragmentPlaybackHasContinuity,
   planTimelineFragments,
+  PREVIEW_ENCODE_TAG,
   timelineVideoExtentSec,
   type TimelineFragmentPlan,
   type TimelineFragmentSpec,
@@ -37,6 +38,23 @@ export type TimelineFragmentStatus = {
   queued: number;
   error: string | null;
   playheadReady: boolean;
+  /** Covering slot waits on non-local source media (not a bake error). */
+  depwait: boolean;
+};
+
+export type TimelinePreviewSnapshotFragment = {
+  index: number;
+  startSec: number;
+  durationSec: number;
+  fingerprint: string;
+  path: string;
+};
+
+export type TimelinePreviewSnapshot = {
+  encodeTag: string;
+  aspectRatio: string;
+  quality: string;
+  fragments: TimelinePreviewSnapshotFragment[];
 };
 
 export type TimelineFragmentCache = {
@@ -65,6 +83,10 @@ export type TimelineFragmentCache = {
   videoExtentSec(): number;
   /** Play/seek admission: bake covering + next immediately, bypass edit debounce. */
   demandPlayableWindow(sec: number): void;
+  /** True when the fragment at sec waits on non-local source media. */
+  isDepwaitAt(sec: number): boolean;
+  /** Drop a stale ready entry and demand a rebake (F11). */
+  invalidateFragmentAtPath(path: string): void;
   status(): TimelineFragmentStatus;
   /** Surface a playback-side failure (e.g. CSP-blocked fragment fetch). */
   reportError(message: string | null): void;
@@ -160,6 +182,35 @@ export async function clearTimelineFragments(projectId: string): Promise<void> {
   await invoke("library_clear_timeline_fragments", { projectId: id });
 }
 
+export async function readTimelinePreviewSnapshot(
+  projectId: string,
+): Promise<TimelinePreviewSnapshot | null> {
+  const id = projectId.trim();
+  if (!id) return null;
+  try {
+    return await invoke<TimelinePreviewSnapshot>(
+      "library_read_timeline_preview_snapshot",
+      { projectId: id },
+    );
+  } catch {
+    return null;
+  }
+}
+
+export type TimelinePreviewConfig = {
+  encodeTag: string;
+  fragmentDurationSec: number;
+  fragmentFps: number;
+  timescale: number;
+};
+
+export async function readTimelinePreviewConfig(): Promise<TimelinePreviewConfig> {
+  return invoke<TimelinePreviewConfig>("library_read_timeline_preview_config");
+}
+
+/** Hold a disk path against prune/clear while MSE fetches it (F7). */
+export { acquirePreviewLeases, releasePreviewLeases } from "../../playback/previewFragmentLeases";
+
 
 export function createTimelineFragmentCache(
   options: TimelineFragmentCacheOptions = {},
@@ -184,11 +235,36 @@ export function createTimelineFragmentCache(
   let debounceGen = 0;
   let activeBakes = 0;
   const backoffTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  const depwaitIndices = new Set<number>();
   const ready = new Map<number, ReadyTimelineFragment>();
   /** index → fingerprint currently encoding. Stale results are dropped. */
   const inflight = new Map<number, string>();
   /** index → earliest time we may retry after a bake failure. */
   const failureBackoffUntil = new Map<number, number>();
+  /** Known-local asset ids — drives readiness bits in fingerprints. */
+  let encodeTag = PREVIEW_ENCODE_TAG;
+  void readTimelinePreviewConfig()
+    .then((cfg) => {
+      if (cfg.encodeTag.trim()) encodeTag = cfg.encodeTag.trim();
+    })
+    .catch(() => {
+      /* fallback to bundled default */
+    });
+
+  const planWithTag = (
+    clipInput: readonly TimelineClip[],
+    aspect: string,
+    qual: PreviewQuality,
+    localIds?: Set<string> | null,
+  ) =>
+    planTimelineFragments(
+      clipInput,
+      aspect,
+      undefined,
+      qual,
+      localIds,
+      encodeTag,
+    );
   /** Known-local asset ids — drives readiness bits in fingerprints. */
   let localAssetIds: Set<string> | null = null;
   const listeners = new Set<() => void>();
@@ -317,15 +393,38 @@ export function createTimelineFragmentCache(
   };
 
   const replanFromLocality = () => {
-    const nextPlan = planTimelineFragments(
+    const nextPlan = planWithTag(
       clips,
       aspectRatio,
-      undefined,
       quality,
       localAssetIds,
     );
     applyPlan(nextPlan);
     notify();
+  };
+
+  const reconcileSnapshot = async () => {
+    const id = projectId.trim();
+    if (!id || !plan) return;
+    const snapshot = await readTimelinePreviewSnapshot(id);
+    if (!snapshot || snapshot.encodeTag !== encodeTag) return;
+    if (snapshot.aspectRatio !== aspectRatio || snapshot.quality !== quality) return;
+    let changed = false;
+    for (const entry of snapshot.fragments) {
+      const spec = plan.fragments[entry.index];
+      if (!spec || spec.fingerprint !== entry.fingerprint) continue;
+      if (isReady(spec)) continue;
+      ready.set(entry.index, {
+        path: entry.path,
+        index: entry.index,
+        startSec: entry.startSec,
+        durationSec: entry.durationSec,
+        fingerprint: entry.fingerprint,
+      });
+      depwaitIndices.delete(entry.index);
+      changed = true;
+    }
+    if (changed) notify();
   };
 
   const bakeOne = async (spec: TimelineFragmentSpec) => {
@@ -378,6 +477,7 @@ export function createTimelineFragmentCache(
         durationSec: result.durationSec,
         fingerprint: result.fingerprint,
       });
+      depwaitIndices.delete(result.index);
       if (errorSource === "bake") {
         error = null;
         errorSource = null;
@@ -386,6 +486,14 @@ export function createTimelineFragmentCache(
     } catch (caught) {
       inflight.delete(spec.index);
       if (destroyed || epoch !== bakeEpoch) return;
+      if (
+        caught instanceof Error &&
+        caught.message.includes("Stale preview bake")
+      ) {
+        scheduleJobs(true);
+        notify();
+        return;
+      }
       const depwait =
         caught instanceof FragmentDepwaitError ||
         (caught instanceof Error &&
@@ -393,6 +501,11 @@ export function createTimelineFragmentCache(
       const until = Date.now() + BAKE_FAILURE_BACKOFF_MS;
       failureBackoffUntil.set(spec.index, until);
       scheduleBackoffWake(spec.index, until);
+      if (depwait) {
+        depwaitIndices.add(spec.index);
+      } else {
+        depwaitIndices.delete(spec.index);
+      }
       if (!depwait) {
         error = caught instanceof Error ? caught.message : String(caught);
         errorSource = "bake";
@@ -453,6 +566,7 @@ export function createTimelineFragmentCache(
       ready.clear();
       inflight.clear();
       failureBackoffUntil.clear();
+      depwaitIndices.clear();
       localAssetIds = null;
     } else if (
       (nextAspect !== aspectRatio || nextQuality !== quality) &&
@@ -462,15 +576,15 @@ export function createTimelineFragmentCache(
       ready.clear();
       inflight.clear();
       failureBackoffUntil.clear();
+      depwaitIndices.clear();
     }
     projectId = nextId;
     clips = input.clips;
     aspectRatio = nextAspect;
     quality = nextQuality;
-    const nextPlan = planTimelineFragments(
+    const nextPlan = planWithTag(
       clips,
       aspectRatio,
-      undefined,
       quality,
       localAssetIds,
     );
@@ -481,6 +595,7 @@ export function createTimelineFragmentCache(
       dirtyFragmentIndices(plan, nextPlan).length > 0;
     applyPlan(nextPlan);
     notify();
+    void reconcileSnapshot();
     if (!planChanged && spawn !== "now") return;
     if (spawn === "skip") return;
     scheduleJobs(spawn === "now");
@@ -518,6 +633,32 @@ export function createTimelineFragmentCache(
         }
       }
       pump();
+    },
+    isDepwaitAt(sec) {
+      if (!plan) return false;
+      if (sec >= plan.durationSec - 1e-3) return false;
+      const index = fragmentIndexAtSec(sec, Math.round(plan.durationSec * 30));
+      return depwaitIndices.has(index);
+    },
+    invalidateFragmentAtPath(path) {
+      if (destroyed) return;
+      const target = path.trim();
+      if (!target) return;
+      let changed = false;
+      for (const [index, rec] of ready) {
+        if (rec.path !== target) continue;
+        ready.delete(index);
+        clearBackoffTimer(index);
+        failureBackoffUntil.delete(index);
+        changed = true;
+      }
+      if (!changed) return;
+      if (errorSource === "playback") {
+        error = null;
+        errorSource = null;
+      }
+      notify();
+      scheduleJobs(true);
     },
     setTimeline(input) {
       if (destroyed) return;
@@ -584,6 +725,7 @@ export function createTimelineFragmentCache(
         error,
         playheadReady:
           pastVideo || Boolean(plan && this.fragmentCovering(playheadSec)),
+        depwait: depwaitIndices.size > 0,
       };
     },
     reportError(message) {
@@ -607,6 +749,7 @@ export function createTimelineFragmentCache(
       ready.clear();
       inflight.clear();
       failureBackoffUntil.clear();
+      depwaitIndices.clear();
       error = null;
       errorSource = null;
       pausingForRefresh = true;
@@ -643,6 +786,7 @@ export function createTimelineFragmentCache(
       ready.clear();
       inflight.clear();
       failureBackoffUntil.clear();
+      depwaitIndices.clear();
       plan = null;
     },
   };

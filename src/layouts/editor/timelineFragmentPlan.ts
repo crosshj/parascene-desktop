@@ -9,8 +9,7 @@ export const FRAGMENT_DURATION_SEC = 2;
 export const FRAGMENT_FPS = 30;
 export const FRAGMENT_FRAMES = FRAGMENT_DURATION_SEC * FRAGMENT_FPS;
 /** Bump when preview encode params change so stale fMP4 cache is dropped. */
-const PREVIEW_ENCODE_TAG = "pv-cmaf5";
-/** One frame of neighbor overlap so cuts on a boundary dirty both sides. */
+export const PREVIEW_ENCODE_TAG = "pv-cmaf5";
 export const FRAGMENT_NEIGHBOR_PAD_SEC = 1 / FRAGMENT_FPS;
 /** Next chunk must be ready this far before the current one ends. */
 export const FRAGMENT_PLAYBACK_LOOKAHEAD_SEC = 0.2;
@@ -220,6 +219,7 @@ export function planTimelineFragments(
   durationSec = timelineVideoExtentSec(clips),
   quality: PreviewQuality = DEFAULT_PREVIEW_QUALITY,
   localAssetIds?: ReadonlySet<string> | null,
+  encodeTag: string = PREVIEW_ENCODE_TAG,
 ): TimelineFragmentPlan {
   const totalFrames = sequenceFrameCount(durationSec);
   const fragmentCount =
@@ -238,7 +238,7 @@ export function planTimelineFragments(
     );
     const fingerprint = fnv1a32(
       [
-        PREVIEW_ENCODE_TAG,
+        encodeTag,
         quality,
         aspect,
         index,

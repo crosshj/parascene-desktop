@@ -30,7 +30,10 @@ function mockFragmentCache(): TimelineFragmentCache {
       queued: 0,
       error: null,
       playheadReady: false,
+      depwait: false,
     }),
+    isDepwaitAt: () => false,
+    invalidateFragmentAtPath: () => {},
     reportError: () => {},
     subscribe: () => () => {},
     refresh: () => {},
@@ -93,6 +96,50 @@ describe("createTimelinePlaybackEngine admission policy", () => {
       matteH: 540,
     });
     expect(typeof engine.retryPreview).toBe("function");
+    engine.destroy();
+    host.remove();
+  });
+
+  it("reports depwait when fragment cache waits on local media", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const onPreviewStatusChange = vi.fn();
+    const engine = createTimelinePlaybackEngine(host, {
+      stageW: 960,
+      stageH: 540,
+      matteW: 960,
+      matteH: 540,
+      onPreviewStatusChange,
+    });
+    engine.setClips([
+      {
+        id: "v1",
+        lane: "video",
+        label: "v1",
+        startSec: 0,
+        endSec: 4,
+        assetId: "a1",
+        kind: "video",
+      },
+    ]);
+    engine.setFragmentCache({
+      ...mockFragmentCache(),
+      isDepwaitAt: () => true,
+      status: () => ({
+        ready: 0,
+        total: 2,
+        baking: false,
+        queued: 0,
+        error: null,
+        playheadReady: false,
+        depwait: true,
+      }),
+    });
+    engine.play();
+    const calls = onPreviewStatusChange.mock.calls;
+    const last = calls[calls.length - 1]?.[0];
+    expect(last?.phase).toBe("depwait");
+    expect(last?.holding).toBe(true);
     engine.destroy();
     host.remove();
   });

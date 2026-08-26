@@ -26,6 +26,7 @@ mod sync_full;
 mod sync_newest;
 mod sync_refresh;
 mod thumb_fill;
+mod preview_scheduler;
 mod timeline_fragments;
 
 pub use beats::library_detect_beats;
@@ -85,7 +86,9 @@ pub use render::{
 };
 pub use timeline_fragments::{
     library_bake_timeline_fragment, library_clear_timeline_fragments,
-    library_concat_timeline_fragments,
+    library_concat_timeline_fragments, library_preview_lease_acquire,
+    library_preview_lease_release, library_read_timeline_preview_config,
+    library_read_timeline_preview_snapshot,
 };
 pub use reverse::{library_ensure_reversed, library_rebuild_reversed};
 pub use slideshow::library_ensure_slideshow;

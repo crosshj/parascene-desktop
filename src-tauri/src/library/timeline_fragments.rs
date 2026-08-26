@@ -5,19 +5,168 @@
 //! SourceBuffer can hold one continuous range. Encode is tiny test quality,
 //! not Publisher export.
 
+use super::preview_scheduler::acquire_preview_bake_slot;
 use super::catalog::default_paths;
 use super::ffmpeg::resolve_ffmpeg;
 use super::render::{
     aspect_parts, build_video_segments, concat_demixer_line, fit_inside, run_ffmpeg, safe_id,
     Framing, RenderTimelineClipInput, VideoSegment, VideoSource,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
+const PREVIEW_LEASE_TTL: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Debug)]
+struct PreviewLeaseEntry {
+    count: u32,
+    expires: Instant,
+}
+
+static PREVIEW_LEASES: OnceLock<Mutex<HashMap<String, PreviewLeaseEntry>>> = OnceLock::new();
+static PREVIEW_LEASE_PENDING_DELETE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn preview_leases() -> &'static Mutex<HashMap<String, PreviewLeaseEntry>> {
+    PREVIEW_LEASES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn preview_lease_pending_delete() -> &'static Mutex<HashSet<String>> {
+    PREVIEW_LEASE_PENDING_DELETE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn prune_expired_preview_leases(map: &mut HashMap<String, PreviewLeaseEntry>) {
+    let now = Instant::now();
+    map.retain(|_, entry| entry.count > 0 && entry.expires > now);
+}
+
+fn preview_path_key(path: &str) -> String {
+    path.trim().to_string()
+}
+
+fn preview_path_leased(path: &Path) -> bool {
+    let key = preview_path_key(&path.display().to_string());
+    if key.is_empty() {
+        return false;
+    }
+    let mut guard = preview_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    prune_expired_preview_leases(&mut guard);
+    guard
+        .get(&key)
+        .map(|entry| entry.count > 0 && entry.expires > Instant::now())
+        .unwrap_or(false)
+}
+
+fn preview_lease_adjust(paths: &[String], delta: i32) -> Result<(), String> {
+    if delta == 0 {
+        return Ok(());
+    }
+    let mut guard = preview_leases()
+        .lock()
+        .map_err(|_| "Preview lease registry unavailable".to_string())?;
+    prune_expired_preview_leases(&mut guard);
+    let now = Instant::now();
+    for raw in paths {
+        let key = preview_path_key(raw);
+        if key.is_empty() {
+            continue;
+        }
+        if delta > 0 {
+            let entry = guard.entry(key).or_insert(PreviewLeaseEntry {
+                count: 0,
+                expires: now + PREVIEW_LEASE_TTL,
+            });
+            entry.count = entry.count.saturating_add(delta as u32);
+            entry.expires = now + PREVIEW_LEASE_TTL;
+        } else {
+            let Some(entry) = guard.get_mut(&key) else {
+                continue;
+            };
+            entry.count = entry.count.saturating_sub((-delta) as u32);
+            if entry.count == 0 {
+                guard.remove(&key);
+                drop(guard);
+                preview_try_delete_pending(&key);
+                guard = preview_leases()
+                    .lock()
+                    .map_err(|_| "Preview lease registry unavailable".to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn preview_mark_pending_delete(path: &Path) {
+    let key = preview_path_key(&path.display().to_string());
+    if key.is_empty() {
+        return;
+    }
+    let Ok(mut pending) = preview_lease_pending_delete().lock() else {
+        return;
+    };
+    pending.insert(key);
+}
+
+fn preview_try_delete_pending(path_key: &str) {
+    let should_delete = {
+        let Ok(mut pending) = preview_lease_pending_delete().lock() else {
+            return;
+        };
+        if !pending.contains(path_key) {
+            return;
+        }
+        if preview_path_leased(Path::new(path_key)) {
+            return;
+        }
+        pending.remove(path_key);
+        true
+    };
+    if should_delete {
+        let _ = fs::remove_file(path_key);
+    }
+}
+
+fn clear_preview_dir_respecting_leases(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let manifest = manifest_path(dir);
+    if manifest.is_file() && !preview_path_leased(&manifest) {
+        let _ = fs::remove_file(&manifest);
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if preview_path_leased(&path) {
+            preview_mark_pending_delete(&path);
+            continue;
+        }
+        let _ = fs::remove_file(&path);
+    }
+    if fs::read_dir(dir)
+        .map(|mut iter| iter.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir(dir);
+    }
+    Ok(())
+}
+
 const PREVIEW_PRESET: &str = "ultrafast";
+/// Must match the tag mixed into FE fragment fingerprints until plan moves fully to Rust.
+pub const PREVIEW_ENCODE_TAG: &str = "pv-cmaf5";
+const MANIFEST_FILE: &str = "manifest.json";
 
 /// Encode parameters per preview-quality setting: resolution, bitrate, and the
 /// output frame clock. Cut snapping still uses the 30fps export grid in
@@ -82,6 +231,93 @@ pub struct TimelineFragmentBakeResult {
 #[serde(rename_all = "camelCase")]
 pub struct TimelineFragmentConcatResult {
     pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePreviewSnapshot {
+    pub encode_tag: String,
+    pub aspect_ratio: String,
+    pub quality: String,
+    pub fragments: Vec<TimelinePreviewSnapshotFragment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePreviewSnapshotFragment {
+    pub index: u32,
+    pub start_sec: f64,
+    pub duration_sec: f64,
+    pub fingerprint: String,
+    pub path: String,
+}
+
+fn empty_snapshot(aspect_ratio: &str, quality: &str) -> TimelinePreviewSnapshot {
+    TimelinePreviewSnapshot {
+        encode_tag: PREVIEW_ENCODE_TAG.to_string(),
+        aspect_ratio: aspect_ratio.to_string(),
+        quality: quality.to_string(),
+        fragments: Vec::new(),
+    }
+}
+
+fn manifest_path(dir: &Path) -> PathBuf {
+    dir.join(MANIFEST_FILE)
+}
+
+fn read_snapshot(dir: &Path) -> Option<TimelinePreviewSnapshot> {
+    let raw = fs::read_to_string(manifest_path(dir)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_snapshot(dir: &Path, snapshot: &TimelinePreviewSnapshot) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("Could not create preview manifest dir: {e}"))?;
+    let partial = dir.join("manifest.partial.json");
+    let body = serde_json::to_string_pretty(snapshot)
+        .map_err(|e| format!("Could not serialize preview manifest: {e}"))?;
+    fs::write(&partial, &body).map_err(|e| format!("Could not write preview manifest: {e}"))?;
+    fs::rename(&partial, manifest_path(dir))
+        .map_err(|e| format!("Could not finalize preview manifest: {e}"))?;
+    Ok(())
+}
+
+fn upsert_snapshot_fragment(
+    dir: &Path,
+    aspect_ratio: &str,
+    quality: &str,
+    baked: &TimelineFragmentBakeResult,
+) -> Result<(), String> {
+    let mut snapshot = read_snapshot(dir).unwrap_or_else(|| empty_snapshot(aspect_ratio, quality));
+    if snapshot.encode_tag != PREVIEW_ENCODE_TAG
+        || snapshot.aspect_ratio != aspect_ratio
+        || snapshot.quality != quality
+    {
+        snapshot = empty_snapshot(aspect_ratio, quality);
+    }
+    snapshot.fragments.retain(|frag| frag.index != baked.index);
+    snapshot.fragments.push(TimelinePreviewSnapshotFragment {
+        index: baked.index,
+        start_sec: baked.start_sec,
+        duration_sec: baked.duration_sec,
+        fingerprint: baked.fingerprint.clone(),
+        path: baked.path.clone(),
+    });
+    snapshot.fragments.sort_by_key(|frag| frag.index);
+    write_snapshot(dir, &snapshot)
+}
+
+fn snapshot_from_disk(dir: &Path) -> TimelinePreviewSnapshot {
+    let mut snapshot = read_snapshot(dir).unwrap_or_else(|| empty_snapshot("", ""));
+    let quality = snapshot.quality.clone();
+    snapshot.fragments.retain(|frag| {
+        fragment_artifact_matches_plan(
+            Path::new(&frag.path),
+            Some(frag.start_sec),
+            Some(frag.duration_sec),
+            Some(if quality.is_empty() { "low" } else { &quality }),
+        )
+    });
+    snapshot
 }
 
 fn preview_dir(paths: &super::paths::ParascenePaths, project_id: &str) -> PathBuf {
@@ -470,6 +706,10 @@ fn prune_index_files(dir: &Path, index: u32, keep: &Path) {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with(&prefix) && path != keep {
+            if preview_path_leased(&path) {
+                preview_mark_pending_delete(&path);
+                continue;
+            }
             let _ = fs::remove_file(path);
         }
     }
@@ -487,23 +727,139 @@ fn fragment_partial_path(dir: &Path, index: u32, fingerprint: &str) -> PathBuf {
 }
 
 fn fragment_artifact_valid(path: &Path) -> bool {
+    fragment_artifact_matches_plan(path, None, None, None)
+}
+
+fn read_u32_be(data: &[u8], at: usize) -> Option<u32> {
+    data.get(at..at + 4)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u32::from_be_bytes)
+}
+
+fn read_first_tfdt_decode_ticks(data: &[u8]) -> Option<u64> {
+    let mut i = 0usize;
+    while i + 8 <= data.len() {
+        let size = read_u32_be(data, i)? as usize;
+        if size < 8 || i + size > data.len() {
+            break;
+        }
+        let kind = &data[i + 4..i + 8];
+        if kind == b"moof" || kind == b"traf" {
+            if let Some(value) = read_first_tfdt_decode_ticks(&data[i + 8..i + size]) {
+                return Some(value);
+            }
+        } else if kind == b"tfdt" {
+            let body = i + 8;
+            if body >= data.len() {
+                return None;
+            }
+            let version = data[body];
+            if version == 1 {
+                if body + 12 > data.len() {
+                    return None;
+                }
+                let raw: [u8; 8] = data[body + 4..body + 12].try_into().ok()?;
+                return Some(u64::from_be_bytes(raw));
+            }
+            if body + 8 > data.len() {
+                return None;
+            }
+            return Some(u64::from(read_u32_be(data, body + 4)?));
+        }
+        i += size;
+    }
+    None
+}
+
+fn read_trun_sample_count(data: &[u8]) -> Option<u32> {
+    let mut i = 0usize;
+    while i + 8 <= data.len() {
+        let size = read_u32_be(data, i)? as usize;
+        if size < 8 || i + size > data.len() {
+            break;
+        }
+        let kind = &data[i + 4..i + 8];
+        if kind == b"moof" || kind == b"traf" {
+            if let Some(value) = read_trun_sample_count(&data[i + 8..i + size]) {
+                return Some(value);
+            }
+        } else if kind == b"trun" {
+            let body = i + 8;
+            if body + 8 > data.len() {
+                return None;
+            }
+            return read_u32_be(data, body + 4);
+        }
+        i += size;
+    }
+    None
+}
+
+/// Structural + sample-clock validation when plan fields are known.
+fn fragment_artifact_matches_plan(
+    path: &Path,
+    start_sec: Option<f64>,
+    duration_sec: Option<f64>,
+    quality: Option<&str>,
+) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         return false;
     };
     if meta.len() < 256 {
         return false;
     }
-    let Ok(mut file) = fs::File::open(path) else {
+    let Ok(data) = fs::read(path) else {
         return false;
     };
-    let mut head = [0u8; 12];
-    if file.read_exact(&mut head).is_err() {
+    if data.len() < 12 {
         return false;
     }
-    if &head[4..8] != b"ftyp" {
+    if &data[4..8] != b"ftyp" {
         return false;
     }
-    true
+    if !data.windows(4).any(|window| window == b"moof") {
+        return false;
+    }
+    let (Some(start_sec), Some(duration_sec)) = (start_sec, duration_sec) else {
+        return true;
+    };
+    let quality = quality.unwrap_or("low");
+    let params = preview_quality_params(quality);
+    let expected_ticks = (start_sec * PREVIEW_TIMESCALE as f64).round() as i64;
+    let Some(actual_ticks) = read_first_tfdt_decode_ticks(&data) else {
+        return false;
+    };
+    if (actual_ticks as i64 - expected_ticks).abs() > 1 {
+        return false;
+    }
+    let expected_frames = fragment_frame_count(duration_sec, params.fps);
+    let Some(actual_frames) = read_trun_sample_count(&data) else {
+        return false;
+    };
+    actual_frames.abs_diff(expected_frames) <= 1
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePreviewConfig {
+    pub encode_tag: String,
+    pub fragment_duration_sec: f64,
+    pub fragment_fps: f64,
+    pub timescale: u64,
+}
+
+pub fn timeline_preview_config() -> TimelinePreviewConfig {
+    TimelinePreviewConfig {
+        encode_tag: PREVIEW_ENCODE_TAG.to_string(),
+        fragment_duration_sec: 2.0,
+        fragment_fps: 30.0,
+        timescale: PREVIEW_TIMESCALE,
+    }
+}
+
+#[tauri::command]
+pub async fn library_read_timeline_preview_config() -> Result<TimelinePreviewConfig, String> {
+    Ok(timeline_preview_config())
 }
 
 #[tauri::command]
@@ -519,6 +875,7 @@ pub async fn library_bake_timeline_fragment(
     fingerprint: String,
 ) -> Result<TimelineFragmentBakeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let bake_guard = acquire_preview_bake_slot(&project_id, index, &fingerprint)?;
         if !fingerprint_ok(&fingerprint) {
             return Err("Invalid fragment fingerprint".into());
         }
@@ -529,18 +886,38 @@ pub async fn library_bake_timeline_fragment(
         let dir = preview_dir(&paths, &project_id);
         fs::create_dir_all(&dir)
             .map_err(|e| format!("Could not create timeline preview cache: {e}"))?;
+        let quality_str = quality.as_deref().unwrap_or("low").to_string();
+        let finish = |dest: PathBuf| -> Result<TimelineFragmentBakeResult, String> {
+            if bake_guard.is_stale() {
+                return Err("Stale preview bake".into());
+            }
+            let result = TimelineFragmentBakeResult {
+                path: dest.display().to_string(),
+                index,
+                start_sec,
+                duration_sec,
+                fingerprint: fingerprint.clone(),
+            };
+            if let Err(err) = upsert_snapshot_fragment(&dir, &aspect_ratio, &quality_str, &result)
+            {
+                eprintln!("[preview] manifest upsert failed: {err}");
+            }
+            Ok(result)
+        };
         let dest = dir.join(format!("frag_{index:04}_{fingerprint}.mp4"));
         if dest.is_file() {
-            if fragment_artifact_valid(&dest) {
-                return Ok(TimelineFragmentBakeResult {
-                    path: dest.display().to_string(),
-                    index,
-                    start_sec,
-                    duration_sec,
-                    fingerprint,
-                });
+            if fragment_artifact_matches_plan(
+                &dest,
+                Some(start_sec),
+                Some(duration_sec),
+                Some(quality.as_deref().unwrap_or("low")),
+            ) {
+                return finish(dest);
             }
             let _ = fs::remove_file(&dest);
+        }
+        if bake_guard.is_stale() {
+            return Err("Stale preview bake".into());
         }
         let partial = fragment_partial_path(&dir, index, &fingerprint);
         if partial.exists() {
@@ -557,6 +934,10 @@ pub async fn library_bake_timeline_fragment(
             duration_sec,
             &partial,
         )?;
+        if bake_guard.is_stale() {
+            let _ = fs::remove_file(&partial);
+            return Err("Stale preview bake".into());
+        }
         if !partial.is_file() {
             return Err("ffmpeg preview fragment produced no output".into());
         }
@@ -566,13 +947,7 @@ pub async fn library_bake_timeline_fragment(
         fs::rename(&partial, &dest)
             .map_err(|e| format!("Could not finalize preview fragment: {e}"))?;
         prune_index_files(&dir, index, &dest);
-        Ok(TimelineFragmentBakeResult {
-            path: dest.display().to_string(),
-            index,
-            start_sec,
-            duration_sec,
-            fingerprint,
-        })
+        finish(dest)
     })
     .await
     .map_err(|e| format!("Timeline preview fragment bake failed: {e}"))?
@@ -651,15 +1026,41 @@ pub async fn library_concat_timeline_fragments(
 }
 
 #[tauri::command]
+pub async fn library_read_timeline_preview_snapshot(
+    project_id: String,
+) -> Result<TimelinePreviewSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = default_paths()?;
+        let dir = preview_dir(&paths, &project_id);
+        if !dir.is_dir() {
+            return Ok(empty_snapshot("", ""));
+        }
+        Ok(snapshot_from_disk(&dir))
+    })
+    .await
+    .map_err(|e| format!("Read timeline preview snapshot failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn library_preview_lease_acquire(paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || preview_lease_adjust(&paths, 1))
+        .await
+        .map_err(|e| format!("Preview lease acquire failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn library_preview_lease_release(paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || preview_lease_adjust(&paths, -1))
+        .await
+        .map_err(|e| format!("Preview lease release failed: {e}"))?
+}
+
+#[tauri::command]
 pub async fn library_clear_timeline_fragments(project_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = default_paths()?;
         let dir = preview_dir(&paths, &project_id);
-        if dir.exists() {
-            fs::remove_dir_all(&dir)
-                .map_err(|e| format!("Could not clear timeline preview cache: {e}"))?;
-        }
-        Ok(())
+        clear_preview_dir_respecting_leases(&dir)
     })
     .await
     .map_err(|e| format!("Clear timeline preview cache failed: {e}"))?
@@ -787,5 +1188,162 @@ mod tests {
         bytes[4..8].copy_from_slice(b"free");
         let patched = patch_tfdt_offset(&mut bytes, 40000).expect("patch");
         assert_eq!(patched, 0);
+    }
+
+    fn trun_v0_fixture(sample_count: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0u8; 4]);
+        body.extend_from_slice(&sample_count.to_be_bytes());
+        let mut trun = Vec::new();
+        trun.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
+        trun.extend_from_slice(b"trun");
+        trun.extend_from_slice(&body);
+        trun
+    }
+
+    fn ftyp_box() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&20u32.to_be_bytes());
+        v.extend_from_slice(b"ftyp");
+        v.extend_from_slice(b"isom");
+        v.extend_from_slice(&512u32.to_be_bytes());
+        v.extend_from_slice(b"isom");
+        v
+    }
+
+    fn pad_fragment_bytes(mut data: Vec<u8>) -> Vec<u8> {
+        if data.len() < 256 {
+            data.resize(256, 0);
+        }
+        data
+    }
+
+    fn valid_preview_fragment_bytes(start_sec: f64, duration_sec: f64, quality: &str) -> Vec<u8> {
+        let params = preview_quality_params(quality);
+        let ticks = (start_sec * PREVIEW_TIMESCALE as f64).round() as u32;
+        let frames = fragment_frame_count(duration_sec, params.fps);
+        let tfdt = {
+            let mut inner = Vec::new();
+            inner.extend_from_slice(&16u32.to_be_bytes());
+            inner.extend_from_slice(b"tfdt");
+            inner.extend_from_slice(&[0, 0, 0, 0]);
+            inner.extend_from_slice(&ticks.to_be_bytes());
+            inner
+        };
+        let trun = trun_v0_fixture(frames);
+        let mut traf = Vec::new();
+        traf.extend_from_slice(&((8 + tfdt.len() + trun.len()) as u32).to_be_bytes());
+        traf.extend_from_slice(b"traf");
+        traf.extend_from_slice(&tfdt);
+        traf.extend_from_slice(&trun);
+        let mut moof = Vec::new();
+        moof.extend_from_slice(&((8 + traf.len()) as u32).to_be_bytes());
+        moof.extend_from_slice(b"moof");
+        moof.extend_from_slice(&traf);
+        let mut data = ftyp_box();
+        data.extend(moof);
+        pad_fragment_bytes(data)
+    }
+
+    fn minimal_fragment_bytes() -> Vec<u8> {
+        valid_preview_fragment_bytes(0.0, 2.0, "low")
+    }
+
+    #[test]
+    fn fragment_artifact_matches_plan_checks_tfdt_and_sample_count() {
+        let dir = std::env::temp_dir().join(format!(
+            "parascene-preview-plan-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("frag.mp4");
+        fs::write(&path, valid_preview_fragment_bytes(0.0, 2.0, "low")).unwrap();
+        assert!(fragment_artifact_matches_plan(&path, Some(0.0), Some(2.0), Some("low")));
+        assert!(!fragment_artifact_matches_plan(&path, Some(2.0), Some(2.0), Some("low")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fragment_artifact_valid_requires_ftyp_moof_and_min_size() {
+        let dir = std::env::temp_dir().join(format!(
+            "parascene-preview-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("frag.mp4");
+
+        fs::write(&path, b"tiny").unwrap();
+        assert!(!fragment_artifact_valid(&path));
+
+        let mut ftyp_only = vec![0u8; 300];
+        ftyp_only[4..8].copy_from_slice(b"ftyp");
+        fs::write(&path, &ftyp_only).unwrap();
+        assert!(!fragment_artifact_valid(&path));
+
+        fs::write(&path, minimal_fragment_bytes()).unwrap();
+        assert!(fragment_artifact_valid(&path));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_prune_skips_leased_fragment_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "parascene-preview-lease-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let keep = dir.join("frag_0000_keep1234.mp4");
+        let stale = dir.join("frag_0000_stale5678.mp4");
+        fs::write(&keep, minimal_fragment_bytes()).unwrap();
+        fs::write(&stale, minimal_fragment_bytes()).unwrap();
+
+        preview_lease_adjust(&[stale.display().to_string()], 1).expect("lease");
+        prune_index_files(&dir, 0, &keep);
+        assert!(stale.is_file(), "leased stale fragment must survive prune");
+        assert!(keep.is_file(), "canonical fragment must remain");
+
+        preview_lease_adjust(&[stale.display().to_string()], -1).expect("release");
+        assert!(
+            !stale.is_file(),
+            "stale fragment should delete after lease release when pending"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_snapshot_roundtrip_and_prunes_missing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "parascene-preview-manifest-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let frag_path = dir.join("frag_0000_test1234.mp4");
+        fs::write(&frag_path, minimal_fragment_bytes()).unwrap();
+
+        let baked = TimelineFragmentBakeResult {
+            path: frag_path.display().to_string(),
+            index: 0,
+            start_sec: 0.0,
+            duration_sec: 2.0,
+            fingerprint: "test1234".into(),
+        };
+        upsert_snapshot_fragment(&dir, "16:9", "low", &baked).expect("upsert");
+
+        let snapshot = read_snapshot(&dir).expect("read");
+        assert_eq!(snapshot.encode_tag, PREVIEW_ENCODE_TAG);
+        assert_eq!(snapshot.fragments.len(), 1);
+
+        fs::remove_file(&frag_path).unwrap();
+        let pruned = snapshot_from_disk(&dir);
+        assert!(pruned.fragments.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
