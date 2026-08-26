@@ -54,23 +54,26 @@ export function bufferedCoversSec(
 }
 
 /**
- * If `sec` sits in a hole, the start of the next buffered range — but only a
- * short hop (one preview fragment). Otherwise null (already covered, or the
- * next data is too far to skip silently).
+ * True when some buffered range fully covers `[startSec, endSec]`.
+ * Admission uses this — no interior slop or snap-to-nearby.
  */
-export function nextBufferedSecAfter(
+export function bufferedCoversRangeExact(
   ranges: readonly BufferedRange[],
-  sec: number,
-  maxJumpSec = 2.5,
-  slopSec = 0.05,
-): number | null {
-  if (bufferedCoversSec(ranges, sec, slopSec)) return null;
-  let best: number | null = null;
-  for (const range of ranges) {
-    if (range.end <= sec + slopSec) continue;
-    const jump = Math.max(range.start, sec);
-    if (jump - sec > maxJumpSec + 1e-9) continue;
-    if (best == null || jump < best) best = jump;
+  startSec: number,
+  endSec: number,
+  epsilonSec = 0.001,
+): boolean {
+  if (ranges.length === 0) return false;
+  if (endSec <= startSec + epsilonSec) {
+    return bufferedCoversSec(ranges, startSec, 0);
   }
-  return best;
+  for (const range of ranges) {
+    if (
+      range.start <= startSec + epsilonSec &&
+      range.end >= endSec - epsilonSec
+    ) {
+      return true;
+    }
+  }
+  return false;
 }

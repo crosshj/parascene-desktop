@@ -7648,6 +7648,84 @@ body.is-timeline-clip-moving * {
   color: var(--muted);
 }
 
+.editor-timeline-tool.is-preview-health {
+  color: var(--muted);
+}
+
+.editor-timeline-tool.is-preview-health.is-warning {
+  color: #e6c07b;
+  border-color: color-mix(in srgb, #e6c07b 45%, transparent);
+  background: color-mix(in srgb, #e6c07b 10%, transparent);
+}
+
+.editor-timeline-tool.is-preview-health.is-error {
+  color: #e8954a;
+  border-color: color-mix(in srgb, #e8954a 45%, transparent);
+  background: color-mix(in srgb, #e8954a 12%, transparent);
+}
+
+.preview-health-dialog .preview-health-detail {
+  margin: 0 0 0.85rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.preview-health-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.55rem 1rem;
+  margin: 0 0 0.85rem;
+  font-size: 0.86rem;
+}
+
+.preview-health-summary div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.preview-health-summary dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.preview-health-summary dd {
+  margin: 0;
+}
+
+.preview-health-events {
+  margin: 0 0 0.85rem;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 0.78rem;
+}
+
+.preview-health-events li {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.preview-health-events li:first-child {
+  border-top: 0;
+}
+
+.preview-health-event-phase {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.preview-health-event-detail {
+  color: var(--muted);
+  word-break: break-word;
+}
+
 .editor-timeline-preview-status.is-error {
   color: #f07178;
   max-width: 18rem;

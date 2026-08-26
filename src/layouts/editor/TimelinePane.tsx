@@ -49,7 +49,9 @@ import {
   releasePointerCaptureSafe,
   subscribeGestureAbort,
 } from "./gestureCleanup";
+import type { PreviewPlaybackStatus } from "../../playback/timelinePlaybackEngine";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
+import { PreviewHealthModal } from "./PreviewHealthModal";
 import {
   recordUiOpTrace,
 } from "./uiOpTrace";
@@ -151,10 +153,54 @@ type TimelinePaneProps = {
   };
   /** Play is held while the preview picture buffers. */
   previewBuffering?: boolean;
+  previewStatus?: PreviewPlaybackStatus;
+  onRetryPreview?: () => void;
   onRefreshFragmentCache?: () => void;
   /** Creation ids referenced by the project but not in the project folder. */
   outsideReferenceIds?: readonly string[];
 };
+
+type PreviewHealthTone = "idle" | "warning" | "error";
+
+function resolvePreviewHealth(args: {
+  fragmentStatus?: TimelinePaneProps["fragmentStatus"];
+  previewStatus?: PreviewPlaybackStatus;
+  previewBuffering: boolean;
+}): { tone: PreviewHealthTone; label: string } {
+  const { fragmentStatus, previewStatus, previewBuffering } = args;
+  if (fragmentStatus?.error) {
+    return { tone: "error", label: "Preview error" };
+  }
+  if (previewStatus?.phase === "blocked") {
+    return { tone: "error", label: "Preview blocked" };
+  }
+  if (previewStatus?.phase === "loading" || previewBuffering) {
+    return { tone: "warning", label: "Loading preview" };
+  }
+  if (
+    previewStatus?.phase === "baking" ||
+    (fragmentStatus?.baking && !fragmentStatus.playheadReady)
+  ) {
+    return { tone: "warning", label: "Baking preview" };
+  }
+  return { tone: "idle", label: "Preview status" };
+}
+
+function PreviewHealthIcon({ tone }: { tone: PreviewHealthTone }) {
+  const filled = tone !== "idle";
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+      <circle
+        cx="8"
+        cy="8"
+        r="5.25"
+        fill={filled ? "currentColor" : "none"}
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
 
 type PointerDropDetail = {
   draft: StagedClipDraft;
@@ -713,6 +759,8 @@ export function TimelinePane({
   onRemoveAudioBake,
   fragmentStatus,
   previewBuffering = false,
+  previewStatus,
+  onRetryPreview,
   onRefreshFragmentCache,
   outsideReferenceIds = [],
 }: TimelinePaneProps) {
@@ -721,6 +769,15 @@ export function TimelinePane({
     () => new Set(outsideReferenceIds.map((id) => id.trim()).filter(Boolean)),
     [outsideReferenceIds],
   );
+  const previewHealth = useMemo(
+    () =>
+      resolvePreviewHealth({
+        fragmentStatus,
+        previewStatus,
+        previewBuffering,
+      }),
+    [fragmentStatus, previewStatus, previewBuffering],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
   const [ghost, setGhost] = useState<TimelineGhostClip | null>(null);
@@ -728,6 +785,7 @@ export function TimelinePane({
   const [movingClipIds, setMovingClipIds] = useState<string[]>([]);
   const [resizingClipIds, setResizingClipIds] = useState<string[]>([]);
   const [magnetic, setMagnetic] = useState(true);
+  const [previewHealthOpen, setPreviewHealthOpen] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [thumbByAssetId, setThumbByAssetId] = useState<Record<string, string>>(
     {},
@@ -2060,28 +2118,30 @@ export function TimelinePane({
               />
             </svg>
           </button>
-          {(fragmentStatus?.error ||
-            previewBuffering ||
-            (fragmentStatus?.baking && !fragmentStatus.playheadReady)) && (
-            <span
-              className={[
-                "editor-timeline-preview-status",
-                fragmentStatus?.error ? "is-error" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              title={fragmentStatus?.error ?? undefined}
-              role={fragmentStatus?.error ? "alert" : "status"}
-            >
-              {fragmentStatus?.error
-                ? fragmentStatus.error
-                : previewBuffering
-                  ? fragmentStatus?.baking
-                    ? `Baking preview… ${fragmentStatus.ready}/${fragmentStatus.total}`
-                    : "Waiting for preview…"
-                  : `Baking preview… ${fragmentStatus?.ready ?? 0}/${fragmentStatus?.total ?? 0}`}
-            </span>
-          )}
+          <button
+            type="button"
+            className={[
+              "editor-timeline-tool",
+              "is-preview-health",
+              previewHealth.tone === "error" ? "is-error" : "",
+              previewHealth.tone === "warning" ? "is-warning" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            title={`${previewHealth.label} — open details`}
+            aria-label={`${previewHealth.label} — open details`}
+            aria-haspopup="dialog"
+            onClick={() => setPreviewHealthOpen(true)}
+          >
+            <PreviewHealthIcon tone={previewHealth.tone} />
+          </button>
+          <PreviewHealthModal
+            open={previewHealthOpen}
+            onClose={() => setPreviewHealthOpen(false)}
+            previewStatus={previewStatus}
+            fragmentStatus={fragmentStatus}
+            onRetryPreview={onRetryPreview}
+          />
           <button
             type="button"
             className="editor-timeline-tool"

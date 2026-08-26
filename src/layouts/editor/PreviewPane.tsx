@@ -109,6 +109,7 @@ import {
   type BakeInfo,
 } from "../../library/slideshowMedia";
 import { pendingDraftMatchesSelection } from "./editorSelection";
+import type { PreviewPlaybackStatus } from "../../playback/timelinePlaybackEngine";
 import { TimelineMonitorHost } from "../../playback/TimelineMonitorHost";
 import type { TimelineFragmentCache } from "./timelineFragmentCache";
 import { useVideoStretchStyle } from "./useVideoStretchStyle";
@@ -223,6 +224,9 @@ type PreviewPaneProps = {
   onTimelineTimeUpdate?: (sec: number) => void;
   /** True while timeline play is held waiting for the preview picture. */
   onPreviewBufferingChange?: (buffering: boolean) => void;
+  onPreviewStatusChange?: (status: PreviewPlaybackStatus) => void;
+  /** Engine retry callback for blocked preview state. */
+  onPreviewRetryReady?: (retry: () => void) => void;
   /** Staging fields when a timeline clip is selected. */
   stagingSeed?: StagedClipDraft | null;
   /** Clip id (or other key) so re-selecting refreshes seed even for same asset. */
@@ -425,6 +429,8 @@ export function PreviewPane({
   mediaSeekEpoch = 0,
   onTimelineTimeUpdate,
   onPreviewBufferingChange,
+  onPreviewStatusChange,
+  onPreviewRetryReady,
   stagingSeed = null,
   stagingSeedKey = null,
   selectedClipAddAssetGeneration = null,
@@ -3342,22 +3348,7 @@ export function PreviewPane({
                 }
               />
             ) : monitorMode === "timeline" ? (
-              <TimelineMonitorHost
-                clips={timelineClips}
-                playheadSec={timelinePlayheadSec}
-                playing={timelinePlaying}
-                mediaSeekEpoch={mediaSeekEpoch}
-                bakeInfoByClipId={bakeInfoByClipId}
-                audioBakePath={audioBakePath}
-                fragmentCache={fragmentCache}
-                volume={volume}
-                stageW={stage.w}
-                stageH={stage.h}
-                matteW={matte.w}
-                matteH={matte.h}
-                onTimeUpdate={onTimelineTimeUpdate}
-                onBufferingChange={onPreviewBufferingChange}
-              />
+              null
             ) : showUnsupportedSelection && unsupportedSelection ? (
               <UnsupportedSelectionPanel
                 classification={unsupportedSelection}
@@ -3605,6 +3596,40 @@ export function PreviewPane({
             {showAspectOverlay && matteStyle ? (
               <div className="editor-preview-aspect-overlay" aria-hidden>
                 <div className="editor-preview-aspect-matte" style={matteStyle} />
+              </div>
+            ) : null}
+
+            {fragmentCache ? (
+              <div
+                className={`timeline-playback-engine-persist${
+                  monitorMode === "timeline" ? " is-active" : ""
+                }`}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  visibility: monitorMode === "timeline" ? "visible" : "hidden",
+                  pointerEvents: monitorMode === "timeline" ? "auto" : "none",
+                }}
+                aria-hidden={monitorMode !== "timeline"}
+              >
+                <TimelineMonitorHost
+                  clips={timelineClips}
+                  playheadSec={timelinePlayheadSec}
+                  playing={timelinePlaying}
+                  mediaSeekEpoch={mediaSeekEpoch}
+                  bakeInfoByClipId={bakeInfoByClipId}
+                  audioBakePath={audioBakePath}
+                  fragmentCache={fragmentCache}
+                  volume={volume}
+                  stageW={stage.w}
+                  stageH={stage.h}
+                  matteW={matte.w}
+                  matteH={matte.h}
+                  onTimeUpdate={onTimelineTimeUpdate}
+                  onBufferingChange={onPreviewBufferingChange}
+                  onPreviewStatusChange={onPreviewStatusChange}
+                  onPreviewRetryReady={onPreviewRetryReady}
+                />
               </div>
             ) : null}
           </div>

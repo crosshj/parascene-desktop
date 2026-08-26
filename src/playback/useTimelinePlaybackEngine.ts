@@ -9,6 +9,7 @@ import type { TimelineFragmentCache } from "../layouts/editor/timelineFragmentCa
 import type { TimelineClip } from "../project/types";
 import {
   createTimelinePlaybackEngine,
+  type PreviewPlaybackStatus,
   type TimelinePlaybackEngine,
 } from "./timelinePlaybackEngine";
 
@@ -36,6 +37,9 @@ export type TimelinePlaybackEngineHostProps = {
   onTimeUpdate?: (sec: number) => void;
   /** True while play is held waiting for the preview picture. */
   onBufferingChange?: (buffering: boolean) => void;
+  /** Rich preview admission state (baking / loading / blocked). */
+  onPreviewStatusChange?: (status: PreviewPlaybackStatus) => void;
+  onPreviewRetryReady?: (retry: () => void) => void;
 };
 
 /**
@@ -60,11 +64,15 @@ export function useTimelinePlaybackEngine(
     matteH,
     onTimeUpdate,
     onBufferingChange,
+    onPreviewStatusChange,
+    onPreviewRetryReady,
   }: TimelinePlaybackEngineHostProps,
 ): void {
   const engineRef = useRef<TimelinePlaybackEngine | null>(null);
   const onTimeUpdateRef = useRef(onTimeUpdate);
   const onBufferingChangeRef = useRef(onBufferingChange);
+  const onPreviewStatusChangeRef = useRef(onPreviewStatusChange);
+  const onPreviewRetryReadyRef = useRef(onPreviewRetryReady);
   const playheadSecRef = useRef(playheadSec);
   const wasPlayingRef = useRef(playing);
   // Keep latest callbacks/values for effects without re-subscribing the engine.
@@ -72,6 +80,10 @@ export function useTimelinePlaybackEngine(
   onTimeUpdateRef.current = onTimeUpdate;
   // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
   onBufferingChangeRef.current = onBufferingChange;
+  // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
+  onPreviewStatusChangeRef.current = onPreviewStatusChange;
+  // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
+  onPreviewRetryReadyRef.current = onPreviewRetryReady;
   // eslint-disable-next-line react-hooks/refs -- intentional latest-value mirror
   playheadSecRef.current = playheadSec;
 
@@ -84,10 +96,13 @@ export function useTimelinePlaybackEngine(
       matteW,
       matteH,
       onTimeUpdate: (sec) => onTimeUpdateRef.current?.(sec),
-      onBufferingChange: (buffering) =>
-        onBufferingChangeRef.current?.(buffering),
+      onPreviewStatusChange: (status) => {
+        onPreviewStatusChangeRef.current?.(status);
+        onBufferingChangeRef.current?.(status.holding);
+      },
     });
     engineRef.current = engine;
+    onPreviewRetryReadyRef.current?.(() => engine.retryPreview());
     return () => {
       engine.destroy();
       engineRef.current = null;

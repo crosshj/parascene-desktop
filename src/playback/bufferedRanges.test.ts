@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  bufferedCoversRangeExact,
   bufferedCoversSec,
   bufferedIsContinuous,
   formatBufferedRanges,
-  nextBufferedSecAfter,
 } from "./bufferedRanges";
 
 describe("buffered ranges", () => {
@@ -25,22 +25,10 @@ describe("buffered ranges", () => {
     expect(bufferedIsContinuous([])).toBe(true);
   });
 
-  it("jumps a one-fragment hole and refuses a long gap", () => {
-    const ranges = [
-      { start: 0, end: 19.98 },
-      { start: 22, end: 24 },
-    ];
-    expect(bufferedCoversSec(ranges, 20.08)).toBe(false);
-    expect(nextBufferedSecAfter(ranges, 20.08)).toBe(22);
-    expect(nextBufferedSecAfter(ranges, 19.9)).toBe(null);
-    expect(
-      nextBufferedSecAfter(
-        [
-          { start: 0, end: 20 },
-          { start: 28, end: 30 },
-        ],
-        20.08,
-      ),
-    ).toBe(null);
+  it("requires exact range coverage for admission", () => {
+    const ranges = [{ start: 0, end: 1.98 }];
+    expect(bufferedCoversRangeExact(ranges, 0, 2)).toBe(false);
+    expect(bufferedCoversRangeExact(ranges, 0, 1.98)).toBe(true);
+    expect(bufferedCoversSec(ranges, 0.01)).toBe(true);
   });
 });

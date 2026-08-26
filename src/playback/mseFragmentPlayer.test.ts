@@ -50,19 +50,18 @@ describe("createMseFragmentPlayer", () => {
     const player = createMseFragmentPlayer(host);
     player.show();
     player.sync(1.2, false, [], { feed: false, seek: true });
-    // Nothing buffered in jsdom — the seek must wait, not vanish.
     expect(player.hasPendingSeek()).toBe(true);
     expect(player.getTime()).toBe(0);
     player.destroy();
     host.remove();
   });
 
-  it("reports no hole jump when nothing is buffered", () => {
+  it("reports exact range coverage, not interior slop", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const player = createMseFragmentPlayer(host);
     player.show();
-    expect(player.skipHole(20.08)).toBeNull();
+    expect(player.coversRangeExact(0, 2)).toBe(false);
     expect(player.appendedCount()).toBe(0);
     player.destroy();
     host.remove();
@@ -92,8 +91,6 @@ describe("createMseFragmentPlayer", () => {
     document.body.appendChild(host);
     const player = createMseFragmentPlayer(host, { onFetchError });
     player.show();
-    // Bypass convertFileSrc by feeding a path the helper already wrapped —
-    // mediaUrlForBakePath may throw in jsdom; the player must still report it.
     player.sync(
       0,
       false,
@@ -115,5 +112,17 @@ describe("createMseFragmentPlayer", () => {
     player.destroy();
     host.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("discards stale generation work", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const player = createMseFragmentPlayer(host);
+    player.warm();
+    player.setGeneration(1);
+    player.setGeneration(2);
+    expect(player.getPreviewPhase()).not.toBe("blocked");
+    player.destroy();
+    host.remove();
   });
 });

@@ -2,6 +2,7 @@ import {
   timelineSequenceDuration,
 } from "../layouts/editor/timelineCompose";
 import {
+  FRAGMENT_PLAYBACK_LOOKAHEAD_SEC,
   timelineVideoExtentSec,
 } from "../layouts/editor/timelineFragmentPlan";
 import type { BakeInfo } from "../library/slideshowMedia";
@@ -18,12 +19,19 @@ import {
   timelineMseSupported,
   type MseFragmentPlayer,
 } from "./mseFragmentPlayer";
+import { logPreviewEvent } from "./previewDiagnostics";
 
 /** Ruler / React playhead updates while playing (engineering gate: not every frame). */
 export const PLAYBACK_TIME_UPDATE_HZ = 5;
 const TIME_UPDATE_MS = 1000 / PLAYBACK_TIME_UPDATE_HZ;
-/** Fall back to legacy decoders if the preview stream never produces data. */
-export const PREVIEW_BUFFERING_FAIL_OPEN_MS = 3000;
+
+export type PreviewPlaybackStatus = {
+  /** True while playhead is held waiting for verified picture. */
+  holding: boolean;
+  phase: "idle" | "loading" | "baking" | "blocked";
+  message?: string;
+  retryable?: boolean;
+};
 
 export type TimelinePlaybackEngineOptions = {
   stageW: number;
@@ -33,8 +41,8 @@ export type TimelinePlaybackEngineOptions = {
   /** Throttled while playing; always fired on seek / pause. */
   onTimeUpdate?: (sec: number) => void;
   onPlayingChange?: (playing: boolean) => void;
-  /** True while play is held waiting for the preview picture. */
-  onBufferingChange?: (buffering: boolean) => void;
+  /** Preview admission / load state for UI. */
+  onPreviewStatusChange?: (status: PreviewPlaybackStatus) => void;
 };
 
 export type { PlaybackDiagnostics };
@@ -51,9 +59,11 @@ export type TimelinePlaybackEngine = {
   seek(sec: number): void;
   play(): void;
   pause(): void;
+  retryPreview(): void;
   getCurrentTime(): number;
   isPlaying(): boolean;
   isBuffering(): boolean;
+  getPreviewStatus(): PreviewPlaybackStatus;
   getDiagnostics(): PlaybackDiagnostics;
   destroy(): void;
 };
@@ -70,6 +80,11 @@ type EngineState = {
   mediaSeekEpoch: number;
   sequenceDurationSec: number;
   videoExtentSec: number;
+};
+
+const IDLE_STATUS: PreviewPlaybackStatus = {
+  holding: false,
+  phase: "idle",
 };
 
 /**
@@ -105,16 +120,14 @@ export function createTimelinePlaybackEngine(
   let rafId = 0;
   let lastRafNow = 0;
   let lastEmittedAt = 0;
-  /** Playing, but the preview stream has no data at the playhead. Audio holds. */
   let buffering = false;
   let stallFrames = 0;
   let lastVideoSnapAt = 0;
   let hadMonitor = false;
-  /** Session kill-switch after a persistent preview stall. */
-  let previewStreamDisabled = false;
-  let bufferingSinceMs = 0;
+  let previewGeneration = 0;
+  let previewStatus: PreviewPlaybackStatus = IDLE_STATUS;
+  let mseConfigBlocked = false;
 
-  /** Wrap slack: one frame at the coarsest preview rate (low = 10fps). */
   const WRAP_EPSILON_SEC = 0.101;
 
   const mediaSources: MediaSources = createMediaSources();
@@ -130,31 +143,139 @@ export function createTimelinePlaybackEngine(
   let fragmentCache: TimelineFragmentCache | null = null;
   let unsubFragments: (() => void) | null = null;
 
+  const bumpPreviewGeneration = (reason: string) => {
+    previewGeneration += 1;
+    mse.setGeneration(previewGeneration);
+    logPreviewEvent({
+      ts: Date.now(),
+      phase: "generation-bump",
+      generation: previewGeneration,
+      detail: reason,
+    });
+  };
+
   const mse: MseFragmentPlayer = createMseFragmentPlayer(surface, {
     onFetchError: (message) => {
       fragmentCache?.reportError(message);
     },
+    onBlocked: (reason) => {
+      setPreviewStatus({
+        holding: true,
+        phase: "blocked",
+        message: reason,
+        retryable: true,
+      });
+      setBuffering(true);
+    },
   });
 
   let lastMseFeedSec = -1;
-  let lastMseFeedAt = 0;
 
   type ResyncKind = "tick" | "seek" | "transport" | "data";
 
   const previewStreamActive = () =>
-    !previewStreamDisabled &&
-    Boolean(fragmentCache) &&
-    timelineMseSupported();
+    Boolean(fragmentCache) && timelineMseSupported() && !mseConfigBlocked;
 
-  /** Picture coverage is only required while the playhead is in video content. */
   const needsPreviewCoverage = (sec: number) =>
     previewStreamActive() && sec < state.videoExtentSec - 1e-3;
+
+  const emitPreviewStatus = (next: PreviewPlaybackStatus) => {
+    const prev = previewStatus;
+    previewStatus = next;
+    if (
+      prev.holding === next.holding &&
+      prev.phase === next.phase &&
+      prev.message === next.message
+    ) {
+      return;
+    }
+    options.onPreviewStatusChange?.(next);
+  };
+
+  const setPreviewStatus = (next: PreviewPlaybackStatus) => {
+    emitPreviewStatus(next);
+  };
+
+  const refreshPreviewStatus = () => {
+    if (mse.getPreviewPhase() === "blocked") {
+      setPreviewStatus({
+        holding: true,
+        phase: "blocked",
+        message: mse.getBlockedReason() ?? "Preview blocked",
+        retryable: true,
+      });
+      return;
+    }
+    if (!needsPreviewCoverage(state.currentSec)) {
+      setPreviewStatus(IDLE_STATUS);
+      return;
+    }
+    const cache = fragmentCache;
+    if (!cache) {
+      setPreviewStatus(IDLE_STATUS);
+      return;
+    }
+    const covering = cache.fragmentCovering(state.currentSec);
+    if (!covering) {
+      const fragStatus = cache.status();
+      setPreviewStatus({
+        holding: buffering,
+        phase: fragStatus.baking ? "baking" : "loading",
+        message: fragStatus.baking
+          ? `Baking preview… ${fragStatus.ready}/${fragStatus.total}`
+          : "Loading preview…",
+      });
+      return;
+    }
+    if (!mse.coversRangeExact(covering.startSec, covering.startSec + covering.durationSec)) {
+      setPreviewStatus({
+        holding: buffering,
+        phase: "loading",
+        message: "Loading preview…",
+      });
+      return;
+    }
+    if (!ensurePlayableWindow(state.currentSec)) {
+      setPreviewStatus({
+        holding: buffering,
+        phase: "loading",
+        message: "Loading preview…",
+      });
+      return;
+    }
+    setPreviewStatus(IDLE_STATUS);
+  };
 
   const setBuffering = (next: boolean) => {
     if (buffering === next) return;
     buffering = next;
-    bufferingSinceMs = next ? performance.now() : 0;
-    options.onBufferingChange?.(next);
+    refreshPreviewStatus();
+  };
+
+  /**
+   * Covering fragment and next (when within lookahead) verified in SourceBuffer.
+   * Last picture fragment needs no next.
+   */
+  const ensurePlayableWindow = (sec: number): boolean => {
+    if (!needsPreviewCoverage(sec)) return true;
+    const cache = fragmentCache;
+    if (!cache) return false;
+
+    const covering = cache.fragmentCovering(sec);
+    if (!covering) return false;
+    const coverEnd = covering.startSec + covering.durationSec;
+    if (!mse.coversRangeExact(covering.startSec, coverEnd)) return false;
+
+    const nextStart = coverEnd;
+    if (nextStart >= state.videoExtentSec - 1e-3) return true;
+
+    const lookahead = FRAGMENT_PLAYBACK_LOOKAHEAD_SEC;
+    if (nextStart - sec > lookahead + 1e-3) return true;
+
+    const next = cache.fragmentCovering(nextStart);
+    if (!next) return false;
+    const nextEnd = next.startSec + next.durationSec;
+    return mse.coversRangeExact(next.startSec, nextEnd);
   };
 
   const resync = (kind: ResyncKind = "data") => {
@@ -162,19 +283,30 @@ export function createTimelinePlaybackEngine(
     const cache = fragmentCache;
     const usePreviewStream = previewStreamActive();
     const inVideoRegion = state.currentSec < state.videoExtentSec - 1e-3;
+
+    if (fragmentCache && !timelineMseSupported()) {
+      mseConfigBlocked = true;
+      mse.hide();
+      pool.setVisualSuppressed(true);
+      setPreviewStatus({
+        holding: true,
+        phase: "blocked",
+        message: "Preview requires MSE — codec not supported in this WebView.",
+        retryable: false,
+      });
+      setBuffering(true);
+      pool.sync(state.clips, state.currentSec, false);
+      return;
+    }
+
     if (usePreviewStream && cache && inVideoRegion) {
       mse.warm();
-      // MSE duration matches picture content — not the audio-only tail.
       mse.setDuration(Math.max(state.videoExtentSec, 0.1));
-      const nowMs = performance.now();
       const moved = Math.abs(state.currentSec - lastMseFeedSec) >= 0.5;
-      // While buffering the playhead is frozen, so movement never re-feeds —
-      // retry on a throttle instead (covers transient fetch failures).
-      const stalledRetry = buffering && nowMs - lastMseFeedAt > 250;
-      const feed = kind !== "tick" || moved || stalledRetry;
+      const ticketRetry = mse.getPreviewPhase() === "loading";
+      const feed = kind !== "tick" || moved || ticketRetry || buffering;
       if (feed) {
         lastMseFeedSec = state.currentSec;
-        lastMseFeedAt = nowMs;
       }
       mse.sync(state.currentSec, state.playing, cache.readyFragments(), {
         feed,
@@ -183,18 +315,20 @@ export function createTimelinePlaybackEngine(
       mse.show();
       pool.setVisualSuppressed(true);
     } else if (usePreviewStream && cache && !inVideoRegion) {
-      // Audio-only tail: blank the picture, let the audio clock run.
+      mse.hide();
+      pool.setVisualSuppressed(true);
+    } else if (fragmentCache) {
       mse.hide();
       pool.setVisualSuppressed(true);
     } else {
       mse.hide();
       pool.setVisualSuppressed(false);
     }
-    // While the preview stream buffers, hold audio too — the picture is the
-    // master clock, so nothing else may run ahead of it.
+
     const effectivePlaying =
       state.playing && !(needsPreviewCoverage(state.currentSec) && buffering);
     pool.sync(state.clips, state.currentSec, effectivePlaying);
+    refreshPreviewStatus();
   };
 
   const bumpSeekEpoch = () => {
@@ -224,40 +358,16 @@ export function createTimelinePlaybackEngine(
     resync("seek");
   };
 
-  const maybeFailOpen = (now: number) => {
-    if (!buffering || previewStreamDisabled) return;
-    if (bufferingSinceMs <= 0) bufferingSinceMs = now;
-    const waited = now - bufferingSinceMs;
-    // Disk cache is ready but this timestamp is a hole — skip ahead the way
-    // a manual scrub does, instead of sitting on "Waiting for preview…".
-    if (waited > 400) {
-      const jump = mse.skipHole(state.currentSec);
-      if (jump != null && jump > state.currentSec + 0.04) {
-        state.currentSec = jump;
-        stallFrames = 0;
-        setBuffering(false);
-        bumpSeekEpoch();
-        resync("seek");
-        return;
-      }
-    }
-    if (waited < PREVIEW_BUFFERING_FAIL_OPEN_MS) return;
-    previewStreamDisabled = true;
-    setBuffering(false);
-    stallFrames = 0;
-    fragmentCache?.reportError(
-      "Preview stream stalled — falling back to live playback.",
-    );
-    bumpSeekEpoch();
-    resync("transport");
-  };
-
   const tickPreviewStream = (now: number, dt: number) => {
     const end = state.sequenceDurationSec;
     const inVideoRegion = state.currentSec < state.videoExtentSec - 1e-3;
 
+    if (mse.getPreviewPhase() === "blocked") {
+      setBuffering(true);
+      return;
+    }
+
     if (!inVideoRegion) {
-      // Past picture content: audio is the sole clock; no MSE gating.
       if (buffering) setBuffering(false);
       stallFrames = 0;
       const monitor = pool.getMonitorTime();
@@ -275,13 +385,11 @@ export function createTimelinePlaybackEngine(
       return;
     }
 
-    // Audio is the master clock — a light local file that never stalls, and
-    // touching a running audio element is always audible. While audio spins up
-    // (or there is no bake) the picture leads; a pending seek or buffering
-    // holds the playhead where the user put it.
     const pendingSeek = mse.hasPendingSeek();
     const monitor = pool.getMonitorTime();
-    if (!pendingSeek && !buffering) {
+    const playable = ensurePlayableWindow(state.currentSec);
+
+    if (!pendingSeek && !buffering && playable) {
       if (monitor != null) {
         state.currentSec = monitor;
       } else {
@@ -289,47 +397,33 @@ export function createTimelinePlaybackEngine(
         state.currentSec = videoTime > 0 ? videoTime : state.currentSec + dt;
       }
     }
+
     if (mse.isEnded() || state.currentSec >= end - WRAP_EPSILON_SEC) {
       hadMonitor = false;
       wrapToStart();
       return;
     }
-    const covered = mse.covers(state.currentSec, 0.02);
-    // Cache may have just finished the covering fragment — treat that as
-    // covered-intent so we keep feeding/resyncing until MSE appends land.
-    const cacheReady = Boolean(
-      fragmentCache?.fragmentCovering(state.currentSec),
-    );
-    if (pendingSeek || (!covered && !cacheReady)) {
-      stallFrames += 1;
-    } else if (!covered && cacheReady) {
-      // Fragment is baked but not yet appended — keep feeding, light stall.
+
+    const covered = mse.covers(state.currentSec, FRAGMENT_PLAYBACK_LOOKAHEAD_SEC);
+    if (pendingSeek || !playable || !covered) {
       stallFrames += 1;
     } else {
       stallFrames = 0;
     }
-    // The coarsest preview (low, 10fps) only moves currentTime every ~100ms,
-    // so require a real stall (~200ms uncovered) before declaring buffering;
-    // pending seeks into unbuffered land are buffering immediately.
-    const nextBuffering = pendingSeek || (!covered && stallFrames > 12);
+
+    const nextBuffering = pendingSeek || !playable || (!covered && stallFrames > 12);
     if (nextBuffering !== buffering) {
       setBuffering(nextBuffering);
       if (!buffering) {
-        // Resume from where the picture actually stopped so no content is
-        // skipped; the epoch bump re-seeks audio to that point.
         const videoTime = mse.getTime();
         if (videoTime > 0) state.currentSec = videoTime;
         hadMonitor = false;
         bumpSeekEpoch();
       }
     }
-    maybeFailOpen(now);
-    // Slave the picture to the clock. Audio is never nudged while running —
-    // snap the video instead, which is invisible at preview quality. Right
-    // after audio starts (seek latency puts it slightly behind the picture),
-    // align tightly once; in steady state only correct real drift.
+
     let snapVideo = false;
-    if (!pendingSeek && !buffering && monitor != null) {
+    if (!pendingSeek && !buffering && playable && monitor != null) {
       const drift = Math.abs(mse.getTime() - state.currentSec);
       const limit = hadMonitor ? 0.35 : 0.12;
       if (drift > limit && covered && now - lastVideoSnapAt > 500) {
@@ -374,7 +468,7 @@ export function createTimelinePlaybackEngine(
       if (end > 0) {
         if (previewStreamActive()) {
           tickPreviewStream(now, dt);
-        } else {
+        } else if (!fragmentCache) {
           tickLegacy(dt);
         }
         emitTimeUpdate(false);
@@ -394,6 +488,7 @@ export function createTimelinePlaybackEngine(
       state.clips = clips;
       state.sequenceDurationSec = timelineSequenceDuration(clips);
       state.videoExtentSec = timelineVideoExtentSec(clips);
+      bumpPreviewGeneration("clips");
       resync("data");
     },
     setBakeInfo(bakeInfoByClipId) {
@@ -411,29 +506,21 @@ export function createTimelinePlaybackEngine(
       unsubFragments?.();
       unsubFragments = null;
       fragmentCache = cache;
-      previewStreamDisabled = false;
+      mseConfigBlocked = false;
       if (cache) {
+        bumpPreviewGeneration("fragment-cache");
         unsubFragments = cache.subscribe(() => {
-          // Fresh fragment data: re-feed and clear a hold once the playhead
-          // is covered (first-session auto-resume without remounting).
           resync("data");
           if (
             state.playing &&
             buffering &&
-            needsPreviewCoverage(state.currentSec)
+            needsPreviewCoverage(state.currentSec) &&
+            ensurePlayableWindow(state.currentSec)
           ) {
-            if (
-              mse.covers(state.currentSec, 0.02) ||
-              cache.fragmentCovering(state.currentSec)
-            ) {
-              // Keep buffering until MSE actually covers, but force a feed
-              // pass; the tick will clear buffering when appends land.
-              stallFrames = Math.min(stallFrames, 6);
-            }
+            stallFrames = Math.min(stallFrames, 6);
           }
         });
       }
-      // Seek, not data: the stream may be mid-timeline while the video is at 0.
       resync("seek");
     },
     setStage(stageW, stageH, matteW, matteH) {
@@ -462,8 +549,11 @@ export function createTimelinePlaybackEngine(
       const jumped = Math.abs(next - state.currentSec) > 1e-4;
       state.currentSec = next;
       stallFrames = 0;
-      // Scrub / loop handoff while free-running: re-prime decoders.
       if (state.playing && jumped) bumpSeekEpoch();
+      const hold =
+        needsPreviewCoverage(next) && !ensurePlayableWindow(next);
+      setBuffering(hold);
+      stallFrames = hold ? 13 : 0;
       emitTimeUpdate(true);
       resync("seek");
     },
@@ -471,11 +561,9 @@ export function createTimelinePlaybackEngine(
       if (destroyed || state.playing) return;
       if (state.sequenceDurationSec <= 0) return;
       state.playing = true;
-      // Don't start audio into a black preview — hold until picture exists.
-      // Past the video extent, audio-only play starts immediately.
       const hold =
         needsPreviewCoverage(state.currentSec) &&
-        !mse.covers(state.currentSec, 0.02);
+        !ensurePlayableWindow(state.currentSec);
       setBuffering(hold);
       stallFrames = hold ? 13 : 0;
       hadMonitor = false;
@@ -494,6 +582,14 @@ export function createTimelinePlaybackEngine(
       emitTimeUpdate(true);
       resync("transport");
     },
+    retryPreview() {
+      if (destroyed) return;
+      mse.retryBlocked();
+      bumpPreviewGeneration("retry");
+      setBuffering(true);
+      stallFrames = 13;
+      resync("data");
+    },
     getCurrentTime() {
       return state.currentSec;
     },
@@ -502,6 +598,9 @@ export function createTimelinePlaybackEngine(
     },
     isBuffering() {
       return buffering;
+    },
+    getPreviewStatus() {
+      return previewStatus;
     },
     getDiagnostics() {
       return pool.getDiagnostics();

@@ -108,6 +108,7 @@ import {
   releasePointerCaptureSafe,
   subscribeGestureAbort,
 } from "./gestureCleanup";
+import type { PreviewPlaybackStatus } from "../../playback/timelinePlaybackEngine";
 import { registerGestureStatusProvider } from "../../app/uiDiagnostics";
 import { recordUiOpTrace } from "./uiOpTrace";
 import { TimelinePane } from "./TimelinePane";
@@ -291,6 +292,11 @@ export function EditorLayout() {
     () => fragmentCache.status(),
   );
   const [previewBuffering, setPreviewBuffering] = useState(false);
+  const [previewStatus, setPreviewStatus] = useState<PreviewPlaybackStatus>({
+    holding: false,
+    phase: "idle",
+  });
+  const [previewRetry, setPreviewRetry] = useState<(() => void) | null>(null);
   const addAssetGenerationSession = useAddAssetGenerationSession(project.id);
   const prevAddAssetGenerationSessionRef = useRef(addAssetGenerationSession);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
@@ -2685,6 +2691,8 @@ export function EditorLayout() {
         mediaSeekEpoch={mediaSeekEpoch}
         onTimelineTimeUpdate={onTimelineEngineTimeUpdate}
         onPreviewBufferingChange={setPreviewBuffering}
+        onPreviewStatusChange={setPreviewStatus}
+        onPreviewRetryReady={(retry) => setPreviewRetry(() => retry)}
         stagingSeed={
           monitorMode === "source" ? (clipStagingSeed?.draft ?? null) : null
         }
@@ -2810,6 +2818,8 @@ export function EditorLayout() {
         onRemoveAudioBake={onRemoveTimelineAudioBake}
         fragmentStatus={fragmentStatus}
         previewBuffering={previewBuffering}
+        previewStatus={previewStatus}
+        onRetryPreview={() => previewRetry?.()}
         onRefreshFragmentCache={() => fragmentCache?.refresh()}
         outsideReferenceIds={outsideReferenceIds}
       />
