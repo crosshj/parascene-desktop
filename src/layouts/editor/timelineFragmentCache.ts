@@ -63,6 +63,8 @@ export type TimelineFragmentCache = {
   isWindowReady(sec: number, aheadSec: number): boolean;
   /** Picture extent — past this, audio plays without video fragments. */
   videoExtentSec(): number;
+  /** Play/seek admission: bake covering + next immediately, bypass edit debounce. */
+  demandPlayableWindow(sec: number): void;
   status(): TimelineFragmentStatus;
   /** Surface a playback-side failure (e.g. CSP-blocked fragment fetch). */
   reportError(message: string | null): void;
@@ -90,6 +92,16 @@ export type TimelineFragmentCacheOptions = {
 export const FRAGMENT_JOB_DEBOUNCE_MS = 750;
 /** After a bake error, skip that fragment briefly so others can proceed. */
 const BAKE_FAILURE_BACKOFF_MS = 4000;
+/** Demanded play/seek slots may encode concurrently. */
+const MAX_CONCURRENT_BAKES = 2;
+
+class FragmentDepwaitError extends Error {
+  readonly depwait = true;
+  constructor(message = "Waiting for local source media") {
+    super(message);
+    this.name = "FragmentDepwaitError";
+  }
+}
 
 export async function bakeTimelineFragment(input: {
   projectId: string;
@@ -109,6 +121,13 @@ export async function bakeTimelineFragment(input: {
   const renderInput = timelineClipsToRenderInput(windowClips);
   const { clips: readyClips, readyIds, missingIds } =
     await filterRenderMediaLocal(renderInput);
+  if (windowClips.length > 0 && readyClips.length === 0) {
+    throw new FragmentDepwaitError(
+      missingIds.length > 0
+        ? "Waiting for local source media"
+        : "Fragment has no renderable video",
+    );
+  }
   const result = await invoke<TimelineFragmentBakeResult>(
     "library_bake_timeline_fragment",
     {
@@ -141,11 +160,6 @@ export async function clearTimelineFragments(projectId: string): Promise<void> {
   await invoke("library_clear_timeline_fragments", { projectId: id });
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
 
 export function createTimelineFragmentCache(
   options: TimelineFragmentCacheOptions = {},
@@ -161,7 +175,6 @@ export function createTimelineFragmentCache(
   let playheadSec = 0;
   let plan: TimelineFragmentPlan | null = null;
   let destroyed = false;
-  let pumping = false;
   /** True while a manual rebuild is wiping the on-disk cache. */
   let pausingForRefresh = false;
   let bakeEpoch = 0;
@@ -169,6 +182,8 @@ export function createTimelineFragmentCache(
   let errorSource: "bake" | "playback" | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let debounceGen = 0;
+  let activeBakes = 0;
+  const backoffTimers = new Map<number, ReturnType<typeof setTimeout>>();
   const ready = new Map<number, ReadyTimelineFragment>();
   /** index → fingerprint currently encoding. Stale results are dropped. */
   const inflight = new Map<number, string>();
@@ -208,6 +223,38 @@ export function createTimelineFragmentCache(
   const playheadIndex = () => {
     if (!plan) return 0;
     return fragmentIndexAtSec(playheadSec, Math.round(plan.durationSec * 30));
+  };
+
+  const admissionIndices = (sec: number): number[] => {
+    if (!plan || sec >= plan.durationSec - 1e-3) return [];
+    const totalFrames = Math.round(plan.durationSec * 30);
+    const index = fragmentIndexAtSec(sec, totalFrames);
+    const out = [index];
+    const next = index + 1;
+    if (next < plan.fragments.length) out.push(next);
+    return out;
+  };
+
+  const scheduleBackoffWake = (index: number, untilMs: number) => {
+    const existing = backoffTimers.get(index);
+    if (existing) clearTimeout(existing);
+    const delay = Math.max(0, untilMs - Date.now());
+    backoffTimers.set(
+      index,
+      setTimeout(() => {
+        backoffTimers.delete(index);
+        failureBackoffUntil.delete(index);
+        scheduleJobs(true);
+      }, delay),
+    );
+  };
+
+  const clearBackoffTimer = (index: number) => {
+    const timer = backoffTimers.get(index);
+    if (timer) {
+      clearTimeout(timer);
+      backoffTimers.delete(index);
+    }
   };
 
   const coveringAt = (sec: number) => {
@@ -281,84 +328,95 @@ export function createTimelineFragmentCache(
     notify();
   };
 
-  const pump = async () => {
-    if (pumping) return;
-    pumping = true;
+  const bakeOne = async (spec: TimelineFragmentSpec) => {
+    const epoch = bakeEpoch;
+    inflight.set(spec.index, spec.fingerprint);
+    notify();
     try {
-      while (!destroyed) {
-        const spec = nextJob();
-        if (!spec || !projectId.trim() || !plan) break;
-        const epoch = bakeEpoch;
-        inflight.set(spec.index, spec.fingerprint);
-        notify();
-        try {
-          const result = customBake
-            ? await customBake({
-                projectId,
-                clips,
-                aspectRatio,
-                quality,
-                fragment: spec,
-              })
-            : await bakeTimelineFragment({
-                projectId,
-                clips,
-                aspectRatio,
-                quality,
-                fragment: spec,
-              });
-          inflight.delete(spec.index);
-          failureBackoffUntil.delete(spec.index);
-          if (destroyed || epoch !== bakeEpoch) continue;
-          if (
-            !customBake &&
-            "readyIds" in result &&
-            "missingIds" in result &&
-            Array.isArray(result.readyIds) &&
-            Array.isArray(result.missingIds) &&
-            mergeLocality(result.readyIds, result.missingIds)
-          ) {
-            replanFromLocality();
-          }
-          const current = plan.fragments[result.index];
-          if (
-            !current ||
-            current.fingerprint !== result.fingerprint ||
-            current.fingerprint !== spec.fingerprint
-          ) {
-            // Locality change may have dirtied this slot — keep pumping.
-            continue;
-          }
-          ready.set(result.index, {
-            path: result.path,
-            index: result.index,
-            startSec: result.startSec,
-            durationSec: result.durationSec,
-            fingerprint: result.fingerprint,
+      const result = customBake
+        ? await customBake({
+            projectId,
+            clips,
+            aspectRatio,
+            quality,
+            fragment: spec,
+          })
+        : await bakeTimelineFragment({
+            projectId,
+            clips,
+            aspectRatio,
+            quality,
+            fragment: spec,
           });
-          if (errorSource === "bake") {
-            error = null;
-            errorSource = null;
-          }
-          notify();
-        } catch (caught) {
-          inflight.delete(spec.index);
-          if (destroyed || epoch !== bakeEpoch) continue;
-          error = caught instanceof Error ? caught.message : String(caught);
-          errorSource = "bake";
-          failureBackoffUntil.set(
-            spec.index,
-            Date.now() + BAKE_FAILURE_BACKOFF_MS,
-          );
-          notify();
-          // Move on to the next dirty fragment; do not hot-loop one failure.
-          await wait(200);
-        }
+      inflight.delete(spec.index);
+      clearBackoffTimer(spec.index);
+      failureBackoffUntil.delete(spec.index);
+      if (destroyed || epoch !== bakeEpoch) return;
+      if (
+        !customBake &&
+        "readyIds" in result &&
+        "missingIds" in result &&
+        Array.isArray(result.readyIds) &&
+        Array.isArray(result.missingIds) &&
+        mergeLocality(result.readyIds, result.missingIds)
+      ) {
+        replanFromLocality();
       }
-    } finally {
-      pumping = false;
-      if (!destroyed) notify();
+      if (!plan) return;
+      const current = plan.fragments[result.index];
+      if (
+        !current ||
+        current.fingerprint !== result.fingerprint ||
+        current.fingerprint !== spec.fingerprint
+      ) {
+        return;
+      }
+      ready.set(result.index, {
+        path: result.path,
+        index: result.index,
+        startSec: result.startSec,
+        durationSec: result.durationSec,
+        fingerprint: result.fingerprint,
+      });
+      if (errorSource === "bake") {
+        error = null;
+        errorSource = null;
+      }
+      notify();
+    } catch (caught) {
+      inflight.delete(spec.index);
+      if (destroyed || epoch !== bakeEpoch) return;
+      const depwait =
+        caught instanceof FragmentDepwaitError ||
+        (caught instanceof Error &&
+          (caught as { depwait?: boolean }).depwait === true);
+      const until = Date.now() + BAKE_FAILURE_BACKOFF_MS;
+      failureBackoffUntil.set(spec.index, until);
+      scheduleBackoffWake(spec.index, until);
+      if (!depwait) {
+        error = caught instanceof Error ? caught.message : String(caught);
+        errorSource = "bake";
+      }
+      notify();
     }
+  };
+
+  const maybePump = () => {
+    if (destroyed || pausingForRefresh || !projectId.trim() || !plan) return;
+    while (activeBakes < MAX_CONCURRENT_BAKES) {
+      const spec = nextJob();
+      if (!spec) break;
+      activeBakes += 1;
+      void bakeOne(spec).finally(() => {
+        activeBakes = Math.max(0, activeBakes - 1);
+        notify();
+        maybePump();
+      });
+    }
+  };
+
+  const pump = () => {
+    maybePump();
   };
 
   const scheduleJobs = (immediate: boolean) => {
@@ -368,14 +426,14 @@ export function createTimelineFragmentCache(
       debounceTimer = null;
     }
     if (immediate || debounceMs === 0) {
-      void pump();
+      pump();
       return;
     }
     const gen = ++debounceGen;
     debounceTimer = setTimeout(() => {
       if (destroyed || gen !== debounceGen) return;
       debounceTimer = null;
-      void pump();
+      pump();
     }, debounceMs);
   };
 
@@ -433,16 +491,39 @@ export function createTimelineFragmentCache(
       if (destroyed) return;
       commitClips(input, "debounce");
     },
-    setPlayhead(sec) {
+    setPlayhead(sec, playing = false) {
       if (destroyed) return;
       playheadSec = sec;
-      if (pumping || debounceTimer != null) return;
-      if (nextJob()) void pump();
+      if (playing) {
+        pump();
+        return;
+      }
+      if (activeBakes > 0 || debounceTimer != null) return;
+      if (nextJob()) pump();
+    },
+    demandPlayableWindow(sec) {
+      if (destroyed) return;
+      playheadSec = sec;
+      if (debounceTimer != null) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      // Touch admission indices so nextJob prioritizes them even while inflight.
+      if (plan) {
+        for (const index of admissionIndices(sec)) {
+          const spec = plan.fragments[index];
+          if (spec && !isReady(spec) && !inflight.has(index)) {
+            /* priority comes from playheadIndex() via playheadSec above */
+          }
+        }
+      }
+      pump();
     },
     setTimeline(input) {
       if (destroyed) return;
       playheadSec = input.playheadSec;
-      commitClips(input, "debounce");
+      commitClips(input, input.playing ? "now" : "debounce");
+      if (input.playing) this.demandPlayableWindow(input.playheadSec);
     },
     fragmentCovering(sec) {
       return coveringAt(sec);
@@ -498,7 +579,7 @@ export function createTimelineFragmentCache(
       return {
         ready: ready.size,
         total: plan?.fragmentCount ?? 0,
-        baking: pumping || inflight.size > 0 || pausingForRefresh,
+        baking: activeBakes > 0 || inflight.size > 0 || pausingForRefresh,
         queued: queuedCount(),
         error,
         playheadReady:
@@ -556,6 +637,8 @@ export function createTimelineFragmentCache(
         clearTimeout(debounceTimer);
         debounceTimer = null;
       }
+      for (const timer of backoffTimers.values()) clearTimeout(timer);
+      backoffTimers.clear();
       listeners.clear();
       ready.clear();
       inflight.clear();

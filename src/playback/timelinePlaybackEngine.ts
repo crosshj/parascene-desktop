@@ -550,6 +550,7 @@ export function createTimelinePlaybackEngine(
       state.currentSec = next;
       stallFrames = 0;
       if (state.playing && jumped) bumpSeekEpoch();
+      fragmentCache?.demandPlayableWindow(next);
       const hold =
         needsPreviewCoverage(next) && !ensurePlayableWindow(next);
       setBuffering(hold);
@@ -561,6 +562,7 @@ export function createTimelinePlaybackEngine(
       if (destroyed || state.playing) return;
       if (state.sequenceDurationSec <= 0) return;
       state.playing = true;
+      fragmentCache?.demandPlayableWindow(state.currentSec);
       const hold =
         needsPreviewCoverage(state.currentSec) &&
         !ensurePlayableWindow(state.currentSec);

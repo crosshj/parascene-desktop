@@ -13,6 +13,7 @@ use super::render::{
 };
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -481,6 +482,30 @@ fn fingerprint_ok(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+fn fragment_partial_path(dir: &Path, index: u32, fingerprint: &str) -> PathBuf {
+    dir.join(format!("frag_{index:04}_{fingerprint}.partial.mp4"))
+}
+
+fn fragment_artifact_valid(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < 256 {
+        return false;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 12];
+    if file.read_exact(&mut head).is_err() {
+        return false;
+    }
+    if &head[4..8] != b"ftyp" {
+        return false;
+    }
+    true
+}
+
 #[tauri::command]
 pub async fn library_bake_timeline_fragment(
     app: AppHandle,
@@ -506,15 +531,18 @@ pub async fn library_bake_timeline_fragment(
             .map_err(|e| format!("Could not create timeline preview cache: {e}"))?;
         let dest = dir.join(format!("frag_{index:04}_{fingerprint}.mp4"));
         if dest.is_file() {
-            return Ok(TimelineFragmentBakeResult {
-                path: dest.display().to_string(),
-                index,
-                start_sec,
-                duration_sec,
-                fingerprint,
-            });
+            if fragment_artifact_valid(&dest) {
+                return Ok(TimelineFragmentBakeResult {
+                    path: dest.display().to_string(),
+                    index,
+                    start_sec,
+                    duration_sec,
+                    fingerprint,
+                });
+            }
+            let _ = fs::remove_file(&dest);
         }
-        let partial = dest.with_extension("partial.mp4");
+        let partial = fragment_partial_path(&dir, index, &fingerprint);
         if partial.exists() {
             let _ = fs::remove_file(&partial);
         }

@@ -95,13 +95,15 @@ describe("createTimelineFragmentCache", () => {
       clips: [clip({ id: "a", startSec: 0, endSec: 10, assetId: "v1" })],
     });
     await Promise.resolve();
-    expect(order).toEqual([0]);
+    expect(order).toContain(0);
+    expect(order.length).toBeLessThanOrEqual(2);
 
     cache.setPlayhead(8, true);
     pending[0]?.();
     await Promise.resolve();
+    await Promise.resolve();
     expect(cache.fragmentCovering(0)?.index).toBe(0);
-    expect(order[1]).toBe(4);
+    expect(order).toContain(4);
 
     cache.destroy();
   });
@@ -258,6 +260,33 @@ describe("createTimelineFragmentCache", () => {
     expect(cache.hasContinuity(50)).toBe(true);
     expect(cache.isWindowReady(50, 2)).toBe(true);
     expect(baked.length).toBe(2);
+
+    cache.destroy();
+  });
+
+  it("demandPlayableWindow bypasses edit debounce for admission slots", async () => {
+    vi.useFakeTimers();
+    const baked: number[] = [];
+    const cache = createTimelineFragmentCache({
+      debounceMs: 750,
+      bake: async ({ fragment }) => {
+        baked.push(fragment.index);
+        return resultFor(fragment);
+      },
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [clip({ id: "a", startSec: 0, endSec: 10, assetId: "v1" })],
+    });
+    expect(baked).toEqual([]);
+
+    cache.demandPlayableWindow(4);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(baked.length).toBeGreaterThan(0);
+    expect(baked).toContain(2);
 
     cache.destroy();
   });

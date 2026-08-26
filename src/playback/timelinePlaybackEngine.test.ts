@@ -37,6 +37,7 @@ function mockFragmentCache(): TimelineFragmentCache {
     destroy: () => {},
     setClips: () => {},
     setPlayhead: () => {},
+    demandPlayableWindow: () => {},
     setAspectRatio: () => {},
     setPreviewQuality: () => {},
     setTimeline: () => {},
