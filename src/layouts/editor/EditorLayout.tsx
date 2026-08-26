@@ -15,7 +15,11 @@ import {
   type MergeProgress,
 } from "../../library/catalogClient";
 import { runLocalMerge } from "../../services/localMerge";
-import { loadStoredProjectStrict } from "../../project/projectStore";
+import {
+  loadStoredProjectStrict,
+  normalizeTimelinePlayheadSec,
+} from "../../project/projectStore";
+import { usePreviewQuality } from "../../settings/previewQuality";
 import { collectProjectReferencedCreationIds } from "../../project/projectUsage";
 import {
   collectCabinetMemberIdsFromCovers,
@@ -282,6 +286,7 @@ export function EditorLayout() {
   const [audioBakeBusy, setAudioBakeBusy] = useState(false);
   const [audioBakeError, setAudioBakeError] = useState<string | null>(null);
   const [fragmentCache] = useState(() => createTimelineFragmentCache());
+  const previewQuality = usePreviewQuality();
   const [fragmentStatus, setFragmentStatus] = useState<TimelineFragmentStatus>(
     () => fragmentCache.status(),
   );
@@ -371,8 +376,10 @@ export function EditorLayout() {
   );
   /**
    * While playing, the playback engine owns the playhead RAF; React only
-   * receives throttled onTimeUpdate for the ruler. When paused, the persisted
-   * project playhead is the source of truth.
+   * receives throttled onTimeUpdate for the ruler. The UI always renders the
+   * live value — project persistence is async (patchOpenProject), so switching
+   * the display source on pause showed the stale pre-play position for a frame
+   * before the store caught up. The persisted value reconciles in below.
    */
   const [timelinePlaying, setTimelinePlaying] = useState(false);
   const [livePlayheadSec, setLivePlayheadSec] = useState(
@@ -383,9 +390,43 @@ export function EditorLayout() {
   const livePlayheadRef = useRef(project.timelinePlayheadSec);
   const wasTimelinePlayingRef = useRef(false);
   const toggleTimelinePlayingRef = useRef<() => void>(() => {});
-  const displayPlayheadSec = timelinePlaying
-    ? livePlayheadSec
-    : project.timelinePlayheadSec;
+  const displayPlayheadSec = livePlayheadSec;
+  /** Last playhead value we sent to the async project store, until it lands. */
+  const pendingPlayheadWriteRef = useRef<{ value: number; at: number } | null>(
+    null,
+  );
+  const writeProjectPlayheadSec = useCallback(
+    (sec: number) => {
+      pendingPlayheadWriteRef.current = {
+        value: normalizeTimelinePlayheadSec(sec),
+        at: performance.now(),
+      };
+      setOpenProjectTimelinePlayheadSec(sec);
+    },
+    [setOpenProjectTimelinePlayheadSec],
+  );
+  // Paused: adopt external playhead changes once the async store settles.
+  // While one of our own writes is in flight the store still echoes the old
+  // position — adopting that echo is what made the cursor snap back on pause.
+  // Pending writes expire (no-op writes never produce a store change).
+  useEffect(() => {
+    const pending = pendingPlayheadWriteRef.current;
+    if (pending != null) {
+      const landed = Math.abs(project.timelinePlayheadSec - pending.value) < 1e-6;
+      if (landed || performance.now() - pending.at > 2000) {
+        pendingPlayheadWriteRef.current = null;
+      }
+      if (!landed) return;
+    }
+    if (timelinePlaying) return;
+    // Within store rounding (10ms) of the live value — keep the more precise
+    // live position instead of nudging the engine by a rounding artifact.
+    if (Math.abs(project.timelinePlayheadSec - livePlayheadRef.current) < 0.011) {
+      return;
+    }
+    livePlayheadRef.current = project.timelinePlayheadSec;
+    setLivePlayheadSec(project.timelinePlayheadSec);
+  }, [project.timelinePlayheadSec, timelinePlaying]);
   const mergeSelection = useMemo(
     () => getMergeableTimelineSelection(project.timeline, selectedClipIds),
     [project.timeline, selectedClipIds],
@@ -525,18 +566,16 @@ export function EditorLayout() {
   const pauseTimelinePlayback = useCallback(() => {
     if (!timelinePlaying) return;
     setTimelinePlaying(false);
-    // Persist now so displayPlayheadSec (project playhead when paused) does not
-    // jump backward. Engine layout pause may refine via onTimeUpdate afterward.
-    setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
-  }, [timelinePlaying, setTimelinePlaying, setOpenProjectTimelinePlayheadSec]);
+    writeProjectPlayheadSec(livePlayheadRef.current);
+  }, [timelinePlaying, setTimelinePlaying, writeProjectPlayheadSec]);
 
   // Persist playhead after the engine emits its final time on pause.
   useEffect(() => {
     if (wasTimelinePlayingRef.current && !timelinePlaying) {
-      setOpenProjectTimelinePlayheadSec(livePlayheadRef.current);
+      writeProjectPlayheadSec(livePlayheadRef.current);
     }
     wasTimelinePlayingRef.current = timelinePlaying;
-  }, [timelinePlaying, setOpenProjectTimelinePlayheadSec]);
+  }, [timelinePlaying, writeProjectPlayheadSec]);
 
   /** Engine → React: throttled ruler updates while playing; accurate on pause. */
   const onTimelineEngineTimeUpdate = (sec: number) => {
@@ -549,7 +588,7 @@ export function EditorLayout() {
     const next = Math.max(0, Math.min(end, sec));
     livePlayheadRef.current = next;
     setLivePlayheadSec(next);
-    setOpenProjectTimelinePlayheadSec(next);
+    writeProjectPlayheadSec(next);
     // Stay in playback — jump media to the new point.
     if (timelinePlaying) setMediaSeekEpoch((n) => n + 1);
   };
@@ -569,7 +608,7 @@ export function EditorLayout() {
     livePlayheadRef.current = start;
     setLivePlayheadSec(start);
     if (start !== project.timelinePlayheadSec) {
-      setOpenProjectTimelinePlayheadSec(start);
+      writeProjectPlayheadSec(start);
     }
     setTimelinePlaying(true);
   };
@@ -1195,10 +1234,10 @@ export function EditorLayout() {
     const unsub = fragmentCache.subscribe(() => {
       setFragmentStatus(fragmentCache.status());
     });
-    return () => {
-      unsub();
-      fragmentCache.destroy();
-    };
+    // Do not destroy() here. React Strict Mode remounts this effect in dev and
+    // would leave the useState cache permanently dead — the rebuild button
+    // then does nothing.
+    return unsub;
   }, [fragmentCache]);
 
   useEffect(() => {
@@ -1206,8 +1245,15 @@ export function EditorLayout() {
       projectId: project.id,
       clips: displayTimeline,
       aspectRatio: project.aspectRatio,
+      quality: previewQuality,
     });
-  }, [fragmentCache, project.id, project.aspectRatio, displayTimeline]);
+  }, [
+    fragmentCache,
+    project.id,
+    project.aspectRatio,
+    displayTimeline,
+    previewQuality,
+  ]);
 
   useEffect(() => {
     fragmentCache?.setPlayhead(

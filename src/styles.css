@@ -5551,7 +5551,8 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   background: #000;
 }
 
-.timeline-mse-video {
+.timeline-mse-video,
+.timeline-preview-chunk {
   z-index: 4;
   background: #000;
   pointer-events: none;
@@ -9759,6 +9760,22 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
   margin: 1.25rem 0 0.35rem;
   font-size: 0.95rem;
   font-weight: 600;
+}
+
+.settings-quality-slider {
+  width: 100%;
+  max-width: 320px;
+  accent-color: var(--accent, #6c8cff);
+  margin: 0.25rem 0 0;
+}
+
+.settings-quality-scale {
+  display: flex;
+  justify-content: space-between;
+  max-width: 320px;
+  font-size: 0.75rem;
+  color: var(--muted, #a0a0ab);
+  margin-bottom: 0.35rem;
 }
 
 .settings-tool-list {

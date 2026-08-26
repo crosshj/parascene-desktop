@@ -84,6 +84,16 @@ describe("planTimelineFragments", () => {
     );
   });
 
+  it("changes every fingerprint when preview quality changes", () => {
+    const clips = [clip({ id: "a", startSec: 0, endSec: 4, assetId: "v1" })];
+    const low = planTimelineFragments(clips, "16:9", 4, "low");
+    const high = planTimelineFragments(clips, "16:9", 4, "high");
+    expect(dirtyFragmentIndices(low, high)).toEqual([0, 1]);
+    // Same quality stays stable.
+    const lowAgain = planTimelineFragments(clips, "16:9", 4, "low");
+    expect(dirtyFragmentIndices(low, lowAgain)).toEqual([]);
+  });
+
   it("keeps stable timestamps so an edit far away does not dirty earlier fragments", () => {
     const short = planTimelineFragments(
       [clip({ id: "a", startSec: 0, endSec: 2, assetId: "v1" })],

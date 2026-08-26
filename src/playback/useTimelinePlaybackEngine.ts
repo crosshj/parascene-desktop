@@ -25,7 +25,7 @@ export type TimelinePlaybackEngineHostProps = {
   bakeInfoByClipId?: ReadonlyMap<string, BakeInfo>;
   /** Cached timeline mix; when set, monitor plays this instead of live clip audio. */
   audioBakePath?: string | null;
-  /** Replaceable fMP4 preview fragments for MSE playback. */
+  /** Replaceable CMAF preview fragments for MSE playback. */
   fragmentCache?: TimelineFragmentCache | null;
   volume: number;
   stageW: number;

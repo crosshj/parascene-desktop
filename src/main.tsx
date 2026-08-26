@@ -1,5 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { guardTauriUnregisterListener } from "./app/tauriEventGuard";
+
+guardTauriUnregisterListener();
 
 function renderBootstrapFailure(error: unknown): void {
   const root = document.getElementById("root");

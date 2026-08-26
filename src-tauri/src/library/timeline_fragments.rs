@@ -1,24 +1,71 @@
 //! Preview-quality timeline fragments for MSE playback.
 //!
-//! Each fragment is a 1–3s closed-GOP fMP4 with identical codec params so the
-//! frontend can append/replace ranges on a single SourceBuffer. Encode is
-//! deliberately softer/smaller than Publisher export.
+//! Each fragment is a closed-GOP CMAF media segment for the same init/codec.
+//! Timestamps are on the *timeline* (tfdt/PTS continue across files) so
+//! SourceBuffer can hold one continuous range. Encode is tiny test quality,
+//! not Publisher export.
 
 use super::catalog::default_paths;
 use super::ffmpeg::resolve_ffmpeg;
 use super::render::{
     aspect_parts, build_video_segments, concat_demixer_line, fit_inside, run_ffmpeg, safe_id,
-    Framing, RenderTimelineClipInput, VideoSegment, VideoSource, RENDER_FPS,
+    Framing, RenderTimelineClipInput, VideoSegment, VideoSource,
 };
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
-const PREVIEW_STAGE_W: u32 = 960;
-const PREVIEW_STAGE_H: u32 = 540;
-const PREVIEW_CRF: &str = "28";
 const PREVIEW_PRESET: &str = "ultrafast";
+
+/// Encode parameters per preview-quality setting: resolution, bitrate, and the
+/// output frame clock. Cut snapping still uses the 30fps export grid in
+/// `build_video_segments` regardless of the preview fps. `scale` multiplies
+/// the low-quality output sizes. Fps values must divide the 2s fragment into
+/// whole frames (10/15/30 all do).
+#[derive(Clone, Copy, Debug)]
+struct PreviewQualityParams {
+    /// Landscape pad stage before the aspect crop. Keep even.
+    stage_w: u32,
+    stage_h: u32,
+    crf: &'static str,
+    maxrate: &'static str,
+    bufsize: &'static str,
+    scale: u32,
+    fps: f64,
+}
+
+fn preview_quality_params(quality: &str) -> PreviewQualityParams {
+    match quality.trim() {
+        "high" => PreviewQualityParams {
+            stage_w: 960,
+            stage_h: 540,
+            crf: "28",
+            maxrate: "2500k",
+            bufsize: "5000k",
+            scale: 3,
+            fps: 30.0,
+        },
+        "medium" => PreviewQualityParams {
+            stage_w: 640,
+            stage_h: 360,
+            crf: "33",
+            maxrate: "700k",
+            bufsize: "1400k",
+            scale: 2,
+            fps: 15.0,
+        },
+        _ => PreviewQualityParams {
+            stage_w: 320,
+            stage_h: 180,
+            crf: "40",
+            maxrate: "80k",
+            bufsize: "160k",
+            scale: 1,
+            fps: 10.0,
+        },
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,13 +90,14 @@ fn preview_dir(paths: &super::paths::ParascenePaths, project_id: &str) -> PathBu
         .join(safe_id(project_id))
 }
 
-fn preview_output_size(aspect_ratio: &str) -> (u32, u32) {
-    match aspect_ratio.trim() {
-        "1:1" => (540, 540),
-        "9:16" => (540, 960),
-        "4:5" => (540, 676),
-        _ => (960, 540),
-    }
+fn preview_output_size(aspect_ratio: &str, params: PreviewQualityParams) -> (u32, u32) {
+    let (w, h) = match aspect_ratio.trim() {
+        "1:1" => (180, 180),
+        "9:16" => (180, 320),
+        "4:5" => (180, 224),
+        _ => (320, 180),
+    };
+    (w * params.scale, h * params.scale)
 }
 
 fn preview_frame_filter(
@@ -58,12 +106,15 @@ fn preview_frame_filter(
     crop_w: u32,
     crop_h: u32,
     framing: Framing,
+    params: PreviewQualityParams,
 ) -> String {
     let prefix = "setsar=1";
-    let tail = format!("fps={RENDER_FPS:.0},format=yuv420p");
+    let tail = format!("fps={:.0},format=yuv420p", params.fps);
+    let stage_w = params.stage_w;
+    let stage_h = params.stage_h;
     match framing {
         Framing::Fit => format!(
-            "{prefix},scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
+            "{prefix},scale={stage_w}:{stage_h}:force_original_aspect_ratio=decrease,pad={stage_w}:{stage_h}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
         ),
         Framing::Fill => format!(
             "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,{tail}"
@@ -74,14 +125,18 @@ fn preview_frame_filter(
     }
 }
 
-fn push_preview_x264(args: &mut Vec<String>, gop_frames: u32) {
+fn push_preview_x264(args: &mut Vec<String>, gop_frames: u32, params: PreviewQualityParams) {
     let gop = gop_frames.max(1).to_string();
     args.push("-c:v".into());
     args.push("libx264".into());
     args.push("-preset".into());
     args.push(PREVIEW_PRESET.into());
     args.push("-crf".into());
-    args.push(PREVIEW_CRF.into());
+    args.push(params.crf.into());
+    args.push("-maxrate".into());
+    args.push(params.maxrate.into());
+    args.push("-bufsize".into());
+    args.push(params.bufsize.into());
     args.push("-pix_fmt".into());
     args.push("yuv420p".into());
     args.push("-profile:v".into());
@@ -111,25 +166,122 @@ fn push_preview_x264(args: &mut Vec<String>, gop_frames: u32) {
     args.push("-color_range".into());
     args.push("tv".into());
     args.push("-video_track_timescale".into());
-    args.push("30000".into());
+    args.push("10000".into());
 }
 
-fn push_preview_fmp4_flags(args: &mut Vec<String>) {
+/// Timescale written by `-video_track_timescale`; tfdt patching must match.
+const PREVIEW_TIMESCALE: u64 = 10000;
+
+fn push_preview_cmaf_flags(args: &mut Vec<String>) {
     args.push("-movflags".into());
     args.push("+empty_moov+default_base_moof+frag_keyframe+omit_tfhd_offset".into());
 }
 
-fn fragment_frame_count(duration_sec: f64) -> u32 {
-    (duration_sec * RENDER_FPS).round().max(1.0) as u32
+/// Put the fragment on the timeline by adding `offset_ticks` to every tfdt.
+///
+/// ffmpeg's mov muxer normalizes each file to start at t=0 no matter what
+/// (setpts and -output_ts_offset are both discarded), so we do what packagers
+/// do: rewrite baseMediaDecodeTime after encode. Tick-exact, no float drift.
+fn patch_tfdt_offset(bytes: &mut [u8], offset_ticks: u64) -> Result<u32, String> {
+    fn read_u32(bytes: &[u8], at: usize) -> u32 {
+        u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+    }
+
+    fn patch_traf(traf: &mut [u8], offset_ticks: u64, patched: &mut u32) -> Result<(), String> {
+        let mut i = 0usize;
+        while i + 8 <= traf.len() {
+            let size = read_u32(traf, i) as usize;
+            if size < 8 || i + size > traf.len() {
+                break;
+            }
+            if &traf[i + 4..i + 8] == b"tfdt" {
+                let body = i + 8;
+                if body >= traf.len() {
+                    return Err("Truncated tfdt box".into());
+                }
+                let version = traf[body];
+                if version == 1 {
+                    if body + 12 > traf.len() {
+                        return Err("Truncated tfdt v1 box".into());
+                    }
+                    let mut raw = [0u8; 8];
+                    raw.copy_from_slice(&traf[body + 4..body + 12]);
+                    let value = u64::from_be_bytes(raw).saturating_add(offset_ticks);
+                    traf[body + 4..body + 12].copy_from_slice(&value.to_be_bytes());
+                } else {
+                    if body + 8 > traf.len() {
+                        return Err("Truncated tfdt v0 box".into());
+                    }
+                    let value = u64::from(read_u32(traf, body + 4)) + offset_ticks;
+                    let value: u32 = value
+                        .try_into()
+                        .map_err(|_| "tfdt overflow: fragment start too large for v0".to_string())?;
+                    traf[body + 4..body + 8].copy_from_slice(&value.to_be_bytes());
+                }
+                *patched += 1;
+            }
+            i += size;
+        }
+        Ok(())
+    }
+
+    let mut patched = 0u32;
+    let mut i = 0usize;
+    while i + 8 <= bytes.len() {
+        let size = read_u32(bytes, i) as usize;
+        if size < 8 || i + size > bytes.len() {
+            break;
+        }
+        if &bytes[i + 4..i + 8] == b"moof" {
+            let (start, end) = (i + 8, i + size);
+            let mut j = start;
+            while j + 8 <= end {
+                let child_size = read_u32(bytes, j) as usize;
+                if child_size < 8 || j + child_size > end {
+                    break;
+                }
+                if &bytes[j + 4..j + 8] == b"traf" {
+                    patch_traf(&mut bytes[j + 8..j + child_size], offset_ticks, &mut patched)?;
+                }
+                j += child_size;
+            }
+        }
+        i += size;
+    }
+    Ok(patched)
 }
 
-fn push_segment_input(args: &mut Vec<String>, segment: &VideoSegment, width: u32, height: u32) {
+fn patch_fragment_timeline_offset(path: &Path, start_sec: f64) -> Result<(), String> {
+    let offset_ticks = (start_sec * PREVIEW_TIMESCALE as f64).round() as u64;
+    if offset_ticks == 0 {
+        return Ok(());
+    }
+    let mut bytes =
+        fs::read(path).map_err(|e| format!("Could not read fragment for tfdt patch: {e}"))?;
+    let patched = patch_tfdt_offset(&mut bytes, offset_ticks)?;
+    if patched == 0 {
+        return Err("Fragment has no tfdt box to place on the timeline".into());
+    }
+    fs::write(path, bytes).map_err(|e| format!("Could not write patched fragment: {e}"))
+}
+
+fn fragment_frame_count(duration_sec: f64, fps: f64) -> u32 {
+    (duration_sec * fps).round().max(1.0) as u32
+}
+
+fn push_segment_input(
+    args: &mut Vec<String>,
+    segment: &VideoSegment,
+    width: u32,
+    height: u32,
+    fps: f64,
+) {
     if let Some(source) = &segment.source {
         if source.is_image {
             args.push("-loop".into());
             args.push("1".into());
             args.push("-framerate".into());
-            args.push(format!("{RENDER_FPS:.0}"));
+            args.push(format!("{fps:.0}"));
             args.push("-t".into());
             args.push(format!("{:.3}", segment.duration_sec));
         }
@@ -141,7 +293,7 @@ fn push_segment_input(args: &mut Vec<String>, segment: &VideoSegment, width: u32
     args.push("lavfi".into());
     args.push("-i".into());
     args.push(format!(
-        "color=c=black:s={width}x{height}:d={:.3}:rate={RENDER_FPS:.0}",
+        "color=c=black:s={width}x{height}:d={:.3}:rate={fps:.0}",
         segment.duration_sec
     ));
 }
@@ -153,9 +305,10 @@ fn segment_chain(
     height: u32,
     crop_w: u32,
     crop_h: u32,
+    params: PreviewQualityParams,
 ) -> String {
     if let Some(source) = source {
-        let frame = preview_frame_filter(width, height, crop_w, crop_h, source.framing);
+        let frame = preview_frame_filter(width, height, crop_w, crop_h, source.framing, params);
         if source.is_image {
             return format!(
                 "{frame},trim=duration={duration:.3},setpts=PTS-STARTPTS",
@@ -181,7 +334,7 @@ fn segment_chain(
             duration_sec
         );
     }
-    "setsar=1,fps=30,format=yuv420p".into()
+    format!("setsar=1,fps={:.0},format=yuv420p", params.fps)
 }
 
 fn fragment_filter_complex(
@@ -190,6 +343,7 @@ fn fragment_filter_complex(
     height: u32,
     crop_w: u32,
     crop_h: u32,
+    params: PreviewQualityParams,
 ) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(segments.len() + 1);
     for (idx, segment) in segments.iter().enumerate() {
@@ -200,15 +354,16 @@ fn fragment_filter_complex(
             height,
             crop_w,
             crop_h,
+            params,
         );
         parts.push(format!("[{idx}:v]{chain}[v{idx}]"));
     }
     if segments.len() == 1 {
-        parts.push("[v0]null[vout]".into());
+        parts.push("[v0]setpts=PTS-STARTPTS[vout]".into());
     } else {
         let labels: String = (0..segments.len()).map(|i| format!("[v{i}]")).collect();
         parts.push(format!(
-            "{labels}concat=n={}:v=1:a=0[vout]",
+            "{labels}concat=n={}:v=1:a=0,setpts=PTS-STARTPTS[vout]",
             segments.len()
         ));
     }
@@ -223,29 +378,34 @@ fn encode_segments_as_fragment(
     height: u32,
     crop_w: u32,
     crop_h: u32,
+    start_sec: f64,
     duration_sec: f64,
+    params: PreviewQualityParams,
     dest: &Path,
 ) -> Result<(), String> {
-    let frames = fragment_frame_count(duration_sec);
+    let frames = fragment_frame_count(duration_sec, params.fps);
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into(), "-nostdin".into()];
     for segment in segments {
-        push_segment_input(&mut args, segment, width, height);
+        push_segment_input(&mut args, segment, width, height, params.fps);
     }
     args.push("-filter_complex".into());
     args.push(fragment_filter_complex(
-        segments, width, height, crop_w, crop_h,
+        segments, width, height, crop_w, crop_h, params,
     ));
     args.push("-map".into());
     args.push("[vout]".into());
     args.push("-an".into());
+    args.push("-r".into());
+    args.push(format!("{:.0}", params.fps));
     args.push("-fps_mode".into());
     args.push("cfr".into());
-    push_preview_x264(&mut args, frames);
-    push_preview_fmp4_flags(&mut args);
+    push_preview_x264(&mut args, frames, params);
+    push_preview_cmaf_flags(&mut args);
     args.push("-frames:v".into());
     args.push(frames.to_string());
     args.push(dest.display().to_string());
-    run_ffmpeg(ffmpeg, &args)
+    run_ffmpeg(ffmpeg, &args)?;
+    patch_fragment_timeline_offset(dest, start_sec)
 }
 
 /// Encode one independently invalidatable preview fragment for `[start, start+dur)`.
@@ -256,6 +416,7 @@ fn encode_preview_fragment(
     project_id: &str,
     clips: &[RenderTimelineClipInput],
     aspect_ratio: &str,
+    quality: &str,
     start_sec: f64,
     duration_sec: f64,
     dest: &Path,
@@ -263,9 +424,10 @@ fn encode_preview_fragment(
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| {
         "FFmpeg is required to bake timeline preview. Install with: brew install ffmpeg".to_string()
     })?;
-    let (width, height) = preview_output_size(aspect_ratio);
+    let params = preview_quality_params(quality);
+    let (width, height) = preview_output_size(aspect_ratio, params);
     let (aw, ah) = aspect_parts(aspect_ratio);
-    let (crop_w, crop_h) = fit_inside(PREVIEW_STAGE_W, PREVIEW_STAGE_H, aw, ah);
+    let (crop_w, crop_h) = fit_inside(params.stage_w, params.stage_h, aw, ah);
     let end_sec = start_sec + duration_sec;
     let windowed: Vec<RenderTimelineClipInput> = clips
         .iter()
@@ -291,7 +453,9 @@ fn encode_preview_fragment(
         height,
         crop_w,
         crop_h,
+        start_sec,
         duration_sec,
+        params,
         dest,
     )
 }
@@ -323,6 +487,7 @@ pub async fn library_bake_timeline_fragment(
     project_id: String,
     clips: Vec<RenderTimelineClipInput>,
     aspect_ratio: String,
+    quality: Option<String>,
     index: u32,
     start_sec: f64,
     duration_sec: f64,
@@ -359,6 +524,7 @@ pub async fn library_bake_timeline_fragment(
             &project_id,
             &clips,
             &aspect_ratio,
+            quality.as_deref().unwrap_or("low"),
             start_sec,
             duration_sec,
             &partial,
@@ -476,14 +642,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preview_sizes_stay_even_and_small() {
-        assert_eq!(preview_output_size("16:9"), (960, 540));
-        assert_eq!(preview_output_size("9:16"), (540, 960));
-        assert_eq!(preview_output_size("1:1"), (540, 540));
-        let (w, h) = preview_output_size("4:5");
-        assert_eq!(w % 2, 0);
-        assert_eq!(h % 2, 0);
-        assert!(w * h < 1920 * 1080);
+    fn preview_sizes_stay_even_and_scale_with_quality() {
+        let low = preview_quality_params("low");
+        assert_eq!(preview_output_size("16:9", low), (320, 180));
+        assert_eq!(preview_output_size("9:16", low), (180, 320));
+        assert_eq!(preview_output_size("1:1", low), (180, 180));
+        let medium = preview_quality_params("medium");
+        assert_eq!(preview_output_size("16:9", medium), (640, 360));
+        let high = preview_quality_params("high");
+        assert_eq!(preview_output_size("16:9", high), (960, 540));
+        for params in [low, medium, high] {
+            let (w, h) = preview_output_size("4:5", params);
+            assert_eq!(w % 2, 0);
+            assert_eq!(h % 2, 0);
+        }
+    }
+
+    #[test]
+    fn preview_quality_changes_bitrate_resolution_and_fps() {
+        let low = preview_quality_params("low");
+        let medium = preview_quality_params("medium");
+        let high = preview_quality_params("high");
+        assert_ne!(low.crf, high.crf);
+        assert_ne!(low.maxrate, high.maxrate);
+        assert_ne!((low.stage_w, low.stage_h), (high.stage_w, high.stage_h));
+        assert_eq!(low.fps, 10.0);
+        assert_eq!(medium.fps, 15.0);
+        assert_eq!(high.fps, 30.0);
+        // Unknown values fall back to low.
+        assert_eq!(preview_quality_params("??").stage_w, low.stage_w);
+    }
+
+    #[test]
+    fn preview_fps_follows_quality_and_divides_fragments_evenly() {
+        assert_eq!(fragment_frame_count(2.0, preview_quality_params("low").fps), 20);
+        assert_eq!(
+            fragment_frame_count(2.0, preview_quality_params("medium").fps),
+            30
+        );
+        assert_eq!(
+            fragment_frame_count(2.0, preview_quality_params("high").fps),
+            60
+        );
+        assert_eq!(fragment_frame_count(1.5, 10.0), 15);
     }
 
     #[test]
@@ -505,9 +706,58 @@ mod tests {
                 source: None,
             },
         ];
-        let graph = fragment_filter_complex(&segments, 960, 540, 960, 540);
+        let graph =
+            fragment_filter_complex(&segments, 320, 180, 320, 180, preview_quality_params("low"));
         assert!(graph.contains("[0:v]"));
+        assert!(graph.contains("fps=10"));
         assert!(graph.contains("[1:v]"));
-        assert!(graph.contains("concat=n=2:v=1:a=0[vout]"));
+        assert!(graph.contains("concat=n=2:v=1:a=0"));
+        assert!(graph.contains("setpts=PTS-STARTPTS[vout]"));
+        assert!(!graph.contains("concat=n=2:v=1:a=0[vout]"));
+    }
+
+    fn tfdt_v0_fixture(base_time: u32) -> Vec<u8> {
+        // moof > traf > tfdt(v0), minimal but structurally valid.
+        let mut tfdt = Vec::new();
+        tfdt.extend_from_slice(&16u32.to_be_bytes());
+        tfdt.extend_from_slice(b"tfdt");
+        tfdt.extend_from_slice(&[0, 0, 0, 0]);
+        tfdt.extend_from_slice(&base_time.to_be_bytes());
+        let mut traf = Vec::new();
+        traf.extend_from_slice(&((8 + tfdt.len()) as u32).to_be_bytes());
+        traf.extend_from_slice(b"traf");
+        traf.extend_from_slice(&tfdt);
+        let mut moof = Vec::new();
+        moof.extend_from_slice(&((8 + traf.len()) as u32).to_be_bytes());
+        moof.extend_from_slice(b"moof");
+        moof.extend_from_slice(&traf);
+        moof
+    }
+
+    #[test]
+    fn tfdt_patch_places_fragment_on_the_timeline() {
+        let mut bytes = tfdt_v0_fixture(0);
+        let patched = patch_tfdt_offset(&mut bytes, 40000).expect("patch");
+        assert_eq!(patched, 1);
+        // moof hdr (8) + traf hdr (8) + tfdt size/type/verflags (12) = 28
+        let value = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+        assert_eq!(value, 40000); // 4.0s at timescale 10000
+    }
+
+    #[test]
+    fn tfdt_patch_adds_to_existing_base_time() {
+        let mut bytes = tfdt_v0_fixture(5000);
+        patch_tfdt_offset(&mut bytes, 20000).expect("patch");
+        let value = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+        assert_eq!(value, 25000);
+    }
+
+    #[test]
+    fn tfdt_patch_errors_when_no_tfdt_present() {
+        let mut bytes = vec![0u8; 16];
+        bytes[..4].copy_from_slice(&16u32.to_be_bytes());
+        bytes[4..8].copy_from_slice(b"free");
+        let patched = patch_tfdt_offset(&mut bytes, 40000).expect("patch");
+        assert_eq!(patched, 0);
     }
 }

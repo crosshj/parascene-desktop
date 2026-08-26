@@ -187,4 +187,41 @@ describe("createTimelineFragmentCache", () => {
 
     cache.destroy();
   });
+
+  it("refresh wipes the disk cache and re-bakes fragments that were already ready", async () => {
+    const baked: number[] = [];
+    const cleared: string[] = [];
+    const cache = createTimelineFragmentCache({
+      debounceMs: 0,
+      bake: async ({ fragment }) => {
+        baked.push(fragment.index);
+        return resultFor(fragment);
+      },
+      clear: async (projectId) => {
+        cleared.push(projectId);
+      },
+    });
+
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [clip({ id: "a", startSec: 0, endSec: 2, assetId: "v1" })],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cache.status().ready).toBe(1);
+    expect(baked).toEqual([0]);
+
+    cache.refresh();
+    expect(cache.status().ready).toBe(0);
+    expect(cache.status().baking).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cleared).toEqual(["p1"]);
+    expect(baked).toEqual([0, 0]);
+    expect(cache.status().ready).toBe(1);
+
+    cache.destroy();
+  });
 });
