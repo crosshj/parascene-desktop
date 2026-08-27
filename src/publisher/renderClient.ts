@@ -36,6 +36,10 @@ export type RenderTimelineClipInput = {
   linkedVideoClipId?: string;
   reverse?: boolean;
   framing?: "fit" | "fill" | "stretch";
+  /** Image instance zoom (1 = none). Baked into preview/export frames. */
+  zoom?: number;
+  centerX?: number;
+  centerY?: number;
   slideshow?: RenderSlideshowRecipe;
   bakeKey?: string | null;
   bakePath?: string | null;
@@ -103,6 +107,9 @@ export function timelineClipsToRenderInput(
     linkedVideoClipId: clip.linkedVideoClipId,
     reverse: clip.reverse,
     framing: clip.framing,
+    zoom: clip.zoom,
+    centerX: clip.centerX,
+    centerY: clip.centerY,
     slideshow: clip.slideshow
       ? {
           imageAssetIds: clip.slideshow.imageAssetIds,

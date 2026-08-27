@@ -34,14 +34,27 @@ describe("createMseFragmentPlayer", () => {
     expect(typeof timelineMseSupported()).toBe("boolean");
   });
 
-  it("calls muted play() when the timeline is running", () => {
+  it("calls muted play() once the playhead range is buffered", () => {
     const play = vi
       .spyOn(HTMLMediaElement.prototype, "play")
       .mockResolvedValue(undefined);
     const host = document.createElement("div");
     document.body.appendChild(host);
     const player = createMseFragmentPlayer(host);
+    player.setDuration(10);
     player.show();
+    Object.defineProperty(player.video, "currentTime", {
+      configurable: true,
+      value: 0.5,
+    });
+    Object.defineProperty(player.video, "buffered", {
+      configurable: true,
+      value: {
+        length: 1,
+        start: () => 0,
+        end: () => 2,
+      },
+    });
     player.sync(0.5, true, [], { feed: false, seek: false });
     expect(play).toHaveBeenCalled();
     player.destroy();
@@ -150,6 +163,81 @@ describe("createMseFragmentPlayer", () => {
     await vi.waitFor(() => {
       expect(onFragmentMissing).toHaveBeenCalledWith("/tmp/missing-frag.mp4");
     });
+    player.destroy();
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects fragments whose tfdt does not match the plan start", async () => {
+    const box = (type: string, payload: Uint8Array) => {
+      const out = new Uint8Array(8 + payload.byteLength);
+      const view = new DataView(out.buffer);
+      view.setUint32(0, out.byteLength);
+      out[4] = type.charCodeAt(0);
+      out[5] = type.charCodeAt(1);
+      out[6] = type.charCodeAt(2);
+      out[7] = type.charCodeAt(3);
+      out.set(payload, 8);
+      return out;
+    };
+    const join = (parts: Uint8Array[]) => {
+      const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const part of parts) {
+        out.set(part, offset);
+        offset += part.byteLength;
+      }
+      return out;
+    };
+    // tfdt baseMediaDecodeTime = 0, but plan says startSec = 54.
+    const tfdt = box("tfdt", new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0]));
+    const trun = box("trun", new Uint8Array([0, 0, 0, 0, 0, 0, 0, 60]));
+    const traf = box("traf", join([tfdt, trun]));
+    const moof = box("moof", traf);
+    const ftyp = box("ftyp", new Uint8Array([1, 2, 3, 4]));
+    const fragmentBytes = join([ftyp, moof]);
+
+    const onFragmentMissing = vi.fn();
+    const onFetchError = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () =>
+        fragmentBytes.buffer.slice(
+          fragmentBytes.byteOffset,
+          fragmentBytes.byteOffset + fragmentBytes.byteLength,
+        ),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const player = createMseFragmentPlayer(host, {
+      onFragmentMissing,
+      onFetchError,
+    });
+    player.show();
+    player.warm();
+    player.sync(
+      54,
+      false,
+      [
+        {
+          index: 27,
+          startSec: 54,
+          durationSec: 2,
+          fingerprint: "bad-tfdt",
+          path: "/tmp/frag-27-bad.mp4",
+        },
+      ],
+      { feed: true },
+    );
+    await vi.waitFor(() => {
+      expect(onFragmentMissing).toHaveBeenCalledWith("/tmp/frag-27-bad.mp4");
+    });
+    expect(onFetchError.mock.calls.some((call) =>
+      String(call[0]).includes("timestamps"),
+    )).toBe(true);
     player.destroy();
     host.remove();
     vi.unstubAllGlobals();

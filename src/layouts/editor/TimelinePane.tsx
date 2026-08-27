@@ -173,10 +173,18 @@ function resolvePreviewHealth(args: {
     return { tone: "error", label: "Preview error" };
   }
   if (previewStatus?.phase === "blocked") {
-    return { tone: "error", label: "Preview blocked" };
+    return { tone: "error", label: "Preview blocked — retry available" };
   }
   if (previewStatus?.phase === "depwait" || fragmentStatus?.depwait) {
     return { tone: "warning", label: "Waiting for source media" };
+  }
+  if (
+    previewStatus?.holding &&
+    previewStatus?.phase === "loading" &&
+    fragmentStatus?.playheadReady &&
+    !fragmentStatus?.baking
+  ) {
+    return { tone: "warning", label: "Preview stuck — click to retry" };
   }
   if (previewStatus?.phase === "loading" || previewBuffering) {
     return { tone: "warning", label: "Loading preview" };
@@ -2139,6 +2147,32 @@ export function TimelinePane({
           >
             <PreviewHealthIcon tone={previewHealth.tone} />
           </button>
+          {onRetryPreview &&
+          ((previewStatus?.phase === "blocked" &&
+            previewStatus?.retryable !== false) ||
+            (previewStatus?.holding &&
+              previewStatus?.phase === "loading" &&
+              fragmentStatus?.playheadReady &&
+              !fragmentStatus?.baking)) ? (
+            <button
+              type="button"
+              className="editor-timeline-tool is-preview-retry"
+              title="Retry preview — reset playback buffer"
+              aria-label="Retry preview"
+              onClick={() => onRetryPreview()}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M2.5 8a5.5 5.5 0 019.2-3.8M13.5 8A5.5 5.5 0 014.3 11.8M13.5 2.5V6h-3.5M2.5 13.5V10H6"
+                />
+              </svg>
+            </button>
+          ) : null}
           <PreviewHealthModal
             open={previewHealthOpen}
             onClose={() => setPreviewHealthOpen(false)}

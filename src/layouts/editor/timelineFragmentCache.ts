@@ -486,10 +486,14 @@ export function createTimelineFragmentCache(
     } catch (caught) {
       inflight.delete(spec.index);
       if (destroyed || epoch !== bakeEpoch) return;
-      if (
-        caught instanceof Error &&
-        caught.message.includes("Stale preview bake")
-      ) {
+      const message =
+        caught instanceof Error ? caught.message : String(caught);
+      if (message.includes("Stale preview bake")) {
+        // Superseded by a newer fingerprint — not a user-facing failure.
+        if (errorSource === "bake" && error?.includes("Stale preview bake")) {
+          error = null;
+          errorSource = null;
+        }
         scheduleJobs(true);
         notify();
         return;
@@ -507,7 +511,7 @@ export function createTimelineFragmentCache(
         depwaitIndices.delete(spec.index);
       }
       if (!depwait) {
-        error = caught instanceof Error ? caught.message : String(caught);
+        error = message;
         errorSource = "bake";
       }
       notify();
@@ -715,6 +719,18 @@ export function createTimelineFragmentCache(
       return plan?.durationSec ?? timelineVideoExtentSec(clips);
     },
     status() {
+      // Superseded bakes can leave a sticky "Stale preview bake" string when
+      // the throw was not an Error instance — drop it once the queue is idle.
+      if (
+        error &&
+        error.includes("Stale preview bake") &&
+        queuedCount() === 0 &&
+        activeBakes === 0 &&
+        inflight.size === 0
+      ) {
+        error = null;
+        errorSource = null;
+      }
       const extent = plan?.durationSec ?? 0;
       const pastVideo = playheadSec >= extent - 1e-3;
       return {

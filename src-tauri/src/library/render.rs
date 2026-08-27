@@ -62,6 +62,14 @@ pub struct RenderTimelineClipInput {
     /// Match editor staging: fit (contain), fill (cover), stretch.
     #[serde(default)]
     pub framing: Option<String>,
+    /// Image (and future video) instance zoom; 1 = none. Matches editor CSS scale.
+    #[serde(default)]
+    pub zoom: Option<f64>,
+    /// Pan as percent of framed size (−50…50); matches editor CSS translate %.
+    #[serde(default)]
+    pub center_x: Option<f64>,
+    #[serde(default)]
+    pub center_y: Option<f64>,
     #[serde(default)]
     pub slideshow: Option<RenderSlideshowRecipe>,
     #[serde(default)]
@@ -199,6 +207,10 @@ pub(crate) struct VideoSource {
     pub reverse_trim: bool,
     /// Playback rate applied after trim (1 = realtime). Extend bakes are already retimed.
     pub speed: f64,
+    /// Instance zoom (1 = identity). Used for image composition in preview/export.
+    pub zoom: f64,
+    pub center_x: f64,
+    pub center_y: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -681,6 +693,27 @@ fn clip_framing(clip: &RenderTimelineClipInput) -> Framing {
     }
 }
 
+fn clip_zoom(clip: &RenderTimelineClipInput) -> f64 {
+    clip.zoom
+        .filter(|v| v.is_finite())
+        .unwrap_or(1.0)
+        .clamp(1.0, 4.0)
+}
+
+fn clip_center_x(clip: &RenderTimelineClipInput) -> f64 {
+    clip.center_x
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
+        .clamp(-50.0, 50.0)
+}
+
+fn clip_center_y(clip: &RenderTimelineClipInput) -> f64 {
+    clip.center_y
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
+        .clamp(-50.0, 50.0)
+}
+
 /// Matches editor `clipCovering`: later clips in timeline order win when stacked.
 fn video_clip_covering_index(
     lane_clips: &[&RenderTimelineClipInput],
@@ -907,6 +940,9 @@ pub(crate) fn build_video_segments(
                     framing: clip_framing(clip),
                     reverse_trim: false,
                     speed,
+                    zoom: clip_zoom(clip),
+                    center_x: clip_center_x(clip),
+                    center_y: clip_center_y(clip),
                 }),
             });
             emit_progress_detail(
@@ -1010,6 +1046,9 @@ pub(crate) fn build_video_segments(
                     framing: Framing::Stretch,
                     reverse_trim: false,
                     speed: 1.0,
+                    zoom: 1.0,
+                    center_x: 0.0,
+                    center_y: 0.0,
                 }),
             });
         } else {
@@ -1032,6 +1071,9 @@ pub(crate) fn build_video_segments(
                     framing: clip_framing(clip),
                     reverse_trim: false,
                     speed: if is_image { 1.0 } else { speed },
+                    zoom: clip_zoom(clip),
+                    center_x: clip_center_x(clip),
+                    center_y: clip_center_y(clip),
                 }),
             });
         }
@@ -1516,7 +1558,16 @@ pub async fn library_delete_timeline_audio_bake(path: String) -> Result<(), Stri
     .map_err(|e| format!("Delete timeline audio bake failed: {e}"))?
 }
 
-fn frame_filter(out_w: u32, out_h: u32, crop_w: u32, crop_h: u32, framing: Framing) -> String {
+fn frame_filter(
+    out_w: u32,
+    out_h: u32,
+    crop_w: u32,
+    crop_h: u32,
+    framing: Framing,
+    zoom: f64,
+    center_x: f64,
+    center_y: f64,
+) -> String {
     // Browsers size by pixel dimensions (ignore SAR/DAR).
     // Always end with fps + yuv420p so concat segments share one format/timebase.
     // (PNG stills are rgb/rgba; mixing those with yuv video mid-concat is a
@@ -1524,20 +1575,56 @@ fn frame_filter(out_w: u32, out_h: u32, crop_w: u32, crop_h: u32, framing: Frami
     let prefix = "setsar=1";
     // Deterministic 30fps clock is appended by the segment encoder.
     let tail = "fps=30,format=yuv420p";
+    let zoom = zoom.clamp(1.0, 4.0);
+    let dx_stage = center_x.clamp(-50.0, 50.0) / 100.0 * PREVIEW_STAGE_W as f64;
+    let dy_stage = center_y.clamp(-50.0, 50.0) / 100.0 * PREVIEW_STAGE_H as f64;
+    let dx_out = center_x.clamp(-50.0, 50.0) / 100.0 * out_w as f64;
+    let dy_out = center_y.clamp(-50.0, 50.0) / 100.0 * out_h as f64;
+    let identity = (zoom - 1.0).abs() < 1e-6 && dx_out.abs() < 1e-6 && dy_out.abs() < 1e-6;
     match framing {
         // Match editor TimelineMonitor: contain into the 16:9 preview stage, then
         // center-crop to the project aspect matte, then scale to the output size.
         // (A 1:1 clip in a 9:16 project fills height in the UI — not letterboxed.)
-        Framing::Fit => format!(
-            "{prefix},scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
-        ),
+        Framing::Fit => {
+            let base = format!(
+                "{prefix},scale={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:force_original_aspect_ratio=decrease,pad={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(ow-iw)/2:(oh-ih)/2:black"
+            );
+            let zoomed = if identity {
+                base
+            } else {
+                format!(
+                    "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{PREVIEW_STAGE_W}:ih+{PREVIEW_STAGE_H}:{PREVIEW_STAGE_W}/2:{PREVIEW_STAGE_H}/2:black,crop={PREVIEW_STAGE_W}:{PREVIEW_STAGE_H}:(iw-{PREVIEW_STAGE_W})/2-{dx_stage:.3}:(ih-{PREVIEW_STAGE_H})/2-{dy_stage:.3}"
+                )
+            };
+            format!(
+                "{zoomed},crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
+            )
+        }
         // object-fit: cover into the final project frame
-        Framing::Fill => format!(
-            "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,{tail}"
-        ),
+        Framing::Fill => {
+            let base = format!(
+                "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h}"
+            );
+            let zoomed = if identity {
+                base
+            } else {
+                format!(
+                    "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{out_w}:ih+{out_h}:{out_w}/2:{out_h}/2:black,crop={out_w}:{out_h}:(iw-{out_w})/2-{dx_out:.3}:(ih-{out_h})/2-{dy_out:.3}"
+                )
+            };
+            format!("{zoomed},setsar=1,{tail}")
+        }
         // object-fit: fill
         Framing::Stretch => {
-            format!("{prefix},scale={out_w}:{out_h},setsar=1,{tail}")
+            let base = format!("{prefix},scale={out_w}:{out_h}");
+            let zoomed = if identity {
+                base
+            } else {
+                format!(
+                    "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{out_w}:ih+{out_h}:{out_w}/2:{out_h}/2:black,crop={out_w}:{out_h}:(iw-{out_w})/2-{dx_out:.3}:(ih-{out_h})/2-{dy_out:.3}"
+                )
+            };
+            format!("{zoomed},setsar=1,{tail}")
         }
     }
 }
@@ -1693,7 +1780,16 @@ fn render_timeline_file(
         let mut args: Vec<String> = vec!["-y".into()];
 
         if let Some(source) = &segment.source {
-            let frame = frame_filter(width, height, crop_w, crop_h, source.framing);
+            let frame = frame_filter(
+                width,
+                height,
+                crop_w,
+                crop_h,
+                source.framing,
+                source.zoom,
+                source.center_x,
+                source.center_y,
+            );
             if source.is_image {
                 args.push("-loop".into());
                 args.push("1".into());

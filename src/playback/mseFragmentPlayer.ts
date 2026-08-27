@@ -20,13 +20,19 @@ import { logPreviewEvent } from "./previewDiagnostics";
 /** Baseline level 3.1 — matches the encoder and covers the High (960x540) preview. */
 export const TIMELINE_MSE_MIME = 'video/mp4; codecs="avc1.42E01F"';
 
-export const MSE_BUFFER_AHEAD_SEC = 8;
-export const MSE_BUFFER_BEHIND_SEC = 2;
+/** Seconds of timeline to fetch ahead of the playhead while playing (~8 fragments). */
+export const MSE_BUFFER_AHEAD_SEC = 16;
+/** Seconds kept behind the playhead while playing (rewind / clock drift). */
+export const MSE_BUFFER_BEHIND_SEC = 4;
 /** Paused scrub keeps a wider cached window so random seeks land on a frame. */
-export const MSE_SCRUB_WINDOW_SEC = 12;
+export const MSE_SCRUB_WINDOW_SEC = 20;
 
 /** Fetch deadline — F13 detection. */
 const FETCH_TIMEOUT_MS = 15_000;
+/** Concurrent disk fetches while appends stay ordered in the SourceBuffer. */
+const MAX_PARALLEL_FRAGMENT_FETCHES = 4;
+/** Reject media whose tfdt does not land on the planned fragment start. */
+const TFDT_MATCH_TOLERANCE_SEC = 0.05;
 /** K2 retry budget before promotion to reset/blocked. */
 const TICKET_MAX_ATTEMPTS = 5;
 const TICKET_BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000];
@@ -57,6 +63,7 @@ type BufferOp =
       fragment: ReadyTimelineFragment;
       bytes: Uint8Array;
       generation: number;
+      loadEpoch: number;
       retried?: boolean;
     }
   | { kind: "remove"; start: number; end: number }
@@ -99,12 +106,19 @@ export type MseFragmentPlayer = {
   coversRangeExact(startSec: number, endSec: number): boolean;
   /** True when `sec` is inside a buffered range with `aheadSec` of future data. */
   covers(sec: number, aheadSec?: number): boolean;
+  /**
+   * End of the buffered range that contains `sec`, or 0 if uncovered.
+   * Used to detect picture-tail exit without requiring exact fragment ends.
+   */
+  bufferEndAt(sec: number): number;
   /** How many fragments have been successfully appended this session. */
   appendedCount(): number;
   getPreviewPhase(): MsePreviewPhase;
   getBlockedReason(): string | null;
-  /** User Retry from blocked state. */
-  retryBlocked(): void;
+  /** Clear auto-reset budget after a user-initiated recovery. */
+  clearResetBudget(): void;
+  /** User-initiated recovery — rebuild MSE from any phase (blocked or loading wedge). */
+  retrySession(): void;
   destroy(): void;
 };
 
@@ -114,6 +128,11 @@ export type MseFragmentPlayerOptions = {
   /** Called when a ready fragment path 404s — producer should rebake (F11). */
   onFragmentMissing?: (path: string) => void;
   onBlocked?: (reason: string) => void;
+  /**
+   * Fired after SourceBuffer settles (append/remove). Engine should refresh
+   * admission status and continue the load window even while paused.
+   */
+  onBufferChanged?: () => void;
 };
 
 type AppendedRec = {
@@ -126,6 +145,7 @@ type LoadTicket = {
   key: string;
   fragment: ReadyTimelineFragment;
   generation: number;
+  loadEpoch: number;
   attempts: number;
   wakeTimer: ReturnType<typeof setTimeout> | null;
 };
@@ -158,6 +178,9 @@ export function createMseFragmentPlayer(
   let durationSec = 0;
   let initAppended = false;
   let generation = 0;
+  /** Bumped on MSE reset so stale fetches/appends are discarded. */
+  let loadEpoch = 0;
+  const activeFetchAborts = new Set<AbortController>();
   let previewPhase: MsePreviewPhase = "idle";
   let blockedReason: string | null = null;
   /** Timeline position the caller wants; applied once its range is buffered. */
@@ -178,6 +201,7 @@ export function createMseFragmentPlayer(
     fingerprint: string;
     start: number;
     end: number;
+    path: string;
   } | null = null;
   let resetTimestamps: number[] = [];
   let appendErrors = 0;
@@ -194,6 +218,16 @@ export function createMseFragmentPlayer(
         ? Math.min(sec + Math.max(0, aheadSec), Math.max(0, durationSec - 0.001))
         : sec + Math.max(0, aheadSec);
     return coversRangeExact(sec, need);
+  };
+
+  const bufferEndAt = (sec: number): number => {
+    if (!Number.isFinite(sec)) return 0;
+    for (const range of bufferedRanges()) {
+      if (range.start - 0.05 <= sec && sec <= range.end + 0.001) {
+        return range.end;
+      }
+    }
+    return 0;
   };
 
   const fragmentEnd = (frag: ReadyTimelineFragment) =>
@@ -226,6 +260,21 @@ export function createMseFragmentPlayer(
     tickets.clear();
   };
 
+  const invalidateInFlightLoads = () => {
+    loadEpoch += 1;
+    for (const controller of activeFetchAborts) controller.abort();
+    activeFetchAborts.clear();
+    inflightFetch.clear();
+  };
+
+  /** Drop in-flight fetch/append state without counting against reset budget. */
+  const rebuildMediaSession = () => {
+    clearTickets();
+    resetMedia();
+    attach();
+    setPreviewPhase("loading");
+  };
+
   const backoffMs = (attempt: number) =>
     TICKET_BACKOFF_MS[Math.min(attempt, TICKET_BACKOFF_MS.length - 1)] ??
     8000;
@@ -234,7 +283,13 @@ export function createMseFragmentPlayer(
     if (ticket.wakeTimer) clearTimeout(ticket.wakeTimer);
     ticket.wakeTimer = setTimeout(() => {
       ticket.wakeTimer = null;
-      if (destroyed || ticket.generation !== generation) return;
+      if (
+        destroyed ||
+        ticket.generation !== generation ||
+        ticket.loadEpoch !== loadEpoch
+      ) {
+        return;
+      }
       void runTicket(ticket);
     }, delayMs);
   };
@@ -248,6 +303,8 @@ export function createMseFragmentPlayer(
     }
     if (previewPhase === "blocked") return;
     if (pendingSeekSec != null && !coversRange(pendingSeekSec, 0)) return;
+    const atSec = pendingSeekSec ?? video.currentTime;
+    if (!Number.isFinite(atSec) || !coversRange(atSec, 0.02)) return;
     if (video.paused && !playPending) {
       playPending = true;
       video.muted = true;
@@ -288,6 +345,52 @@ export function createMseFragmentPlayer(
     ensurePlayback();
   };
 
+  let appendingBytes: Uint8Array | null = null;
+  /** Paths/fingerprints already reported as bad-tfdt so we don't spam invalidate. */
+  const corruptReported = new Set<string>();
+  let corruptRebuildQueued = false;
+
+  const corruptKey = (frag: ReadyTimelineFragment) =>
+    `${frag.index}:${frag.fingerprint}:${frag.path}`;
+
+  const fragmentBytesMatchPlan = (
+    frag: ReadyTimelineFragment,
+    bytes: Uint8Array,
+  ): boolean => {
+    const video = inspectFragmentTimestamps(bytes).video;
+    if (!video) return false;
+    return Math.abs(video.startSec - frag.startSec) <= TFDT_MATCH_TOLERANCE_SEC;
+  };
+
+  const reportCorruptFragment = (
+    frag: ReadyTimelineFragment,
+    detail: string,
+  ) => {
+    const key = corruptKey(frag);
+    if (corruptReported.has(key)) return;
+    corruptReported.add(key);
+    logPreviewEvent({
+      ts: Date.now(),
+      f: "F26",
+      fragment: frag.index,
+      generation,
+      phase: "bad-tfdt",
+      detail,
+    });
+    options.onFetchError?.(
+      `Preview fragment ${frag.index} has wrong timeline timestamps — rebaking…`,
+    );
+    options.onFragmentMissing?.(frag.path);
+    if (!corruptRebuildQueued) {
+      corruptRebuildQueued = true;
+      queueMicrotask(() => {
+        corruptRebuildQueued = false;
+        if (destroyed) return;
+        rebuildMediaSession();
+      });
+    }
+  };
+
   const logAppend = (mark: NonNullable<typeof pendingMark>, bytes: Uint8Array) => {
     const report = inspectFragmentTimestamps(bytes);
     const buffered = bufferedRanges();
@@ -298,7 +401,28 @@ export function createMseFragmentPlayer(
       phase: "append",
       detail: `video ${formatTrackRange(report.video)}`,
     });
-    if (!bufferedIsContinuous(buffered) && queue.length === 0) {
+    const videoRange = report.video;
+    if (
+      videoRange &&
+      Math.abs(videoRange.startSec - mark.start) > TFDT_MATCH_TOLERANCE_SEC
+    ) {
+      appended.delete(mark.index);
+      reportCorruptFragment(
+        {
+          index: mark.index,
+          startSec: mark.start,
+          durationSec: mark.end - mark.start,
+          fingerprint: mark.fingerprint,
+          path: mark.path,
+        },
+        `expected start ${mark.start.toFixed(3)} got ${videoRange.startSec.toFixed(3)}`,
+      );
+      return;
+    }
+    if (!bufferedIsContinuous(buffered) && queue.length === 0 && !pumping) {
+      const sec = video.currentTime;
+      const playheadCovered =
+        Number.isFinite(sec) && sec > 0 && coversRange(sec, 0.02);
       logPreviewEvent({
         ts: Date.now(),
         f: "F17",
@@ -306,10 +430,14 @@ export function createMseFragmentPlayer(
         phase: "buffer-gap",
         detail: formatBufferedRanges(buffered),
       });
+      // Orphan tail away from the playhead — trim, do not nuke the whole session.
+      if (playheadCovered) {
+        trimOutside(lastWindow.start, lastWindow.end);
+      } else {
+        rebuildMediaSession();
+      }
     }
   };
-
-  let appendingBytes: Uint8Array | null = null;
 
   const canReset = (): boolean => {
     const now = Date.now();
@@ -337,6 +465,7 @@ export function createMseFragmentPlayer(
   };
 
   const resetMedia = () => {
+    invalidateInFlightLoads();
     initAppended = false;
     pendingMark = null;
     appendingBytes = null;
@@ -403,6 +532,9 @@ export function createMseFragmentPlayer(
           tryApplyPendingSeek();
           ensurePlayback();
           void pump();
+          if (queue.length === 0 && !sourceBuffer?.updating) {
+            options.onBufferChanged?.();
+          }
         });
         sourceBuffer.addEventListener("error", () => {
           appendErrors += 1;
@@ -437,13 +569,45 @@ export function createMseFragmentPlayer(
 
   const enqueue = (op: BufferOp) => {
     if (destroyed || previewPhase === "blocked") return;
-    queue.push(op);
+    if (op.kind === "append") {
+      const insertAt = queue.findIndex(
+        (existing) =>
+          existing.kind === "append" &&
+          existing.fragment.startSec > op.fragment.startSec,
+      );
+      if (insertAt >= 0) queue.splice(insertAt, 0, op);
+      else queue.push(op);
+    } else {
+      queue.push(op);
+    }
     void pump();
+  };
+
+  const dequeueNextOp = (): BufferOp | undefined => {
+    for (let i = 0; i < queue.length; i += 1) {
+      const op = queue[i];
+      if (op && op.kind !== "append") {
+        return queue.splice(i, 1)[0];
+      }
+    }
+    let best = -1;
+    let bestStart = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < queue.length; i += 1) {
+      const op = queue[i];
+      if (op?.kind === "append" && op.fragment.startSec < bestStart) {
+        bestStart = op.fragment.startSec;
+        best = i;
+      }
+    }
+    if (best < 0) return undefined;
+    return queue.splice(best, 1)[0];
   };
 
   const trimOutside = (keepFrom: number, keepTo: number) => {
     for (const [index, rec] of [...appended]) {
-      if (rec.end <= keepFrom || rec.start >= keepTo) {
+      // Use < keepFrom (not <=) so a fragment ending exactly at the window
+      // start is kept — otherwise play punches a hole behind the playhead.
+      if (rec.end < keepFrom - 1e-3 || rec.start >= keepTo) {
         appended.delete(index);
         enqueue({ kind: "remove", start: rec.start, end: rec.end });
       }
@@ -454,7 +618,7 @@ export function createMseFragmentPlayer(
     if (destroyed || pumping || previewPhase === "blocked") return;
     if (!sourceBuffer || sourceBuffer.updating) return;
     if (mediaSource?.readyState !== "open") return;
-    const op = queue.shift();
+    const op = dequeueNextOp();
     if (!op) return;
     pumping = true;
     updateEndWatchdog = setTimeout(() => {
@@ -491,6 +655,15 @@ export function createMseFragmentPlayer(
         void pump();
         return;
       }
+      if (op.kind === "append" && op.loadEpoch !== loadEpoch) {
+        pumping = false;
+        if (updateEndWatchdog) {
+          clearTimeout(updateEndWatchdog);
+          updateEndWatchdog = null;
+        }
+        void pump();
+        return;
+      }
       const { init, media } = splitFmp4(op.bytes);
       if (!initAppended) {
         if (init.byteLength === 0) {
@@ -518,9 +691,30 @@ export function createMseFragmentPlayer(
         return;
       }
       if (
-        appended.get(op.fragment.index)?.fingerprint === op.fragment.fingerprint &&
-        isFragmentVerified(op.fragment)
+        appended.get(op.fragment.index)?.fingerprint === op.fragment.fingerprint
       ) {
+        // Already appended this fingerprint — never re-append (wrong-tfdt
+        // files never verify and would loop forever).
+        if (!isFragmentVerified(op.fragment)) {
+          reportCorruptFragment(
+            op.fragment,
+            "appended but not buffered at plan time",
+          );
+        }
+        pumping = false;
+        if (updateEndWatchdog) {
+          clearTimeout(updateEndWatchdog);
+          updateEndWatchdog = null;
+        }
+        void pump();
+        return;
+      }
+      if (!fragmentBytesMatchPlan(op.fragment, op.bytes)) {
+        const video = inspectFragmentTimestamps(op.bytes).video;
+        reportCorruptFragment(
+          op.fragment,
+          `expected start ${op.fragment.startSec.toFixed(3)} got ${(video?.startSec ?? NaN).toFixed(3)}`,
+        );
         pumping = false;
         if (updateEndWatchdog) {
           clearTimeout(updateEndWatchdog);
@@ -534,6 +728,7 @@ export function createMseFragmentPlayer(
         fingerprint: op.fragment.fingerprint,
         start: op.fragment.startSec,
         end: fragmentEnd(op.fragment),
+        path: op.fragment.path,
       };
       appendingBytes = op.bytes;
       if (sourceBuffer.timestampOffset !== 0) {
@@ -628,7 +823,7 @@ export function createMseFragmentPlayer(
 
   const runTicket = async (ticket: LoadTicket) => {
     if (destroyed || previewPhase === "blocked") return;
-    if (ticket.generation !== generation) return;
+    if (ticket.generation !== generation || ticket.loadEpoch !== loadEpoch) return;
     const frag = ticket.fragment;
     if (isFragmentVerified(frag)) {
       tickets.delete(ticket.key);
@@ -644,12 +839,26 @@ export function createMseFragmentPlayer(
     }
 
     setPreviewPhase("loading");
+    const ticketEpoch = loadEpoch;
     const controller = new AbortController();
+    activeFetchAborts.add(controller);
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const bytes = await fetchBytes(frag.path, controller.signal);
-    clearTimeout(timeout);
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await fetchBytes(frag.path, controller.signal);
+    } finally {
+      clearTimeout(timeout);
+      activeFetchAborts.delete(controller);
+    }
 
-    if (destroyed || ticket.generation !== generation) return;
+    if (
+      destroyed ||
+      ticket.generation !== generation ||
+      ticket.loadEpoch !== loadEpoch ||
+      ticketEpoch !== loadEpoch
+    ) {
+      return;
+    }
     if (!bytes || !warmed) {
       scheduleTicketWake(ticket, backoffMs(ticket.attempts));
       return;
@@ -659,17 +868,46 @@ export function createMseFragmentPlayer(
       return;
     }
     if (queuedHasAppend(frag.index, frag.fingerprint)) return;
+    if (
+      appended.get(frag.index)?.fingerprint === frag.fingerprint
+    ) {
+      // Same fingerprint already appended; coverage failure means bad tfdt.
+      reportCorruptFragment(
+        frag,
+        "appended but not buffered at plan time",
+      );
+      tickets.delete(ticket.key);
+      return;
+    }
+    if (!fragmentBytesMatchPlan(frag, bytes)) {
+      const video = inspectFragmentTimestamps(bytes).video;
+      reportCorruptFragment(
+        frag,
+        `expected start ${frag.startSec.toFixed(3)} got ${(video?.startSec ?? NaN).toFixed(3)}`,
+      );
+      tickets.delete(ticket.key);
+      return;
+    }
     enqueue({
       kind: "append",
       fragment: frag,
       bytes,
       generation: ticket.generation,
+      loadEpoch: ticket.loadEpoch,
     });
+    tickets.delete(ticket.key);
   };
 
   const ensureTicket = (frag: ReadyTimelineFragment) => {
     if (previewPhase === "blocked") return;
     if (isFragmentVerified(frag)) return;
+    if (appended.get(frag.index)?.fingerprint === frag.fingerprint) {
+      reportCorruptFragment(
+        frag,
+        "appended but not buffered at plan time",
+      );
+      return;
+    }
     const key = ticketKey(frag);
     if (queuedHasAppend(frag.index, frag.fingerprint)) return;
     let ticket = tickets.get(key);
@@ -678,6 +916,7 @@ export function createMseFragmentPlayer(
         key,
         fragment: frag,
         generation,
+        loadEpoch,
         attempts: 0,
         wakeTimer: null,
       };
@@ -688,10 +927,46 @@ export function createMseFragmentPlayer(
     if (ticket.generation !== generation) {
       if (ticket.wakeTimer) clearTimeout(ticket.wakeTimer);
       ticket.generation = generation;
+      ticket.loadEpoch = loadEpoch;
       ticket.attempts = 0;
       ticket.wakeTimer = null;
       void runTicket(ticket);
     }
+  };
+
+  const countActiveLoadTickets = (): number => {
+    let active = 0;
+    for (const ticket of tickets.values()) {
+      if (isFragmentVerified(ticket.fragment)) continue;
+      if (
+        queuedHasAppend(ticket.fragment.index, ticket.fragment.fingerprint)
+      ) {
+        continue;
+      }
+      active += 1;
+    }
+    return active;
+  };
+
+  const cancelTicketsOutsideWindow = (
+    ordered: readonly ReadyTimelineFragment[],
+  ) => {
+    const keep = new Set(ordered.map((frag) => ticketKey(frag)));
+    for (const [key, ticket] of [...tickets]) {
+      if (keep.has(key)) continue;
+      if (ticket.wakeTimer) clearTimeout(ticket.wakeTimer);
+      tickets.delete(key);
+    }
+  };
+
+  const fragmentLoadRank = (
+    frag: ReadyTimelineFragment,
+    currentSec: number,
+  ): number => {
+    const end = fragmentEnd(frag);
+    if (currentSec >= frag.startSec && currentSec < end) return -1;
+    if (frag.startSec >= currentSec) return frag.startSec - currentSec;
+    return 1000 + currentSec - frag.startSec;
   };
 
   const feed = (
@@ -721,7 +996,8 @@ export function createMseFragmentPlayer(
         return rank(a) - rank(b);
       });
 
-    let loading = false;
+    cancelTicketsOutsideWindow(ordered);
+
     for (const frag of ordered) {
       const fragEnd = fragmentEnd(frag);
       const have = appended.get(frag.index);
@@ -734,16 +1010,67 @@ export function createMseFragmentPlayer(
         appended.delete(frag.index);
         enqueue({ kind: "remove", start: frag.startSec, end: fragEnd });
       }
-      if (isFragmentVerified(frag)) continue;
-      loading = true;
+    }
+
+    const fragmentNeedsLoad = (frag: ReadyTimelineFragment) => {
+      if (isFragmentVerified(frag)) return false;
+      // Never re-fetch a fingerprint we already appended — wrong-tfdt files
+      // never verify and would spin forever.
+      if (appended.get(frag.index)?.fingerprint === frag.fingerprint) {
+        reportCorruptFragment(
+          frag,
+          "appended but not buffered at plan time",
+        );
+        return false;
+      }
+      if (!playing) return true;
+      const fragEnd = fragmentEnd(frag);
+      if (playing) {
+        const ranges = bufferedRanges();
+        if (ranges.length > 0) {
+          const sorted = [...ranges].sort((a, b) => a.start - b.start);
+          const span = sorted.find(
+            (range) =>
+              range.start - 0.05 <= currentSec &&
+              currentSec < range.end + 0.001,
+          );
+          if (span && currentSec >= span.start - 0.05) {
+            return frag.startSec >= span.end - 0.001;
+          }
+        }
+      }
+      return fragEnd > currentSec + 0.001 || currentSec >= frag.startSec - 0.05;
+    };
+
+    const toLoad = ordered
+      .filter(fragmentNeedsLoad)
+      .sort(
+        (a, b) =>
+          fragmentLoadRank(a, currentSec) - fragmentLoadRank(b, currentSec),
+      );
+
+    const loading = toLoad.length > 0;
+    for (const frag of toLoad) {
+      if (countActiveLoadTickets() >= MAX_PARALLEL_FRAGMENT_FETCHES) break;
       ensureTicket(frag);
     }
 
     if (loading) setPreviewPhase("loading");
     else if (previewPhase === "loading") setPreviewPhase("idle");
 
+    // Only trim while paused. Trimming during play deleted trailing edges of the
+    // keep-behind window (end === windowStart) and punched gaps mid-timeline.
     if (!playing) {
       trimOutside(windowStart, windowEnd);
+    } else {
+      // Drop orphan ranges entirely ahead of the demand window (e.g. after a
+      // mid-timeline retry left a tail fragment buffered).
+      for (const [index, rec] of [...appended]) {
+        if (rec.start >= windowEnd) {
+          appended.delete(index);
+          enqueue({ kind: "remove", start: rec.start, end: rec.end });
+        }
+      }
     }
   };
 
@@ -772,14 +1099,30 @@ export function createMseFragmentPlayer(
     const sec = video.currentTime;
     if (!Number.isFinite(sec) || sec <= 0) return;
     if (!coversRange(sec, 0.02)) return;
+    const ranges = bufferedRanges();
+    if (ranges.length > 0) {
+      const tail = Math.max(...ranges.map((range) => range.end));
+      // Near the buffered tail is normal while the loader catches up, and at
+      // picture end before we hand off to audio-only / wrap.
+      if (tail - sec < 5.0) return;
+    }
+    if (durationSec > 0 && sec >= durationSec - 5.0) return;
     if (stallTimer) return;
     stallTimer = setTimeout(() => {
       stallTimer = null;
       if (destroyed) return;
       const nowSec = video.currentTime;
       if (!Number.isFinite(nowSec) || !coversRange(nowSec, 0.02)) return;
+      const nowRanges = bufferedRanges();
+      if (nowRanges.length > 0) {
+        const tail = Math.max(...nowRanges.map((range) => range.end));
+        if (tail - nowSec < 5.0) return;
+      }
+      if (durationSec > 0 && nowSec >= durationSec - 5.0) return;
       logPreviewEvent({ ts: Date.now(), f: "F25", phase: "playback-stall" });
-      resetSession("Playback stalled inside buffered range");
+      if (wantPlaying && video.paused && coversRange(nowSec, 0.02)) {
+        void video.play().catch(() => {});
+      }
     }, 1200);
   };
 
@@ -806,12 +1149,12 @@ export function createMseFragmentPlayer(
     setGeneration(token) {
       if (token === generation) return;
       generation = token;
-      clearTickets();
       logPreviewEvent({
         ts: Date.now(),
         phase: "generation",
         generation: token,
       });
+      rebuildMediaSession();
     },
     sync(currentSec, playing, fragments, opts = {}) {
       if (destroyed || !warmed) return;
@@ -869,6 +1212,9 @@ export function createMseFragmentPlayer(
     covers(sec, aheadSec = 0) {
       return coversRange(sec, aheadSec);
     },
+    bufferEndAt(sec) {
+      return bufferEndAt(sec);
+    },
     appendedCount() {
       return appended.size;
     },
@@ -878,12 +1224,18 @@ export function createMseFragmentPlayer(
     getBlockedReason() {
       return blockedReason;
     },
-    retryBlocked() {
-      if (previewPhase !== "blocked") return;
-      setPreviewPhase("loading");
+    clearResetBudget() {
+      resetTimestamps = [];
       appendErrors = 0;
-      resetMedia();
-      attach();
+      corruptReported.clear();
+    },
+    retrySession() {
+      resetTimestamps = [];
+      appendErrors = 0;
+      corruptReported.clear();
+      setPreviewPhase("loading");
+      rebuildMediaSession();
+      logPreviewEvent({ ts: Date.now(), phase: "manual-retry", generation });
     },
     destroy() {
       if (destroyed) return;

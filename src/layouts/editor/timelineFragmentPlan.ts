@@ -9,7 +9,7 @@ export const FRAGMENT_DURATION_SEC = 2;
 export const FRAGMENT_FPS = 30;
 export const FRAGMENT_FRAMES = FRAGMENT_DURATION_SEC * FRAGMENT_FPS;
 /** Bump when preview encode params change so stale fMP4 cache is dropped. */
-export const PREVIEW_ENCODE_TAG = "pv-cmaf5";
+export const PREVIEW_ENCODE_TAG = "pv-cmaf6";
 export const FRAGMENT_NEIGHBOR_PAD_SEC = 1 / FRAGMENT_FPS;
 /** Next chunk must be ready this far before the current one ends. */
 export const FRAGMENT_PLAYBACK_LOOKAHEAD_SEC = 0.2;
@@ -111,7 +111,9 @@ function visualClipKey(
     quantizeSec(clip.centerY ?? 0),
     quantizeSec(clip.extendSourceSpanSec ?? 0),
     clip.bakePath ?? "",
+    clip.extendBakeKey ?? "",
     clip.extendBakePath ?? "",
+    quantizeSec(clip.extendBakeCoverSec ?? 0),
     clipPreviewMediaReady(clip, localAssetIds) ? "1" : "0",
     slideshow
       ? [

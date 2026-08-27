@@ -90,8 +90,13 @@ export function PreviewHealthModal({
 
   const headline = phaseHeadline(previewStatus, fragmentStatus);
   const detail = phaseDetail(previewStatus, fragmentStatus);
-  const retryable =
-    previewStatus?.phase === "blocked" && previewStatus.retryable === true;
+  const canRetryPreview =
+    previewStatus?.phase === "blocked"
+      ? previewStatus.retryable !== false
+      : previewStatus?.holding === true &&
+        previewStatus?.phase === "loading" &&
+        fragmentStatus?.playheadReady === true &&
+        fragmentStatus?.baking !== true;
 
   if (!open) return null;
   void reportTick;
@@ -184,7 +189,7 @@ export function PreviewHealthModal({
                 ? "Copy failed"
                 : "Copy report"}
           </button>
-          {retryable ? (
+          {canRetryPreview ? (
             <button
               type="button"
               className="btn btn-primary"

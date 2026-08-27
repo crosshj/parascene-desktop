@@ -126,7 +126,31 @@ export function createTimelinePlaybackEngine(
   let hadMonitor = false;
   let previewGeneration = 0;
   let previewStatus: PreviewPlaybackStatus = IDLE_STATUS;
+  let loadingHoldSince = 0;
   let mseConfigBlocked = false;
+  /**
+   * Sticky: once picture ends and audio continues, do not re-enter MSE because
+   * a lagging video/monitor clock pulled the playhead back under pictureExtent
+   * (that caused black↔video flicker on the last frames).
+   */
+  let pastPictureLatch = false;
+
+  const loadingHoldMessage = (): string => {
+    const stuckMs =
+      loadingHoldSince > 0 ? Date.now() - loadingHoldSince : 0;
+    if (stuckMs >= 8000) {
+      return "Preview stuck loading — use Retry preview to reset the buffer.";
+    }
+    return "Loading preview…";
+  };
+
+  const noteLoadingHold = (holding: boolean) => {
+    if (holding) {
+      if (loadingHoldSince <= 0) loadingHoldSince = Date.now();
+    } else {
+      loadingHoldSince = 0;
+    }
+  };
 
   const WRAP_EPSILON_SEC = 0.101;
 
@@ -142,6 +166,15 @@ export function createTimelinePlaybackEngine(
 
   let fragmentCache: TimelineFragmentCache | null = null;
   let unsubFragments: (() => void) | null = null;
+  let clipsGenerationSignature = "";
+
+  const clipsSignature = (clips: readonly TimelineClip[]) =>
+    clips
+      .map(
+        (clip) =>
+          `${clip.id}:${clip.startSec}:${clip.endSec}:${clip.assetId ?? ""}`,
+      )
+      .join("|");
 
   const bumpPreviewGeneration = (reason: string) => {
     previewGeneration += 1;
@@ -170,17 +203,46 @@ export function createTimelinePlaybackEngine(
       });
       setBuffering(true);
     },
+    onBufferChanged: () => {
+      if (destroyed || bufferChangedScheduled) return;
+      bufferChangedScheduled = true;
+      queueMicrotask(() => {
+        bufferChangedScheduled = false;
+        if (destroyed) return;
+        // Appends finish asynchronously while paused — keep filling the load
+        // window and clear false "loading" yellow once admission passes.
+        if (ensurePlayableWindow(state.currentSec)) {
+          setBuffering(false);
+        } else {
+          refreshPreviewStatus();
+        }
+        resync("data");
+      });
+    },
   });
 
   let lastMseFeedSec = -1;
+  let bufferChangedScheduled = false;
 
   type ResyncKind = "tick" | "seek" | "transport" | "data";
 
   const previewStreamActive = () =>
     Boolean(fragmentCache) && timelineMseSupported() && !mseConfigBlocked;
 
+  /**
+   * Authoritative end of baked picture for MSE. Prefer the fragment plan
+   * duration — clip `videoExtentSec` can sit past the last planned fragment
+   * (frame quantize), which left admission waiting for a fragment that
+   * does not exist and froze at the picture tail.
+   */
+  const pictureExtentSec = () => {
+    const planned = fragmentCache?.videoExtentSec() ?? 0;
+    if (planned > 0) return planned;
+    return state.videoExtentSec;
+  };
+
   const needsPreviewCoverage = (sec: number) =>
-    previewStreamActive() && sec < state.videoExtentSec - 1e-3;
+    previewStreamActive() && sec < pictureExtentSec() - 1e-3;
 
   const emitPreviewStatus = (next: PreviewPlaybackStatus) => {
     const prev = previewStatus;
@@ -188,7 +250,8 @@ export function createTimelinePlaybackEngine(
     if (
       prev.holding === next.holding &&
       prev.phase === next.phase &&
-      prev.message === next.message
+      prev.message === next.message &&
+      prev.retryable === next.retryable
     ) {
       return;
     }
@@ -200,6 +263,27 @@ export function createTimelinePlaybackEngine(
   };
 
   const refreshPreviewStatus = () => {
+    noteLoadingHold(
+      buffering &&
+        needsPreviewCoverage(state.currentSec) &&
+        mse.getPreviewPhase() !== "blocked",
+    );
+    if (loadingHoldSince > 0 && Date.now() - loadingHoldSince >= 8000) {
+      const cache = fragmentCache;
+      const fragStatus = cache?.status();
+      if (
+        fragStatus?.playheadReady &&
+        !fragStatus.baking &&
+        previewStatus.phase === "loading" &&
+        previewStatus.holding
+      ) {
+        emitPreviewStatus({
+          ...previewStatus,
+          message: loadingHoldMessage(),
+          retryable: true,
+        });
+      }
+    }
     if (mse.getPreviewPhase() === "blocked") {
       setPreviewStatus({
         holding: true,
@@ -234,23 +318,37 @@ export function createTimelinePlaybackEngine(
         phase: fragStatus.baking ? "baking" : "loading",
         message: fragStatus.baking
           ? `Baking preview… ${fragStatus.ready}/${fragStatus.total}`
-          : "Loading preview…",
+          : loadingHoldMessage(),
+        retryable:
+          buffering &&
+          !fragStatus.baking &&
+          (fragStatus.playheadReady || fragStatus.ready === fragStatus.total),
       });
       return;
     }
     if (!mse.coversRangeExact(covering.startSec, covering.startSec + covering.durationSec)) {
+      const cacheReady = cache.status();
       setPreviewStatus({
         holding: buffering,
         phase: "loading",
-        message: "Loading preview…",
+        message: loadingHoldMessage(),
+        retryable:
+          buffering &&
+          (cacheReady.playheadReady ||
+            cacheReady.ready === cacheReady.total),
       });
       return;
     }
     if (!ensurePlayableWindow(state.currentSec)) {
+      const cacheReady = cache.status();
       setPreviewStatus({
         holding: buffering,
         phase: "loading",
-        message: "Loading preview…",
+        message: loadingHoldMessage(),
+        retryable:
+          buffering &&
+          (cacheReady.playheadReady ||
+            cacheReady.ready === cacheReady.total),
       });
       return;
     }
@@ -265,7 +363,8 @@ export function createTimelinePlaybackEngine(
 
   /**
    * Covering fragment and next (when within lookahead) verified in SourceBuffer.
-   * Last picture fragment needs no next.
+   * Last picture fragment needs no next — and only needs the playhead covered,
+   * because the sample clock often ends a few ms short of the planned end.
    */
   const ensurePlayableWindow = (sec: number): boolean => {
     if (!needsPreviewCoverage(sec)) return true;
@@ -275,12 +374,18 @@ export function createTimelinePlaybackEngine(
     const covering = cache.fragmentCovering(sec);
     if (!covering) return false;
     const coverEnd = covering.startSec + covering.durationSec;
-    if (!mse.coversRangeExact(covering.startSec, coverEnd)) return false;
 
     const nextStart = coverEnd;
-    if (nextStart >= state.videoExtentSec - 1e-3) return true;
+    if (nextStart >= pictureExtentSec() - 1e-3) {
+      return mse.covers(sec, 0);
+    }
 
-    const lookahead = FRAGMENT_PLAYBACK_LOOKAHEAD_SEC;
+    if (!mse.coversRangeExact(covering.startSec, coverEnd)) return false;
+
+    const lookahead = Math.min(
+      FRAGMENT_PLAYBACK_LOOKAHEAD_SEC,
+      Math.max(0, pictureExtentSec() - sec - 0.001),
+    );
     if (nextStart - sec > lookahead + 1e-3) return true;
 
     const next = cache.fragmentCovering(nextStart);
@@ -289,11 +394,55 @@ export function createTimelinePlaybackEngine(
     return mse.coversRangeExact(next.startSec, nextEnd);
   };
 
+  /** Picture content is done — exit MSE to black / wrap at sequence end. */
+  const pictureRegionFinished = (sec: number): boolean => {
+    const extent = pictureExtentSec();
+    if (!(extent > 0)) return false;
+    if (mse.isEnded()) return true;
+    if (sec >= extent - WRAP_EPSILON_SEC) return true;
+    const videoTime = mse.getTime();
+    if (videoTime >= extent - WRAP_EPSILON_SEC) return true;
+    // Past the last planned fragment with nothing covering the playhead.
+    if (
+      !fragmentCache?.fragmentCovering(sec) &&
+      sec >= extent - WRAP_EPSILON_SEC
+    ) {
+      return true;
+    }
+    // Only on the final frames when the buffer is essentially exhausted.
+    const bufEnd = mse.bufferEndAt(sec);
+    if (
+      bufEnd > 0 &&
+      bufEnd >= extent - 0.05 &&
+      sec >= extent - 0.12 &&
+      bufEnd - sec < 0.08
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  const leavePictureRegion = (sequenceEnd: number) => {
+    const extent = pictureExtentSec();
+    pastPictureLatch = true;
+    state.currentSec = Math.max(state.currentSec, extent);
+    if (buffering) setBuffering(false);
+    stallFrames = 0;
+    hadMonitor = false;
+    if (extent < sequenceEnd - WRAP_EPSILON_SEC) {
+      // Audio continues — black video, keep the clock. Ignore lagging MSE time.
+      resync("tick");
+      return;
+    }
+    wrapToStart();
+  };
+
   const resync = (kind: ResyncKind = "data") => {
     if (destroyed) return;
     const cache = fragmentCache;
     const usePreviewStream = previewStreamActive();
-    const inVideoRegion = state.currentSec < state.videoExtentSec - 1e-3;
+    const inVideoRegion =
+      !pastPictureLatch && state.currentSec < pictureExtentSec() - 1e-3;
 
     if (fragmentCache && !timelineMseSupported()) {
       mseConfigBlocked = true;
@@ -312,10 +461,15 @@ export function createTimelinePlaybackEngine(
 
     if (usePreviewStream && cache && inVideoRegion) {
       mse.warm();
-      mse.setDuration(Math.max(state.videoExtentSec, 0.1));
+      mse.setDuration(Math.max(pictureExtentSec(), 0.1));
       const moved = Math.abs(state.currentSec - lastMseFeedSec) >= 0.5;
       const ticketRetry = mse.getPreviewPhase() === "loading";
-      const feed = kind !== "tick" || moved || ticketRetry || buffering;
+      const feed =
+        kind !== "tick" ||
+        moved ||
+        ticketRetry ||
+        buffering ||
+        state.playing;
       if (feed) {
         lastMseFeedSec = state.currentSec;
       }
@@ -362,6 +516,7 @@ export function createTimelinePlaybackEngine(
   };
 
   const wrapToStart = () => {
+    pastPictureLatch = false;
     state.currentSec = 0;
     setBuffering(false);
     stallFrames = 0;
@@ -371,7 +526,9 @@ export function createTimelinePlaybackEngine(
 
   const tickPreviewStream = (now: number, dt: number) => {
     const end = state.sequenceDurationSec;
-    const inVideoRegion = state.currentSec < state.videoExtentSec - 1e-3;
+    const extent = pictureExtentSec();
+    const inVideoRegion =
+      !pastPictureLatch && state.currentSec < extent - 1e-3;
 
     if (mse.getPreviewPhase() === "blocked") {
       setBuffering(true);
@@ -381,11 +538,12 @@ export function createTimelinePlaybackEngine(
     if (!inVideoRegion) {
       if (buffering) setBuffering(false);
       stallFrames = 0;
+      // Never let a lagging picture clock pull us back under pictureExtent.
       const monitor = pool.getMonitorTime();
-      if (monitor != null) {
+      if (monitor != null && monitor >= extent - 1e-3) {
         state.currentSec = monitor;
       } else {
-        state.currentSec += dt;
+        state.currentSec = Math.max(state.currentSec, extent) + dt;
       }
       if (state.currentSec >= end - WRAP_EPSILON_SEC) {
         hadMonitor = false;
@@ -399,30 +557,50 @@ export function createTimelinePlaybackEngine(
     const pendingSeek = mse.hasPendingSeek();
     const monitor = pool.getMonitorTime();
     const playable = ensurePlayableWindow(state.currentSec);
+    const nearPictureEnd =
+      state.currentSec >= extent - 0.5 || pictureRegionFinished(state.currentSec);
 
-    if (!pendingSeek && !buffering && playable) {
-      if (monitor != null) {
+    if (!pendingSeek && (!buffering || nearPictureEnd) && (playable || nearPictureEnd)) {
+      const videoTime = mse.getTime();
+      if (videoTime > 0) {
+        state.currentSec = videoTime;
+      } else if (monitor != null && monitor < extent - 1e-3) {
         state.currentSec = monitor;
       } else {
-        const videoTime = mse.getTime();
-        state.currentSec = videoTime > 0 ? videoTime : state.currentSec + dt;
+        state.currentSec += dt;
       }
     }
 
-    if (mse.isEnded() || state.currentSec >= end - WRAP_EPSILON_SEC) {
-      hadMonitor = false;
-      wrapToStart();
+    if (pictureRegionFinished(state.currentSec)) {
+      leavePictureRegion(end);
       return;
     }
 
-    const covered = mse.covers(state.currentSec, FRAGMENT_PLAYBACK_LOOKAHEAD_SEC);
-    if (pendingSeek || !playable || !covered) {
+    const playbackLookahead = Math.min(
+      FRAGMENT_PLAYBACK_LOOKAHEAD_SEC,
+      Math.max(0, extent - state.currentSec - 0.001),
+    );
+    const covered = mse.covers(state.currentSec, playbackLookahead);
+    if (
+      playable &&
+      covered &&
+      !pendingSeek &&
+      state.currentSec >= extent - FRAGMENT_PLAYBACK_LOOKAHEAD_SEC - 0.05
+    ) {
+      stallFrames = 0;
+      if (buffering) setBuffering(false);
+    }
+    if (pendingSeek || (!playable && !nearPictureEnd) || (!covered && !nearPictureEnd)) {
       stallFrames += 1;
     } else {
       stallFrames = 0;
     }
 
-    const nextBuffering = pendingSeek || !playable || (!covered && stallFrames > 12);
+    // Never hold on the picture tail — short last samples / waiting@ended look
+    // like gaps but should exit to black or wrap instead.
+    const nextBuffering =
+      !nearPictureEnd &&
+      (pendingSeek || !playable || (!covered && stallFrames > 12));
     if (nextBuffering !== buffering) {
       setBuffering(nextBuffering);
       if (!buffering) {
@@ -444,6 +622,13 @@ export function createTimelinePlaybackEngine(
       hadMonitor = true;
     } else if (monitor == null) {
       hadMonitor = false;
+    }
+    if (
+      buffering &&
+      loadingHoldSince > 0 &&
+      Date.now() - loadingHoldSince >= 8000
+    ) {
+      refreshPreviewStatus();
     }
     resync(snapVideo ? "seek" : "tick");
   };
@@ -496,10 +681,14 @@ export function createTimelinePlaybackEngine(
   return {
     setClips(clips) {
       if (destroyed) return;
+      const sig = clipsSignature(clips);
       state.clips = clips;
       state.sequenceDurationSec = timelineSequenceDuration(clips);
       state.videoExtentSec = timelineVideoExtentSec(clips);
-      bumpPreviewGeneration("clips");
+      if (sig !== clipsGenerationSignature) {
+        clipsGenerationSignature = sig;
+        bumpPreviewGeneration("clips");
+      }
       resync("data");
     },
     setBakeInfo(bakeInfoByClipId) {
@@ -559,6 +748,7 @@ export function createTimelinePlaybackEngine(
       const next = Math.max(0, sec);
       const jumped = Math.abs(next - state.currentSec) > 1e-4;
       state.currentSec = next;
+      pastPictureLatch = next >= pictureExtentSec() - 1e-3;
       stallFrames = 0;
       if (state.playing && jumped) bumpSeekEpoch();
       fragmentCache?.demandPlayableWindow(next);
@@ -597,11 +787,13 @@ export function createTimelinePlaybackEngine(
     },
     retryPreview() {
       if (destroyed) return;
-      mse.retryBlocked();
+      loadingHoldSince = 0;
+      mse.clearResetBudget();
       bumpPreviewGeneration("retry");
       setBuffering(true);
       stallFrames = 13;
-      resync("data");
+      hadMonitor = false;
+      resync("seek");
     },
     getCurrentTime() {
       return state.currentSec;

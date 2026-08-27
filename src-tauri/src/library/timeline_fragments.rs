@@ -165,7 +165,7 @@ fn clear_preview_dir_respecting_leases(dir: &Path) -> Result<(), String> {
 
 const PREVIEW_PRESET: &str = "ultrafast";
 /// Must match the tag mixed into FE fragment fingerprints until plan moves fully to Rust.
-pub const PREVIEW_ENCODE_TAG: &str = "pv-cmaf5";
+pub const PREVIEW_ENCODE_TAG: &str = "pv-cmaf6";
 const MANIFEST_FILE: &str = "manifest.json";
 
 /// Encode parameters per preview-quality setting: resolution, bitrate, and the
@@ -343,21 +343,60 @@ fn preview_frame_filter(
     crop_w: u32,
     crop_h: u32,
     framing: Framing,
+    zoom: f64,
+    center_x: f64,
+    center_y: f64,
     params: PreviewQualityParams,
 ) -> String {
     let prefix = "setsar=1";
     let tail = format!("fps={:.0},format=yuv420p", params.fps);
     let stage_w = params.stage_w;
     let stage_h = params.stage_h;
+    let zoom = zoom.clamp(1.0, 4.0);
+    let dx_stage = center_x.clamp(-50.0, 50.0) / 100.0 * stage_w as f64;
+    let dy_stage = center_y.clamp(-50.0, 50.0) / 100.0 * stage_h as f64;
+    let dx_out = center_x.clamp(-50.0, 50.0) / 100.0 * out_w as f64;
+    let dy_out = center_y.clamp(-50.0, 50.0) / 100.0 * out_h as f64;
+    let identity = (zoom - 1.0).abs() < 1e-6 && dx_out.abs() < 1e-6 && dy_out.abs() < 1e-6;
     match framing {
-        Framing::Fit => format!(
-            "{prefix},scale={stage_w}:{stage_h}:force_original_aspect_ratio=decrease,pad={stage_w}:{stage_h}:(ow-iw)/2:(oh-ih)/2:black,crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
-        ),
-        Framing::Fill => format!(
-            "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,{tail}"
-        ),
+        Framing::Fit => {
+            let base = format!(
+                "{prefix},scale={stage_w}:{stage_h}:force_original_aspect_ratio=decrease,pad={stage_w}:{stage_h}:(ow-iw)/2:(oh-ih)/2:black"
+            );
+            let zoomed = if identity {
+                base
+            } else {
+                format!(
+                    "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{stage_w}:ih+{stage_h}:{stage_w}/2:{stage_h}/2:black,crop={stage_w}:{stage_h}:(iw-{stage_w})/2-{dx_stage:.3}:(ih-{stage_h})/2-{dy_stage:.3}"
+                )
+            };
+            format!(
+                "{zoomed},crop={crop_w}:{crop_h}:(iw-{crop_w})/2:(ih-{crop_h})/2,scale={out_w}:{out_h},setsar=1,{tail}"
+            )
+        }
+        Framing::Fill => {
+            let base = format!(
+                "{prefix},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h}"
+            );
+            let zoomed = if identity {
+                base
+            } else {
+                format!(
+                    "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{out_w}:ih+{out_h}:{out_w}/2:{out_h}/2:black,crop={out_w}:{out_h}:(iw-{out_w})/2-{dx_out:.3}:(ih-{out_h})/2-{dy_out:.3}"
+                )
+            };
+            format!("{zoomed},setsar=1,{tail}")
+        }
         Framing::Stretch => {
-            format!("{prefix},scale={out_w}:{out_h},setsar=1,{tail}")
+            let base = format!("{prefix},scale={out_w}:{out_h}");
+            let zoomed = if identity {
+                base
+            } else {
+                format!(
+                    "{base},scale=iw*{zoom:.6}:ih*{zoom:.6},pad=iw+{out_w}:ih+{out_h}:{out_w}/2:{out_h}/2:black,crop={out_w}:{out_h}:(iw-{out_w})/2-{dx_out:.3}:(ih-{out_h})/2-{dy_out:.3}"
+                )
+            };
+            format!("{zoomed},setsar=1,{tail}")
         }
     }
 }
@@ -545,7 +584,17 @@ fn segment_chain(
     params: PreviewQualityParams,
 ) -> String {
     if let Some(source) = source {
-        let frame = preview_frame_filter(width, height, crop_w, crop_h, source.framing, params);
+        let frame = preview_frame_filter(
+            width,
+            height,
+            crop_w,
+            crop_h,
+            source.framing,
+            source.zoom,
+            source.center_x,
+            source.center_y,
+            params,
+        );
         if source.is_image {
             return format!(
                 "{frame},trim=duration={duration:.3},setpts=PTS-STARTPTS",
@@ -724,10 +773,6 @@ fn fingerprint_ok(value: &str) -> bool {
 
 fn fragment_partial_path(dir: &Path, index: u32, fingerprint: &str) -> PathBuf {
     dir.join(format!("frag_{index:04}_{fingerprint}.partial.mp4"))
-}
-
-fn fragment_artifact_valid(path: &Path) -> bool {
-    fragment_artifact_matches_plan(path, None, None, None)
 }
 
 fn read_u32_be(data: &[u8], at: usize) -> Option<u32> {
@@ -947,6 +992,15 @@ pub async fn library_bake_timeline_fragment(
         fs::rename(&partial, &dest)
             .map_err(|e| format!("Could not finalize preview fragment: {e}"))?;
         prune_index_files(&dir, index, &dest);
+        if !fragment_artifact_matches_plan(
+            &dest,
+            Some(start_sec),
+            Some(duration_sec),
+            Some(quality.as_deref().unwrap_or("low")),
+        ) {
+            let _ = fs::remove_file(&dest);
+            return Err("Preview fragment failed timeline timestamp check".into());
+        }
         finish(dest)
     })
     .await
@@ -1085,6 +1139,42 @@ mod tests {
             assert_eq!(w % 2, 0);
             assert_eq!(h % 2, 0);
         }
+    }
+
+    #[test]
+    fn preview_frame_filter_bakes_image_zoom_and_pan() {
+        let params = preview_quality_params("medium");
+        let plain = preview_frame_filter(
+            640,
+            360,
+            640,
+            360,
+            Framing::Fit,
+            1.0,
+            0.0,
+            0.0,
+            params,
+        );
+        assert!(!plain.contains("scale=iw*"));
+        let zoomed = preview_frame_filter(
+            640,
+            360,
+            640,
+            360,
+            Framing::Fit,
+            2.0,
+            25.0,
+            -10.0,
+            params,
+        );
+        assert!(zoomed.contains("scale=iw*2.000000:ih*2.000000"));
+        assert!(zoomed.contains(&format!(
+            "crop={}:{}:(iw-{})/2-{:.3}",
+            params.stage_w,
+            params.stage_h,
+            params.stage_w,
+            25.0 / 100.0 * params.stage_w as f64
+        )));
     }
 
     #[test]
@@ -1274,15 +1364,15 @@ mod tests {
         let path = dir.join("frag.mp4");
 
         fs::write(&path, b"tiny").unwrap();
-        assert!(!fragment_artifact_valid(&path));
+        assert!(!fragment_artifact_matches_plan(&path, None, None, None));
 
         let mut ftyp_only = vec![0u8; 300];
         ftyp_only[4..8].copy_from_slice(b"ftyp");
         fs::write(&path, &ftyp_only).unwrap();
-        assert!(!fragment_artifact_valid(&path));
+        assert!(!fragment_artifact_matches_plan(&path, None, None, None));
 
         fs::write(&path, minimal_fragment_bytes()).unwrap();
-        assert!(fragment_artifact_valid(&path));
+        assert!(fragment_artifact_matches_plan(&path, None, None, None));
 
         let _ = fs::remove_dir_all(&dir);
     }
