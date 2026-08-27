@@ -78,15 +78,16 @@ Fix failures before continuing.
 
 Read the current version from `package.json`. Bump the **patch** segment (`1.1.8` → `1.1.9`).
 
-Write the **same** new version into all of:
+Write the **same** new version into:
 
 | File | Field |
 |------|--------|
 | `package.json` | `"version"` |
-| `package-lock.json` | root package `"version"` (use `npm version <new> --no-git-tag-version`, then sync Rust/Tauri files) |
-| `src-tauri/tauri.conf.json` | `"version"` |
-| `src-tauri/Cargo.toml` | `[package] version` |
-| `src-tauri/Cargo.lock` | `name = "parascene-desktop"` entry `version` |
+| `package-lock.json` | root package `"version"` (use `npm version <new> --no-git-tag-version`) |
+
+`src-tauri/tauri.conf.json` uses `"version": "../package.json"` — do not edit it.
+`src-tauri/Cargo.toml` / `Cargo.lock` stay pinned at `0.0.0` (rust-cache). Do **not**
+bump them; CI stamps the real semver with `app-version.sh --sync-cargo` at build time.
 
 Do **not** create a git tag. Do **not** bump major/minor unless the user asks.
 

@@ -44,6 +44,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -69,6 +75,7 @@ jobs:
             exit 1
           fi
           export PATH="$HOME/.cargo/bin:$PATH"
+          bash scripts/app-version.sh --sync-cargo
           npm run build
 
       - name: Upload Windows artifacts
