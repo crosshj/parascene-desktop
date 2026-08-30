@@ -7,8 +7,10 @@ import {
   addAssetGenerationProgress,
   findTimelineGenerationForAsset,
   generatedClipShouldSyncToTimeline,
+  attachAudioCreationRangeArgs,
   initialAddAssetGenerationSteps,
   replaceAddAssetPlaceholderWithVideo,
+  resolveA2vSourceAudioMode,
   resolveAddAssetAudioMode,
   ADD_ASSET_GENERATION_EXPECTED_MS,
 } from "./addAssetGenerate";
@@ -21,6 +23,23 @@ describe("buildAddAssetGenerationPrompt", () => {
   });
 });
 
+describe("attachAudioCreationRangeArgs", () => {
+  it("sends creation id and range only", () => {
+    const args: Record<string, unknown> = { prompt: "x" };
+    attachAudioCreationRangeArgs(args, {
+      creationId: 27140,
+      startSec: 8,
+      durationSec: 9,
+    });
+    expect(args.audio_creation_id).toBe(27140);
+    expect(args.audio_start_sec).toBe(8);
+    expect(args.audio_duration_sec).toBe(9);
+    expect(args).not.toHaveProperty("input_audio_urls");
+    expect(args).not.toHaveProperty("audio_url");
+    expect(args).not.toHaveProperty("audio_clip_id");
+  });
+});
+
 describe("resolveAddAssetAudioMode", () => {
   it("uses vocals when lyrics are present", () => {
     expect(resolveAddAssetAudioMode("Line one")).toBe("vocals");
@@ -28,6 +47,21 @@ describe("resolveAddAssetAudioMode", () => {
 
   it("uses the full mix when lyrics are absent", () => {
     expect(resolveAddAssetAudioMode("  ")).toBe("full_mix");
+  });
+});
+
+describe("resolveA2vSourceAudioMode", () => {
+  it("never returns none", () => {
+    expect(resolveA2vSourceAudioMode("none", "")).toBe("full_mix");
+    expect(resolveA2vSourceAudioMode("none", "A verse")).toBe("vocals");
+  });
+
+  it("keeps full mix when lyrics exist", () => {
+    expect(resolveA2vSourceAudioMode("full_mix", "A verse")).toBe("full_mix");
+  });
+
+  it("hides vocals when lyrics are absent", () => {
+    expect(resolveA2vSourceAudioMode("vocals", "")).toBe("full_mix");
   });
 });
 
@@ -48,10 +82,22 @@ describe("addAssetClipDurationSec", () => {
 });
 
 describe("initialAddAssetGenerationSteps", () => {
-  it("labels audio steps for full-mix sections", () => {
+  it("labels audio steps for full-mix clip upload", () => {
     const steps = initialAddAssetGenerationSteps("full_mix");
     expect(steps[0]?.label).toBe("Prepare audio slice");
     expect(steps[1]?.label).toBe("Upload audio clip");
+  });
+
+  it("omits clip-upload steps for CDN Creation range", () => {
+    const steps = initialAddAssetGenerationSteps("full_mix", "start_frame", {
+      cdnAudioWindow: true,
+    });
+    expect(steps.map((s) => s.id)).toEqual(["still", "generate", "file"]);
+    expect(steps.map((s) => s.label)).toEqual([
+      "Prepare framed start still",
+      "Generate video",
+      "Add to project",
+    ]);
   });
 
   it("uses still-only steps for first_last mode", () => {

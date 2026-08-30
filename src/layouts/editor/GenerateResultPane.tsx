@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { AddAssetGeneration } from "../../project/types";
 import {
   addAssetGenerationProgress,
@@ -54,9 +55,25 @@ export function GenerateResultPane({
   resultPreviewUrl = null,
   resultMediaKind = "image",
 }: GenerateResultPaneProps) {
-  const tickMs = nowMs ?? 0;
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  const [heldStart, setHeldStart] = useState<number | null>(null);
+  const [heldPhase, setHeldPhase] = useState(phase);
+  useEffect(() => {
+    if (phase !== "running") return;
+    const id = window.setInterval(() => setClockMs(Date.now()), 200);
+    return () => window.clearInterval(id);
+  }, [phase]);
+  const tickMs = nowMs && nowMs > 0 ? nowMs : clockMs;
+  const fromProps = session?.startedAtMs ?? startedAtMs ?? null;
+  const propStart = fromProps && fromProps > 0 ? fromProps : null;
+  if (phase !== heldPhase) {
+    setHeldPhase(phase);
+    setHeldStart(phase === "running" ? (propStart ?? tickMs) : null);
+  } else if (phase === "running" && propStart != null && heldStart !== propStart) {
+    setHeldStart(propStart);
+  }
   if (phase === "running") {
-    const started = session?.startedAtMs ?? startedAtMs ?? tickMs;
+    const started = propStart ?? heldStart ?? tickMs;
     const expected = session?.expectedMs ?? expectedMs;
     const note =
       session?.progressNote?.trim() ||

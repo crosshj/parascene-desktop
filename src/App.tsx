@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AuthProvider, useAuth } from "./auth/AuthProvider";
+import { AuthProvider, useAuthOptional } from "./auth/AuthProvider";
 import { LoginScreen } from "./auth/LoginScreen";
 import { ReauthOverlay } from "./auth/ReauthOverlay";
 import { AppChrome } from "./app/AppChrome";
@@ -65,7 +65,9 @@ function LayoutRouter() {
 }
 
 function Root() {
-  const { status, session } = useAuth();
+  const auth = useAuthOptional();
+  const status = auth?.status ?? "reconnecting";
+  const session = auth?.session ?? null;
 
   if (status === "reconnecting") {
     return (

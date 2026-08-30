@@ -256,7 +256,7 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
   const id = String(img.id);
   const mediaType =
     (typeof img.media_type === "string" && img.media_type) ||
-    (img.video_url ? "video" : "image");
+    (img.video_url ? "video" : img.audio_url ? "audio" : "image");
   const origin = mediaOrigin();
   const url =
     absolutizeAssetUrl(img.url || undefined, origin) ?? null;
@@ -268,8 +268,16 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
     null;
   const videoUrl =
     absolutizeAssetUrl(img.video_url || undefined, origin) ?? null;
+  const audioUrl =
+    absolutizeAssetUrl(img.audio_url || undefined, origin) ?? null;
+  // Prefer playable media URL. Cover art stays on `url` / thumbs.
+  // Audio without audio_url (cover-only Suno) keeps image remoteUrl → skip download.
   const remoteUrl =
-    (mediaType === "video" ? videoUrl || url : url || videoUrl) ?? null;
+    (mediaType === "video"
+      ? videoUrl || url
+      : mediaType === "audio"
+        ? audioUrl || url
+        : url || videoUrl) ?? null;
   const filename = optionalString(img.filename);
   const title =
     optionalString(img.title) || filename || `Creation ${id}`;
@@ -287,6 +295,7 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
     thumbnail_url: thumbnailUrl,
     fit_thumbnail_url: fitThumbnailUrl,
     video_url: videoUrl,
+    audio_url: audioUrl,
     media_type: mediaType,
     width,
     height,

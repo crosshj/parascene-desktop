@@ -13,7 +13,7 @@ Two product problems stay distinct:
 - Generate input — stranger GET of a time-window URL. Phases 1–2 done; joined in 5.
 - Owned song — durable audio Creation. Phase 3 on www; 4 is desktop.
 
-Suno scrape stays dropped. Library clips (`prsn_audio_clips`) stay the throwaway A2V pipe until phase 5. Vocals and lyrics stay on the desktop project (Lab), not on the Creation.
+Suno scrape stays dropped. Library clips (`prsn_audio_clips`) stay the throwaway pipe for vocals and local-only songs. Full-mix CDN songs skip clip upload. Vocals and lyrics stay on the desktop project (Lab), not on the Creation.
 
 Repos: `parascene-provider-local` (CDN), `parascene` (www), this repo (desktop + probe scripts). www validation notes also in `../parascene/_docs/TODO_PLAN_audio_cdn_hard_delete.md`.
 
@@ -39,7 +39,7 @@ Deployed and proved: mint upload, unauthed PUT/GET, `so`/`du`, `?cover=1`, pin, 
 
 Replicate `openai/whisper` GETs a minted window URL (~$0.0025). Not A2V, not `/api/files`. Fail if logs show 401 / CF Access.
 
-## Phase 3 — www audio Creations [code in, prod validate next]
+## Phase 3 — www audio Creations [done enough; skip remaining validate]
 
 Import Media: original Suno/YouTube URL block stays on top. Second section is local file (host, embedded cover, 50 MB). Modal stays open during import; closes only on success.
 
@@ -49,26 +49,29 @@ Playback: custom hosted player (315×100), not native `<audio controls>`. Downlo
 
 Admin permanent delete (`?permanent=1`) calls `deleteCdnObjectBestEffort`. Owner delete is soft; CDN stays. Cleanup is best-effort: Blue miss still deletes the row.
 
-Local looks good. Pushing www + Blue to prod. Still need to prove:
-
-- Import, play, three-dots download on parascene.com.
-- Soft-delete leaves CDN; admin hard-delete removes the object.
+Prod proved for 27140: CDN ingest meta, ranged mint via Parascene `/audio?so&du`, unauthed Blue GET, Whisper on a 9s window. Soft/hard-delete and www UI play/download — skip for now.
 
 Key www files: `api_routes/utils/blueCdn.js`, `importAudioFileCreation.js`, `create.js`, `public/shared/importAudioFile.js`, `importSunoModal.js`, `public/pages/creation-detail.js`. Blue CORS: `parascene-provider-local/server/lib/http.js` (open CORS on possession `/cdn` URLs; `setHeader` before `writeHead`).
 
-## Phase 4 — desktop [not started]
+## Phase 4 — desktop [sync done; create skipped]
 
 Product path only. Direct-to-Blue keeps `/api/files`. No shared helper that treats them as one store.
 
-- Create: same as site — ask Parascene, PUT to minted upload URL. Desktop does not hold the Blue API key on this path.
-- Sync: `mapRemoteCreation` uses Parascene `audio_url`, follow 302, save bytes. Do not persist a Blue ephemeral URL. Cover stays thumb. Skip cover-only Suno (`isCoverOnlyCloudAv`).
-- Editor / Lab: treat synced audio Creations like local audio. Generate can still slice and POST clips until phase 5.
+- Create: same as site — ask Parascene, PUT to minted upload URL. Desktop does not hold the Blue API key on this path. Skip for now (www import is enough).
+- Sync: `mapRemoteCreation` / Rust `map_remote_creation_json` prefer Parascene `audio_url` as `remoteUrl`. Cover stays on `url` / thumbs. Cover-only Suno (no `audio_url`) still maps to image remote and skips download. Download follows auth → 302 → Blue; do not persist a Blue ephemeral URL. Done; lightbox re-reads catalog on open.
+- Editor / Lab: treat synced audio Creations like local audio.
 
-## Phase 5 — product create [not started]
+## Phase 5 — product create [done]
 
-Desktop sends `audio_creation_id` + start + duration. Parascene puts a Parascene audio URL (with range) on `input_audio_urls`. GET 302s to a Blue window. Desktop does not build CDN query params or call `/api/files` on this path.
+Any client (desktop included) sends `audio_creation_id` + `audio_start_sec` + `audio_duration_sec`. Desktop does not mint Blue URLs.
 
-When this works, product A2V can stop uploading throwaway clips for Creation-backed songs. Direct-to-Blue may still POST slices to `/api/files`.
+Parascene create validates the Creation + range. Fail the request with `code: audio_resolve_failed` and a clear `message` if it cannot. Job mints a Blue CDN window and sends only `input_audio_urls` (or other `audio_url` / `audio_url_array` fields). Blue never sees the Creation id.
+
+Vocals / local-only still slice + `audio_clip_id`. Direct-to-Blue may still POST slices to `/api/files`.
+
+A2V source audio is full mix, or vocals when lyrics exist in range. No None option.
+
+Proved: Editor A2V on CDN song 27140 (full mix, no `/api/audio-clips/record`).
 
 ## Do not
 

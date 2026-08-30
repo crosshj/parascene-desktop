@@ -209,9 +209,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+/** Soft read so a Vite HMR remount does not crash the app (same as useShellOptional). */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useAuthOptional(): AuthContextValue | null {
+  return useContext(AuthContext);
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
+  const ctx = useAuthOptional();
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
 }

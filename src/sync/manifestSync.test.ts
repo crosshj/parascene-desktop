@@ -159,6 +159,56 @@ describe("manifestSync", () => {
     );
   });
 
+  it("maps CDN audio Creations to audio_url as remoteUrl (cover stays on url/thumbs)", () => {
+    const mapped = mapRemoteCreation({
+      id: 27140,
+      filename: "cover.png",
+      title: "Dichotomy (blegh)",
+      url: "https://www.parascene.com/api/images/created/cover.png",
+      thumbnail_url:
+        "https://www.parascene.com/api/images/created/cover.png?variant=thumbnail",
+      audio_url: "/api/create/images/27140/audio",
+      media_type: "audio",
+      created_at: "2026-08-30T08:23:53Z",
+      meta: {
+        audio: {
+          cdn_id: "o_8972e00517b91de76c0d3c64",
+          duration: 314.24,
+          content_type: "audio/mpeg",
+          filename: "Dichotomy (blegh).mp3",
+        },
+      },
+    });
+
+    expect(mapped).toMatchObject({
+      id: "27140",
+      mediaType: "audio",
+      remoteUrl: "https://www.parascene.com/api/create/images/27140/audio",
+      thumbnailUrl:
+        "https://www.parascene.com/api/images/created/cover.png?variant=thumbnail",
+    });
+    const snap = JSON.parse(mapped.remoteJson);
+    expect(snap.audio_url).toBe(
+      "https://www.parascene.com/api/create/images/27140/audio",
+    );
+    expect(snap.url).toBe(
+      "https://www.parascene.com/api/images/created/cover.png",
+    );
+  });
+
+  it("keeps cover-only audio remoteUrl as image when audio_url is missing", () => {
+    const mapped = mapRemoteCreation({
+      id: 99,
+      url: "https://cdn.example/suno-cover.png",
+      thumbnail_url: "https://cdn.example/suno-cover.png?variant=thumbnail",
+      media_type: "audio",
+      created_at: "2026-08-01T00:00:00Z",
+      meta: { import: { provider: "suno", url: "https://suno.com/song/x" } },
+    });
+    expect(mapped.remoteUrl).toBe("https://cdn.example/suno-cover.png");
+    expect(JSON.parse(mapped.remoteJson).audio_url).toBeNull();
+  });
+
   it("maps API rows into catalog upserts with full remote snapshot", () => {
     const mapped = mapRemoteCreation({
       id: 7,

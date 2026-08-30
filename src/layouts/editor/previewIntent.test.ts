@@ -5,6 +5,7 @@ import {
   SELECTION_INTENT_MODES,
   addAssetIntentAllowsLibraryGeneration,
   addAssetIntentAllowsTimelinePlacement,
+  audioModeForIntent,
   intentOffersAssetsDestination,
   isIntentServerWired,
   makeAddAssetIntent,
@@ -223,5 +224,12 @@ describe("previewIntent catalog", () => {
     expect(selectionModeAllowsTimelinePlacement("generate_from_selection")).toBe(
       false,
     );
+  });
+
+  it("never seeds A2V source audio as none", () => {
+    expect(audioModeForIntent("image_audio_to_video")).toBe("full_mix");
+    expect(audioModeForIntent("image_audio_to_video", "none")).toBe("full_mix");
+    expect(audioModeForIntent("image_audio_to_video", "vocals")).toBe("vocals");
+    expect(audioModeForIntent("image_to_video", "full_mix")).toBe("none");
   });
 });

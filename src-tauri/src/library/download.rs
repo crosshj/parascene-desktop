@@ -295,6 +295,9 @@ fn extension_for(url: &str, media_type: &str, content_type: Option<&str>) -> Str
             "video/webm" => Some("webm"),
             "audio/mpeg" | "audio/mp3" => Some("mp3"),
             "audio/wav" | "audio/x-wav" => Some("wav"),
+            "audio/mp4" | "audio/aac" | "audio/x-m4a" => Some("m4a"),
+            "audio/ogg" | "application/ogg" => Some("ogg"),
+            "audio/flac" => Some("flac"),
             _ => None,
         } {
             return ext.to_string();
@@ -313,7 +316,8 @@ fn extension_for(url: &str, media_type: &str, content_type: Option<&str>) -> Str
 
     match media_type {
         "video" => "mp4".into(),
-        "audio" => "wav".into(),
+        // CDN-backed songs are usually mpeg; Content-Type should win when present.
+        "audio" => "mp3".into(),
         _ => "bin".into(),
     }
 }

@@ -31,8 +31,10 @@ import {
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
 import {
+  ADD_ASSET_NO_LYRICS_AUDIO_NOTE,
   addAssetGenerationExpectedMs,
   addAssetGenerationProgress,
+  resolveA2vSourceAudioMode,
   resolveAddAssetAudioMode,
   type AddAssetAudioMode,
   type AddAssetBlueModel,
@@ -191,7 +193,7 @@ function draftFromClip(
         : continuity === "start_frame" || continuity === "none"
           ? "ltx_i2v"
           : null;
-  const audioMode: AddAssetAudioMode =
+  const rawAudioMode: AddAssetAudioMode =
     draft?.audioMode === "vocals" ||
     draft?.audioMode === "full_mix" ||
     draft?.audioMode === "none"
@@ -201,6 +203,10 @@ function draftFromClip(
         : continuity === "none"
           ? "none"
           : resolveAddAssetAudioMode(lyricsText);
+  const audioMode: AddAssetAudioMode =
+    draft?.intentId === "image_audio_to_video"
+      ? resolveA2vSourceAudioMode(rawAudioMode, lyricsText)
+      : rawAudioMode;
   return {
     prompt:
       typeof draft?.prompt === "string" ? draft.prompt : LAB_A2V_PROMPT,
@@ -712,6 +718,7 @@ export function AddAssetGeneratePanel({
 
   const hasLyrics = Boolean(lyricsText.trim());
   const hasMainAudio = Boolean(mainAudioCreationId?.trim());
+  const isA2v = currentIntentId === "image_audio_to_video";
 
   const resolvedContinuityMode: AddAssetContinuityMode = (() => {
     if (isReplicate && continuityMode === "motion_match") return "motion_match";
@@ -719,11 +726,12 @@ export function AddAssetGeneratePanel({
     return continuityFromFrameSources(firstFrameSource, lastFrameSource);
   })();
 
-  const tentativeAudioMode: AddAssetAudioMode =
-    audioMode === "none" ||
-    resolvedContinuityMode === "none" ||
-    resolvedContinuityMode === "first_last" ||
-    !hasMainAudio
+  const tentativeAudioMode: AddAssetAudioMode = isA2v
+    ? resolveA2vSourceAudioMode(audioMode, lyricsText)
+    : audioMode === "none" ||
+        resolvedContinuityMode === "none" ||
+        resolvedContinuityMode === "first_last" ||
+        !hasMainAudio
       ? "none"
       : !hasLyrics
         ? "full_mix"
@@ -868,8 +876,8 @@ export function AddAssetGeneratePanel({
       !hasA2vModels);
 
   const resolvedAudioMode: AddAssetAudioMode = (() => {
-    if (isReplicate) {
-      return hasLyrics ? (audioMode === "full_mix" ? "full_mix" : "vocals") : "full_mix";
+    if (isReplicate || isA2v) {
+      return resolveA2vSourceAudioMode(audioMode, lyricsText);
     }
     if (sourceAudioLocked) return "none";
     return tentativeAudioMode;
@@ -916,6 +924,10 @@ export function AddAssetGeneratePanel({
   };
 
   const selectSourceAudio = (next: AddAssetAudioMode) => {
+    if (isA2v) {
+      if (next === "none") return;
+      if (next === "vocals" && !hasLyrics) return;
+    }
     if (sourceAudioLocked && next !== "none") return;
     if (next !== "none") {
       const a2v = pickCompatibleBlueModel({
@@ -939,14 +951,21 @@ export function AddAssetGeneratePanel({
     setAudioMode(next);
   };
 
-  // Keep draft audio locked to None for WAN, Text to Video, or when no main audio.
+  // A2V stays on full mix / vocals. Other modes lock to None for WAN, T2V, or no audio.
   useEffect(() => {
+    if (isA2v) {
+      const next = resolveA2vSourceAudioMode(audioMode, lyricsText);
+      if (next !== audioMode) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- coerce A2V audio
+        setAudioMode(next);
+      }
+      return;
+    }
     if (!sourceAudioLocked) return;
     if (audioMode !== "none") {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- lock source audio to none
       setAudioMode("none");
     }
-  }, [sourceAudioLocked, audioMode]);
+  }, [isA2v, sourceAudioLocked, audioMode, lyricsText]);
 
   useEffect(() => {
     if (!isBlueDirect) return;
@@ -2444,19 +2463,19 @@ export function AddAssetGeneratePanel({
               role="group"
               aria-label="Source audio"
             >
-              <button
-                type="button"
-                className={resolvedAudioMode === "none" ? "is-active" : ""}
-                disabled={
-                  !fieldsInteractive ||
-                  currentIntentId === "text_to_video" ||
-                  currentIntentId === "image_audio_to_video"
-                }
-                onClick={() => selectSourceAudio("none")}
-                aria-pressed={resolvedAudioMode === "none"}
-              >
-                None
-              </button>
+              {!isA2v ? (
+                <button
+                  type="button"
+                  className={resolvedAudioMode === "none" ? "is-active" : ""}
+                  disabled={
+                    !fieldsInteractive || currentIntentId === "text_to_video"
+                  }
+                  onClick={() => selectSourceAudio("none")}
+                  aria-pressed={resolvedAudioMode === "none"}
+                >
+                  None
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={
@@ -2464,8 +2483,9 @@ export function AddAssetGeneratePanel({
                 }
                 disabled={
                   !fieldsInteractive ||
-                  sourceAudioLocked ||
-                  currentIntentId === "text_to_video"
+                  (!isA2v && sourceAudioLocked) ||
+                  currentIntentId === "text_to_video" ||
+                  (isA2v && (!hasMainAudio || !hasA2vModels))
                 }
                 onClick={() => selectSourceAudio("full_mix")}
                 aria-pressed={resolvedAudioMode === "full_mix"}
@@ -2481,32 +2501,40 @@ export function AddAssetGeneratePanel({
               >
                 Full mix
               </button>
-              <button
-                type="button"
-                className={resolvedAudioMode === "vocals" ? "is-active" : ""}
-                disabled={
-                  !fieldsInteractive ||
-                  sourceAudioLocked ||
-                  currentIntentId === "text_to_video"
-                }
-                onClick={() => selectSourceAudio("vocals")}
-                aria-pressed={resolvedAudioMode === "vocals"}
-                title={
-                  currentIntentId === "text_to_video"
-                    ? "Text to Video has no audio processing"
-                    : !hasA2vModels
-                      ? "No audio-to-video models available"
-                      : !hasMainAudio
-                        ? "Add main audio to the timeline first"
-                        : undefined
-                }
-              >
-                Vocals
-              </button>
+              {!isA2v || hasLyrics ? (
+                <button
+                  type="button"
+                  className={resolvedAudioMode === "vocals" ? "is-active" : ""}
+                  disabled={
+                    !fieldsInteractive ||
+                    (!isA2v && sourceAudioLocked) ||
+                    currentIntentId === "text_to_video" ||
+                    (isA2v && (!hasMainAudio || !hasA2vModels))
+                  }
+                  onClick={() => selectSourceAudio("vocals")}
+                  aria-pressed={resolvedAudioMode === "vocals"}
+                  title={
+                    currentIntentId === "text_to_video"
+                      ? "Text to Video has no audio processing"
+                      : !hasA2vModels
+                        ? "No audio-to-video models available"
+                        : !hasMainAudio
+                          ? "Add main audio to the timeline first"
+                          : undefined
+                  }
+                >
+                  Vocals
+                </button>
+              ) : null}
             </div>
-            {currentIntentId === "image_audio_to_video" ? (
+            {isA2v ? (
               <p className="muted add-asset-generate-note">
                 Audio to Video requires source audio on the timeline.
+              </p>
+            ) : null}
+            {isA2v && !hasLyrics ? (
+              <p className="muted add-asset-generate-note">
+                {ADD_ASSET_NO_LYRICS_AUDIO_NOTE}
               </p>
             ) : null}
           </section>

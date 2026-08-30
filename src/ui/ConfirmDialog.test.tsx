@@ -134,7 +134,7 @@ describe("ConfirmDialog", () => {
     resolveWork?.();
     await vi.waitFor(() => {
       expect(onResult).toHaveBeenCalledWith(true);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
-    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 });

@@ -18,6 +18,7 @@ import {
   LTX_I2V_MODEL,
 } from "../../lab/ltxI2vGeneration";
 import { getCreations } from "../../library/catalogClient";
+import { creationSupportsCdnAudioWindow } from "../../library/cdnAudioCreation";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import type {
   AddAssetBlueModel,
@@ -121,8 +122,19 @@ export type AddAssetContinuityMode = AddAssetGenerationMode;
 
 export type { AddAssetBlueModel };
 
-export function resolveAddAssetAudioMode(lyricsText: string): AddAssetAudioMode {
+export function resolveAddAssetAudioMode(
+  lyricsText: string,
+): Exclude<AddAssetAudioMode, "none"> {
   return lyricsText.trim() ? "vocals" : "full_mix";
+}
+
+/** A2V never uses "none". Vocals is only valid when lyrics exist in range. */
+export function resolveA2vSourceAudioMode(
+  audioMode: AddAssetAudioMode | null | undefined,
+  lyricsText: string,
+): Exclude<AddAssetAudioMode, "none"> {
+  if (lyricsText.trim() && audioMode === "full_mix") return "full_mix";
+  return resolveAddAssetAudioMode(lyricsText);
 }
 
 /** Shown in the generate modal when this section has no aligned lyrics. */
@@ -143,13 +155,14 @@ export function createRunningAddAssetGenerationSession(
   audioMode: AddAssetAudioMode,
   durationSec: number = ADD_ASSET_TIMELINE_DURATION_SEC,
   continuityMode: AddAssetContinuityMode = "start_frame",
+  opts?: { cdnAudioWindow?: boolean },
 ): AddAssetGenerationSession {
   return {
     clipId,
     phase: "running",
     startedAtMs: Date.now(),
     expectedMs: addAssetGenerationExpectedMs(durationSec),
-    steps: initialAddAssetGenerationSteps(audioMode, continuityMode),
+    steps: initialAddAssetGenerationSteps(audioMode, continuityMode, opts),
     progressNote: "Starting…",
     errorMessage: null,
   };
@@ -158,6 +171,7 @@ export function createRunningAddAssetGenerationSession(
 export function initialAddAssetGenerationSteps(
   audioMode: AddAssetAudioMode = "vocals",
   continuityMode: AddAssetContinuityMode = "start_frame",
+  opts?: { cdnAudioWindow?: boolean },
 ): AddAssetGenerationStep[] {
   if (continuityMode === "none") {
     return [
@@ -189,6 +203,13 @@ export function initialAddAssetGenerationSteps(
     ];
   }
   const fullMix = audioMode === "full_mix";
+  if (Boolean(opts?.cdnAudioWindow) && fullMix) {
+    return [
+      { id: "still", label: "Prepare framed start still", status: "pending" },
+      { id: "generate", label: "Generate video", status: "pending" },
+      { id: "file", label: "Add to project", status: "pending" },
+    ];
+  }
   return [
     {
       id: "vocals",
@@ -204,6 +225,16 @@ export function initialAddAssetGenerationSteps(
     { id: "generate", label: "Generate video", status: "pending" },
     { id: "file", label: "Add to project", status: "pending" },
   ];
+}
+
+/** Product A2V: Parascene resolves this to a Blue CDN URL. Do not mint here. */
+export function attachAudioCreationRangeArgs(
+  args: Record<string, unknown>,
+  opts: { creationId: number; startSec: number; durationSec: number },
+): void {
+  args.audio_creation_id = opts.creationId;
+  args.audio_start_sec = opts.startSec;
+  args.audio_duration_sec = opts.durationSec;
 }
 
 function setStep(
@@ -959,12 +990,6 @@ async function runStartFrameAddAssetGeneration(
   model: string;
 }> {
   const audioMode = opts.audioMode;
-  let steps = initialAddAssetGenerationSteps(audioMode, "start_frame");
-  const pushSteps = (next: AddAssetGenerationStep[]) => {
-    steps = next;
-    opts.onSteps(steps);
-  };
-
   const { durationSec: durationSeconds, songRange } =
     resolveAddAssetGenerationTiming(
       opts.timeline,
@@ -978,51 +1003,74 @@ async function runStartFrameAddAssetGeneration(
     throw new Error("Invalid song time range for this clip.");
   }
 
-  let audioClipId: string | null = null;
+  let audioRow: Awaited<ReturnType<typeof getCreations>>[number] | undefined;
+  const audioId = opts.mainAudioCreationId?.trim() || null;
   if (audioMode !== "none") {
-    const audioId = opts.mainAudioCreationId?.trim();
     if (!audioId) {
       throw new Error(
         "Add main audio to the timeline (or set it in Lab) before generating.",
       );
     }
+    [audioRow] = await getCreations([audioId]);
+  }
+  const useCdnWindow =
+    audioMode === "full_mix" && creationSupportsCdnAudioWindow(audioRow);
 
-    pushSteps(advanceStep(steps, "vocals"));
-    opts.onProgress(
-      audioMode === "full_mix"
-        ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
-        : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
-    );
-    const [audioRow] = await getCreations([audioId]);
-    const mixPath = audioRow?.localPath?.trim();
-    if (!mixPath) {
-      throw new Error("Main audio is not available locally yet.");
-    }
-    const audioSlice =
-      audioMode === "full_mix"
-        ? await sliceAudioRange({
-            sourcePath: mixPath,
-            inSec,
-            outSec: sliceOutSec,
-          })
-        : await isolateVocalsRange({
-            sourcePath: mixPath,
-            inSec,
-            outSec: sliceOutSec,
-          });
-    pushSteps(completeStep(steps, "vocals"));
+  let steps = initialAddAssetGenerationSteps(audioMode, "start_frame", {
+    cdnAudioWindow: useCdnWindow,
+  });
+  const pushSteps = (next: AddAssetGenerationStep[]) => {
+    steps = next;
+    opts.onSteps(steps);
+  };
+  pushSteps(steps);
 
-    pushSteps(advanceStep(steps, "upload-audio"));
-    opts.onProgress("Uploading audio clip…");
-    const { clipId } = await uploadVocalsSliceClip(audioSlice.path, {
-      title:
+  let audioClipId: string | null = null;
+  let audioCreationId: number | null = null;
+  let audioStartSec: number | null = null;
+  let audioDurationSec: number | null = null;
+  if (audioMode !== "none") {
+    if (useCdnWindow) {
+      audioCreationId = Number(audioId);
+      audioStartSec = inSec;
+      audioDurationSec = durationSeconds;
+    } else {
+      pushSteps(advanceStep(steps, "vocals"));
+      opts.onProgress(
         audioMode === "full_mix"
-          ? `Editor mix ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`
-          : `Editor vocals ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`,
-      durationSec: durationSeconds,
-    });
-    audioClipId = clipId;
-    pushSteps(completeStep(steps, "upload-audio"));
+          ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
+          : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
+      );
+      const mixPath = audioRow?.localPath?.trim();
+      if (!mixPath) {
+        throw new Error("Main audio is not available locally yet.");
+      }
+      const audioSlice =
+        audioMode === "full_mix"
+          ? await sliceAudioRange({
+              sourcePath: mixPath,
+              inSec,
+              outSec: sliceOutSec,
+            })
+          : await isolateVocalsRange({
+              sourcePath: mixPath,
+              inSec,
+              outSec: sliceOutSec,
+            });
+      pushSteps(completeStep(steps, "vocals"));
+
+      pushSteps(advanceStep(steps, "upload-audio"));
+      opts.onProgress("Uploading audio clip…");
+      const { clipId } = await uploadVocalsSliceClip(audioSlice.path, {
+        title:
+          audioMode === "full_mix"
+            ? `Editor mix ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`
+            : `Editor vocals ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`,
+        durationSec: durationSeconds,
+      });
+      audioClipId = clipId;
+      pushSteps(completeStep(steps, "upload-audio"));
+    }
   }
 
   pushSteps(advanceStep(steps, "still"));
@@ -1058,7 +1106,7 @@ async function runStartFrameAddAssetGeneration(
   let model: string;
   let filedProjectCreationIds: string[] = [];
   let videosGroupId: string | null = opts.videosGroupId;
-  if (audioMode === "none" || !audioClipId) {
+  if (audioMode === "none" || (!audioClipId && audioCreationId == null)) {
     model = useWan ? FLF2V_MODEL : LTX_I2V_MODEL;
     const args = useWan
       ? (buildFlf2vCreateArgs({
@@ -1100,8 +1148,16 @@ async function runStartFrameAddAssetGeneration(
       model,
       aspect_ratio: opts.aspectRatio,
       input_images: [imageUrl],
-      audio_clip_id: Number(audioClipId),
     };
+    if (audioCreationId != null) {
+      attachAudioCreationRangeArgs(args, {
+        creationId: audioCreationId,
+        startSec: audioStartSec ?? 0,
+        durationSec: audioDurationSec ?? durationSeconds,
+      });
+    } else {
+      args.audio_clip_id = Number(audioClipId);
+    }
     if (
       typeof durationSeconds === "number" &&
       Number.isFinite(durationSeconds) &&

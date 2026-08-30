@@ -621,12 +621,15 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             if (project.id !== result.projectId) return project;
             const timeline = storedProjectToUi(project).timeline;
             const placeholder = timeline.find(
-              (clip) =>
-                clip.id === result.clipId && clip.isAddAssetPlaceholder,
+              (clip) => clip.id === result.clipId,
             );
             // Duplicate success (e.g. stale resume) — do not merge another
             // creation id into Assets or re-write a finished clip.
-            if (!placeholder) {
+            if (
+              !placeholder ||
+              (!placeholder.isAddAssetPlaceholder &&
+                Boolean(placeholder.assetId?.trim()))
+            ) {
               return project;
             }
             let next = mergeCreationIds(project, folderIds);

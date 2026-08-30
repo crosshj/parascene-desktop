@@ -21,6 +21,8 @@ export async function ingestRemoteCreation(
       row.fit_thumbnail_url,
     video_url:
       absolutizeAssetUrl(row.video_url ?? undefined, origin) ?? row.video_url,
+    audio_url:
+      absolutizeAssetUrl(row.audio_url ?? undefined, origin) ?? row.audio_url,
   };
   const upsert = mapRemoteCreation(absolutized);
   await applyManifest([upsert]);

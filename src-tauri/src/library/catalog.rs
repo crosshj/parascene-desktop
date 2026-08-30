@@ -1794,9 +1794,9 @@ fn aspect_ratio_from_meta(meta: Option<&serde_json::Value>) -> Option<String> {
 
 /// Map a Parascene create-images JSON row the same way FE `mapRemoteCreation` does.
 ///
-/// - Absolutizes url / thumbnail / fit / video
+/// - Absolutizes url / thumbnail / fit / video / audio
 /// - Infers media_type from video_url when missing
-/// - Prefers video_url as remote_url for videos
+/// - Prefers video_url / audio_url as remote_url for video / audio
 /// - Derives aspect_ratio from meta.args, else width×height
 /// - Synthesizes url/thumbnail from `file_path` when sparse (group source rows)
 /// - Derives `fit_thumbnail_url` from thumbnail/url when the API omits it
@@ -1815,10 +1815,13 @@ pub(crate) fn map_remote_creation_json(raw: &serde_json::Value) -> Result<Creati
         .or_else(|| file_path.as_ref().map(|p| format!("{p}?variant=thumbnail")));
     let mut fit_thumbnail_url = json_opt_string(raw.get("fit_thumbnail_url"));
     let mut video_url = json_opt_string(raw.get("video_url"));
+    let mut audio_url = json_opt_string(raw.get("audio_url"));
 
     let media_type = json_opt_string(raw.get("media_type")).unwrap_or_else(|| {
         if video_url.is_some() {
             "video".into()
+        } else if audio_url.is_some() {
+            "audio".into()
         } else {
             "image".into()
         }
@@ -1830,9 +1833,14 @@ pub(crate) fn map_remote_creation_json(raw: &serde_json::Value) -> Result<Creati
     fit_thumbnail_url = absolutize_asset_url(fit_thumbnail_url.as_deref(), origin)
         .or_else(|| derive_fit_thumbnail_url(thumbnail_url.as_deref(), url.as_deref()));
     video_url = absolutize_asset_url(video_url.as_deref(), origin);
+    audio_url = absolutize_asset_url(audio_url.as_deref(), origin);
 
+    // Prefer playable media. Cover art stays on `url` / thumbs.
+    // Audio without audio_url (cover-only Suno) keeps image remote_url → skip download.
     let remote_url = if media_type.eq_ignore_ascii_case("video") {
         video_url.clone().or_else(|| url.clone())
+    } else if media_type.eq_ignore_ascii_case("audio") {
+        audio_url.clone().or_else(|| url.clone())
     } else {
         url.clone().or_else(|| video_url.clone())
     };
@@ -1887,6 +1895,13 @@ pub(crate) fn map_remote_creation_json(raw: &serde_json::Value) -> Result<Creati
         obj.insert(
             "video_url".into(),
             match &video_url {
+                Some(u) => serde_json::Value::String(u.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+        obj.insert(
+            "audio_url".into(),
+            match &audio_url {
                 Some(u) => serde_json::Value::String(u.clone()),
                 None => serde_json::Value::Null,
             },
@@ -2806,6 +2821,64 @@ mod tests {
             mapped.fit_thumbnail_url.as_deref(),
             Some("https://www.parascene.com/cdn/t.jpg?variant=fit")
         );
+    }
+
+    #[test]
+    fn map_remote_creation_prefers_audio_url_for_cdn_audio() {
+        let raw = serde_json::json!({
+            "id": 27140,
+            "filename": "cover.png",
+            "title": "Dichotomy (blegh)",
+            "url": "/api/images/created/cover.png",
+            "thumbnail_url": "/api/images/created/cover.png?variant=thumbnail",
+            "audio_url": "/api/create/images/27140/audio",
+            "media_type": "audio",
+            "created_at": "2026-08-30T08:23:53Z",
+            "meta": {
+                "audio": {
+                    "cdn_id": "o_8972e00517b91de76c0d3c64",
+                    "duration": 314.24,
+                    "content_type": "audio/mpeg",
+                    "filename": "Dichotomy (blegh).mp3"
+                }
+            }
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(mapped.media_type, "audio");
+        assert_eq!(
+            mapped.remote_url.as_deref(),
+            Some("https://www.parascene.com/api/create/images/27140/audio")
+        );
+        assert_eq!(
+            mapped.thumbnail_url.as_deref(),
+            Some("https://www.parascene.com/api/images/created/cover.png?variant=thumbnail")
+        );
+        let snap: serde_json::Value = serde_json::from_str(&mapped.remote_json).expect("snap");
+        assert_eq!(
+            snap.get("audio_url").and_then(|v| v.as_str()),
+            Some("https://www.parascene.com/api/create/images/27140/audio")
+        );
+        assert_eq!(
+            snap.get("url").and_then(|v| v.as_str()),
+            Some("https://www.parascene.com/api/images/created/cover.png")
+        );
+    }
+
+    #[test]
+    fn map_remote_creation_cover_only_audio_keeps_image_remote_url() {
+        let raw = serde_json::json!({
+            "id": 99,
+            "url": "https://cdn.example/suno-cover.png",
+            "media_type": "audio",
+            "created_at": "2026-08-01T00:00:00Z"
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(
+            mapped.remote_url.as_deref(),
+            Some("https://cdn.example/suno-cover.png")
+        );
+        let snap: serde_json::Value = serde_json::from_str(&mapped.remote_json).expect("snap");
+        assert!(snap.get("audio_url").unwrap_or(&serde_json::Value::Null).is_null());
     }
 
     #[test]

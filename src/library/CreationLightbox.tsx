@@ -91,6 +91,22 @@ export function CreationLightbox({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLiveCreation(creation);
   }, [creation]);
+  // Sync/download often finishes after the board hands us a stale row. Re-read
+  // the catalog so audio/video that just landed on disk is playable immediately.
+  useEffect(() => {
+    let cancelled = false;
+    void getCreations([creation.id])
+      .then((rows) => {
+        const row = rows.find((r) => r.id === creation.id);
+        if (!cancelled && row) setLiveCreation(row);
+      })
+      .catch(() => {
+        /* keep prop snapshot */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creation.id]);
   const displayedCreation = groupMembers[safeIndex] ?? liveCreation;
   const detail = creationDetailUrl(displayedCreation);
   const thumb = creationPreviewUrl(displayedCreation);

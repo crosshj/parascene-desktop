@@ -37,6 +37,8 @@ export type RemoteCreateImage = {
   /** Native-aspect alt thumb; may 404 until fit repair / new upload. */
   fit_thumbnail_url?: string | null;
   video_url?: string | null;
+  /** Stable Parascene audio path (`/api/create/images/:id/audio`) for CDN-backed songs. */
+  audio_url?: string | null;
   media_type?: string | null;
   title?: string | null;
   description?: string | null;
@@ -1138,9 +1140,10 @@ export class ParasceneSdk {
 
   /**
    * Upload raw audio bytes as a reusable library audio clip.
-   * `POST /api/audio-clips/record` (raw body). Returns the clip id and a
-   * provider-fetchable public URL; pass `audio_clip_id` in create args and the
-   * server resolves the share URL into `input_audio_urls`.
+   * `POST /api/audio-clips/record` (raw body). Prefer `audio_creation_id` +
+   * start/duration for CDN-backed songs; use this for vocals stems and
+   * local-only mixes. Pass `audio_clip_id` in create args and the server
+   * resolves the share URL into `input_audio_urls`.
    */
   async recordAudioClip(opts: {
     bytesBase64: string;

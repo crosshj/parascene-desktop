@@ -533,7 +533,7 @@ export function audioModeForIntent(
 ): "vocals" | "full_mix" | "none" {
   if (intentId === "image_audio_to_video") {
     if (existing === "full_mix" || existing === "vocals") return existing;
-    return "vocals";
+    return "full_mix";
   }
   return "none";
 }

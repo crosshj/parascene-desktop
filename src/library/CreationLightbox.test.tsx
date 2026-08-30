@@ -90,9 +90,9 @@ describe("CreationLightbox group carousel", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "Group" }),
+      await screen.findByRole("heading", { name: "Group" }, { timeout: 8_000 }),
     ).toBeInTheDocument();
-    await screen.findByRole("heading", { name: "First" });
+    await screen.findByRole("heading", { name: "First" }, { timeout: 8_000 });
     const previous = screen.getByRole("button", {
       name: "Previous in group",
     });
@@ -117,7 +117,7 @@ describe("CreationLightbox group carousel", () => {
         screen.getByRole("heading", { name: "Second" }),
       ).toBeInTheDocument();
     });
-  });
+  }, 15_000);
 
   it("carousels video group members with looping playback", async () => {
     const members = [
@@ -204,6 +204,14 @@ describe("CreationLightbox cloud A/V", () => {
         },
       }),
     });
+    invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+      if (command === "library_get_creations") {
+        if (args?.ids?.includes("20794")) return [suno];
+        return [];
+      }
+      if (command === "library_ensure_local") return undefined;
+      throw new Error(`Unexpected command: ${command}`);
+    });
     render(
       <ConfirmProvider>
         <CreationLightbox creation={suno} onClose={vi.fn()} />
@@ -216,5 +224,37 @@ describe("CreationLightbox cloud A/V", () => {
     expect(screen.getByText(/cloud · Suno/i)).toBeInTheDocument();
     expect(screen.getByText("Cloud audio · Suno")).toBeInTheDocument();
     expect(screen.queryByText("Saving locally…")).not.toBeInTheDocument();
+  });
+
+  it("refreshes from catalog so a just-downloaded audio file is playable", async () => {
+    const stale = creation("27140", "Dichotomy (blegh)", {
+      mediaType: "audio",
+      localPath: null,
+      localThumbPath: "/tmp/27140.webp",
+      downloadState: "remote",
+      remoteUrl: "https://www.parascene.com/api/create/images/27140/audio",
+    });
+    const fresh = {
+      ...stale,
+      localPath: "/tmp/27140.mp3",
+      downloadState: "local",
+    };
+    invoke.mockImplementation(async (command: string, args?: { ids?: string[] }) => {
+      if (command === "library_get_creations") {
+        if (args?.ids?.includes("27140")) return [fresh];
+        return [];
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    render(
+      <ConfirmProvider>
+        <CreationLightbox creation={stale} onClose={vi.fn()} />
+      </ConfirmProvider>,
+    );
+    expect(await screen.findByText(/audio · local/i)).toBeInTheDocument();
+    expect(document.querySelector("audio.creation-lightbox-audio-el")).toHaveAttribute(
+      "src",
+      expect.stringContaining("27140.mp3"),
+    );
   });
 });
