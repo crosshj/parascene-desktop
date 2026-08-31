@@ -81,3 +81,7 @@ Proved: Editor A2V on CDN song 27140 (full mix, no `/api/audio-clips/record`).
 - Fold Direct-to-Blue into this.
 - Put vocals/lyrics on the www Creation (Lab/project only).
 - Revive Suno scrape.
+
+## Later — video frame stills
+
+Short-term is ephemeral jpeg storage, not video-on-CDN extract. See [PLAN-ephemeral-frame-cdn.md](./PLAN-ephemeral-frame-cdn.md). If CDK later grows `?t=` / last-frame, port desktop rules — [PLAN-blue-cdn-frames.md](./PLAN-blue-cdn-frames.md).

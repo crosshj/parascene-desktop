@@ -1,8 +1,9 @@
 //! Shared FFmpeg binary resolution for local media tools.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
-use std::process::Command;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 
 /// Build a `Command` that does not flash a console window on Windows.
 ///
@@ -48,4 +49,378 @@ pub fn resolve_ffmpeg() -> Option<PathBuf> {
         }
     }
     None
+}
+
+pub fn jpeg_has_bytes(path: &Path) -> bool {
+    path.is_file() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+}
+
+/// True when `time_sec` is the last visible source time of an untrimmed clip
+/// (at/after the last 50ms of the file) or the explicit last-frame sentinel.
+/// Mid-file times (trim / loop / ping-pong) stay false so we do not read past
+/// the timeline out-point to the file's real EOF.
+pub fn wants_last_video_frame(time_sec: f64, duration_sec: f64) -> bool {
+    if time_sec >= 1.0e8 {
+        return true;
+    }
+    if duration_sec <= 0.0 {
+        return false;
+    }
+    time_sec + 0.05 + 1e-6 >= duration_sec
+}
+
+fn ffmpeg_tail(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let useful: String = stderr
+        .lines()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if useful.trim().is_empty() {
+        stderr.chars().take(400).collect()
+    } else {
+        useful
+    }
+}
+
+/// Write one JPEG. A non-empty file counts as success even when ffmpeg exits
+/// non-zero at EOF (common when decoding through the last packet).
+fn write_jpeg(ffmpeg: &Path, dest: &Path, args: &[&str]) -> Result<(), String> {
+    let _ = fs::remove_file(dest);
+    let output = command(ffmpeg)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
+    if jpeg_has_bytes(dest) {
+        return Ok(());
+    }
+    Err(format!(
+        "ffmpeg failed (exit {}): {}",
+        output.status,
+        ffmpeg_tail(&output)
+    ))
+}
+
+fn write_jpeg_at_time(
+    ffmpeg: &Path,
+    source: &Path,
+    dest: &Path,
+    time_sec: f64,
+    vf: &str,
+) -> Result<(), String> {
+    let t_arg = format!("{:.3}", time_sec.max(0.0));
+    let src_arg = source.to_string_lossy().to_string();
+    let dest_arg = dest.to_string_lossy().to_string();
+    write_jpeg(
+        ffmpeg,
+        dest,
+        &[
+            "-y",
+            "-i",
+            &src_arg,
+            "-ss",
+            &t_arg,
+            "-an",
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-vf",
+            vf,
+            "-q:v",
+            "2",
+            "-update",
+            "1",
+            &dest_arg,
+        ],
+    )
+}
+
+/// Last frame in `[start_sec, start_sec + span_sec]` (`-update 1`). Stops at
+/// the timeline out-point — does not continue to file EOF.
+fn write_jpeg_through(
+    ffmpeg: &Path,
+    source: &Path,
+    dest: &Path,
+    start_sec: f64,
+    span_sec: f64,
+    vf: &str,
+) -> Result<(), String> {
+    let start_arg = format!("{:.3}", start_sec.max(0.0));
+    let span_arg = format!("{:.3}", span_sec.max(0.04));
+    let src_arg = source.to_string_lossy().to_string();
+    let dest_arg = dest.to_string_lossy().to_string();
+    write_jpeg(
+        ffmpeg,
+        dest,
+        &[
+            "-y",
+            "-i",
+            &src_arg,
+            "-ss",
+            &start_arg,
+            "-t",
+            &span_arg,
+            "-an",
+            "-map",
+            "0:v:0",
+            "-vf",
+            vf,
+            "-q:v",
+            "2",
+            "-update",
+            "1",
+            &dest_arg,
+        ],
+    )
+}
+
+/// Decode from `start_sec` through EOF and keep the last frame (`-update 1`).
+fn write_last_jpeg_from(
+    ffmpeg: &Path,
+    source: &Path,
+    dest: &Path,
+    start_sec: f64,
+    vf: &str,
+) -> Result<(), String> {
+    let t_arg = format!("{:.3}", start_sec.max(0.0));
+    let src_arg = source.to_string_lossy().to_string();
+    let dest_arg = dest.to_string_lossy().to_string();
+    write_jpeg(
+        ffmpeg,
+        dest,
+        &[
+            "-y",
+            "-i",
+            &src_arg,
+            "-ss",
+            &t_arg,
+            "-an",
+            "-map",
+            "0:v:0",
+            "-vf",
+            vf,
+            "-q:v",
+            "2",
+            "-update",
+            "1",
+            &dest_arg,
+        ],
+    )
+}
+
+fn write_last_jpeg(
+    ffmpeg: &Path,
+    source: &Path,
+    dest: &Path,
+    duration_sec: f64,
+    vf: &str,
+) -> Result<(), String> {
+    let rewind = (duration_sec - 1.0).max(0.0);
+    let mut last_err = String::new();
+    for start in [rewind, 0.0] {
+        match write_last_jpeg_from(ffmpeg, source, dest, start, vf) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = e,
+        }
+        if start <= 0.0 {
+            break;
+        }
+    }
+    Err(if last_err.is_empty() {
+        "Could not read the last video frame".into()
+    } else {
+        last_err
+    })
+}
+
+/// Last decoded frame at or before the timeline source time `time_sec`.
+/// Untrimmed clips (time at/near file duration) read through EOF because
+/// container length is often a few tens of ms past the last video packet.
+/// Trimmed / looped times never read past `time_sec`.
+pub fn extract_video_jpeg(
+    ffmpeg: &Path,
+    source: &Path,
+    dest: &Path,
+    time_sec: f64,
+    duration_sec: f64,
+    vf: &str,
+) -> Result<(), String> {
+    if wants_last_video_frame(time_sec, duration_sec) {
+        return write_last_jpeg(ffmpeg, source, dest, duration_sec, vf);
+    }
+
+    // Do not clamp down by 50ms — that skips the last shown frames and can
+    // land in the empty gap after the last video packet.
+    let t = time_sec.max(0.0);
+    if write_jpeg_at_time(ffmpeg, source, dest, t, vf).is_ok() {
+        return Ok(());
+    }
+    let start = (t - 1.0).max(0.0);
+    if write_jpeg_through(ffmpeg, source, dest, start, t - start, vf).is_ok() {
+        return Ok(());
+    }
+    for delta in [0.05, 0.1, 0.25, 0.5, 1.0] {
+        let earlier = t - delta;
+        if earlier < 0.0 {
+            break;
+        }
+        if write_jpeg_at_time(ffmpeg, source, dest, earlier, vf).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "No frame at {t:.2}s (video is {duration_sec:.2}s)."
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("parascene-ffmpeg-frame-{nonce}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn probe_duration(ffmpeg: &Path, source: &Path) -> f64 {
+        let output = command(ffmpeg)
+            .args(["-hide_banner", "-i", source.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let idx = stderr.find("Duration:").expect("Duration in ffmpeg banner");
+        let time = stderr[idx + "Duration:".len()..]
+            .split(',')
+            .next()
+            .unwrap()
+            .trim();
+        let parts: Vec<&str> = time.split(':').collect();
+        let h: f64 = parts[0].parse().unwrap();
+        let m: f64 = parts[1].parse().unwrap();
+        let s: f64 = parts[2].parse().unwrap();
+        h * 3600.0 + m * 60.0 + s
+    }
+
+    /// Video stream ends ~0.5s; audio pads the container to ~1s — the case
+    /// where `duration - 0.05` + `-frames:v 1` writes an empty JPEG.
+    fn write_padded_video(ffmpeg: &Path, dest: &Path) -> Result<(), String> {
+        let dest_arg = dest.to_string_lossy().to_string();
+        let output = command(ffmpeg)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x64:rate=24:duration=0.5",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=stereo:d=1.0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                &dest_arg,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("spawn ffmpeg: {e}"))?;
+        if !output.status.success() || !dest.is_file() {
+            return Err(format!(
+                "could not build padded test video: {}",
+                ffmpeg_tail(&output)
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wants_last_frame_at_clamp_and_sentinel() {
+        assert!(wants_last_video_frame(1.0e9, 8.9));
+        assert!(wants_last_video_frame(8.85, 8.90));
+        assert!(wants_last_video_frame(8.90, 8.90));
+        assert!(!wants_last_video_frame(8.70, 8.90));
+        assert!(!wants_last_video_frame(0.0, 8.90));
+        // Looped 9s source on a longer clip — last visible is mid-file.
+        assert!(!wants_last_video_frame(7.55, 9.0));
+    }
+
+    #[test]
+    fn last_frame_when_container_outlasts_video() {
+        let Some(ffmpeg) = resolve_ffmpeg() else {
+            return;
+        };
+        let dir = temp_dir();
+        let source = dir.join("padded.mp4");
+        if let Err(err) = write_padded_video(&ffmpeg, &source) {
+            let _ = fs::remove_dir_all(&dir);
+            panic!("{err}");
+        }
+        let duration = probe_duration(&ffmpeg, &source);
+        assert!(
+            duration > 0.7,
+            "expected padded container duration, got {duration:.2}s"
+        );
+
+        let dest = dir.join("last.jpg");
+        extract_video_jpeg(
+            &ffmpeg,
+            &source,
+            &dest,
+            duration - 0.05,
+            duration,
+            "format=yuvj420p",
+        )
+        .expect("last-frame extract at duration-0.05");
+        assert!(jpeg_has_bytes(&dest), "expected a real last-frame JPEG");
+
+        let dest_eof = dir.join("sentinel.jpg");
+        extract_video_jpeg(
+            &ffmpeg,
+            &source,
+            &dest_eof,
+            1.0e9,
+            duration,
+            "format=yuvj420p",
+        )
+        .expect("last-frame extract via sentinel");
+        assert!(jpeg_has_bytes(&dest_eof));
+
+        // Mid-stream time (trimmed last-visible analog) must not require EOF.
+        let dest_mid = dir.join("mid.jpg");
+        extract_video_jpeg(
+            &ffmpeg,
+            &source,
+            &dest_mid,
+            0.25,
+            duration,
+            "format=yuvj420p",
+        )
+        .expect("mid-file extract at 0.25s");
+        assert!(jpeg_has_bytes(&dest_mid));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

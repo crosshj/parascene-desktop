@@ -29,7 +29,7 @@ UI: resolve(stamp? for local-only : derive(meta.args))
 
 | Server | Durable FIRST/LAST | Temp local extract |
 |--------|--------------------|--------------------|
-| `parascene_blue` | Parascene still **Creation** | Upload bridge only — not Form identity, not long-term project member |
+| `parascene_blue` | Creation URL or ephemeral `still_url` | Upload bridge only — not Form identity, not an Images member |
 | `blue_direct` / `replicate` | Local catalog still | **Is** the durable input; keep it; stamp Parascene-like args on the **output** |
 
 **Known flaw:** Parascene I2V Form can still show FIRST as `local-…` after the still was uploaded as a Creation. Fix is identity rewrite on success + stop filing throwaway locals — not another desktop stamp on the video Creation.

@@ -274,8 +274,8 @@ describe("lastFrameSourceSec", () => {
       outSec: 10,
       kind: "video",
     });
-    // Timeline span 7.5s < source trim 10s → no loop; last ≈ in + 7.45.
-    expect(lastFrameSourceSec(prior)).toBeCloseTo(7.45, 2);
+    // Timeline span 7.5s < source trim 10s → no loop; last ≈ in + 7.499.
+    expect(lastFrameSourceSec(prior)).toBeCloseTo(7.5, 2);
   });
 
   it("maps looped extend (repeat) to the visible source time", () => {
@@ -288,8 +288,8 @@ describe("lastFrameSourceSec", () => {
       kind: "video",
       extendPingPong: false,
     });
-    // Timeline 7.6s over 3.2s trim → loop; last visible ≈ 1.15 into trim.
-    expect(lastFrameSourceSec(prior)).toBeCloseTo(1.15, 2);
+    // Timeline 7.6s over 3.2s trim → loop; last visible ≈ 1.20 into trim.
+    expect(lastFrameSourceSec(prior)).toBeCloseTo(1.2, 2);
   });
 
   it("maps ping-pong extend to the visible source time", () => {
@@ -302,8 +302,8 @@ describe("lastFrameSourceSec", () => {
       kind: "video",
       extendPingPong: true,
     });
-    // local 7.95 → mediaLocal 7.95; after first 3s, extend 4.95 → segment 1 phase 1.95 → forward 1.95
-    expect(lastFrameSourceSec(prior)).toBeCloseTo(1.95, 2);
+    // local 7.999 → after first 3s, extend 4.999 → segment 1 phase 1.999 → forward.
+    expect(lastFrameSourceSec(prior)).toBeCloseTo(2.0, 2);
   });
 
   it("uses extendSourceSpanSec when a short source is stretched on the timeline", () => {
@@ -318,9 +318,9 @@ describe("lastFrameSourceSec", () => {
       extendSourceSpanSec: 9,
       extendPingPong: false,
     });
-    // Must NOT seek to ~16.55 (past EOF of a 9s file).
+    // Must NOT seek to ~16.6 (past EOF of a 9s file).
     expect(lastFrameSourceSec(prior)).toBeLessThan(9);
-    expect(lastFrameSourceSec(prior)).toBeCloseTo(7.55, 2);
+    expect(lastFrameSourceSec(prior)).toBeCloseTo(7.6, 2);
   });
 });
 

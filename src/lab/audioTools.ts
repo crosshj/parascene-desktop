@@ -152,7 +152,7 @@ export async function deleteExtendCacheFile(path: string): Promise<void> {
   await invoke("library_delete_extend_cache_file", { path: trimmed });
 }
 
-/** Pull the last readable frame from a local video (time clamped in Rust). */
+/** Pull the last readable frame from a local video (Rust decodes to EOF). */
 export async function extractVideoLastFrame(
   sourcePath: string,
 ): Promise<{ path: string; mediaUrl: string; timeSec: number }> {

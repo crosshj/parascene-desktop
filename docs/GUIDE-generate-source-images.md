@@ -27,7 +27,7 @@ Parascene target
 - Hosted still, fit, grouped or not: send existing URL. Durable id = that Creation. Do not group. Do not upload a clone.
 - Hosted still, fill/stretch, grouped or not: bake JPEG, upload new Creation, append only the new id to Images. Durable id = new Creation. Do not re-send the original member.
 - Not hosted (local-only image): upload new Creation, append the new id. Durable id = new Creation.
-- Video still (video may be hosted / in Videos): extract, upload new Creation, append the new id to Images. Durable id = new Creation. Do not file the video into Images. Drop the temp extract from project membership.
+- Video still (video may be hosted / in Videos): extract locally, upload to Parascene ephemeral Blue CDN (`still_url`). Do not create a still Creation. Do not file Images. Durable input = that `still_url`. Drop the temp extract from project membership. See [PLAN-ephemeral-frame-cdn.md](./PLAN-ephemeral-frame-cdn.md).
 
 Blue / Replicate target
 

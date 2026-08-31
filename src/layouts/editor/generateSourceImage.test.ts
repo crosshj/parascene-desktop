@@ -103,18 +103,27 @@ describe("planGenerateSourceImage", () => {
     const fill = planGenerateSourceImage(
       facts({ derivedPixels: true, inImagesGroup: true }),
     );
-    const fromVideo = planGenerateSourceImage(
-      facts({ videoStill: true, hostedStill: false, inImagesGroup: false }),
-    );
     const localOnly = planGenerateSourceImage(
       facts({ hostedStill: false, videoStill: false }),
     );
-    for (const plan of [fill, fromVideo, localOnly]) {
+    for (const plan of [fill, localOnly]) {
       expect(plan.send).toBe("upload_new_creation");
       expect(plan.fileNewStillIntoImages).toBe(true);
       expect(plan.durableId).toBe("new_creation");
       expect(plan.regroupSource).toBe(false);
     }
+  });
+
+  it("sends a video extract to ephemeral CDN and does not file Images", () => {
+    const fromVideo = planGenerateSourceImage(
+      facts({ videoStill: true, hostedStill: false, inImagesGroup: false }),
+    );
+    expect(fromVideo).toEqual({
+      send: "upload_ephemeral",
+      fileNewStillIntoImages: false,
+      durableId: "ephemeral_url",
+      regroupSource: false,
+    });
   });
 
   it("sends local files to Blue and Replicate without grouping", () => {

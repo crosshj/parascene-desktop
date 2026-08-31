@@ -20,11 +20,13 @@ export type GenerateSourceImageFacts = {
 export type GenerateSourceSend =
   | "parascene_url"
   | "upload_new_creation"
+  | "upload_ephemeral"
   | "local_file";
 
 export type GenerateSourceDurableId =
   | "source_asset"
   | "new_creation"
+  | "ephemeral_url"
   | "local_extract";
 
 export type GenerateSourceImagePlan = {
@@ -53,8 +55,15 @@ export function planGenerateSourceImage(
     };
   }
 
-  const mustNewStill =
-    facts.videoStill || !facts.hostedStill || facts.derivedPixels;
+  if (facts.videoStill) {
+    return {
+      send: "upload_ephemeral",
+      fileNewStillIntoImages: false,
+      durableId: "ephemeral_url",
+      regroupSource,
+    };
+  }
+  const mustNewStill = !facts.hostedStill || facts.derivedPixels;
   if (mustNewStill) {
     return {
       send: "upload_new_creation",

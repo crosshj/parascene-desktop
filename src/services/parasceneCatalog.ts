@@ -148,6 +148,35 @@ export async function uploadGenericImageViaService(opts: {
   };
 }
 
+export async function uploadEphemeralStillViaService(opts: {
+  path?: string;
+  bytesBase64?: string;
+  contentType?: string;
+  filename?: string;
+}): Promise<{ stillUrl: string; expiresAt?: string }> {
+  const payload: Record<string, unknown> = {
+    contentType: opts.contentType ?? "image/jpeg",
+    filename: opts.filename ?? "frame.jpg",
+  };
+  if (opts.path?.trim()) payload.path = opts.path.trim();
+  else if (opts.bytesBase64) payload.bytesBase64 = opts.bytesBase64;
+  else {
+    throw new Error("uploadEphemeralStillViaService requires path or bytesBase64");
+  }
+  const data = (await invokeResult(
+    "parascene",
+    "upload_ephemeral_still",
+    payload,
+  )) as Record<string, unknown>;
+  const stillUrl = typeof data.stillUrl === "string" ? data.stillUrl.trim() : "";
+  if (!stillUrl) throw new Error("upload_ephemeral_still returned no stillUrl");
+  return {
+    stillUrl,
+    expiresAt:
+      typeof data.expiresAt === "string" ? data.expiresAt : undefined,
+  };
+}
+
 export async function ungroupCreationsViaService(
   id: string,
 ): Promise<{ restoredCreationIds: string[] }> {

@@ -628,7 +628,8 @@ pub async fn library_extract_video_frame(
     let ffmpeg = resolve_ffmpeg()
         .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
-    // Seek past EOF yields exit 234 / "Nothing was written" — clamp to the last readable frame.
+    // Seek past EOF yields an empty JPEG. Near the end, grab the last decoded
+    // frame instead of aiming at `duration - 0.05` (often past the last packet).
     let duration = probe_media_duration_sec(&ffmpeg, &src)?;
     let max_t = if duration > 0.05 {
         (duration - 0.05).max(0.0)
@@ -647,35 +648,21 @@ pub async fn library_extract_video_frame(
 
     let tmp = dir.join(format!("{fp}-{millis}.tmp.jpg"));
     let _ = fs::remove_file(&tmp);
-    // `-ss` after `-i` for accurate frame; yuvj420p matches JPEG full-range (avoids mjpeg -22).
-    let t_arg = format!("{t:.3}");
-    let src_arg = src.to_string_lossy().to_string();
-    let tmp_arg = tmp.to_string_lossy().to_string();
-    run_ffmpeg_frame(
+    // yuvj420p matches JPEG full-range (avoids mjpeg -22).
+    ffmpeg::extract_video_jpeg(
         &ffmpeg,
-        &[
-            "-y",
-            "-i",
-            &src_arg,
-            "-ss",
-            &t_arg,
-            "-an",
-            "-map",
-            "0:v:0",
-            "-frames:v",
-            "1",
-            "-vf",
-            "format=yuvj420p",
-            "-q:v",
-            "2",
-            "-update",
-            "1",
-            &tmp_arg,
-        ],
-    )?;
-    if !tmp.is_file() || tmp.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+        &src,
+        &tmp,
+        time_sec,
+        duration,
+        "format=yuvj420p",
+    )
+    .map_err(|e| {
+        format!("Could not grab a frame from this video ({e}; duration {duration:.2}s)")
+    })?;
+    if !ffmpeg::jpeg_has_bytes(&tmp) {
         return Err(format!(
-            "No frame at {t:.2}s (video is {duration:.2}s). Try an earlier time."
+            "Could not grab a frame from this video (duration {duration:.2}s)."
         ));
     }
     fs::rename(&tmp, &dest).map_err(|e| format!("frame rename: {e}"))?;

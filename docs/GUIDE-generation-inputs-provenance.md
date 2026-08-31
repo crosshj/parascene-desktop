@@ -22,15 +22,15 @@ This guide is the guardrail. Do not “fix” one server path by copying habits 
 | Can the server read a desktop path / `local-*` id? | **No** | **Yes** (file upload / local bytes at call time) |
 | Durable input image for I2V / I2I / FLF | A **Parascene Creation** (image) with a public/API URL | A **local catalog row** (or path) is fine |
 | What Form / provenance must show as FIRST/LAST | That **Parascene still Creation id** (and/or URL in `meta.args`) | The **local** asset id / path used as input |
-| Ephemeral ffmpeg extract from a timeline neighbor | Upload → Creation → **reference the Creation**; do **not** keep the extract as the project’s “real” first frame | Keep the local extract (or derived still) as the durable input |
+| Ephemeral ffmpeg extract from a timeline neighbor | Upload jpeg to Parascene ephemeral Blue CDN (`still_url`); **no** still Creation / Images member | Keep the local extract (or derived still) as the durable input |
 | Catalog output provenance | Parascene Creation `meta.method` / `meta.args` (sync snapshot). **No** post-gen `meta.desktop` stamp | Local-only output → stamp **Parascene-shaped** provenance under `meta.desktop` (see below) |
 
 ```
 Parascene I2V (correct):
   timeline/video → extract still (temp)
-       → uploadImage Creation (durable input)
-       → generate video Creation (args.input_images = that still’s URL)
-       → Form FIRST = still Creation id
+       → ephemeral Blue CDN jpeg (`still_url`)
+       → generate video Creation (args.input_images = still_url)
+       → Form FIRST = still_url (not a local-* id, not an Images member)
        → drop temp local extract from project membership
 
 Local-capable I2V (correct):
@@ -49,7 +49,7 @@ Local-capable I2V (correct):
 
 Before writing extract / upload / stamp / Form code, ask: **which Generate server is this?**
 
-- If `parascene_blue` → every image the model sees must already be (or become) a **Parascene Creation**. Local paths are transport only.
+- If `parascene_blue` → every image the model sees must be a URL Parascene can fetch: an existing **Creation** URL, or an **ephemeral still_url** (timeline extract). Local paths are transport only.
 - If `blue_direct` / `replicate` → local files are first-class inputs. Do not invent a Parascene Creation just to hold a frame unless the user explicitly publishes.
 
 ### 2. Provenance tells the truth about what the model saw
@@ -102,9 +102,9 @@ Locked Form review (I2I, I2V, and any gen that used start stills) resolves FIRST
 Parascene Image→Video must not leave a dual identity for the start still:
 
 1. Temp ffmpeg extract is upload transport only — **not** imported as `local-*` into the project.
-2. A **new** uploaded still Creation is filed into the **Images group** (append the new id only). Never regroup the source still — especially not an Images member. See [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md).
-3. Success stamps `startFrameAssetId` / `firstFrameSource` to that **Creation id**.
-4. Read heal: `local-*` FIRST stamps clear when Parascene `meta.args.input_images` already names the still URL; Form shows that still (URL and/or matched Creation id via `matchCreationIdByRemoteUrl`).
+2. Video extracts go to ephemeral Blue CDN (`still_url`). Do not file Images. Hosted fit stills stay Creation URLs. Fill/stretch of a project image still uploads a new Creation (append the new id only). Never regroup the source. See [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md).
+3. Success stamps FIRST/LAST to the durable input (Creation id or `still_url`).
+4. Read heal: `local-*` FIRST stamps clear when Parascene `meta.args.input_images` already names the still URL.
 
 Local-capable servers (`blue_direct` / `replicate`) still import local stills as durable flat project members — do not copy Parascene habits onto those lanes.
 

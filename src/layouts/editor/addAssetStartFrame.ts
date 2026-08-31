@@ -100,7 +100,8 @@ export function clipVisibleSourceSec(
 
 /** Source media time of the last visible frame in a timeline clip. */
 export function lastFrameSourceSec(clip: TimelineClip): number {
-  const endTimelineSec = Math.max(clip.startSec, clip.endSec - 0.05);
+  // Half-open clip: last shown instant is just before endSec (not file EOF).
+  const endTimelineSec = Math.max(clip.startSec, clip.endSec - 0.001);
   return clipSourceSec(clip, endTimelineSec);
 }
 

@@ -18,6 +18,7 @@ import {
   LTX_I2V_MODEL,
 } from "../../lab/ltxI2vGeneration";
 import { getCreations } from "../../library/catalogClient";
+import { uploadEphemeralStillViaService } from "../../services/parasceneCatalog";
 import { creationSupportsCdnAudioWindow } from "../../library/cdnAudioCreation";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import type {
@@ -388,6 +389,26 @@ async function prepareParasceneGenerationStill(opts: {
       imageUrl: hostedUrl,
       creationId: existingId,
       projectCreationIds: opts.imagesGroupId ? [opts.imagesGroupId] : [],
+      groupId: opts.imagesGroupId,
+    };
+  }
+  if (plan.send === "upload_ephemeral") {
+    if (!opts.frame.framePath?.trim()) {
+      throw new Error(
+        `Missing ${opts.progressLabel} — place the clip next to timeline media.`,
+      );
+    }
+    const framingLabel = framingFilenameLabel(opts.frame.framing);
+    opts.onProgress(`Storing ${opts.progressLabel} on Parascene…`);
+    const uploaded = await uploadEphemeralStillViaService({
+      path: opts.frame.framePath,
+      filename: `${opts.filenamePrefix}-${framingLabel}.jpg`,
+      contentType: "image/jpeg",
+    });
+    return {
+      imageUrl: uploaded.stillUrl,
+      creationId: null,
+      projectCreationIds: [],
       groupId: opts.imagesGroupId,
     };
   }

@@ -273,49 +273,13 @@ fn extract_frame(
         "FFmpeg is required to create clip thumbnails. Install with: brew install ffmpeg"
             .to_string()
     })?;
-    // Seeking past EOF yields an empty JPEG — clamp like library_extract_video_frame.
     let duration = probe_duration_sec(&ffmpeg, source).unwrap_or(0.0);
-    let max_t = if duration > 0.05 {
-        (duration - 0.05).max(0.0)
-    } else {
-        0.0
-    };
-    let t = time_sec.max(0.0).min(max_t);
-    let output = ffmpeg::command(ffmpeg)
-        .args([
-            "-y",
-            "-i",
-            &source.display().to_string(),
-            "-ss",
-            &format!("{t:.3}"),
-            "-an",
-            "-map",
-            "0:v:0",
-            "-frames:v",
-            "1",
-            "-vf",
-            &composition.map(composition_filter).unwrap_or_else(|| {
-                "scale=720:720:force_original_aspect_ratio=decrease,format=yuv420p".into()
-            }),
-            "-q:v",
-            "2",
-            "-update",
-            "1",
-            &dest.display().to_string(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
-    if output.status.success() && dest.is_file() {
-        return Ok(());
-    }
-    let err = String::from_utf8_lossy(&output.stderr);
-    let tail = err.lines().rev().take(5).collect::<Vec<_>>();
-    Err(format!(
-        "FFmpeg failed extracting clip frame: {}",
-        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
-    ))
+    let vf = composition.map(composition_filter).unwrap_or_else(|| {
+        "scale=720:720:force_original_aspect_ratio=decrease,format=yuv420p".into()
+    });
+    ffmpeg::extract_video_jpeg(&ffmpeg, source, dest, time_sec, duration, &vf).map_err(|e| {
+        format!("FFmpeg failed extracting clip frame: {e}")
+    })
 }
 
 fn ensure_clip_thumb(

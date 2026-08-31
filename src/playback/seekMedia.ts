@@ -28,10 +28,10 @@ export function waitForMetadata(el: HTMLMediaElement): Promise<void> {
       if (settled) return;
       settled = true;
       el.removeEventListener("loadedmetadata", finish);
-      window.clearTimeout(fallback);
+      globalThis.clearTimeout(fallback);
       resolve();
     };
-    const fallback = window.setTimeout(finish, 800);
+    const fallback = globalThis.setTimeout(finish, 800);
     el.addEventListener("loadedmetadata", finish);
   });
 }
@@ -57,10 +57,10 @@ export async function seekMedia(
       if (settled) return;
       settled = true;
       el.removeEventListener("seeked", finish);
-      window.clearTimeout(fallback);
+      globalThis.clearTimeout(fallback);
       resolve(true);
     };
-    const fallback = window.setTimeout(finish, 800);
+    const fallback = globalThis.setTimeout(finish, 800);
     el.addEventListener("seeked", finish);
     try {
       // Clear ended before assigning; some WebKit builds no-op seeks while ended.
@@ -83,10 +83,10 @@ export function waitForCurrentFrame(el: HTMLMediaElement): Promise<void> {
       settled = true;
       el.removeEventListener("loadeddata", finish);
       el.removeEventListener("canplay", finish);
-      window.clearTimeout(fallback);
+      globalThis.clearTimeout(fallback);
       resolve();
     };
-    const fallback = window.setTimeout(finish, 800);
+    const fallback = globalThis.setTimeout(finish, 800);
     el.addEventListener("loadeddata", finish);
     el.addEventListener("canplay", finish);
   });
@@ -99,9 +99,9 @@ export function waitForPaintedFrame(el: HTMLVideoElement): Promise<void> {
   };
   if (typeof withRvfc.requestVideoFrameCallback === "function") {
     return new Promise((resolve) => {
-      const fallback = window.setTimeout(resolve, 400);
+      const fallback = globalThis.setTimeout(resolve, 400);
       withRvfc.requestVideoFrameCallback!(() => {
-        window.clearTimeout(fallback);
+        globalThis.clearTimeout(fallback);
         resolve();
       });
     });
@@ -119,10 +119,10 @@ export function waitForCanPlay(el: HTMLMediaElement): Promise<void> {
       if (settled) return;
       settled = true;
       el.removeEventListener("canplay", finish);
-      window.clearTimeout(fallback);
+      globalThis.clearTimeout(fallback);
       resolve();
     };
-    const fallback = window.setTimeout(finish, 800);
+    const fallback = globalThis.setTimeout(finish, 800);
     el.addEventListener("canplay", finish);
   });
 }

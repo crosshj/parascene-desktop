@@ -13,7 +13,7 @@ Before changing Generate, frame extract/upload, Form review, catalog stamps, or 
 
 ## Non-negotiables
 
-- **Parascene** (`parascene_blue`) cannot read local files. Durable I2V/I2I/FLF inputs must be **Parascene Creations**. Temp ffmpeg extracts are upload transport only.
+- **Parascene** (`parascene_blue`) cannot read local files. Durable I2V/I2I/FLF inputs must be a fetchable Parascene URL: an existing **Creation**, or an **ephemeral still_url** (timeline extract on Blue CDN — not an Images member). Temp ffmpeg extracts are upload transport only.
 - After Parascene success, Form / provenance FIRST/LAST must show the **Creation still**, never a leftover `local-*` extract id.
 - Do **not** keep throwaway local extracts as project members on the Parascene path once the Creation still exists.
 - **Direct to Blue / Replicate** may use local extracts as durable inputs — and must store **Parascene-like** provenance (`method` / `args`-shaped) locally on the output.

@@ -818,6 +818,82 @@ pub async fn upload_generic_image(
     }))
 }
 
+/// Mint Parascene ephemeral Blue CDN storage, PUT the jpeg, return still_url.
+pub async fn upload_ephemeral_still(
+    body: &[u8],
+    content_type: &str,
+    filename: &str,
+) -> Result<Value, String> {
+    let name = if filename.trim().is_empty() {
+        "frame.jpg"
+    } else {
+        filename.trim()
+    };
+    let ct = if content_type.trim().is_empty() {
+        "image/jpeg"
+    } else {
+        content_type.trim()
+    };
+    let start_body = json!({
+        "filename": name,
+        "content_type": ct,
+    });
+    let (start_status, start) = request_json(
+        reqwest::Method::POST,
+        "/api/create/ephemeral-still/start",
+        Some(&start_body),
+    )
+    .await?;
+    if start_status >= 400 {
+        return Err(api_error(start_status, &start, "ephemeral still start failed"));
+    }
+    let upload_url = start
+        .get("upload_url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "ephemeral still start returned no upload_url".to_string())?;
+    let ticket = start
+        .get("ticket")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "ephemeral still start returned no ticket".to_string())?;
+
+    let put = client()
+        .put(upload_url)
+        .header("Content-Type", ct)
+        .body(body.to_vec())
+        .send()
+        .await
+        .map_err(|e| format!("ephemeral still PUT failed: {e}"))?;
+    let put_status = put.status().as_u16();
+    if put_status >= 400 {
+        let text = put.text().await.unwrap_or_default();
+        return Err(format!("ephemeral still PUT failed ({put_status}): {text}"));
+    }
+
+    let fin_body = json!({ "ticket": ticket });
+    let (fin_status, fin) = request_json(
+        reqwest::Method::POST,
+        "/api/create/ephemeral-still/finalize",
+        Some(&fin_body),
+    )
+    .await?;
+    if fin_status >= 400 {
+        return Err(api_error(fin_status, &fin, "ephemeral still finalize failed"));
+    }
+    let still_url = fin
+        .get("still_url")
+        .and_then(|v| v.as_str())
+        .and_then(absolutize_media_path)
+        .ok_or_else(|| "ephemeral still finalize returned no still_url".to_string())?;
+    Ok(json!({
+        "stillUrl": still_url,
+        "expiresAt": fin.get("expires_at").and_then(|v| v.as_str()),
+    }))
+}
+
 fn urlencoding_path(id: &str) -> String {
     id.chars()
         .map(|c| match c {

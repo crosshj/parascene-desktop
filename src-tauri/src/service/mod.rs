@@ -9,7 +9,7 @@ use crate::library::{
     delete_audio_clip, delete_creation, get_creation, get_credits, get_library_folders,
     group_creations, jobs_cancel, jobs_enqueue, jobs_get, jobs_list, library_read_file_base64,
     library_read_local_thumb_base64, mutate_library_folders, record_audio_clip, ungroup_creations,
-    upload_fit_thumbnail, upload_generic_image, EnqueueJobRequest, Job,
+    upload_ephemeral_still, upload_fit_thumbnail, upload_generic_image, EnqueueJobRequest, Job,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -322,6 +322,15 @@ fn registry() -> Vec<OpDef> {
             status: "wired",
             label: "Upload generic image",
             description: "Upload bytes to Parascene generic image storage.",
+            job_kind: None,
+            placement: Some(placement_parascene_creation()),
+        },
+        OpDef {
+            service: "parascene",
+            operation: "upload_ephemeral_still",
+            status: "wired",
+            label: "Upload ephemeral still",
+            description: "PUT a jpeg to Parascene-minted Blue CDN; no Creation row.",
             job_kind: None,
             placement: Some(placement_parascene_creation()),
         },
@@ -763,6 +772,18 @@ async fn run_sync_operation(
                 .and_then(|v| v.as_str())
                 .unwrap_or("lab-frame.jpg");
             upload_generic_image(&bytes, content_type, filename).await
+        }
+        ("parascene", "upload_ephemeral_still") => {
+            let bytes = payload_bytes(payload)?;
+            let content_type = payload
+                .get("contentType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("image/jpeg");
+            let filename = payload
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("frame.jpg");
+            upload_ephemeral_still(&bytes, content_type, filename).await
         }
         ("parascene", "ungroup") => {
             let id = payload

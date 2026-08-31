@@ -64,7 +64,7 @@ pub use merge::library_merge_timeline_clips;
 pub use parascene_api::{
     delete_audio_clip, delete_creation, get_creation, get_credits, get_library_folders,
     group_creations, mutate_library_folders, record_audio_clip, ungroup_creations,
-    upload_fit_thumbnail, upload_generic_image,
+    upload_ephemeral_still, upload_fit_thumbnail, upload_generic_image,
 };
 pub use plate::{
     library_bake_plate_still, library_cache_composition_run, library_delete_composition_run,
