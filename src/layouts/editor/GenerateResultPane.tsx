@@ -93,7 +93,11 @@ export function GenerateResultPane({
         >
           <div
             className="add-asset-generate-progress-bar"
-            style={{ width: `${Math.round(progress.percent)}%` }}
+            style={
+              progress.indeterminate
+                ? undefined
+                : { width: `${Math.round(progress.percent)}%` }
+            }
           />
         </div>
         <p className="muted generate-result-note">{note}</p>

@@ -75,6 +75,8 @@ type AddAssetIntentPanelProps = {
   onClearError?: () => void;
   onRetryDownload?: () => void;
   imageAssets?: ProjectAsset[];
+  videoAssets?: ProjectAsset[];
+  audioAssets?: ProjectAsset[];
   /** Lock intent when placed on timeline; lock server only when `locked`. */
   locked?: boolean;
   /** Progress UI lives on Result — keep form visible while generating. */
@@ -117,6 +119,8 @@ export function AddAssetIntentPanel({
   onClearError,
   onRetryDownload,
   imageAssets = [],
+  videoAssets = [],
+  audioAssets = [],
   locked = false,
   progressHostedExternally = false,
   onGenerateNew,
@@ -386,6 +390,8 @@ export function AddAssetIntentPanel({
         onClearError={onClearError}
         onRetryDownload={onRetryDownload}
         imageAssets={imageAssets}
+        videoAssets={videoAssets}
+        audioAssets={audioAssets}
         progressHostedExternally={progressHostedExternally}
         formLocked={locked}
         errorRecovery={errorRecovery}

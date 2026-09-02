@@ -8,9 +8,19 @@ import {
   type BlueCapabilities,
   type BlueCapabilityRow,
 } from "../../blue/blueClient";
+import type { GenerateIntentId } from "./previewIntent";
 import type { AddAssetAudioMode, AddAssetContinuityMode } from "./addAssetGenerate";
+import {
+  DEFAULT_R2V_MODEL_ID,
+  DEFAULT_V2V_MODEL_ID,
+} from "./generateMediaRefs";
 
-export type BlueVideoMethod = "text2video" | "image2video" | "audio2video";
+export type BlueVideoMethod =
+  | "text2video"
+  | "image2video"
+  | "audio2video"
+  | "video2video"
+  | "reference2video";
 
 export type BlueVideoModelOption = {
   id: string;
@@ -94,13 +104,50 @@ const SNAPSHOT: BlueVideoModelOption[] = [
     flf: false,
     nativeAudio: true,
   },
+  {
+    id: "bernini_r_v2v",
+    label: "Wan — Bernini-R video edit",
+    method: "video2video",
+    flf: false,
+    nativeAudio: true,
+  },
+  {
+    id: "wan_animate",
+    label: "Wan — Animate 2",
+    method: "video2video",
+    flf: false,
+    nativeAudio: true,
+  },
+  {
+    id: "ltx_ic_lora",
+    label: "LTX — IC-LoRA video control",
+    method: "video2video",
+    flf: false,
+    nativeAudio: true,
+  },
+  {
+    id: "minimax_r2v",
+    label: "MiniMax H3 — reference-to-video (Ref2VA)",
+    method: "reference2video",
+    flf: false,
+    nativeAudio: true,
+  },
+  {
+    id: "ltx_ingredients",
+    label: "LTX — IC-LoRA ingredients",
+    method: "reference2video",
+    flf: false,
+    nativeAudio: true,
+  },
 ];
 
 function isBlueVideoMethod(value: string): value is BlueVideoMethod {
   return (
     value === "text2video" ||
     value === "image2video" ||
-    value === "audio2video"
+    value === "audio2video" ||
+    value === "video2video" ||
+    value === "reference2video"
   );
 }
 
@@ -132,7 +179,13 @@ function parseFromCapabilities(caps: BlueCapabilities): BlueVideoModelOption[] {
   }
 
   const methods = caps.methods ?? {};
-  for (const methodId of ["text2video", "image2video", "audio2video"] as const) {
+  for (const methodId of [
+    "text2video",
+    "image2video",
+    "audio2video",
+    "video2video",
+    "reference2video",
+  ] as const) {
     const def = methods[methodId];
     const options = def?.fields?.model?.options;
     if (!Array.isArray(options)) continue;
@@ -178,6 +231,25 @@ export async function loadBlueVideoModels(): Promise<BlueVideoModelOption[]> {
     /* offline / not configured — use snapshot */
   }
   return SNAPSHOT;
+}
+
+export function blueMethodForIntent(
+  intentId: GenerateIntentId,
+): BlueVideoMethod | null {
+  switch (intentId) {
+    case "text_to_video":
+      return "text2video";
+    case "image_to_video":
+      return "image2video";
+    case "image_audio_to_video":
+      return "audio2video";
+    case "video_to_video":
+      return "video2video";
+    case "reference_to_video":
+      return "reference2video";
+    default:
+      return null;
+  }
 }
 
 export function blueMethodForTimelineFill(opts: {
@@ -255,6 +327,8 @@ export function pickCompatibleBlueModel(opts: {
         ? ["wan_i2v", "minimax_i2v", "ltx_i2v"]
         : ["ltx_i2v", "wan_i2v", "minimax_i2v"],
     audio2video: ["ltx_a2v", "ltx_id_lora"],
+    video2video: [DEFAULT_V2V_MODEL_ID, "wan_animate", "ltx_ic_lora", "wan_scail"],
+    reference2video: [DEFAULT_R2V_MODEL_ID, "ltx_ingredients"],
   };
   for (const id of defaults[opts.method]) {
     const match = compatible.find((m) => m.id === id);
@@ -284,8 +358,12 @@ export function resolveBlueVideoModelId(opts: {
       ? "ltx_t2v"
       : opts.method === "audio2video"
         ? "ltx_a2v"
-        : opts.continuity === "first_last"
-          ? "wan_i2v"
-          : "ltx_i2v")
+        : opts.method === "video2video"
+        ? DEFAULT_V2V_MODEL_ID
+        : opts.method === "reference2video"
+          ? DEFAULT_R2V_MODEL_ID
+          : opts.continuity === "first_last"
+            ? "wan_i2v"
+            : "ltx_i2v")
   );
 }

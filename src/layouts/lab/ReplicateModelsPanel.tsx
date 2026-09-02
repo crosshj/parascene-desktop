@@ -31,6 +31,8 @@ import {
   replicateModelsCrawlStart,
   replicateModelsListCached,
   replicateModelUpdate,
+  replicateModelFetchFull,
+  parseReplicateOwnerName,
   replicatePickLocalFile,
   type ReplicateCacheStats,
   type ReplicateInputField,
@@ -998,6 +1000,47 @@ export function ReplicateModelsPanel({
     commitSearch(query);
   };
 
+  const fetchSlug = parseReplicateOwnerName(query);
+
+  const onFetchBySlug = async () => {
+    const slug = parseReplicateOwnerName(query);
+    if (!slug) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const d = await replicateModelUpdate(slug.owner, slug.name);
+      applyDetail(d);
+      commitSearch(`${d.owner}/${d.name}`);
+      selectModel(d.owner, d.name);
+      invalidateList();
+      await refreshStats();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onFetchFullSchema = async (owner?: string, name?: string) => {
+    const slug =
+      owner && name ? { owner, name } : parseReplicateOwnerName(query);
+    if (!slug) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const d = await replicateModelFetchFull(slug.owner, slug.name);
+      applyDetail(d);
+      commitSearch(`${d.owner}/${d.name}`);
+      selectModel(d.owner, d.name);
+      invalidateList();
+      await refreshStats();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onCopyMatchingNames = async () => {
     setError(null);
     setCopyNamesNote(null);
@@ -1725,6 +1768,32 @@ export function ReplicateModelsPanel({
         <button type="button" className="btn ghost" onClick={applySearch}>
           Search
         </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={busy || !tokenOk || !fetchSlug}
+          title={
+            fetchSlug
+              ? `GET ${fetchSlug.owner}/${fetchSlug.name} from Replicate and add it to the local catalog`
+              : "Type a full owner/name slug (e.g. minimax/h3) to fetch a model the crawl missed"
+          }
+          onClick={() => void onFetchBySlug()}
+        >
+          Fetch from Replicate
+        </button>
+        <button
+          type="button"
+          className="btn primary"
+          disabled={busy || !tokenOk || !fetchSlug}
+          title={
+            fetchSlug
+              ? `GET ${fetchSlug.owner}/${fetchSlug.name} then fill OpenAPI from the public API page if latest_version is missing`
+              : "Type a full owner/name slug (e.g. minimax/h3) to fetch the model plus its full schema"
+          }
+          onClick={() => void onFetchFullSchema()}
+        >
+          Fetch full schema
+        </button>
         <label className="lab-replicate-sort">
           <span className="muted">Show</span>
           <select
@@ -1762,6 +1831,18 @@ export function ReplicateModelsPanel({
           </select>
         </label>
       </div>
+      {fetchSlug ? (
+        <p className="muted lab-replicate-fetch-hint">
+          This list only shows models returned by Replicate’s catalog crawl.
+          Check for new models does not invent missing slugs. Fetch from
+          Replicate loads{" "}
+          <code>
+            {fetchSlug.owner}/{fetchSlug.name}
+          </code>{" "}
+          from their model API. Fetch full schema also reads the public API
+          page when that response has no <code>latest_version</code>.
+        </p>
+      ) : null}
 
       <div
         ref={splitRef}
@@ -1873,6 +1954,21 @@ export function ReplicateModelsPanel({
                       >
                         Update model
                       </button>
+                      <button
+                        type="button"
+                        className={
+                          detail.schemaCached && formFields.length > 0
+                            ? "btn ghost"
+                            : "btn primary"
+                        }
+                        disabled={busy || runBusy || !stats?.tokenConfigured}
+                        title="GET the model, then fill OpenAPI from the public API page if the model API omitted latest_version"
+                        onClick={() =>
+                          void onFetchFullSchema(selected.owner, selected.name)
+                        }
+                      >
+                        Fetch full schema
+                      </button>
                       {!detail.enabled ? (
                         <span className="muted">
                           Enable to open the run form for this model.
@@ -1902,8 +1998,8 @@ export function ReplicateModelsPanel({
                       <h4>Run</h4>
                       {!detail.schemaCached || formFields.length === 0 ? (
                         <p className="muted">
-                          No runnable schema yet — use Update model to fetch
-                          OpenAPI.
+                          No runnable schema yet — use Fetch full schema.
+                          Update model only stores what the model API returns.
                         </p>
                       ) : (
                         <form
@@ -2124,8 +2220,7 @@ export function ReplicateModelsPanel({
                     </section>
                   ) : (
                     <p className="muted">
-                      No input schema cached — use Update model to fetch
-                      OpenAPI.
+                      No input schema cached — use Fetch full schema.
                     </p>
                   )}
                 </>

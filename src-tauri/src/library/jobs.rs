@@ -30,6 +30,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -76,6 +77,18 @@ struct RunnerState {
 fn runner_state() -> &'static Mutex<RunnerState> {
     static STATE: OnceLock<Mutex<RunnerState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(RunnerState { running: false }))
+}
+
+fn parallel_inflight() -> &'static AtomicUsize {
+    static N: OnceLock<AtomicUsize> = OnceLock::new();
+    N.get_or_init(|| AtomicUsize::new(0))
+}
+
+fn is_parallel_job_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "blue_generate" | "replicate_generate" | "parascene_generate"
+    )
 }
 
 fn cancelled_ids() -> &'static Mutex<HashSet<String>> {
@@ -2247,6 +2260,15 @@ async fn finish_local_generate_job(
     Ok(value)
 }
 
+fn checkpoint_blue_job_id(job: &Job) -> Option<String> {
+    let raw = job.checkpoint_json.as_deref()?;
+    let v: Value = serde_json::from_str(raw).ok()?;
+    v.get("blueJobId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 async fn run_blue_generate(app: &AppHandle, job: &Job) -> Result<Value, String> {
     throw_if_cancelled(&job.id)?;
     let payload: Value =
@@ -2254,6 +2276,25 @@ async fn run_blue_generate(app: &AppHandle, job: &Job) -> Result<Value, String> 
     let method = payload_str(&payload, "method").ok_or_else(|| "blue_generate requires method")?;
     let args = payload.get("args").cloned().unwrap_or_else(|| json!({}));
     let files = local_files_map(&payload);
+
+    if let Some(blue_job_id) = checkpoint_blue_job_id(job) {
+        let _ = patch_job(
+            app,
+            &job.id,
+            Some("running"),
+            Some("Waiting for Blue…"),
+            Some(&json!({ "name": "wait", "method": method, "blueJobId": blue_job_id })),
+            None,
+            None,
+        );
+        let result = crate::blue::run::wait_job(app.clone(), blue_job_id).await;
+        throw_if_cancelled(&job.id)?;
+        let result = result?;
+        let value =
+            serde_json::to_value(result).map_err(|e| format!("blue result serialize: {e}"))?;
+        return finish_local_generate_job(app, job, &payload, value).await;
+    }
+
     let _ = patch_job(
         app,
         &job.id,
@@ -2263,7 +2304,28 @@ async fn run_blue_generate(app: &AppHandle, job: &Job) -> Result<Value, String> 
         None,
         None,
     );
-    let result = crate::blue::run::run_method(app.clone(), method, args, files).await;
+    let service_id = job.id.clone();
+    let app_for_hook = app.clone();
+    let method_for_hook = method.clone();
+    let notify: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |blue_id: &str| {
+        let _ = patch_job(
+            &app_for_hook,
+            &service_id,
+            Some("running"),
+            Some("Waiting for Blue…"),
+            Some(&json!({ "name": "wait", "method": method_for_hook, "blueJobId": blue_id })),
+            None,
+            None,
+        );
+    });
+    let result = crate::blue::run::run_method_with_hook(
+        app.clone(),
+        method,
+        args,
+        files,
+        Some(notify),
+    )
+    .await;
     throw_if_cancelled(&job.id)?;
     let result = result?;
     let value = serde_json::to_value(result).map_err(|e| format!("blue result serialize: {e}"))?;
@@ -2885,6 +2947,10 @@ async fn jobs_worker(app: AppHandle) {
         let job = match next {
             Ok(Some(j)) => j,
             Ok(None) => {
+                if parallel_inflight().load(Ordering::SeqCst) > 0 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
                 if let Ok(mut state) = runner_state().lock() {
                     state.running = false;
                 }
@@ -2896,7 +2962,16 @@ async fn jobs_worker(app: AppHandle) {
                 continue;
             }
         };
-        run_job(&app, job).await;
+        if is_parallel_job_kind(&job.kind) {
+            let app2 = app.clone();
+            parallel_inflight().fetch_add(1, Ordering::SeqCst);
+            tauri::async_runtime::spawn(async move {
+                run_job(&app2, job).await;
+                parallel_inflight().fetch_sub(1, Ordering::SeqCst);
+            });
+        } else {
+            run_job(&app, job).await;
+        }
     }
 }
 
@@ -3120,6 +3195,15 @@ mod tests {
             created_at: "t0".into(),
             updated_at: "t0".into(),
         }
+    }
+
+    #[test]
+    fn generate_kinds_run_in_parallel() {
+        assert!(is_parallel_job_kind("blue_generate"));
+        assert!(is_parallel_job_kind("parascene_generate"));
+        assert!(is_parallel_job_kind("replicate_generate"));
+        assert!(!is_parallel_job_kind("sync_full"));
+        assert!(!is_parallel_job_kind("publisher_render"));
     }
 
     #[test]

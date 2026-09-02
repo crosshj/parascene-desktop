@@ -27,19 +27,34 @@ export type ProjectImagePickerContext = {
   projectCabinets: ProjectCabinetIds | null | undefined;
 };
 
+export type ProjectPickerAssetKind = ProjectAsset["kind"];
+
+/** Flatten project assets (including cabinet members), optionally by kind. */
+export function projectPickerAssets(
+  assets: readonly ProjectAsset[],
+  creationsById: Readonly<Record<string, Creation | undefined>>,
+  context: ProjectImagePickerContext,
+  kinds?: readonly ProjectPickerAssetKind[],
+): ProjectAsset[] {
+  const flat = flattenProjectAssetsForBrowserDisplay({
+    projectId: context.projectId,
+    projectTitle: context.projectTitle,
+    rootAssets: assets,
+    creationsById,
+    projectCabinets: context.projectCabinets,
+  });
+  if (!kinds?.length) return flat;
+  const allow = new Set(kinds);
+  return flat.filter((asset) => allow.has(asset.kind));
+}
+
 /** Flatten project assets (including cabinet members) to image stills only. */
 export function projectImagePickerAssets(
   assets: readonly ProjectAsset[],
   creationsById: Readonly<Record<string, Creation | undefined>>,
   context: ProjectImagePickerContext,
 ): ProjectAsset[] {
-  return flattenProjectAssetsForBrowserDisplay({
-    projectId: context.projectId,
-    projectTitle: context.projectTitle,
-    rootAssets: assets,
-    creationsById,
-    projectCabinets: context.projectCabinets,
-  }).filter((asset) => asset.kind === "image");
+  return projectPickerAssets(assets, creationsById, context, ["image"]);
 }
 
 async function loadProjectAssetCreations(
@@ -98,14 +113,16 @@ async function loadProjectAssetCreations(
   return next;
 }
 
-export function useProjectImagePickerAssets(
+export function useProjectPickerAssets(
   assets: readonly ProjectAsset[],
   context: ProjectImagePickerContext,
+  kinds?: readonly ProjectPickerAssetKind[],
 ): ProjectAsset[] {
   const assetIdsKey = useMemo(
     () => assets.map((asset) => asset.id).join("\0"),
     [assets],
   );
+  const kindsKey = (kinds ?? []).join(",");
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
   >({});
@@ -146,6 +163,18 @@ export function useProjectImagePickerAssets(
 
   return useMemo(() => {
     const resolvedCreationsById = assetIdsKey ? creationsById : {};
-    return projectImagePickerAssets(assets, resolvedCreationsById, context);
-  }, [assetIdsKey, assets, context, creationsById]);
+    return projectPickerAssets(
+      assets,
+      resolvedCreationsById,
+      context,
+      kindsKey ? (kindsKey.split(",") as ProjectPickerAssetKind[]) : undefined,
+    );
+  }, [assetIdsKey, assets, context, creationsById, kindsKey]);
+}
+
+export function useProjectImagePickerAssets(
+  assets: readonly ProjectAsset[],
+  context: ProjectImagePickerContext,
+): ProjectAsset[] {
+  return useProjectPickerAssets(assets, context, ["image"]);
 }

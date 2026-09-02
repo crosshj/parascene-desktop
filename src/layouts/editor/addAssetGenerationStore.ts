@@ -74,11 +74,11 @@ async function ensureDurableFrameSource(
 }
 
 /**
- * Module-level add-asset generation session.
+ * Per-clip add-asset generation sessions.
  * Survives EditorLayout unmount (e.g. switching to Library) so in-flight
  * jobs keep updating and can still write the finished clip into the project.
  * Remote job ids are also persisted on the placeholder draft so an app
- * restart can resume wait/download.
+ * restart can resume wait/download. Different clips may generate at once.
  */
 
 export type AddAssetGenerationStoreSession = AddAssetGenerationSession & {
@@ -106,6 +106,13 @@ export type AddAssetGenerationSuccess = {
   firstFrameSource?: AddAssetFrameSource | null;
   lastFrameSource?: AddAssetFrameSource | null;
   startFrameAssetId?: string | null;
+  inputVideoAssetId?: string | null;
+  characterImageAssetId?: string | null;
+  referenceImageAssetIds?: string[];
+  referenceVideoAssetIds?: string[];
+  referenceAudioAssetIds?: string[];
+  timelineAudio?: "none" | "full_mix" | "vocals";
+  startOffsetSeconds?: number;
 };
 
 /** Native folder_items after Generate: cabinet covers only, never members. */
@@ -170,8 +177,10 @@ export type AddAssetGenerationApplier = {
   applyInFlight: (result: AddAssetGenerationInFlight) => void;
 };
 
-let session: AddAssetGenerationStoreSession | null = null;
-let inflight = false;
+const sessions = new Map<string, AddAssetGenerationStoreSession>();
+const inflightClips = new Set<string>();
+let lastSessionClipId: string | null = null;
+let sessionEpoch = 0;
 let applier: AddAssetGenerationApplier | null = null;
 const listeners = new Set<() => void>();
 /** Clip ids currently being resumed (avoid double-start). */
@@ -221,11 +230,23 @@ function isRemoteJobConsumed(job: {
 }
 
 function emit(): void {
+  sessionEpoch += 1;
   for (const listener of listeners) listener();
 }
 
-function setSession(next: AddAssetGenerationStoreSession | null): void {
-  session = next;
+function setClipSession(
+  clipId: string,
+  next: AddAssetGenerationStoreSession | null,
+): void {
+  if (next) {
+    sessions.set(clipId, next);
+    lastSessionClipId = clipId;
+  } else {
+    sessions.delete(clipId);
+    if (lastSessionClipId === clipId) {
+      lastSessionClipId = sessions.keys().next().value ?? null;
+    }
+  }
   emit();
 }
 
@@ -233,13 +254,19 @@ function patchSession(
   clipId: string,
   patch: Partial<AddAssetGenerationStoreSession>,
 ): void {
-  if (!session || session.clipId !== clipId) return;
-  session = { ...session, ...patch };
+  const current = sessions.get(clipId);
+  if (!current) return;
+  sessions.set(clipId, { ...current, ...patch });
   emit();
 }
 
-export function getAddAssetGenerationSession(): AddAssetGenerationStoreSession | null {
-  return session;
+export function getAddAssetGenerationSession(
+  clipId?: string | null,
+): AddAssetGenerationStoreSession | null {
+  const id = clipId?.trim();
+  if (id) return sessions.get(id) ?? null;
+  if (lastSessionClipId) return sessions.get(lastSessionClipId) ?? null;
+  return null;
 }
 
 export function subscribeAddAssetGeneration(listener: () => void): () => void {
@@ -255,8 +282,10 @@ export function bindAddAssetGenerationApplier(
   applier = next;
 }
 
-export function isAddAssetGenerationInflight(): boolean {
-  return inflight;
+export function isAddAssetGenerationInflight(clipId?: string | null): boolean {
+  const id = clipId?.trim();
+  if (id) return inflightClips.has(id);
+  return inflightClips.size > 0;
 }
 
 export function clearAddAssetGenerationError(opts?: {
@@ -270,15 +299,22 @@ export function clearAddAssetGenerationError(opts?: {
   // session to still be in error — another placeholder may be generating.
   if (projectId && clipId) {
     applier?.clearFailure(projectId, clipId);
-  } else if (session?.phase === "error") {
-    applier?.clearFailure(session.projectId, session.clipId);
+  } else {
+    for (const s of sessions.values()) {
+      if (s.phase === "error") {
+        applier?.clearFailure(s.projectId, s.clipId);
+      }
+    }
   }
 
   // Drop the error session only when it belongs to the dismissed clip (or the
   // caller did not name a clip). Never clear a running job for another clip.
-  if (session?.phase === "error") {
-    if (!clipId || session.clipId === clipId) {
-      setSession(null);
+  if (clipId) {
+    const s = sessions.get(clipId);
+    if (s?.phase === "error") setClipSession(clipId, null);
+  } else {
+    for (const [id, s] of [...sessions.entries()]) {
+      if (s.phase === "error") setClipSession(id, null);
     }
   }
 }
@@ -287,17 +323,23 @@ export function clearAddAssetGenerationError(opts?: {
 export function clearAddAssetGenerationIfClipMissing(
   timelineClipIds: ReadonlySet<string> | readonly string[],
 ): void {
-  if (!session) return;
   const ids =
     timelineClipIds instanceof Set
       ? timelineClipIds
       : new Set(timelineClipIds);
-  if (!ids.has(session.clipId)) {
-    setSession(null);
-    // Do not clear `inflight` here. The running promise's `finally` owns that
-    // flag — clearing early lets reconcile start a second download/import of
-    // the same remote job (asset duplication storm).
+  let changed = false;
+  for (const id of [...sessions.keys()]) {
+    if (ids.has(id)) continue;
+    sessions.delete(id);
+    if (lastSessionClipId === id) {
+      lastSessionClipId = sessions.keys().next().value ?? null;
+    }
+    changed = true;
   }
+  if (changed) emit();
+  // Do not clear inflight here. The running promise's `finally` owns that
+  // flag — clearing early lets reconcile start a second download/import of
+  // the same remote job (asset duplication storm).
 }
 
 function persistInFlight(
@@ -328,14 +370,14 @@ function applyJobFailure(
     blueJobId:
       error instanceof BlueDirectPendingDownloadError ? error.blueJobId : null,
   });
-  if (session?.clipId === clipId) {
+  if (sessions.get(clipId)) {
     patchSession(clipId, {
       phase: "error",
       progressNote: "Generation failed",
       errorMessage: message,
     });
   } else {
-    setSession({
+    setClipSession(clipId, {
       ...createRunningAddAssetGenerationSession(
         clipId,
         audioMode,
@@ -365,18 +407,19 @@ export type StartAddAssetGenerationJobOpts = {
     | "startFrame"
     | "endFrame"
     | "placeholder"
+    | "mediaRefs"
   >;
 };
 
-/** Start (or no-op if already inflight). Returns false if a job is already running. */
+/** Start (or no-op if this clip is already inflight). Returns false if this clip is already running. */
 export function startAddAssetGenerationJob(
   opts: StartAddAssetGenerationJobOpts,
 ): boolean {
-  if (inflight) return false;
   const { projectId, request, runOpts } = opts;
   const clipId = request.clip.id;
+  if (inflightClips.has(clipId)) return false;
   const continuityMode = request.continuityMode ?? "start_frame";
-  inflight = true;
+  inflightClips.add(clipId);
   resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
@@ -394,7 +437,7 @@ export function startAddAssetGenerationJob(
       request.audioMode,
     );
   }
-  setSession({
+  setClipSession(clipId, {
     ...baseSession,
     projectId,
   });
@@ -434,6 +477,7 @@ export function startAddAssetGenerationJob(
     endFrame: request.endFrame,
     replicate: request.replicate,
     blueDirect: request.blueDirect,
+    mediaRefs: request.mediaRefs,
     onSteps: (steps) => {
       patchSession(clipId, { steps });
     },
@@ -544,13 +588,17 @@ export function startAddAssetGenerationJob(
         firstFrameSource,
         lastFrameSource,
         startFrameAssetId: frameSourceAssetId(firstFrameSource),
+        inputVideoAssetId: request.mediaRefs?.inputVideoAssetId ?? null,
+        characterImageAssetId: request.mediaRefs?.characterImageAssetId ?? null,
+        referenceImageAssetIds: request.mediaRefs?.referenceImageAssetIds,
+        referenceVideoAssetIds: request.mediaRefs?.referenceVideoAssetIds,
+        referenceAudioAssetIds: request.mediaRefs?.referenceAudioAssetIds,
+        timelineAudio: request.mediaRefs?.timelineAudio,
+        startOffsetSeconds: request.mediaRefs?.startOffsetSeconds,
       };
       markRemoteJobConsumed(activeRemote);
       await applier?.applySuccess(success);
-      // Only clear if this job is still the active session.
-      if (session?.clipId === clipId) {
-        setSession(null);
-      }
+      setClipSession(clipId, null);
     })
     .catch((error) => {
       applyJobFailure(
@@ -563,7 +611,7 @@ export function startAddAssetGenerationJob(
       );
     })
     .finally(() => {
-      inflight = false;
+      inflightClips.delete(clipId);
       resumeAttempted.delete(clipId);
     });
 
@@ -587,7 +635,7 @@ export type RetryAddAssetDownloadJobOpts = {
 export function retryAddAssetDownloadJob(
   opts: RetryAddAssetDownloadJobOpts,
 ): boolean {
-  if (inflight) return false;
+  if (inflightClips.has(opts.clipId)) return false;
   const {
     projectId,
     clipId,
@@ -600,7 +648,7 @@ export function retryAddAssetDownloadJob(
     durationSec,
     modelId,
   } = opts;
-  inflight = true;
+  inflightClips.add(clipId);
   resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
@@ -610,7 +658,7 @@ export function retryAddAssetDownloadJob(
   );
   baseSession.steps = initialReplicateDownloadRetrySteps();
   baseSession.progressNote = "Retrying download…";
-  setSession({
+  setClipSession(clipId, {
     ...baseSession,
     projectId,
   });
@@ -656,9 +704,7 @@ export function retryAddAssetDownloadJob(
       };
       markRemoteJobConsumed({ replicatePredictionId: predictionId });
       await applier?.applySuccess(success);
-      if (session?.clipId === clipId) {
-        setSession(null);
-      }
+      setClipSession(clipId, null);
     })
     .catch((error) => {
       applyJobFailure(
@@ -671,7 +717,7 @@ export function retryAddAssetDownloadJob(
       );
     })
     .finally(() => {
-      inflight = false;
+      inflightClips.delete(clipId);
       resumeAttempted.delete(clipId);
     });
 
@@ -688,12 +734,12 @@ export type ReconcileAddAssetGenerationsOpts = {
 
 /**
  * After project load / app restart: reattach to remote jobs persisted on
- * placeholders. One global job at a time (same as live generation).
+ * placeholders. One job per clip; different clips can run together.
  */
 export function reconcileAddAssetGenerations(
   opts: ReconcileAddAssetGenerationsOpts,
 ): boolean {
-  if (inflight || !applier) return false;
+  if (!applier) return false;
   const candidates = findResumableAddAssetPlaceholders(opts.timeline).filter(
     (c) =>
       !resumeAttempted.has(c.clip.id) &&
@@ -759,7 +805,7 @@ export function reconcileAddAssetGenerations(
     return reconcileAddAssetGenerations(opts);
   }
 
-  inflight = true;
+  inflightClips.add(clipId);
   resumeAttempted.add(clipId);
   const baseSession = initialResumeSessionSteps(
     job.provider,
@@ -767,7 +813,7 @@ export function reconcileAddAssetGenerations(
     audioMode,
     durationSec,
   );
-  setSession({
+  setClipSession(clipId, {
     ...baseSession,
     clipId,
     projectId: opts.projectId,
@@ -881,9 +927,7 @@ export function reconcileAddAssetGenerations(
         serviceJobId: serviceJobId || null,
       });
       await applier?.applySuccess(success);
-      if (session?.clipId === clipId) {
-        setSession(null);
-      }
+      setClipSession(clipId, null);
     })
     .catch((error) => {
       applyJobFailure(
@@ -896,7 +940,7 @@ export function reconcileAddAssetGenerations(
       );
     })
     .finally(() => {
-      inflight = false;
+      inflightClips.delete(clipId);
       resumeAttempted.delete(clipId);
       // Do not re-enter with this stale `opts.timeline` snapshot — it still
       // contains the placeholder we just filled, which re-imports the same
@@ -904,25 +948,33 @@ export function reconcileAddAssetGenerations(
       // the live timeline fingerprint changes and picks up any remaining jobs.
     });
 
+  void Promise.resolve().then(() => {
+    reconcileAddAssetGenerations(opts);
+  });
   return true;
 }
 
 export function useAddAssetGenerationSession(
   projectId: string | null,
+  clipId?: string | null,
 ): AddAssetGenerationStoreSession | null {
-  const snap = useSyncExternalStore(
+  const epoch = useSyncExternalStore(
     subscribeAddAssetGeneration,
-    getAddAssetGenerationSession,
-    getAddAssetGenerationSession,
+    () => sessionEpoch,
+    () => sessionEpoch,
   );
+  void epoch;
+  const snap = getAddAssetGenerationSession(clipId);
   if (!snap || !projectId || snap.projectId !== projectId) return null;
   return snap;
 }
 
 /** Test helper — reset module state between tests. */
 export function __resetAddAssetGenerationStoreForTests(): void {
-  session = null;
-  inflight = false;
+  sessions.clear();
+  inflightClips.clear();
+  lastSessionClipId = null;
+  sessionEpoch = 0;
   applier = null;
   listeners.clear();
   resumeAttempted.clear();

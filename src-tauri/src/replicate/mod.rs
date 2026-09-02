@@ -10,6 +10,7 @@ mod files;
 mod history;
 mod jobs;
 pub(crate) mod predict;
+mod schema_page;
 mod token;
 
 pub use commands::*;

@@ -2,10 +2,10 @@ use crate::blue::credentials::{BlueCredentials, BLUE_BASE_URL};
 use reqwest::multipart;
 use reqwest::Client;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 const MIN_INTERVAL_MS: u64 = 200;
 const MAX_ATTEMPTS: u32 = 6;
@@ -34,6 +34,161 @@ fn download_client() -> &'static Client {
             .build()
             .unwrap_or_else(|_| Client::new())
     })
+}
+
+/// Polls must not reuse a held connection: Blue 202s can keep the body open
+/// until the job finishes, and a later request on a fresh socket returns the file.
+fn poll_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .pool_max_idle_per_host(0)
+            .user_agent("ParasceneDesktop-Blue/1.0")
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
+const POLL_HEADERS_TIMEOUT: Duration = Duration::from_secs(40);
+const POLL_JSON_BODY_TIMEOUT: Duration = Duration::from_secs(30);
+const POLL_MEDIA_BODY_TIMEOUT: Duration = Duration::from_secs(600);
+
+pub enum JobPoll {
+    Pending,
+    Saved(PathBuf),
+    Json(Value),
+}
+
+fn is_media_content_type(ct: &str) -> bool {
+    let ct = ct.to_ascii_lowercase();
+    ct.starts_with("image/")
+        || ct.starts_with("video/")
+        || ct.starts_with("audio/")
+        || ct.contains("octet-stream")
+}
+
+async fn write_response_body(res: reqwest::Response, dest: &Path) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| format!("Create file failed: {e}"))?;
+    let mut stream = res.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download stream: {e}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Write file: {e}"))?;
+    }
+    file.flush().await.map_err(|e| format!("Flush file: {e}"))?;
+    Ok(())
+}
+
+/// One Blue job poll. Does not buffer a 202 body — that is what hung timeline
+/// generate after Blue itself had already finished.
+pub async fn poll_job(
+    creds: &BlueCredentials,
+    method: &str,
+    job_id: &str,
+    dest_dir: &Path,
+) -> Result<JobPoll, String> {
+    sleep(Duration::from_millis(MIN_INTERVAL_MS)).await;
+    let url = absolute_url("/api");
+    let body = serde_json::json!({
+        "method": method,
+        "args": { "job_id": job_id }
+    });
+    let send = apply_auth(
+        poll_client()
+            .post(&url)
+            .header("Accept", "application/json, */*")
+            .header("Content-Type", "application/json")
+            .header("Connection", "close")
+            .json(&body),
+        creds,
+    )
+    .send();
+    let res = match timeout(POLL_HEADERS_TIMEOUT, send).await {
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => return Err(format!("Blue poll failed: {e}")),
+        Err(_) => return Ok(JobPoll::Pending),
+    };
+    let status = res.status().as_u16();
+    let content_type = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    if status == 202 || status == 429 || status == 503 {
+        let _ = timeout(Duration::from_millis(250), res.bytes()).await;
+        return Ok(JobPoll::Pending);
+    }
+    if status == 404 {
+        return Err(format!("Blue job not found: {job_id}"));
+    }
+    if status == 410 {
+        let text = timeout(POLL_JSON_BODY_TIMEOUT, res.text())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+            .unwrap_or_else(|| {
+                if text.trim().is_empty() {
+                    "Output data removed (retention TTL expired).".into()
+                } else {
+                    text
+                }
+            });
+        return Err(msg);
+    }
+    if !(200..300).contains(&status) {
+        let text = timeout(POLL_JSON_BODY_TIMEOUT, res.text())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        return Err(format!("Blue poll HTTP {status}: {text}"));
+    }
+
+    if is_media_content_type(&content_type) {
+        let mut ext = ext_for_content_type(&content_type);
+        if ext == "bin" {
+            let m = method.to_ascii_lowercase();
+            ext = if m.contains("video") {
+                "mp4"
+            } else if m.contains("audio") {
+                "mp3"
+            } else {
+                "png"
+            };
+        }
+        let dest = dest_dir.join(format!("output.{ext}"));
+        timeout(POLL_MEDIA_BODY_TIMEOUT, write_response_body(res, &dest))
+            .await
+            .map_err(|_| "Blue output download timed out".to_string())?
+            .map_err(|e| format!("Save Blue output: {e}"))?;
+        return Ok(JobPoll::Saved(dest));
+    }
+
+    let bytes = timeout(POLL_JSON_BODY_TIMEOUT, res.bytes())
+        .await
+        .map_err(|_| "Blue poll JSON timed out".to_string())?
+        .map_err(|e| format!("Read body failed: {e}"))?;
+    let data: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("Invalid JSON: {e}"))?;
+    Ok(JobPoll::Json(data))
 }
 
 fn apply_auth(req: reqwest::RequestBuilder, creds: &BlueCredentials) -> reqwest::RequestBuilder {

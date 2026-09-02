@@ -58,7 +58,7 @@ import {
   type EditorLayoutPrefs,
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
-import { useProjectImagePickerAssets } from "./projectImagePickerAssets";
+import { useProjectPickerAssets } from "./projectImagePickerAssets";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import { pasteAppendStartSec } from "./timelineAppend";
 import {
@@ -209,6 +209,13 @@ type DragState = {
   reservedLeft: number;
 };
 
+/** Placement fingerprint so we can keep a live overlay until async persist catches up. */
+function timelinePlacementKey(clips: readonly TimelineClip[]): string {
+  return clips
+    .map((c) => `${c.id}:${c.startSec.toFixed(3)}:${c.endSec.toFixed(3)}`)
+    .join("|");
+}
+
 export function EditorLayout() {
   const {
     project,
@@ -297,7 +304,10 @@ export function EditorLayout() {
     phase: "idle",
   });
   const [previewRetry, setPreviewRetry] = useState<(() => void) | null>(null);
-  const addAssetGenerationSession = useAddAssetGenerationSession(project.id);
+  const addAssetGenerationSession = useAddAssetGenerationSession(
+    project.id,
+    selectedClipId,
+  );
   const prevAddAssetGenerationSessionRef = useRef(addAssetGenerationSession);
   const [narrow, setNarrow] = useState(matchesNarrowViewport);
   const [assetsDrawerOpen, setAssetsDrawerOpen] = useState(false);
@@ -564,11 +574,23 @@ export function EditorLayout() {
     }),
     [project.imagesGroupId, project.videosGroupId],
   );
-  const imageAssets = useProjectImagePickerAssets(project.assets, {
+  const pickerAssets = useProjectPickerAssets(project.assets, {
     projectId: project.id,
     projectTitle: project.title,
     projectCabinets,
   });
+  const imageAssets = useMemo(
+    () => pickerAssets.filter((asset) => asset.kind === "image"),
+    [pickerAssets],
+  );
+  const videoAssets = useMemo(
+    () => pickerAssets.filter((asset) => asset.kind === "video"),
+    [pickerAssets],
+  );
+  const audioAssets = useMemo(
+    () => pickerAssets.filter((asset) => asset.kind === "audio"),
+    [pickerAssets],
+  );
 
   const pauseTimelinePlayback = useCallback(() => {
     if (!timelinePlaying) return;
@@ -1283,10 +1305,14 @@ export function EditorLayout() {
   }, [displayTimeline, project.aspectRatio]);
 
   useEffect(() => {
-    // Drop live (in-gesture) timeline when the selection changes.
+    if (!liveTimeline) return;
+    if (timelinePlacementKey(liveTimeline) !== timelinePlacementKey(project.timeline)) {
+      return;
+    }
+    // Persist has the live placement — drop the overlay.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLiveTimeline(null);
-  }, [selectedClipId]);
+  }, [liveTimeline, project.timeline]);
 
   useEffect(() => {
     selectedClipIdsRef.current = selectedClipIds;
@@ -1610,7 +1636,7 @@ export function EditorLayout() {
       return;
     }
     timelineRef.current = next;
-    setLiveTimeline(null);
+    setLiveTimeline(next);
     const syncedDraft =
       updated && (updated.kind === "image" || updated.kind === "video")
         ? (timelineClipToStagedDraft(updated) ?? draft)
@@ -1695,7 +1721,7 @@ export function EditorLayout() {
         syncClipStagingFromTimeline(synced);
         return;
       }
-      setLiveTimeline(null);
+      setLiveTimeline(synced);
       setOpenProjectTimeline(synced);
       syncClipStagingFromTimeline(synced);
     },
@@ -2605,46 +2631,44 @@ export function EditorLayout() {
         onAddAssetDurationChange={(durationSec) => {
           const clip = generateTargetClip;
           if (!clip) return;
-          setOpenProjectTimeline((prev) => {
-            const found = prev.some((c) => c.id === clip.id);
-            recordUiOpTrace({
-              type: "add_asset_duration_patch",
-              clipId: clip.id,
-              count: prev.length,
-              reason: found
-                ? `ok duration=${durationSec}`
-                : "SKIP_MISSING_CLIP",
-            });
-            if (!found) return prev;
-            const next = prev.map((c) =>
-              c.id === clip.id ? withAddAssetDuration(c, durationSec) : c,
-            );
-            timelineRef.current = next;
-            return next;
+          const found = timelineRef.current.some((c) => c.id === clip.id);
+          recordUiOpTrace({
+            type: "add_asset_duration_patch",
+            clipId: clip.id,
+            count: timelineRef.current.length,
+            reason: found
+              ? `ok duration=${durationSec}`
+              : "SKIP_MISSING_CLIP",
           });
+          if (!found) return;
+          const next = timelineRef.current.map((c) =>
+            c.id === clip.id ? withAddAssetDuration(c, durationSec) : c,
+          );
+          timelineRef.current = next;
+          setLiveTimeline(next);
+          setOpenProjectTimeline(next);
         }}
         onAddAssetDraftChange={(draft) => {
           const clip = generateTargetClip;
           if (!clip || !isAddAssetPlaceholderClip(clip)) return;
-          setOpenProjectTimeline((prev) => {
-            const found = prev.some(
-              (c) => c.id === clip.id && isAddAssetPlaceholderClip(c),
-            );
-            recordUiOpTrace({
-              type: "add_asset_draft_patch",
-              clipId: clip.id,
-              count: prev.length,
-              reason: found ? "ok" : "SKIP_MISSING_CLIP",
-            });
-            if (!found) return prev;
-            const next = prev.map((c) =>
-              c.id === clip.id && isAddAssetPlaceholderClip(c)
-                ? { ...c, addAssetDraft: draft }
-                : c,
-            );
-            timelineRef.current = next;
-            return next;
+          const found = timelineRef.current.some(
+            (c) => c.id === clip.id && isAddAssetPlaceholderClip(c),
+          );
+          recordUiOpTrace({
+            type: "add_asset_draft_patch",
+            clipId: clip.id,
+            count: timelineRef.current.length,
+            reason: found ? "ok" : "SKIP_MISSING_CLIP",
           });
+          if (!found) return;
+          const next = timelineRef.current.map((c) =>
+            c.id === clip.id && isAddAssetPlaceholderClip(c)
+              ? { ...c, addAssetDraft: draft }
+              : c,
+          );
+          timelineRef.current = next;
+          setLiveTimeline(next);
+          setOpenProjectTimeline(next);
         }}
         onClearAddAssetGenerationError={() => {
           const clip = generateTargetClip;
@@ -2674,6 +2698,8 @@ export function EditorLayout() {
         }}
         onRetryAddAssetDownload={retryAddAssetDownload}
         imageAssets={imageAssets}
+        videoAssets={videoAssets}
+        audioAssets={audioAssets}
         selectedAssetIds={
           monitorMode === "source" && !clipStagingSeed
             ? selectedAssetIds

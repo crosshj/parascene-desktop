@@ -104,6 +104,18 @@ export function mapReplicateVideoFields(
   };
 }
 
+export function replicateHasReferencePackage(
+  inputs: readonly ReplicateInputField[],
+): boolean {
+  return (
+    hasField(inputs, "reference_image_urls") ||
+    hasField(inputs, "reference_images") ||
+    hasField(inputs, "reference_video_urls") ||
+    hasField(inputs, "reference_videos") ||
+    hasField(inputs, "reference_audio_urls")
+  );
+}
+
 export function replicateVideoCapability(
   inputs: readonly ReplicateInputField[],
 ): ReplicateVideoCapability {

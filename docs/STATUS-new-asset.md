@@ -39,14 +39,14 @@ Legend: ✅ live · ⏳ coming soon · — not applicable
 - [ ] Generate to Assets (— timeline only)
 
 ### Video to Video
-- [x] Place / Drag → timeline generate — Parascene
+- [x] Place / Drag → timeline generate — Parascene, Blue Direct
 - [ ] Generate to Assets
-- [ ] Blue Direct · Replicate
+- [ ] Replicate (`minimax/h3` not in Lab catalog)
 
 ### Refs to Video
-- [ ] All servers (not in live Parascene server 6 methods)
+- [x] Place / Drag → timeline generate — Parascene, Blue Direct (MiniMax H3)
 - [ ] Generate to Assets
-- [ ] Place on timeline
+- [ ] Replicate (`minimax/h3` not in Lab catalog)
 
 ### Text to Music
 - [ ] All servers
@@ -62,8 +62,8 @@ Legend: ✅ live · ⏳ coming soon · — not applicable
 - [ ] Place on timeline for stills (T2I, I2I)
 - [ ] Motion match on I2V (Replicate only today)
 - [ ] Replicate Audio to Video
-- [ ] I2I / V2V on Blue Direct and Replicate
-- [ ] Refs to Video on product path (`reference2video` absent from live server 6)
+- [ ] I2I on Blue Direct and Replicate
+- [ ] V2V / Refs to Video on Replicate (`minimax/h3` missing from Lab catalog)
 - [ ] Music / Speech (not in product server caps)
 - [x] Wire server 1 `replicate` / `replicatePro` / `pixelLabImage` on Parascene stills
 - [x] Wire server 6 native `text2image` / `image2image` (Parascene Blue stills via credits)

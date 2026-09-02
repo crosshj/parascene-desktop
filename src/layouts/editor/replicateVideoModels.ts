@@ -28,6 +28,7 @@ export type ReplicateVideoModelOption = {
 };
 
 const DEFAULT_PREFERENCE = [
+  "minimax/h3",
   "bytedance/seedance-2.0-fast",
   "vidu/q3-turbo",
   "kwaivgi/kling-v2.5-turbo-pro",

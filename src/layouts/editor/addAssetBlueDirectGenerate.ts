@@ -13,7 +13,10 @@ import {
   watchLocalGenerateStill,
 } from "../../services/generateStill";
 import { getCreations } from "../../library/catalogClient";
-import { isolateVocalsRange, sliceAudioRange } from "../../lab/audioTools";
+import {
+  isolateVocalsRange,
+  sliceAudioRange,
+} from "../../lab/audioTools";
 import { buildBlueT2vCreateArgs } from "../../lab/blueT2vGeneration";
 import { buildFlf2vCreateArgs } from "../../lab/flf2vGeneration";
 import { importLocalPathsForProject } from "../../project/projectAssetLanding";
@@ -26,6 +29,7 @@ import {
   type AddAssetContinuityMode,
 } from "./addAssetGenerate";
 import {
+  blueMethodForIntent,
   blueMethodForTimelineFill,
   resolveBlueVideoModelId,
   type BlueVideoMethod,
@@ -35,6 +39,16 @@ import {
   type StartFramePreview,
 } from "./addAssetStartFrame";
 import { recordUiOpTrace } from "./uiOpTrace";
+import type { GenerateIntentId } from "./previewIntent";
+import {
+  normalizeGenerateMediaRefs,
+  validateGenerateMediaRefs,
+  type GenerateMediaRefs,
+} from "./generateMediaRefs";
+import { planAdvancedVideoSend } from "./generateAdvancedVideoSend";
+import { resolveLocalMediaPaths } from "./resolveLocalMedia";
+import { slicePlaceholderTimelineAudio } from "./timelineReferenceAudio";
+import { resolveReferenceImageStillPaths } from "./timelineReferenceImages";
 
 /** Thrown when Blue succeeded remotely but local download/import failed. */
 export class BlueDirectPendingDownloadError extends Error {
@@ -137,6 +151,8 @@ export type RunBlueDirectAddAssetGenerationOpts = {
   blueModel?: AddAssetBlueModel;
   startFrame: StartFramePreview;
   endFrame?: StartFramePreview | null;
+  intentId?: GenerateIntentId;
+  mediaRefs?: GenerateMediaRefs;
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
   onBlueJobId?: (jobId: string) => void;
@@ -224,6 +240,13 @@ export async function runBlueDirectAddAssetGeneration(
     throw new Error("Motion match requires a Replicate model.");
   }
 
+  if (
+    opts.intentId === "video_to_video" ||
+    opts.intentId === "reference_to_video"
+  ) {
+    return runBlueDirectAdvancedVideo(opts);
+  }
+
   const audioMode = continuity === "none" ? "none" : opts.audioMode;
   let steps = initialBlueDirectGenerationSteps(continuity, audioMode);
   const pushSteps = (next: AddAssetGenerationStep[]) => {
@@ -298,7 +321,15 @@ export async function runBlueDirectAddAssetGeneration(
       const result = await watchLocalGenerateStill(handle, {
         onUpdate: (run) => {
           const note = run.progressNote?.trim();
-          if (note) opts.onProgress(note);
+          if (!note) return;
+          if (
+            note === "Blue generate…" ||
+            note === "Starting…" ||
+            note === "Waiting for Blue…"
+          ) {
+            return;
+          }
+          opts.onProgress(note);
         },
       });
       unlistenT2v?.();
@@ -462,7 +493,15 @@ export async function runBlueDirectAddAssetGeneration(
     result = await watchLocalGenerateStill(handle, {
       onUpdate: (run) => {
         const note = run.progressNote?.trim();
-        if (note) opts.onProgress(note);
+        if (!note) return;
+        if (
+          note === "Blue generate…" ||
+          note === "Starting…" ||
+          note === "Waiting for Blue…"
+        ) {
+          return;
+        }
+        opts.onProgress(note);
       },
     });
   } catch (err) {
@@ -575,7 +614,15 @@ export async function resumeBlueDirectServiceJob(opts: {
     {
       onUpdate: (run) => {
         const note = run.progressNote?.trim();
-        if (note) opts.onProgress(note);
+        if (!note) return;
+        if (
+          note === "Blue generate…" ||
+          note === "Starting…" ||
+          note === "Waiting for Blue…"
+        ) {
+          return;
+        }
+        opts.onProgress(note);
       },
     },
   );
@@ -685,4 +732,197 @@ export async function runBlueDirectTextToImage(opts: {
     throw new Error("Blue text-to-image finished but no local file was downloaded.");
   }
   return { creationId: result.creationId };
+}
+
+async function runBlueDirectAdvancedVideo(
+  opts: RunBlueDirectAddAssetGenerationOpts,
+): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  startFrameCreationId: string | null;
+  endFrameCreationId: string | null;
+  mode: AddAssetContinuityMode;
+  model: string;
+}> {
+  const intentId = opts.intentId;
+  if (intentId !== "video_to_video" && intentId !== "reference_to_video") {
+    throw new Error("Advanced Blue video requires Video to Video or Refs to Video.");
+  }
+  const method = blueMethodForIntent(intentId);
+  if (!method) throw new Error("No Blue method for this intent.");
+
+  const refs = normalizeGenerateMediaRefs(opts.mediaRefs);
+  const model = resolveBlueVideoModelId({
+    selected: opts.blueModel,
+    method,
+    continuity: "start_frame",
+    blueDirect: true,
+  });
+  const invalid = validateGenerateMediaRefs({
+    intentId,
+    refs,
+    modelId: model,
+  });
+  if (!invalid && !opts.prompt.trim()) throw new Error("Enter a prompt.");
+  if (invalid) throw new Error(invalid);
+
+  const { durationSec } = resolveAddAssetGenerationTiming(
+    opts.timeline,
+    opts.placeholder,
+    opts.mainAudioCreationId,
+    opts.lyricAlignment,
+  );
+
+  const plan = planAdvancedVideoSend({
+    intentId,
+    lane: "blue_direct",
+    prompt: buildAddAssetGenerationPrompt(opts.prompt),
+    model,
+    aspectRatio: opts.aspectRatio,
+    durationSec,
+    refs,
+  });
+
+  let steps = initialBlueDirectGenerationSteps(
+    "start_frame",
+    refs.timelineAudio === "none" ? "none" : refs.timelineAudio,
+  );
+  const pushSteps = (next: AddAssetGenerationStep[]) => {
+    steps = next;
+    opts.onSteps(steps);
+  };
+
+  pushSteps(advanceStep(steps, "still"));
+  opts.onProgress("Preparing local media for Blue…");
+  const args: Record<string, unknown> = { ...plan.args };
+  const localFiles: Record<string, string | string[]> = {};
+
+  if (plan.slotIds.videos.length > 0) {
+    localFiles[plan.mediaFields.videos] = await resolveLocalMediaPaths(
+      plan.slotIds.videos,
+    );
+  }
+  if (plan.slotIds.images.length > 0) {
+    opts.onProgress("Preparing reference images for Blue…");
+    localFiles[plan.mediaFields.images] = await resolveReferenceImageStillPaths(
+      plan.slotIds.images,
+      {
+        timeline: opts.timeline,
+        placeholder: opts.placeholder,
+        aspectRatio: opts.aspectRatio,
+      },
+    );
+  }
+  const audioPaths: string[] = [];
+  if (refs.timelineAudio !== "none") {
+    pushSteps(advanceStep(steps, "vocals"));
+    opts.onProgress(
+      refs.timelineAudio === "vocals"
+        ? "Preparing timeline vocals slice…"
+        : "Preparing timeline audio slice…",
+    );
+    const sliced = await slicePlaceholderTimelineAudio({
+      mode: refs.timelineAudio,
+      mainAudioCreationId: opts.mainAudioCreationId,
+      timeline: opts.timeline,
+      placeholder: opts.placeholder,
+      lyricAlignment: opts.lyricAlignment,
+    });
+    audioPaths.push(sliced.path);
+    pushSteps(completeStep(steps, "vocals"));
+    pushSteps(advanceStep(steps, "upload-audio"));
+    pushSteps(completeStep(steps, "upload-audio"));
+  }
+  if (plan.slotIds.audios.length > 0) {
+    audioPaths.push(
+      ...(await resolveLocalMediaPaths(plan.slotIds.audios)),
+    );
+  }
+  if (audioPaths.length > 0) {
+    localFiles[plan.mediaFields.audios] = audioPaths;
+  }
+  pushSteps(completeStep(steps, "still"));
+
+  pushSteps(advanceStep(steps, "generate"));
+  opts.onProgress("Running on Direct to Blue…");
+  void recordUiOpTrace({
+    type: "blue_direct_generate",
+    reason: `${method}/${model}`,
+  });
+
+  let unlisten: (() => void) | undefined;
+  try {
+    unlisten = await listenBlueRunProgress((ev) => {
+      const note = ev.message?.trim() || ev.status?.trim();
+      if (note) opts.onProgress(note);
+      const jobId = ev.predictionId?.trim();
+      if (jobId) opts.onBlueJobId?.(jobId);
+    });
+  } catch {
+    /* progress optional */
+  }
+
+  let result;
+  try {
+    const handle = await invokeBlueGenerateStill({
+      method,
+      args,
+      localFiles,
+      projectId: opts.projectId,
+      target: "timeline",
+      clientRequestId: opts.placeholder.id,
+      label: model,
+    });
+    if (handle.mode === "job") {
+      opts.onServiceJobId?.(handle.id);
+    }
+    result = await watchLocalGenerateStill(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        if (!note) return;
+        if (
+          note === "Blue generate…" ||
+          note === "Starting…" ||
+          note === "Waiting for Blue…"
+        ) {
+          return;
+        }
+        opts.onProgress(note);
+      },
+    });
+  } catch (err) {
+    unlisten?.();
+    throw err;
+  }
+  unlisten?.();
+
+  if (result.predictionId?.trim()) {
+    opts.onBlueJobId?.(result.predictionId.trim());
+  }
+  if (!result.creationId?.trim()) {
+    const jobId = result.predictionId?.trim() || "";
+    if (jobId) {
+      throw new BlueDirectPendingDownloadError(
+        "Blue finished but no creation was imported.",
+        jobId,
+      );
+    }
+    throw new Error("Blue finished but no creation was imported.");
+  }
+
+  pushSteps(completeStep(steps, "generate"));
+  pushSteps(advanceStep(steps, "file"));
+  pushSteps(completeStep(steps, "file"));
+  return {
+    creationId: result.creationId,
+    projectCreationIds: [result.creationId],
+    videosGroupId: null,
+    imagesGroupId: opts.imagesGroupId,
+    startFrameCreationId: refs.characterImageAssetId,
+    endFrameCreationId: null,
+    mode: "start_frame",
+    model,
+  };
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { WorkflowForm } from "../../forms/WorkflowForm";
 import { promptSchemaField } from "../../forms/schemaForm";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
+import { useLabMainAudioPaths } from "../../lab/useLabMainAudioPaths";
 import { getCreations } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
 import type {
@@ -78,11 +79,13 @@ import {
   type ReplicateVideoModelOption,
 } from "./replicateVideoModels";
 import {
+  blueMethodForIntent,
   blueMethodForTimelineFill,
   filterBlueVideoModels,
   isWanFamilyBlueModel,
   loadBlueVideoModels,
   pickCompatibleBlueModel,
+  resolveBlueVideoModelId,
   type BlueVideoModelOption,
 } from "./blueVideoModels";
 import { parasceneVideoModelsForIntent } from "./parasceneProductCaps";
@@ -116,6 +119,7 @@ export type StartAddAssetGenerationRequest = {
   replicate?: RunAddAssetGenerationOpts["replicate"];
   /** Direct to Blue (local-only) timeline fill. */
   blueDirect?: boolean;
+  mediaRefs?: GenerateMediaRefs;
 };
 
 type AddAssetGeneratePanelProps = {
@@ -136,6 +140,8 @@ type AddAssetGeneratePanelProps = {
   onRetryDownload?: () => void;
   /** Project image assets available as an explicit start frame. */
   imageAssets?: ProjectAsset[];
+  videoAssets?: ProjectAsset[];
+  audioAssets?: ProjectAsset[];
   /** Omit Back/header when nested under the intent-first shell. */
   embedded?: boolean;
   /**
@@ -258,7 +264,17 @@ function draftsEqual(a: AddAssetDraft, b: AddAssetDraft | undefined): boolean {
     frameSourcesEqual(a.firstFrameSource, b?.firstFrameSource) &&
     frameSourcesEqual(a.lastFrameSource, b?.lastFrameSource) &&
     (a.startFramePreviewUrl ?? "") === (b?.startFramePreviewUrl ?? "") &&
-    (a.endFramePreviewUrl ?? "") === (b?.endFramePreviewUrl ?? "")
+    (a.endFramePreviewUrl ?? "") === (b?.endFramePreviewUrl ?? "") &&
+    (a.inputVideoAssetId ?? "") === (b?.inputVideoAssetId ?? "") &&
+    (a.characterImageAssetId ?? "") === (b?.characterImageAssetId ?? "") &&
+    (a.startOffsetSeconds ?? 0) === (b?.startOffsetSeconds ?? 0) &&
+    JSON.stringify(a.referenceImageAssetIds ?? []) ===
+      JSON.stringify(b?.referenceImageAssetIds ?? []) &&
+    JSON.stringify(a.referenceVideoAssetIds ?? []) ===
+      JSON.stringify(b?.referenceVideoAssetIds ?? []) &&
+    JSON.stringify(a.referenceAudioAssetIds ?? []) ===
+      JSON.stringify(b?.referenceAudioAssetIds ?? []) &&
+    (a.timelineAudio ?? "none") === (b?.timelineAudio ?? "none")
   );
 }
 
@@ -269,6 +285,14 @@ import {
   type GenerateIntentId,
   type GenerateServerId,
 } from "./previewIntent";
+import { GenerateMediaRefsForm } from "./GenerateMediaRefsForm";
+import {
+  isAdvancedVideoIntent,
+  normalizeGenerateMediaRefs,
+  previousTimelineVideoAssetId,
+  validateGenerateMediaRefs,
+  type GenerateMediaRefs,
+} from "./generateMediaRefs";
 import { blueCredentialsStatus } from "../../blue/blueClient";
 import {
   BLUE_CREDENTIALS_CHANGED_EVENT,
@@ -483,6 +507,8 @@ export function AddAssetGeneratePanel({
   onClearError,
   onRetryDownload,
   imageAssets = [],
+  videoAssets = [],
+  audioAssets = [],
   embedded = false,
   progressHostedExternally = false,
   formLocked = false,
@@ -588,6 +614,33 @@ export function AddAssetGeneratePanel({
   );
   const [blueModelsError, setBlueModelsError] = useState<string | null>(null);
   const [motionVideoPath, setMotionVideoPath] = useState<string | null>(null);
+  const neighborVideoId = previousTimelineVideoAssetId(timeline, clip);
+  const [mediaRefs, setMediaRefs] = useState<GenerateMediaRefs>(() =>
+    normalizeGenerateMediaRefs({
+      inputVideoAssetId:
+        clip.addAssetDraft?.inputVideoAssetId ??
+        clip.addAssetGeneration?.inputVideoAssetId ??
+        neighborVideoId,
+      characterImageAssetId:
+        clip.addAssetDraft?.characterImageAssetId ??
+        clip.addAssetGeneration?.characterImageAssetId,
+      referenceImageAssetIds:
+        clip.addAssetDraft?.referenceImageAssetIds ??
+        clip.addAssetGeneration?.referenceImageAssetIds,
+      referenceVideoAssetIds:
+        clip.addAssetDraft?.referenceVideoAssetIds ??
+        clip.addAssetGeneration?.referenceVideoAssetIds,
+      referenceAudioAssetIds:
+        clip.addAssetDraft?.referenceAudioAssetIds ??
+        clip.addAssetGeneration?.referenceAudioAssetIds,
+      timelineAudio:
+        clip.addAssetDraft?.timelineAudio ??
+        clip.addAssetGeneration?.timelineAudio,
+      startOffsetSeconds:
+        clip.addAssetDraft?.startOffsetSeconds ??
+        clip.addAssetGeneration?.startOffsetSeconds,
+    }),
+  );
   const [blueConfigured, setBlueConfigured] = useState<boolean | null>(null);
   const [assetPreviews, setAssetPreviews] = useState<Record<string, string | null>>(
     {},
@@ -718,6 +771,7 @@ export function AddAssetGeneratePanel({
 
   const hasLyrics = Boolean(lyricsText.trim());
   const hasMainAudio = Boolean(mainAudioCreationId?.trim());
+  const { vocalsReady } = useLabMainAudioPaths(mainAudioCreationId?.trim() || "");
   const isA2v = currentIntentId === "image_audio_to_video";
 
   const resolvedContinuityMode: AddAssetContinuityMode = (() => {
@@ -739,16 +793,35 @@ export function AddAssetGeneratePanel({
           ? "full_mix"
           : "vocals";
 
-  const blueMethod = blueMethodForTimelineFill({
-    continuity: resolvedContinuityMode,
-    audioMode: isReplicate ? "none" : tentativeAudioMode,
-  });
+  const isAdvancedVideo = isAdvancedVideoIntent(currentIntentId);
+  const advancedMethod = blueMethodForIntent(currentIntentId);
+  const blueMethod = isAdvancedVideo && advancedMethod
+    ? advancedMethod
+    : blueMethodForTimelineFill({
+        continuity: resolvedContinuityMode,
+        audioMode: isReplicate ? "none" : tentativeAudioMode,
+      });
 
   const isParasceneProductAdvanced =
     !isReplicate &&
     !isBlueDirect &&
-    (currentIntentId === "video_to_video" ||
-      currentIntentId === "reference_to_video");
+    isAdvancedVideo;
+
+  const isBlueDirectAdvanced = isBlueDirect && isAdvancedVideo;
+
+  // V2V with no explicit source video follows the previous timeline clip.
+  // Derived (not setState-in-effect) so state stays the user's actual picks;
+  // the draft-persist effect writes the resolved value through as before.
+  const effectiveMediaRefs = useMemo(() => {
+    if (
+      currentIntentId !== "video_to_video" ||
+      mediaRefs.inputVideoAssetId ||
+      !neighborVideoId
+    ) {
+      return mediaRefs;
+    }
+    return { ...mediaRefs, inputVideoAssetId: neighborVideoId };
+  }, [mediaRefs, currentIntentId, neighborVideoId]);
 
   const parasceneCapsModels = useMemo((): BlueVideoModelOption[] => {
     if (!isParasceneProductAdvanced) return [];
@@ -768,7 +841,7 @@ export function AddAssetGeneratePanel({
     return filterBlueVideoModels({
       models: blueModels,
       method: blueMethod,
-      continuity: resolvedContinuityMode,
+      continuity: isBlueDirectAdvanced ? "start_frame" : resolvedContinuityMode,
       blueDirect: isBlueDirect,
     });
   }, [
@@ -779,6 +852,7 @@ export function AddAssetGeneratePanel({
     blueMethod,
     resolvedContinuityMode,
     isBlueDirect,
+    isBlueDirectAdvanced,
   ]);
 
   const useT2vWorkflowForm =
@@ -787,15 +861,20 @@ export function AddAssetGeneratePanel({
 
   const resolvedBlueModel: string = (() => {
     if (isReplicate) return "ltx_i2v";
-    if (isParasceneProductAdvanced && parasceneCapsModels.length > 0) {
-      const preferred =
-        blueModel?.trim() ||
-        clip.addAssetDraft?.blueModel?.trim() ||
-        clip.addAssetGeneration?.model?.trim();
-      if (preferred && parasceneCapsModels.some((m) => m.id === preferred)) {
-        return preferred;
-      }
-      return parasceneCapsModels[0]?.id ?? preferred ?? "wan_animate";
+    if (
+      (isParasceneProductAdvanced || isBlueDirectAdvanced) &&
+      advancedMethod
+    ) {
+      return resolveBlueVideoModelId({
+        selected:
+          blueModel?.trim() ||
+          clip.addAssetDraft?.blueModel?.trim() ||
+          clip.addAssetGeneration?.model?.trim(),
+        method: advancedMethod,
+        continuity: "start_frame",
+        blueDirect: true,
+        models: compatibleBlueModels,
+      });
     }
     if (!blueModels?.length) {
       return (
@@ -1187,9 +1266,9 @@ export function AddAssetGeneratePanel({
     prompt,
   ]);
 
-  // Load thumbnails for the frame-source Assets picker (interactive form only).
+  // Load thumbnails for the frame-source Assets picker.
   useEffect(() => {
-    if (!fieldsInteractive || imageAssets.length === 0) return;
+    if (imageAssets.length === 0) return;
     let cancelled = false;
     const ids = imageAssets.map((asset) => asset.id);
     void (async () => {
@@ -1204,7 +1283,7 @@ export function AddAssetGeneratePanel({
     return () => {
       cancelled = true;
     };
-  }, [imageAssets, fieldsInteractive]);
+  }, [imageAssets]);
 
   // Persist form choices on the placeholder so they survive clip switches.
   // Skip while error/running — job lifecycle fields (lastError, generationJob)
@@ -1233,6 +1312,13 @@ export function AddAssetGeneratePanel({
       // Keep Generate-new stamps — rewriting without them blanks FIRST/LAST.
       startFramePreviewUrl: clip.addAssetDraft?.startFramePreviewUrl,
       endFramePreviewUrl: clip.addAssetDraft?.endFramePreviewUrl,
+      inputVideoAssetId: effectiveMediaRefs.inputVideoAssetId,
+      characterImageAssetId: effectiveMediaRefs.characterImageAssetId,
+      referenceImageAssetIds: effectiveMediaRefs.referenceImageAssetIds,
+      referenceVideoAssetIds: effectiveMediaRefs.referenceVideoAssetIds,
+      referenceAudioAssetIds: effectiveMediaRefs.referenceAudioAssetIds,
+      timelineAudio: effectiveMediaRefs.timelineAudio,
+      startOffsetSeconds: effectiveMediaRefs.startOffsetSeconds || undefined,
     };
     if (draftsEqual(next, clip.addAssetDraft)) return;
     onDraftChange?.(next);
@@ -1250,6 +1336,7 @@ export function AddAssetGeneratePanel({
     startFrameAssetId,
     firstFrameSource,
     lastFrameSource,
+    effectiveMediaRefs,
     onDraftChange,
     fieldsInteractive,
     currentIntentId,
@@ -1439,22 +1526,20 @@ export function AddAssetGeneratePanel({
       );
       const clipWithDuration = withAddAssetDuration(clip, timing.durationSec);
 
-      if (isParasceneProductAdvanced) {
-        const freshStart = await resolveStartFrameForAddAsset(
-          timeline,
-          clip,
-          aspectRatio,
-          {
-            firstFrameSource,
-            startFrameAssetId,
-          },
-        );
-        if (!startFrameIsReady(freshStart)) {
+      if (isAdvancedVideo) {
+        const refsBlocker = validateGenerateMediaRefs({
+          intentId: currentIntentId,
+          refs: effectiveMediaRefs,
+          modelId: resolvedBlueModel,
+        });
+        if (refsBlocker) {
+          abortGenerate("missing_source_media", refsBlocker);
+          return;
+        }
+        if (effectiveMediaRefs.timelineAudio !== "none" && !hasMainAudio) {
           abortGenerate(
-            "missing_source_media",
-            currentIntentId === "video_to_video"
-              ? "Choose a source video (timeline neighbor or Assets video)."
-              : "Choose at least one reference image from Assets.",
+            "missing_timeline_audio",
+            "Add main audio to the timeline first.",
           );
           return;
         }
@@ -1466,8 +1551,17 @@ export function AddAssetGeneratePanel({
           continuityMode: "start_frame",
           blueModel: resolvedBlueModel,
           songRange: timing.songRange,
-          startFrame: freshStart,
+          startFrame: {
+            previewUrl: null,
+            note: "",
+            framePath: null,
+            frameTimeSec: null,
+            sourceAssetId: effectiveMediaRefs.characterImageAssetId,
+            sourceIsImage: Boolean(effectiveMediaRefs.characterImageAssetId),
+          },
           endFrame: null,
+          blueDirect: isBlueDirect,
+          mediaRefs: effectiveMediaRefs,
         });
         return;
       }
@@ -1736,19 +1830,27 @@ export function AddAssetGeneratePanel({
     })();
   };
 
+  const mediaRefsBlocker = isAdvancedVideo
+    ? validateGenerateMediaRefs({
+        intentId: currentIntentId,
+        refs: effectiveMediaRefs,
+        modelId: resolvedBlueModel,
+      })
+    : null;
+
   const canGenerateBlue =
     fieldsInteractive &&
     Boolean(prompt.trim()) &&
     (!isBlueDirect || blueConfigured !== false) &&
-    (isParasceneProductAdvanced
-      ? Boolean(resolvedBlueModel) && !framesLoading && startFrameIsReady(startFrame)
+    (isAdvancedVideo
+      ? Boolean(resolvedBlueModel) && !mediaRefsBlocker
       : resolvedContinuityMode === "none"
       ? currentIntentId === "text_to_video"
       : !framesLoading &&
         (resolvedContinuityMode === "first_last"
           ? bridgeReady
           : startFrameIsReady(startFrame))) &&
-    (resolvedAudioMode === "none" || hasMainAudio);
+    (resolvedAudioMode === "none" || hasMainAudio || isAdvancedVideo);
 
   const canGenerate =
     isReplicate
@@ -2318,6 +2420,23 @@ export function AddAssetGeneratePanel({
               </p>
             </div>
           </section>
+        ) : isAdvancedVideo ? (
+          <GenerateMediaRefsForm
+            intentId={currentIntentId}
+            modelId={resolvedBlueModel}
+            refs={effectiveMediaRefs}
+            imageAssets={imageAssets}
+            videoAssets={videoAssets}
+            audioAssets={audioAssets}
+            assetPreviews={assetPreviews}
+            timeline={timeline}
+            placeholder={clip}
+            hasMainAudio={hasMainAudio}
+            hasVocalsTrack={vocalsReady}
+            aspectRatio={aspectRatio}
+            disabled={!fieldsInteractive}
+            onChange={setMediaRefs}
+          />
         ) : (
         <section className="add-asset-generate-section">
           <h3>{showMotionMatch ? "Character & motion" : "Frames"}</h3>

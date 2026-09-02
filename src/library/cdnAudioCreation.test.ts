@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { creationSupportsCdnAudioWindow } from "./cdnAudioCreation";
+import {
+  attachAudioCreationRangeArgs,
+  creationSupportsCdnAudioWindow,
+} from "./cdnAudioCreation";
 import type { Creation } from "./types";
 
 function base(overrides: Partial<Creation> = {}): Creation {
@@ -41,6 +44,23 @@ function base(overrides: Partial<Creation> = {}): Creation {
     ...overrides,
   };
 }
+
+describe("attachAudioCreationRangeArgs", () => {
+  it("sends creation id and range only", () => {
+    const args: Record<string, unknown> = { prompt: "x" };
+    attachAudioCreationRangeArgs(args, {
+      creationId: 27140,
+      startSec: 8,
+      durationSec: 9,
+    });
+    expect(args.audio_creation_id).toBe(27140);
+    expect(args.audio_start_sec).toBe(8);
+    expect(args.audio_duration_sec).toBe(9);
+    expect(args).not.toHaveProperty("input_audio_urls");
+    expect(args).not.toHaveProperty("audio_url");
+    expect(args).not.toHaveProperty("audio_clip_id");
+  });
+});
 
 describe("creationSupportsCdnAudioWindow", () => {
   it("accepts synced CDN audio Creations", () => {

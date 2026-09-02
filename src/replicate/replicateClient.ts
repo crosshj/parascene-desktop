@@ -223,6 +223,30 @@ export async function replicateModelUpdate(
   return invoke("replicate_model_update", { owner, name });
 }
 
+/** GET model + public API-page OpenAPI when `latest_version` is missing. */
+export async function replicateModelFetchFull(
+  owner: string,
+  name: string,
+): Promise<ReplicateModelDetail> {
+  return invoke("replicate_model_fetch_full", { owner, name });
+}
+
+/** `owner/name` slug — used to fetch a model that Check New never indexed. */
+export function parseReplicateOwnerName(
+  slug: string,
+): { owner: string; name: string } | null {
+  const trimmed = slug.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) return null;
+  if (trimmed.includes(" ") || trimmed.indexOf("/") !== trimmed.lastIndexOf("/")) {
+    return null;
+  }
+  const owner = trimmed.slice(0, slash).trim();
+  const name = trimmed.slice(slash + 1).trim();
+  if (!owner || name.length < 2) return null;
+  return { owner, name };
+}
+
 export async function replicateModelRun(
   owner: string,
   name: string,

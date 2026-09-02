@@ -100,7 +100,7 @@ Minimum Blue HTTP surface for the Lab proof:
 - [x] Wire proof into Lab: **Parascene Blue methods** + unified **Predictions** (Replicate + Blue history)
 - [x] Capabilities-driven run form, local file / Library picks, delete (incl. batch)
 - [ ] Manual proof against live Blue; refresh capabilities snapshot if contract drifted
-- [ ] Productizing `video2video` / `reference2video` UI — **next** (phases C–F)
+- [x] Productizing `video2video` / `reference2video` UI — Generate on Parascene + Direct to Blue (see [PLAN-v2v-ref2v.md](./PLAN-v2v-ref2v.md))
 
 ### 5. Client growth required (proof)
 
@@ -191,6 +191,8 @@ DIRECT: local still/audio → Blue /api/files → Blue job → download → loca
 Cloning timeline fill does **not** unlock v2v / r2v. Those need new **jobs the UI knows how to ask for**.
 
 ### Phase C–F — Modify the product for Blue’s new surface
+
+Product form concept for attaching typed refs (and sequencing C→E in maker language): [PLAN-refs-to-video.md](./PLAN-refs-to-video.md).
 
 Do **not** bolt every Blue field onto “Images: None | Start | First+last.” That ontology is still-continuity. Grow by **intent**, Blue-direct-first, mapped to Blue methods:
 

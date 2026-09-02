@@ -5171,15 +5171,47 @@ input[type="checkbox"].control,
   line-height: 1.3;
 }
 
-.editor-staging-error {
-  flex: 1 1 100%;
+.editor-staging-error-btn {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
   margin: 0;
-  padding: 0.35rem 0.45rem;
-  border-radius: 4px;
-  background: color-mix(in srgb, #7f1d1d 55%, var(--bg));
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: #7f1d1d;
   color: #fecaca;
-  font-size: 0.78rem;
-  line-height: 1.35;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.editor-staging-error-btn:hover,
+.editor-staging-error-btn:focus-visible {
+  background: #991b1b;
+  outline: 2px solid #fecaca;
+  outline-offset: 1px;
+}
+
+.bake-error-dialog {
+  width: min(40rem, 100%);
+}
+
+.bake-error-dialog-log {
+  margin: 0.75rem 0 0;
+  max-height: min(40vh, 18rem);
+  overflow: auto;
+  padding: 0.65rem 0.7rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, #0b1220 70%, var(--bg));
+  color: #fecaca;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .editor-staging-static {
@@ -5499,11 +5531,16 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   place-items: center;
   width: 14px;
   height: 14px;
+  padding: 0;
+  border: none;
+  font-family: inherit;
   background: #7f1d1d;
   color: #fecaca;
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .editor-timeline-clip-bake.is-outside {
@@ -6416,6 +6453,74 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   background: color-mix(in srgb, var(--select) 10%, var(--bg));
 }
 
+.generate-media-ref-chips {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.generate-media-ref-chips li {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+}
+
+.generate-media-ref-empty {
+  padding: 1.25rem 0.75rem;
+  border: 1px dashed color-mix(in srgb, var(--border, #444) 80%, transparent);
+  border-radius: 6px;
+}
+
+.generate-media-ref-thumbs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5.25rem, 1fr));
+  gap: 0.45rem;
+}
+
+.generate-media-ref-thumbs li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.generate-media-ref-thumb {
+  appearance: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border, #444) 80%, transparent);
+  border-radius: 6px;
+  background: #1a1e28;
+  overflow: hidden;
+  aspect-ratio: 1;
+  cursor: pointer;
+  color: inherit;
+}
+
+.generate-media-ref-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.generate-media-ref-thumb-remove {
+  padding: 0.1rem 0.35rem;
+  font-size: 0.72rem;
+}
+
 .add-asset-generate-pane .add-asset-generate-field-placeholder {
   margin: 0;
   font-size: 0.88rem;
@@ -6511,6 +6616,9 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 }
 
 .generate-frame-source-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
   flex-shrink: 0;
 }
 
@@ -6670,6 +6778,21 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   inset: 0;
   pointer-events: none;
   background: color-mix(in srgb, var(--select, #67e8f9) 14%, transparent);
+}
+
+.generate-frame-source-asset-order {
+  position: absolute;
+  top: 0.2rem;
+  left: 0.2rem;
+  z-index: 1;
+  min-width: 1.1rem;
+  padding: 0.1rem 0.25rem;
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, #000 55%, transparent);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .generate-frame-source-asset-check {
@@ -6888,7 +7011,7 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 
 .add-asset-generate-progress-bar {
   display: block;
-  min-width: 3px;
+  min-width: 0;
   height: 100%;
   border-radius: 999px;
   background: var(--select);
@@ -6896,11 +7019,28 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   transform-origin: left center;
 }
 
-/* Transform-based pulse — soft fades via mask (color-mix gradients vanish in WKWebView). */
+.add-asset-generate-progress:not(.is-indeterminate) .add-asset-generate-progress-bar {
+  min-width: 3px;
+}
+
+/* Pulse a ::after chip so mask/transform do not fight the bar’s layout box
+   (WKWebView left a 1px origin sliver on the transformed element). */
 .add-asset-generate-progress.is-indeterminate .add-asset-generate-progress-bar {
-  width: 46%;
-  min-width: 46%;
+  position: relative;
+  width: 100%;
+  min-width: 0;
   transition: none;
+  background: transparent;
+  animation: none;
+}
+
+.add-asset-generate-progress.is-indeterminate .add-asset-generate-progress-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 46%;
   border-radius: 999px;
   background: var(--select);
   -webkit-mask-image: linear-gradient(
@@ -7489,8 +7629,28 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 .editor-cartridge-actions {
   flex: 0 0 auto;
   display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.4rem;
+}
+
+.editor-bake-cluster {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.editor-bake-cluster .editor-staging-error-btn {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translate(-0.4rem, -50%);
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: 0.8rem;
 }
 
 .editor-cartridge-grip.is-action {
@@ -8850,6 +9010,12 @@ body.is-timeline-clip-moving * {
 .lab-replicate-copy-note {
   font-size: 0.85rem;
   white-space: nowrap;
+}
+
+.lab-replicate-fetch-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  flex-shrink: 0;
 }
 
 .lab-replicate-split {

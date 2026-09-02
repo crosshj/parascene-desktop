@@ -86,12 +86,59 @@ async function main() {
     results[p] = await fetchJson(url, token);
   }
 
-  const primary = results["/api/servers"] ?? results["/api/servers?ids=1,6"];
-  if (!primary) {
+  const listPayload =
+    results["/api/servers?ids=1,6"] ?? results["/api/servers"];
+  if (!listPayload) {
     console.error(
       "Could not fetch server capabilities — refresh OAuth in the app and retry.",
     );
     process.exit(1);
+  }
+
+  const detailById: Record<string, Json> = {};
+  for (const id of ["1", "6"]) {
+    const detail = results[`/api/servers/${id}`];
+    if (detail) detailById[id] = detail;
+  }
+
+  const listServers = Array.isArray(listPayload.servers)
+    ? (listPayload.servers as Json[])
+    : [];
+  const servers: Record<string, Json> = {};
+  for (const id of ["1", "6"]) {
+    const listed =
+      listServers.find((s) => String((s as { id?: unknown }).id) === id) ??
+      {};
+    const detail = detailById[id] ?? listed;
+    const cfg =
+      (detail.server_config as Json | undefined) ??
+      (listed.server_config as Json | undefined) ??
+      {};
+    const methods =
+      (detail.methods as Json | undefined) ??
+      (cfg.methods as Json | undefined) ??
+      {};
+    const matrix =
+      (detail.capability_matrix as unknown[]) ??
+      (cfg.capability_matrix as unknown[] | undefined) ??
+      [];
+    const lastCheck =
+      (detail.last_check_at as string | undefined) ??
+      (cfg.last_check_at as string | undefined);
+    servers[id] = {
+      id: Number(id),
+      name: (detail.name as string | undefined) ?? (listed.name as string),
+      description:
+        (detail.description as string | undefined) ??
+        (listed.description as string),
+      status: (detail.status as string | undefined) ?? (listed.status as string),
+      server_url:
+        (detail.server_url as string | undefined) ??
+        (listed.server_url as string),
+      methods,
+      capability_matrix: matrix,
+      ...(lastCheck ? { last_check_at: lastCheck } : {}),
+    };
   }
 
   const payload = {
@@ -99,11 +146,17 @@ async function main() {
       endpoint: "GET https://api.parascene.com/api/servers",
       refreshed_at: new Date().toISOString().slice(0, 10),
       probe_paths: paths,
+      server_ids: ["1", "6"],
+      note: "Live snapshot. Auth tokens stripped. Methods lifted from server_config.",
     },
-    ...primary,
+    servers,
   };
   fs.writeFileSync(OUT_PATH, `${JSON.stringify(payload, null, 2)}\n`);
   console.log("Wrote", OUT_PATH);
+  console.log(
+    "server 6 methods:",
+    Object.keys((servers["6"]?.methods as object) ?? {}).join(", "),
+  );
 }
 
 void main();

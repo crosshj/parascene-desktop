@@ -703,13 +703,17 @@ pub async fn run_prediction(
 
     let detail = cache::get_model_local(&owner, &name)?
         .ok_or_else(|| format!("Model {owner}/{name} not found in local catalog"))?;
-    let version = detail
-        .latest_version_id
-        .clone()
-        .ok_or_else(|| format!("No cached version for {owner}/{name}. Use Update model first."))?;
+    let versionless = super::schema_page::is_versionless(&detail.raw);
+    let version = if versionless {
+        format!("{owner}/{name}")
+    } else {
+        detail.latest_version_id.clone().ok_or_else(|| {
+            format!("No cached version for {owner}/{name}. Use Update model or Fetch full schema.")
+        })?
+    };
     if !detail.schema_cached {
         return Err(format!(
-            "No schema cached for {owner}/{name}. Use Update model first."
+            "No schema cached for {owner}/{name}. Use Fetch full schema."
         ));
     }
 

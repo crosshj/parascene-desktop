@@ -3,13 +3,15 @@
 use super::catalog::default_paths;
 use super::ffmpeg::{self, resolve_ffmpeg};
 use super::lab_deps::resolve_demucs;
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::UNIX_EPOCH;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,18 +31,16 @@ fn cache_dir(kind: &str) -> Result<PathBuf, String> {
 
 fn run_ffmpeg(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
     let output = ffmpeg::command(ffmpeg)
+        .arg("-hide_banner")
         .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
     if output.status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(format!(
-        "ffmpeg failed (exit {}): {}",
-        output.status,
-        stderr.chars().take(400).collect::<String>()
-    ))
+    Err(ffmpeg::failure_message(&output, "ffmpeg failed"))
 }
 
 fn hash_key(parts: &[&str]) -> String {
@@ -49,6 +49,101 @@ fn hash_key(parts: &[&str]) -> String {
         p.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
+}
+
+fn extend_gates() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn gate_for_extend(key: &str) -> Arc<Mutex<()>> {
+    let mut map = extend_gates().lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(key.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn file_nonempty(path: &Path) -> bool {
+    path.is_file() && path.metadata().map(|m| m.len() > 32).unwrap_or(false)
+}
+
+/// Unique sibling so two bakes never `-y` the same mp4 (truncated moov).
+fn extend_partial(dest: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let stem = dest
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("extend");
+    let ext = dest.extension().and_then(|s| s.to_str()).unwrap_or("mp4");
+    dest.with_file_name(format!(
+        "{stem}.partial.{}.{}.{ext}",
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn publish_partial(partial: &Path, dest: &Path) -> Result<(), String> {
+    if !file_nonempty(partial) {
+        let _ = fs::remove_file(partial);
+        return Err("ffmpeg produced no output file".into());
+    }
+    let _ = fs::remove_file(dest);
+    fs::rename(partial, dest).map_err(|e| {
+        let _ = fs::remove_file(partial);
+        format!("Could not finalize bake: {e}")
+    })?;
+    Ok(())
+}
+
+fn probe_video_duration(ffmpeg: &Path, path: &Path) -> Result<f64, String> {
+    if !file_nonempty(path) {
+        return Err("encode produced an empty file".into());
+    }
+    let path_s = path.to_string_lossy().to_string();
+    let output = ffmpeg::command(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-i",
+            &path_s,
+            "-an",
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Could not probe video: {e}"))?;
+    if !output.status.success() {
+        return Err(ffmpeg::failure_message(&output, "ffmpeg failed"));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_duration_from_ffmpeg_stderr(&stderr)
+        .filter(|d| *d > 0.05)
+        .ok_or_else(|| "Could not read duration from encoded clip".into())
+}
+
+fn push_x264_mp4(args: &mut Vec<String>, dest: &Path) {
+    args.extend([
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-bf".into(),
+        "0".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        dest.to_string_lossy().to_string(),
+    ]);
 }
 
 fn source_fingerprint(path: &Path) -> Result<String, String> {
@@ -355,7 +450,7 @@ pub fn extend_clip_on_disk(
         .filter(|v| v.is_finite() && *v > 0.0)
         .map(|v| v.clamp(0.25, 8.0))
         .unwrap_or(1.0);
-    let mode = if ping_pong { "pingpong_v4" } else { "loop" };
+    let mode = if ping_pong { "pingpong_v6" } else { "loop_v6" };
     let ffmpeg = resolve_ffmpeg()
         .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
@@ -369,16 +464,18 @@ pub fn extend_clip_on_disk(
         &format!("{:.3}", out_s.unwrap_or(-1.0)),
         &format!("speed_{speed:.3}"),
     ]);
+    let gate = gate_for_extend(&key);
+    let _hold = gate.lock().unwrap_or_else(|e| e.into_inner());
     let dir = cache_dir("extend")?;
     let dest = dir.join(format!("{key}.mp4"));
-    if dest.is_file() {
+    if dest.is_file() && probe_video_duration(&ffmpeg, &dest).is_ok() {
         return Ok(dest);
     }
+    let _ = fs::remove_file(&dest);
 
     let segment = dir.join(format!("{key}.seg.mp4"));
     {
-        let tmp = dir.join(format!("{key}.seg.tmp.mp4"));
-        let _ = fs::remove_file(&tmp);
+        let tmp = extend_partial(&segment);
         let mut args: Vec<String> = vec!["-y".into()];
         if in_s > 0.0 {
             args.push("-ss".into());
@@ -393,52 +490,71 @@ pub fn extend_clip_on_disk(
             }
         }
         args.push("-an".into());
+        // libx264 yuv420p needs even width/height. Generated stills/videos
+        // (portrait 4:5, odd MiniMax sizes) fail without this.
+        let mut vf = String::from(
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p,setpts=PTS-STARTPTS",
+        );
         if (speed - 1.0).abs() >= 0.001 {
-            // setpts=PTS/speed: speed>1 shortens, speed<1 lengthens.
-            args.push("-vf".into());
-            args.push(format!("setpts=PTS/{speed:.6}"));
+            vf = format!("setpts=PTS/{speed:.6},{vf}");
         }
-        args.extend([
-            "-c:v".into(),
-            "libx264".into(),
-            "-pix_fmt".into(),
-            "yuv420p".into(),
-            tmp.to_string_lossy().to_string(),
-        ]);
+        args.push("-vf".into());
+        args.push(vf);
+        push_x264_mp4(&mut args, &tmp);
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        run_ffmpeg(&ffmpeg, &arg_refs)?;
-        fs::rename(&tmp, &segment).map_err(|e| format!("segment rename: {e}"))?;
+        let encoded = run_ffmpeg(&ffmpeg, &arg_refs);
+        if let Err(err) = encoded {
+            let _ = fs::remove_file(&tmp);
+            return Err(err);
+        }
+        publish_partial(&tmp, &segment)?;
+        if let Err(err) = probe_video_duration(&ffmpeg, &segment) {
+            let _ = fs::remove_file(&segment);
+            return Err(err);
+        }
     }
 
-    let probe = ffmpeg::command(&ffmpeg)
-        .args(["-i", segment.to_str().unwrap_or(""), "-f", "null", "-"])
-        .output()
-        .map_err(|e| format!("probe failed: {e}"))?;
-    let stderr = String::from_utf8_lossy(&probe.stderr);
-    let seg_dur = parse_duration_from_ffmpeg_stderr(&stderr)
-        .unwrap_or(1.0)
-        .max(0.1);
+    let seg_dur = probe_video_duration(&ffmpeg, &segment)?;
 
     let reverse = dir.join(format!("{key}.rev.mp4"));
-    if ping_pong && !reverse.is_file() {
-        let tmp = dir.join(format!("{key}.rev.tmp.mp4"));
-        run_ffmpeg(
-            &ffmpeg,
-            &[
-                "-y",
-                "-i",
-                segment.to_str().ok_or("bad seg")?,
-                "-an",
-                "-vf",
-                "reverse",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                tmp.to_str().ok_or("bad tmp")?,
-            ],
-        )?;
-        fs::rename(&tmp, &reverse).map_err(|e| format!("reverse rename: {e}"))?;
+    if ping_pong {
+        let reverse_ok = reverse.is_file() && probe_video_duration(&ffmpeg, &reverse).is_ok();
+        if !reverse_ok {
+            let tmp = extend_partial(&reverse);
+            let tmp_s = tmp.to_string_lossy().to_string();
+            let seg_s = segment.to_string_lossy().to_string();
+            let reversed = run_ffmpeg(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-i",
+                    &seg_s,
+                    "-an",
+                    "-vf",
+                    "reverse,format=yuv420p,setpts=PTS-STARTPTS",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-bf",
+                    "0",
+                    "-movflags",
+                    "+faststart",
+                    &tmp_s,
+                ],
+            );
+            if let Err(err) = reversed {
+                let _ = fs::remove_file(&tmp);
+                return Err(err);
+            }
+            publish_partial(&tmp, &reverse)?;
+            if let Err(err) = probe_video_duration(&ffmpeg, &reverse) {
+                let _ = fs::remove_file(&reverse);
+                return Err(err);
+            }
+        }
     }
 
     let list = dir.join(format!("{key}.txt"));
@@ -472,29 +588,47 @@ pub fn extend_clip_on_disk(
         fs::write(&list, body).map_err(|e| format!("concat list: {e}"))?;
     }
 
-    let tmp = dir.join(format!("{key}.out.tmp.mp4"));
-    let _ = fs::remove_file(&tmp);
-    run_ffmpeg(
+    let tmp = extend_partial(&dest);
+    let tmp_s = tmp.to_string_lossy().to_string();
+    let list_s = list.to_string_lossy().to_string();
+    let t_arg = format!("{target_sec:.3}");
+    let concat = run_ffmpeg(
         &ffmpeg,
         &[
             "-y",
+            "-fflags",
+            "+genpts",
             "-f",
             "concat",
             "-safe",
             "0",
             "-i",
-            list.to_str().ok_or("bad list")?,
+            &list_s,
             "-t",
-            &format!("{target_sec:.3}"),
+            &t_arg,
             "-an",
             "-c:v",
             "libx264",
+            "-preset",
+            "veryfast",
             "-pix_fmt",
             "yuv420p",
-            tmp.to_str().ok_or("bad out")?,
+            "-bf",
+            "0",
+            "-movflags",
+            "+faststart",
+            &tmp_s,
         ],
-    )?;
-    fs::rename(&tmp, &dest).map_err(|e| format!("extend rename: {e}"))?;
+    );
+    if let Err(err) = concat {
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    publish_partial(&tmp, &dest)?;
+    if let Err(err) = probe_video_duration(&ffmpeg, &dest) {
+        let _ = fs::remove_file(&dest);
+        return Err(err);
+    }
     Ok(dest)
 }
 
@@ -807,31 +941,16 @@ fn probe_media_duration_sec(ffmpeg: &Path, source: &Path) -> Result<f64, String>
 /// Like `run_ffmpeg`, but surfaces the useful tail of stderr (not the version banner).
 fn run_ffmpeg_frame(ffmpeg: &Path, args: &[&str]) -> Result<(), String> {
     let output = ffmpeg::command(ffmpeg)
+        .arg("-hide_banner")
         .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Could not run ffmpeg: {e}"))?;
     if output.status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let useful: String = stderr
-        .lines()
-        .rev()
-        .take(8)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(format!(
-        "ffmpeg failed (exit {}): {}",
-        output.status,
-        if useful.trim().is_empty() {
-            stderr.chars().take(400).collect::<String>()
-        } else {
-            useful
-        }
-    ))
+    Err(ffmpeg::failure_message(&output, "ffmpeg failed"))
 }
 
 fn parse_duration_from_ffmpeg_stderr(stderr: &str) -> Option<f64> {
@@ -847,3 +966,4 @@ fn parse_duration_from_ffmpeg_stderr(stderr: &str) -> Option<f64> {
     let s: f64 = parts[2].parse().ok()?;
     Some(h * 3600.0 + m * 60.0 + s)
 }
+

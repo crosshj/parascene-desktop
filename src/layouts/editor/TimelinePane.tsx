@@ -24,6 +24,7 @@ import {
 } from "../../library/reversedMedia";
 import type { Creation } from "../../library/types";
 import type { BakeInfo, BakeStatus } from "../../library/slideshowMedia";
+import { BakeErrorModal } from "./BakeErrorModal";
 import {
   projectAspectCss,
   type ProjectAspectRatio,
@@ -468,6 +469,7 @@ function MiniClip({
   thumbAspectRatio = "16 / 9",
   bakeStatus,
   bakeError,
+  errorDialogTitle = "Bake failed",
   waveSeed,
   audioMixPath,
   audioVocalsPath,
@@ -503,6 +505,7 @@ function MiniClip({
   thumbAspectRatio?: string;
   bakeStatus?: BakeStatus;
   bakeError?: string | null;
+  errorDialogTitle?: string;
   waveSeed?: string;
   audioMixPath?: string | null;
   audioVocalsPath?: string | null;
@@ -525,6 +528,8 @@ function MiniClip({
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
+  const [bakeErrorOpen, setBakeErrorOpen] = useState(false);
+  const bakeErrorMessage = bakeError?.trim() || "Bake failed";
   const safeDuration =
     Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 1;
   const resolvedClipOutSec =
@@ -580,6 +585,7 @@ function MiniClip({
   }
 
   return (
+    <>
     <div
       className={classNames}
       title={title}
@@ -619,13 +625,21 @@ function MiniClip({
           title="Rendering slideshow…"
         />
       ) : bakeStatus === "failed" ? (
-        <span
+        <button
+          type="button"
           className="editor-timeline-clip-bake is-failed"
-          aria-label={bakeError?.trim() || "Slideshow render failed"}
-          title={bakeError?.trim() || "Slideshow render failed"}
+          aria-label={`${errorDialogTitle}. Show details.`}
+          title={errorDialogTitle}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            setBakeErrorOpen(true);
+          }}
         >
           !
-        </span>
+        </button>
       ) : outsideFolder ? (
         <span
           className="editor-timeline-clip-bake is-outside"
@@ -734,6 +748,14 @@ function MiniClip({
         )
       ) : null}
     </div>
+    {bakeErrorOpen ? (
+      <BakeErrorModal
+        title={errorDialogTitle}
+        error={bakeErrorMessage}
+        onClose={() => setBakeErrorOpen(false)}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -2352,6 +2374,11 @@ export function TimelinePane({
                       isAddAssetPlaceholderClip(clip)
                         ? addAssetGenerationByClipId?.get(clip.id)?.error
                         : bakeInfoByClipId?.get(clip.id)?.error
+                    }
+                    errorDialogTitle={
+                      isAddAssetPlaceholderClip(clip)
+                        ? "Generation failed"
+                        : "Bake failed"
                     }
                     extendDivitFrac={
                       clipIsTimelineExtended(clip)

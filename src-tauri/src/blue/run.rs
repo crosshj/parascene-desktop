@@ -80,9 +80,18 @@ fn field_expects_image(field: &str) -> bool {
     f.contains("image") || f.ends_with("_images")
 }
 
-/// Re-encode stills to a baseline JPEG ComfyUI/PIL can open reliably.
-/// Asset picks often land as PNG/HEIC/WebP; timeline frames already go through
-/// the clip-thumb JPEG path — keep Blue uploads consistent either way.
+fn png_header_ok(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hdr = [0u8; 8];
+    file.read_exact(&mut hdr).is_ok() && hdr == *b"\x89PNG\r\n\x1a\n"
+}
+
+/// Re-encode stills to a capped RGB PNG. MiniMax/Comfy LoadImage still fails
+/// on our yuv420p JPEGs (`open '…/upload_….jpg'`); PNG with a correct MIME
+/// is what that node actually opens.
 fn prepare_local_path_for_blue(path: &Path, field: &str) -> Result<PathBuf, String> {
     if !path.is_file() {
         return Err(format!(
@@ -125,7 +134,7 @@ fn prepare_local_path_for_blue(path: &Path, field: &str) -> Result<PathBuf, Stri
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let dest = dir.join(format!("{safe}-{stamp}.jpg"));
+    let dest = dir.join(format!("{safe}-{stamp}.png"));
     let dest_arg = dest.to_string_lossy().to_string();
     let src_arg = path.to_string_lossy().to_string();
     let output = ffmpeg::command(&ffmpeg_bin)
@@ -137,21 +146,14 @@ fn prepare_local_path_for_blue(path: &Path, field: &str) -> Result<PathBuf, Stri
             "-frames:v",
             "1",
             "-vf",
-            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
-            "-q:v",
-            "2",
-            "-update",
-            "1",
+            "scale=2048:2048:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=rgb24",
             &dest_arg,
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Could not prepare still for Blue: {e}"))?;
-    if !output.status.success()
-        || !dest.is_file()
-        || dest.metadata().map(|m| m.len() == 0).unwrap_or(true)
-    {
+    if !output.status.success() || !png_header_ok(&dest) {
         let err = String::from_utf8_lossy(&output.stderr);
         let tail: String = err
             .chars()
@@ -267,6 +269,85 @@ async fn save_binary_output(
     Ok(dest)
 }
 
+fn is_in_flight_status(status: &str) -> bool {
+    matches!(
+        status,
+        "pending"
+            | "running"
+            | "queued"
+            | "starting"
+            | "processing"
+            | "in_progress"
+            | "waiting"
+            | "created"
+    )
+}
+
+fn push_output_url(urls: &mut Vec<String>, raw: &str) {
+    let t = raw.trim();
+    if t.is_empty() {
+        return;
+    }
+    if !(t.starts_with("http://") || t.starts_with("https://") || t.starts_with('/')) {
+        return;
+    }
+    if !urls.iter().any(|u| u == t) {
+        urls.push(t.to_string());
+    }
+}
+
+fn collect_output_urls(data: &Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(s) = data.get("url").and_then(Value::as_str) {
+        push_output_url(&mut urls, s);
+    }
+    if let Some(s) = data.get("video_url").and_then(Value::as_str) {
+        push_output_url(&mut urls, s);
+    }
+    if let Some(s) = data.get("image_url").and_then(Value::as_str) {
+        push_output_url(&mut urls, s);
+    }
+    if let Some(s) = data.get("output").and_then(Value::as_str) {
+        push_output_url(&mut urls, s);
+    }
+    if let Some(arr) = data.get("urls").and_then(Value::as_array) {
+        for u in arr {
+            if let Some(s) = u.as_str() {
+                push_output_url(&mut urls, s);
+            }
+        }
+    }
+    if let Some(arr) = data.get("outputs").and_then(Value::as_array) {
+        for u in arr {
+            if let Some(s) = u.as_str() {
+                push_output_url(&mut urls, s);
+            } else if let Some(s) = u.get("url").and_then(Value::as_str) {
+                push_output_url(&mut urls, s);
+            }
+        }
+    }
+    if let Some(result) = data.get("result") {
+        if let Some(s) = result.as_str() {
+            push_output_url(&mut urls, s);
+        }
+        if let Some(s) = result.get("url").and_then(Value::as_str) {
+            push_output_url(&mut urls, s);
+        }
+        if let Some(s) = result.get("video_url").and_then(Value::as_str) {
+            push_output_url(&mut urls, s);
+        }
+        if let Some(s) = result.get("image_url").and_then(Value::as_str) {
+            push_output_url(&mut urls, s);
+        }
+        if let Some(s) = result.get("video").and_then(Value::as_str) {
+            push_output_url(&mut urls, s);
+        }
+    }
+    urls
+}
+
+const POLL_MAX: Duration = Duration::from_secs(30 * 60);
+
 async fn poll_until_done(
     creds: &credentials::BlueCredentials,
     method: &str,
@@ -279,6 +360,9 @@ async fn poll_until_done(
     loop {
         if is_cancelled(my_gen) {
             return Err("Cancelled".into());
+        }
+        if started.elapsed() > POLL_MAX {
+            return Err("Blue job timed out after 30 minutes.".into());
         }
         attempt += 1;
         let wait = Duration::from_millis((800u64).saturating_mul(attempt.min(8) as u64));
@@ -298,112 +382,78 @@ async fn poll_until_done(
             },
         );
 
-        let body = json!({
-            "method": method,
-            "args": { "job_id": job_id }
-        });
-        let resp = client::post_json(creds, "/api", &body).await?;
-
-        if resp.status == 202 {
-            continue;
-        }
-        if resp.status == 404 {
-            return Err(format!("Blue job not found: {job_id}"));
-        }
-        if resp.status == 410 {
-            let msg = resp
-                .json()
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-                .unwrap_or_else(|| "Output data removed (retention TTL expired).".into());
-            return Err(msg);
-        }
-        if !(200..300).contains(&resp.status) {
-            let text = String::from_utf8_lossy(&resp.bytes).to_string();
-            return Err(format!("Blue poll HTTP {}: {text}", resp.status));
-        }
-
-        if resp.is_binary_media() {
-            let run_dir = history::ensure_run_dir(job_id)?;
-            let path = save_binary_output(&run_dir, method, &resp).await?;
-            let local = path.to_string_lossy().to_string();
-            let _elapsed = started.elapsed().as_secs_f64();
-            return Ok(("succeeded".into(), vec![], vec![local], None));
-        }
-
-        let data = resp.json()?;
-        let status = data
-            .get("status")
-            .and_then(|s| s.as_str())
-            .unwrap_or("succeeded")
-            .to_string();
-        if status == "failed" {
-            let err = data
-                .get("error")
-                .and_then(|e| e.as_str())
-                .or_else(|| {
-                    data.get("result")
-                        .and_then(|r| r.get("error"))
-                        .and_then(|e| e.as_str())
-                })
-                .unwrap_or("Blue job failed")
-                .to_string();
-            return Err(err);
-        }
-        if status == "pending" || status == "running" {
-            continue;
-        }
-
-        // JSON success — maybe nested URL(s).
-        let mut urls = Vec::new();
-        if let Some(u) = data.get("url").and_then(|x| x.as_str()) {
-            urls.push(u.to_string());
-        }
-        if let Some(arr) = data.get("urls").and_then(|x| x.as_array()) {
-            for u in arr {
-                if let Some(s) = u.as_str() {
-                    urls.push(s.to_string());
-                }
-            }
-        }
-        if let Some(result) = data.get("result") {
-            if let Some(u) = result.get("url").and_then(|x| x.as_str()) {
-                urls.push(u.to_string());
-            }
-            if let Some(u) = result.get("video_url").and_then(|x| x.as_str()) {
-                urls.push(u.to_string());
-            }
-            if let Some(u) = result.get("image_url").and_then(|x| x.as_str()) {
-                urls.push(u.to_string());
-            }
-        }
-
         let run_dir = history::ensure_run_dir(job_id)?;
-        let mut local_paths = Vec::new();
-        for (i, url) in urls.iter().enumerate() {
-            if is_cancelled(my_gen) {
-                return Err("Cancelled".into());
+        match client::poll_job(creds, method, job_id, &run_dir).await? {
+            client::JobPoll::Pending => continue,
+            client::JobPoll::Saved(path) => {
+                let local = path.to_string_lossy().to_string();
+                return Ok(("succeeded".into(), vec![], vec![local], None));
             }
-            let ext = guess_ext_for_method(method, "");
-            let dest = run_dir.join(format!("output-{i}.{ext}"));
-            client::download_to_path(creds, url, &dest).await?;
-            local_paths.push(dest.to_string_lossy().to_string());
-        }
+            client::JobPoll::Json(data) => {
+                let status = data
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if status == "failed" {
+                    let err = data
+                        .get("error")
+                        .and_then(|e| e.as_str())
+                        .or_else(|| {
+                            data.get("result")
+                                .and_then(|r| r.get("error"))
+                                .and_then(|e| e.as_str())
+                        })
+                        .unwrap_or("Blue job failed")
+                        .to_string();
+                    return Err(err);
+                }
+                if is_in_flight_status(&status) {
+                    continue;
+                }
+                let urls = collect_output_urls(&data);
+                if urls.is_empty() {
+                    // Done on Blue but this JSON has no file URL — keep polling
+                    // for the binary (video/mp4) response.
+                    continue;
+                }
 
-        let preview = if local_paths.is_empty() {
-            Some(data.to_string())
-        } else {
-            None
-        };
-        return Ok((status, urls, local_paths, preview));
+                let mut local_paths = Vec::new();
+                for (i, url) in urls.iter().enumerate() {
+                    if is_cancelled(my_gen) {
+                        return Err("Cancelled".into());
+                    }
+                    let ext = guess_ext_for_method(method, "");
+                    let dest = run_dir.join(format!("output-{i}.{ext}"));
+                    client::download_to_path(creds, url, &dest).await?;
+                    local_paths.push(dest.to_string_lossy().to_string());
+                }
+                let done_status = if status.is_empty() {
+                    "succeeded".into()
+                } else {
+                    status
+                };
+                return Ok((done_status, urls, local_paths, None));
+            }
+        }
     }
 }
 
 pub async fn run_method(
     app: AppHandle,
     method: String,
+    args: Value,
+    local_files: Option<HashMap<String, Value>>,
+) -> Result<RunResult, String> {
+    run_method_with_hook(app, method, args, local_files, None).await
+}
+
+pub async fn run_method_with_hook(
+    app: AppHandle,
+    method: String,
     mut args: Value,
     local_files: Option<HashMap<String, Value>>,
+    on_job_id: Option<Box<dyn Fn(&str) + Send + Sync>>,
 ) -> Result<RunResult, String> {
     let my_gen = cancel_ticket();
     let method = method_from_name(&method);
@@ -454,7 +504,7 @@ pub async fn run_method(
         let text = String::from_utf8_lossy(&create_resp.bytes).to_string();
         if text.contains("open '") || text.contains("open \"") {
             return Err(format!(
-                "Blue create HTTP {}: {text}\n\nBlue/Comfy could not open the uploaded start still. Try again (uploads are now re-encoded to a clean JPEG), or switch model to LTX / Wan to isolate a MiniMax-specific issue.",
+                "Blue create HTTP {}: {text}\n\nBlue/Comfy could not open the uploaded image. Retry this generate (stills are now sent as PNG), or try LTX / Wan to isolate a MiniMax-specific issue.",
                 create_resp.status
             ));
         }
@@ -527,6 +577,9 @@ pub async fn run_method(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| format!("Blue create response missing job_id: {create_json}"))?
         .to_string();
+    if let Some(cb) = on_job_id {
+        cb(&job_id);
+    }
 
     let run_dir = history::ensure_run_dir(&job_id)?;
     let model = args
@@ -715,4 +768,31 @@ pub async fn wait_job(app: AppHandle, job_id: String) -> Result<RunResult, Strin
 pub async fn redownload_job(app: AppHandle, job_id: String) -> Result<RunResult, String> {
     // Same as wait — Blue poll returns artifact again when still retained.
     wait_job(app, job_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_output_urls, is_in_flight_status};
+    use serde_json::json;
+
+    #[test]
+    fn in_flight_statuses() {
+        assert!(is_in_flight_status("pending"));
+        assert!(is_in_flight_status("running"));
+        assert!(is_in_flight_status("starting"));
+        assert!(!is_in_flight_status("succeeded"));
+        assert!(!is_in_flight_status("failed"));
+    }
+
+    #[test]
+    fn collects_nested_and_relative_urls() {
+        let data = json!({
+            "status": "succeeded",
+            "result": { "video_url": "https://blue.parascene.com/api/files/out.mp4" },
+            "output": "/api/files/also.mp4"
+        });
+        let urls = collect_output_urls(&data);
+        assert!(urls.iter().any(|u| u.ends_with("out.mp4")));
+        assert!(urls.iter().any(|u| u.ends_with("also.mp4")));
+    }
 }

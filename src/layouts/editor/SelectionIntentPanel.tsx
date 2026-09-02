@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { requestOpenSettings } from "../../settings/events";
-import type { BakeInfo } from "../../library/slideshowMedia";
 import {
   GENERATE_INTENTS,
   GENERATE_SERVERS,
@@ -63,7 +62,6 @@ type SelectionIntentPanelProps = {
   draft: StagedClipDraft | null;
   sourceDurationSec: number;
   onDraftChange: (draft: StagedClipDraft) => void;
-  bakeInfo?: BakeInfo | null;
   /** Plate composite controls when Composite mode is active. */
   composite?: CompositePlatePanelProps | null;
 };
@@ -83,7 +81,6 @@ export function SelectionIntentPanel({
   draft,
   sourceDurationSec,
   onDraftChange,
-  bakeInfo = null,
   composite = null,
 }: SelectionIntentPanelProps) {
   const selected = findSelectionIntentMode(modeId);
@@ -380,7 +377,6 @@ export function SelectionIntentPanel({
             draft={draft}
             sourceDurationSec={sourceDurationSec}
             onDraftChange={onDraftChange}
-            bakeInfo={bakeInfo}
           />
         </section>
       ) : null}

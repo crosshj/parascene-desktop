@@ -26,6 +26,19 @@ function cdnIdFromRemoteJson(remoteJson: string | null | undefined): string | nu
 }
 
 /**
+ * Product create: Parascene resolves this to a Blue CDN URL. Do not mint here.
+ * Used by A2V and Parascene MiniMax H3 when timeline audio is a CDN Creation.
+ */
+export function attachAudioCreationRangeArgs(
+  args: Record<string, unknown>,
+  opts: { creationId: number; startSec: number; durationSec: number },
+): void {
+  args.audio_creation_id = opts.creationId;
+  args.audio_start_sec = opts.startSec;
+  args.audio_duration_sec = opts.durationSec;
+}
+
+/**
  * True when product A2V can send `audio_creation_id` + window instead of
  * uploading a throwaway `/api/audio-clips` slice (CDN-backed audio Creation).
  */

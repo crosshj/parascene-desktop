@@ -71,6 +71,7 @@ import {
   unsupportedSelectionMessage,
   type MultiSelectionClass,
 } from "./selectionClassify";
+import { BakeErrorButton } from "./BakeErrorModal";
 import {
   ClipDragHandle,
   ClipPlaceHandle,
@@ -203,6 +204,8 @@ type PreviewPaneProps = {
   selectedAssetIds?: string[];
   /** Project image assets for Parascene Blue start-frame picker. */
   imageAssets?: ProjectAsset[];
+  videoAssets?: ProjectAsset[];
+  audioAssets?: ProjectAsset[];
   /**
    * Desktop project cabinets — do not expand into slideshow composites
    * (members are shown as flat assets in the Assets pane instead).
@@ -420,6 +423,8 @@ export function PreviewPane({
   onRetryAddAssetDownload,
   selectedAssetIds = [],
   imageAssets = [],
+  videoAssets = [],
+  audioAssets = [],
   projectCabinets = null,
   aspectRatio,
   monitorMode = "source",
@@ -3126,6 +3131,8 @@ export function PreviewPane({
                     onClearError={onClearAddAssetGenerationError}
                     onRetryDownload={onRetryAddAssetDownload}
                     imageAssets={imageAssets}
+                    videoAssets={videoAssets}
+                    audioAssets={audioAssets}
                     progressHostedExternally
                     locked={generateDualFormLocked}
                     errorRecovery={generateDualErrorRecovery}
@@ -3184,6 +3191,8 @@ export function PreviewPane({
                     onClearError={onClearAddAssetGenerationError}
                     onRetryDownload={onRetryAddAssetDownload}
                     imageAssets={imageAssets}
+                    videoAssets={videoAssets}
+                    audioAssets={audioAssets}
                     progressHostedExternally
                     locked={generateDualFormLocked}
                     errorRecovery={generateDualErrorRecovery}
@@ -3220,6 +3229,8 @@ export function PreviewPane({
                     locked={generateDualFormLocked}
                     hideLibraryInlineProgress
                     imageAssets={imageAssets}
+                    videoAssets={videoAssets}
+                    audioAssets={audioAssets}
                     onLibraryAssetGenerationStarted={
                       onLibraryAssetGenerationStarted
                     }
@@ -3279,6 +3290,8 @@ export function PreviewPane({
                     locked={generateDualFormLocked}
                     hideLibraryInlineProgress
                     imageAssets={imageAssets}
+                    videoAssets={videoAssets}
+                    audioAssets={audioAssets}
                     onLibraryGenerateStateChange={setLibraryGenerateState}
                     libraryFormSeed={libraryFormSeed}
                     onLibraryAssetGenerationStarted={
@@ -3335,6 +3348,8 @@ export function PreviewPane({
                 lyricAlignment={lyricAlignment}
                 mainAudioCreationId={mainAudioCreationId}
                 imageAssets={imageAssets}
+                videoAssets={videoAssets}
+                audioAssets={audioAssets}
                 progressHostedExternally={
                   !isTextToImageGeneration(activeReviewGeneration) &&
                   !isImageToImageGeneration(activeReviewGeneration)
@@ -3360,6 +3375,8 @@ export function PreviewPane({
                 onIntentChange={(next) => onAddAssetIntentChange?.(next)}
                 libraryFormSeed={libraryFormSeed}
                 imageAssets={imageAssets}
+                videoAssets={videoAssets}
+                audioAssets={audioAssets}
                 hideLibraryInlineProgress={showLibraryGenerateDual}
                 onLibraryGenerateStateChange={
                   showLibraryGenerateDual ? setLibraryGenerateState : undefined
@@ -3438,9 +3455,6 @@ export function PreviewPane({
                 }
                 sourceDurationSec={durationSec}
                 onDraftChange={onStagingDraftChange}
-                bakeInfo={
-                  stagedDraft?.kind === "slideshow" ? bakeInfo : null
-                }
                 composite={
                   selectionIntentMode === "composite"
                     ? {
@@ -3811,15 +3825,6 @@ export function PreviewPane({
                         }
                       : null
                   }
-                  bakeInfo={
-                    stagedDraft.kind === "slideshow" ||
-                    (stagedDraft.kind === "video" &&
-                      (needsExtendBake ||
-                        bakeInfo?.status === "generating" ||
-                        bakeInfo?.status === "failed"))
-                      ? bakeInfo
-                      : null
-                  }
                 />
               ) : assetId ? (
                 <div
@@ -3850,10 +3855,19 @@ export function PreviewPane({
               editingClip &&
               onSlideshowRender &&
               !unsupportedMessage ? (
-                <SlideshowRenderHandle
-                  onRender={onSlideshowRender}
-                  rendering={bakeInfo?.status === "generating"}
-                />
+                <div className="editor-bake-cluster">
+                  {bakeInfo?.status === "failed" ? (
+                    <BakeErrorButton
+                      error={bakeInfo.error}
+                      fallback="Slideshow render failed"
+                      title="Slideshow bake failed"
+                    />
+                  ) : null}
+                  <SlideshowRenderHandle
+                    onRender={onSlideshowRender}
+                    rendering={bakeInfo?.status === "generating"}
+                  />
+                </div>
               ) : null}
               {canStage &&
               stagedDraft?.kind === "video" &&
@@ -3863,32 +3877,50 @@ export function PreviewPane({
               !needsReverseBake &&
               !reverseBusy &&
               !unsupportedMessage ? (
-                <ExtendBakeHandle
-                  onBake={onExtendBake}
-                  baking={bakeInfo?.status === "generating"}
-                  title={
-                    bakeInfo?.status === "generating"
-                      ? "Baking extend…"
-                      : "Bake extended clip"
-                  }
-                />
+                <div className="editor-bake-cluster">
+                  {bakeInfo?.status === "failed" ? (
+                    <BakeErrorButton
+                      error={bakeInfo.error}
+                      fallback="Extend bake failed"
+                      title="Bake failed"
+                    />
+                  ) : null}
+                  <ExtendBakeHandle
+                    onBake={onExtendBake}
+                    baking={bakeInfo?.status === "generating"}
+                    title={
+                      bakeInfo?.status === "generating"
+                        ? "Baking extend…"
+                        : "Bake extended clip"
+                    }
+                  />
+                </div>
               ) : null}
               {canStage &&
               stagedDraft &&
               (stagedDraft.kind === "video" || stagedDraft.kind === "audio") &&
               (needsReverseBake || reverseBusy) &&
               !unsupportedMessage ? (
-                <ExtendBakeHandle
-                  onBake={onReverseBake}
-                  baking={reverseBusy}
-                  label="Bake"
-                  bakingLabel="Baking…"
-                  title={
-                    reverseBusy
-                      ? "Baking reversed media…"
-                      : "Bake reversed media"
-                  }
-                />
+                <div className="editor-bake-cluster">
+                  {bakeInfo?.status === "failed" ? (
+                    <BakeErrorButton
+                      error={bakeInfo.error}
+                      fallback="Reverse bake failed"
+                      title="Bake failed"
+                    />
+                  ) : null}
+                  <ExtendBakeHandle
+                    onBake={onReverseBake}
+                    baking={reverseBusy}
+                    label="Bake"
+                    bakingLabel="Baking…"
+                    title={
+                      reverseBusy
+                        ? "Baking reversed media…"
+                        : "Bake reversed media"
+                    }
+                  />
+                </div>
               ) : null}
             </div>
           </div>

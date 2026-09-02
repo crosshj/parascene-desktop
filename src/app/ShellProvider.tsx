@@ -102,6 +102,9 @@ import {
   generateFolderIdsToFile,
   type AddAssetGenerationSuccess,
 } from "../layouts/editor/addAssetGenerationStore";
+import { findResumableAddAssetPlaceholders } from "../layouts/editor/addAssetGenerationResume";
+import { listenServiceUpdated } from "../services/serviceClient";
+import { isTerminalActivityState } from "../services/types";
 import { bindLibraryAssetGenerationApplier } from "../layouts/editor/libraryAssetGenerationStore";
 import { defaultStagedClipDraft } from "../layouts/editor/stagedClip";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
@@ -717,6 +720,23 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                 undefined,
               useNearestDuration: draft?.useNearestDuration,
               replicateTweaks: draft?.replicateTweaks,
+              inputVideoAssetId:
+                result.inputVideoAssetId ?? draft?.inputVideoAssetId,
+              characterImageAssetId:
+                result.characterImageAssetId ?? draft?.characterImageAssetId,
+              referenceImageAssetIds:
+                result.referenceImageAssetIds ??
+                draft?.referenceImageAssetIds,
+              referenceVideoAssetIds:
+                result.referenceVideoAssetIds ??
+                draft?.referenceVideoAssetIds,
+              referenceAudioAssetIds:
+                result.referenceAudioAssetIds ??
+                draft?.referenceAudioAssetIds,
+              timelineAudio:
+                result.timelineAudio ?? draft?.timelineAudio,
+              startOffsetSeconds:
+                result.startOffsetSeconds ?? draft?.startOffsetSeconds,
             };
             const nextTimeline = replaceAddAssetPlaceholderWithVideo(
               timeline,
@@ -876,6 +896,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           j.replicatePredictionId ?? "",
           j.pendingCreationId ?? "",
           j.blueJobId ?? "",
+          j.serviceJobId ?? "",
         ].join(":");
       })
       .join("|");
@@ -896,6 +917,54 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     // storedProjects read inside; key covers resumable identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fingerprint drives resume
   }, [openProjectId, addAssetResumeKey]);
+
+  // Airtight completion: the backend jobs table is the source of truth. If a
+  // placeholder still believes it is in progress but its watcher died (webview
+  // reload, HMR module swap, crashed promise), the fingerprint above never
+  // changes and nothing re-attaches. So also re-ask the backend on every
+  // terminal job event and on a slow sweep; reconcile's in-store guards make
+  // this a no-op while a healthy watcher owns the clip.
+  const reconcileZombiesRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    reconcileZombiesRef.current = () => {
+      if (!openProjectId) return;
+      const found = storedProjects.find((p) => p.id === openProjectId);
+      if (!found) return;
+      const ui = storedProjectToUi(found);
+      if (findResumableAddAssetPlaceholders(ui.timeline).length === 0) return;
+      reconcileAddAssetGenerations({
+        projectId: found.id,
+        projectTitle: found.title,
+        timeline: ui.timeline,
+        imagesGroupId: found.imagesGroupId ?? null,
+        videosGroupId: found.videosGroupId ?? null,
+      });
+    };
+  }, [openProjectId, storedProjects]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenServiceUpdated((run) => {
+      if (!isTerminalActivityState(String(run.status))) return;
+      reconcileZombiesRef.current();
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {
+        /* interval sweep still covers missed events */
+      });
+    const timer = window.setInterval(() => {
+      reconcileZombiesRef.current();
+    }, 15_000);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const patchOpenProject = useCallback(
     (patch: (project: StoredProject) => StoredProject) => {

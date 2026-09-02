@@ -65,6 +65,72 @@ function parseReplicateVideoTweaks(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function trimAssetId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringIdList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = [
+    ...new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean),
+    ),
+  ];
+  return ids;
+}
+
+/** Typed Generate refs persisted on drafts and locked Form provenance. */
+export function pickGenerateMediaRefFields(row: Record<string, unknown>): {
+  inputVideoAssetId?: string | null;
+  characterImageAssetId?: string | null;
+  referenceImageAssetIds?: string[];
+  referenceVideoAssetIds?: string[];
+  referenceAudioAssetIds?: string[];
+  timelineAudio?: "none" | "full_mix" | "vocals";
+  startOffsetSeconds?: number;
+} {
+  const offset = Number(row.startOffsetSeconds);
+  const images = stringIdList(row.referenceImageAssetIds);
+  const videos = stringIdList(row.referenceVideoAssetIds);
+  const audios = stringIdList(row.referenceAudioAssetIds);
+  const timelineAudio =
+    row.timelineAudio === "full_mix" ||
+    row.timelineAudio === "vocals" ||
+    row.timelineAudio === "none"
+      ? row.timelineAudio
+      : undefined;
+  return {
+    inputVideoAssetId: trimAssetId(row.inputVideoAssetId) ?? (
+      "inputVideoAssetId" in row ? null : undefined
+    ),
+    characterImageAssetId: trimAssetId(row.characterImageAssetId) ?? (
+      "characterImageAssetId" in row ? null : undefined
+    ),
+    referenceImageAssetIds: images,
+    referenceVideoAssetIds: videos,
+    referenceAudioAssetIds: audios,
+    timelineAudio,
+    startOffsetSeconds:
+      Number.isFinite(offset) && offset > 0 ? offset : undefined,
+  };
+}
+
+export function generateMediaRefFieldsAreEmpty(
+  fields: ReturnType<typeof pickGenerateMediaRefFields>,
+): boolean {
+  return (
+    !fields.inputVideoAssetId &&
+    !fields.characterImageAssetId &&
+    (fields.referenceImageAssetIds?.length ?? 0) === 0 &&
+    (fields.referenceVideoAssetIds?.length ?? 0) === 0 &&
+    (fields.referenceAudioAssetIds?.length ?? 0) === 0 &&
+    (fields.timelineAudio == null || fields.timelineAudio === "none") &&
+    !fields.startOffsetSeconds
+  );
+}
+
 /** Normalize unknown JSON into AddAssetGeneration (shared by project + catalog). */
 export function normalizeAddAssetGeneration(
   value: unknown,
@@ -152,6 +218,7 @@ export function normalizeAddAssetGeneration(
     (firstFrameSource?.kind === "asset" ? firstFrameSource.assetId : undefined);
   const useNearestDuration = row.useNearestDuration === true ? true : undefined;
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
+  const mediaRefs = pickGenerateMediaRefFields(row);
   return {
     prompt: row.prompt,
     audioMode,
@@ -170,6 +237,13 @@ export function normalizeAddAssetGeneration(
     lastFrameSource,
     startFramePreviewUrl,
     endFramePreviewUrl,
+    inputVideoAssetId: mediaRefs.inputVideoAssetId,
+    characterImageAssetId: mediaRefs.characterImageAssetId,
+    referenceImageAssetIds: mediaRefs.referenceImageAssetIds,
+    referenceVideoAssetIds: mediaRefs.referenceVideoAssetIds,
+    referenceAudioAssetIds: mediaRefs.referenceAudioAssetIds,
+    timelineAudio: mediaRefs.timelineAudio,
+    startOffsetSeconds: mediaRefs.startOffsetSeconds,
     useNearestDuration,
     replicateTweaks,
   };
@@ -301,6 +375,20 @@ function deriveIntentFromParasceneMethod(opts: {
     return {
       intentId: "image_audio_to_video",
       methodId: "image_audio_to_video",
+      mode: "start_frame",
+    };
+  }
+  if (method === "reference2video" || method === "ref2video") {
+    return {
+      intentId: "reference_to_video",
+      methodId: "reference_to_video",
+      mode: "start_frame",
+    };
+  }
+  if (method === "video2video" || method === "vid2video") {
+    return {
+      intentId: "video_to_video",
+      methodId: "video_to_video",
       mode: "start_frame",
     };
   }
@@ -495,6 +583,14 @@ export function stampIntentFromVideoRun(opts: {
 
   let inferred: string;
   if (
+    model.includes("r2v") ||
+    model.includes("reference2video") ||
+    model.includes("_ingredients")
+  ) {
+    inferred = "reference_to_video";
+  } else if (model.includes("v2v") || model.includes("video2video")) {
+    inferred = "video_to_video";
+  } else if (
     model.includes("_t2v") ||
     model.includes("t2v") ||
     model.includes("text2video") ||

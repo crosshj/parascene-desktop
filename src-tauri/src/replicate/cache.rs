@@ -1,6 +1,8 @@
 use crate::library::paths::{default_root, ensure_directories, resolve_paths};
 use crate::replicate::enabled_models::{self, is_enabled};
-use crate::replicate::features::{features_from_model, input_summary, InputFieldSummary};
+use crate::replicate::features::{
+    features_from_model, has_input_schema, input_summary, InputFieldSummary,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -659,7 +661,7 @@ fn detail_from_raw(raw: &Value) -> ModelDetailDto {
             .map(|s| s.to_string()),
         latest_version_id,
         features: features_from_model(raw),
-        schema_cached: true,
+        schema_cached: has_input_schema(raw),
         enabled: is_enabled(&owner, &name),
         inputs: input_summary(raw),
         url: raw
@@ -693,7 +695,7 @@ pub fn save_model_detail(owner: &str, name: &str, raw: &Value) -> Result<ModelDe
             .map(|s| s.to_string()),
         model_created_at: map.get(&key).and_then(|r| r.model_created_at.clone()),
         features: dto.features.clone(),
-        schema_cached: true,
+        schema_cached: dto.schema_cached,
         url: dto.url.clone(),
     };
     map.insert(key, row);

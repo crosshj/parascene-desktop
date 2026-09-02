@@ -162,7 +162,7 @@ describe("addAssetGenerationStore", () => {
       }),
     );
 
-    // Second start is ignored while inflight.
+    // Second start on the same clip is ignored while inflight.
     expect(
       startAddAssetGenerationJob({
         projectId: "proj-1",
@@ -203,6 +203,46 @@ describe("addAssetGenerationStore", () => {
         model: "wan_i2v",
       }),
     );
+  });
+
+  it("lets a second clip generate while another clip is inflight", () => {
+    runMock.mockReturnValue(new Promise(() => {}));
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure: vi.fn(),
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+    const runOpts = {
+      timeline: [],
+      mainAudioCreationId: "audio-1",
+      aspectRatio: "16:9",
+      projectId: "proj-1",
+      projectTitle: "Demo",
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+    expect(
+      startAddAssetGenerationJob({
+        projectId: "proj-1",
+        request: makeRequest(),
+        runOpts,
+      }),
+    ).toBe(true);
+    const second = makeRequest();
+    second.clip = { ...second.clip, id: "ph-2" };
+    expect(
+      startAddAssetGenerationJob({
+        projectId: "proj-1",
+        request: second,
+        runOpts,
+      }),
+    ).toBe(true);
+    expect(isAddAssetGenerationInflight("ph-1")).toBe(true);
+    expect(isAddAssetGenerationInflight("ph-2")).toBe(true);
+    expect(getAddAssetGenerationSession("ph-1")?.clipId).toBe("ph-1");
+    expect(getAddAssetGenerationSession("ph-2")?.clipId).toBe("ph-2");
+    expect(runMock).toHaveBeenCalledTimes(2);
   });
 
   it("notifies subscribers on session updates", async () => {

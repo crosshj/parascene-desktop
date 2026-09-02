@@ -125,6 +125,15 @@ pub async fn replicate_model_update(
 }
 
 #[tauri::command]
+pub async fn replicate_model_fetch_full(
+    app: AppHandle,
+    owner: String,
+    name: String,
+) -> Result<ModelDetailDto, String> {
+    jobs::fetch_model_full(app, owner, name).await
+}
+
+#[tauri::command]
 pub async fn replicate_model_run(
     app: AppHandle,
     owner: String,

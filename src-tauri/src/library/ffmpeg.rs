@@ -69,22 +69,76 @@ pub fn wants_last_video_frame(time_sec: f64, duration_sec: f64) -> bool {
     time_sec + 0.05 + 1e-6 >= duration_sec
 }
 
-fn ffmpeg_tail(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let useful: String = stderr
+pub(crate) fn is_ffmpeg_banner_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return true;
+    }
+    t.starts_with("ffmpeg version")
+        || t.starts_with("ffprobe version")
+        || t.starts_with("Copyright (c)")
+        || t.starts_with("built with")
+        || t.starts_with("configuration:")
+        || t.starts_with("libavutil")
+        || t.starts_with("libavcodec")
+        || t.starts_with("libavformat")
+        || t.starts_with("libavdevice")
+        || t.starts_with("libavfilter")
+        || t.starts_with("libswscale")
+        || t.starts_with("libswresample")
+        || t.starts_with("libpostproc")
+        || (t.starts_with("--") && !t.contains("Error"))
+}
+
+/// Skip the version/configuration banner and keep the last useful lines.
+pub(crate) fn useful_stderr(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
         .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !is_ffmpeg_banner_line(l))
+        .collect();
+    if !lines.is_empty() {
+        return lines
+            .iter()
+            .rev()
+            .take(12)
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let raw: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if raw.is_empty() {
+        return stderr.chars().take(400).collect();
+    }
+    raw.iter()
         .rev()
         .take(8)
+        .copied()
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect::<Vec<_>>()
-        .join("\n");
-    if useful.trim().is_empty() {
-        stderr.chars().take(400).collect()
-    } else {
-        useful
-    }
+        .join("\n")
+}
+
+fn ffmpeg_tail(output: &Output) -> String {
+    useful_stderr(&String::from_utf8_lossy(&output.stderr))
+}
+
+pub(crate) fn failure_message(output: &Output, prefix: &str) -> String {
+    let code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| output.status.to_string());
+    format!("{} (exit {}): {}", prefix, code, ffmpeg_tail(output))
 }
 
 /// Write one JPEG. A non-empty file counts as success even when ffmpeg exits
@@ -100,11 +154,7 @@ fn write_jpeg(ffmpeg: &Path, dest: &Path, args: &[&str]) -> Result<(), String> {
     if jpeg_has_bytes(dest) {
         return Ok(());
     }
-    Err(format!(
-        "ffmpeg failed (exit {}): {}",
-        output.status,
-        ffmpeg_tail(&output)
-    ))
+    Err(failure_message(&output, "ffmpeg failed"))
 }
 
 fn write_jpeg_at_time(
@@ -354,6 +404,22 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    #[test]
+    fn useful_stderr_skips_tessus_banner() {
+        let stderr = concat!(
+            "ffmpeg version 7.1.1-tessus https://evermeet.cx/ffmpeg/ Copyright (c) 2000-2024\n",
+            "  built with Apple clang version 16.0.0 (clang-1600.0.26.4)\n",
+            "  configuration: --cc=/usr/bin/clang --prefix=/opt/ffmpeg --enable-gpl\n",
+            "  libavutil      59. 39.100 / 59. 39.100\n",
+            "Error opening output file.\n",
+            "width not divisible by 2 (853x480)\n",
+        );
+        let useful = useful_stderr(stderr);
+        assert!(useful.contains("width not divisible by 2"));
+        assert!(!useful.contains("ffmpeg version"));
+        assert!(!useful.contains("configuration:"));
     }
 
     #[test]

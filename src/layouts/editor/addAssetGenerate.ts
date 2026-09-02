@@ -19,7 +19,10 @@ import {
 } from "../../lab/ltxI2vGeneration";
 import { getCreations } from "../../library/catalogClient";
 import { uploadEphemeralStillViaService } from "../../services/parasceneCatalog";
-import { creationSupportsCdnAudioWindow } from "../../library/cdnAudioCreation";
+import {
+  attachAudioCreationRangeArgs,
+  creationSupportsCdnAudioWindow,
+} from "../../library/cdnAudioCreation";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import type {
   AddAssetBlueModel,
@@ -56,6 +59,7 @@ import { runParasceneProductVideoGeneration } from "./runParasceneProductVideo";
 import { resolveAddAssetIntent, type GenerateIntentId } from "./previewIntent";
 import { isWanFamilyBlueModel } from "./blueVideoModels";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
+import type { GenerateMediaRefs } from "./generateMediaRefs";
 
 export type AddAssetGenerationStepId =
   | "vocals"
@@ -228,15 +232,7 @@ export function initialAddAssetGenerationSteps(
   ];
 }
 
-/** Product A2V: Parascene resolves this to a Blue CDN URL. Do not mint here. */
-export function attachAudioCreationRangeArgs(
-  args: Record<string, unknown>,
-  opts: { creationId: number; startSec: number; durationSec: number },
-): void {
-  args.audio_creation_id = opts.creationId;
-  args.audio_start_sec = opts.startSec;
-  args.audio_duration_sec = opts.durationSec;
-}
+export { attachAudioCreationRangeArgs } from "../../library/cdnAudioCreation";
 
 function setStep(
   steps: AddAssetGenerationStep[],
@@ -537,6 +533,7 @@ export type RunAddAssetGenerationOpts = {
   blueModel?: AddAssetBlueModel;
   startFrame: StartFramePreview;
   endFrame?: StartFramePreview | null;
+  mediaRefs?: GenerateMediaRefs;
   /** When set, run via Replicate instead of Parascene Blue. */
   replicate?: {
     owner: string;
@@ -579,6 +576,15 @@ export async function runAddAssetGeneration(
   const resolvedIntent =
     resolveAddAssetIntent(opts.placeholder.addAssetDraft ?? {})?.intentId ??
     "image_to_video";
+  if (
+    (resolvedIntent === "video_to_video" ||
+      resolvedIntent === "reference_to_video") &&
+    opts.replicate
+  ) {
+    throw new Error(
+      "Video to Video and Refs to Video on Replicate need MiniMax H3 (minimax/h3) in the Lab catalog.",
+    );
+  }
   if (
     !opts.replicate &&
     !opts.blueDirect &&
@@ -648,6 +654,8 @@ export async function runAddAssetGeneration(
       blueModel: opts.blueModel,
       startFrame: opts.startFrame,
       endFrame: opts.endFrame,
+      intentId: resolvedIntent,
+      mediaRefs: opts.mediaRefs,
       onSteps: opts.onSteps,
       onProgress: opts.onProgress,
       onBlueJobId: (jobId) => {
@@ -711,15 +719,14 @@ async function runParasceneProductVideoIntent(
     prompt: opts.prompt,
     model,
     startFrame: opts.startFrame,
+    mediaRefs: opts.mediaRefs,
     inputVideoCreationId:
       opts.intentId === "video_to_video"
-        ? opts.startFrame.sourceAssetId ??
+        ? opts.mediaRefs?.inputVideoAssetId ??
+          opts.startFrame.sourceAssetId ??
           opts.placeholder.addAssetDraft?.startFrameAssetId
         : undefined,
-    referenceCreationIds:
-      opts.intentId === "reference_to_video" && opts.startFrame.sourceAssetId
-        ? [opts.startFrame.sourceAssetId]
-        : undefined,
+    referenceCreationIds: opts.mediaRefs?.referenceImageAssetIds,
     onProgress: opts.onProgress,
     onPendingCreation: (id) => {
       if (id) {

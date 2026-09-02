@@ -58,13 +58,13 @@ use library::{
 };
 use oauth_listener::{cancel_oauth_listener, oauth_take_callback, start_oauth_listener};
 use replicate::{
-    replicate_cache_stats, replicate_model_get, replicate_model_run, replicate_model_run_cancel,
-    replicate_model_set_enabled, replicate_model_update, replicate_models_check_new,
-    replicate_models_crawl_cancel, replicate_models_crawl_pause, replicate_models_crawl_start,
-    replicate_models_list_cached, replicate_models_list_enabled, replicate_pick_local_file,
-    replicate_prediction_delete, replicate_prediction_download, replicate_prediction_get,
-    replicate_prediction_wait, replicate_predictions_list, replicate_token_clear,
-    replicate_token_set, replicate_token_status,
+    replicate_cache_stats, replicate_model_fetch_full, replicate_model_get, replicate_model_run,
+    replicate_model_run_cancel, replicate_model_set_enabled, replicate_model_update,
+    replicate_models_check_new, replicate_models_crawl_cancel, replicate_models_crawl_pause,
+    replicate_models_crawl_start, replicate_models_list_cached, replicate_models_list_enabled,
+    replicate_pick_local_file, replicate_prediction_delete, replicate_prediction_download,
+    replicate_prediction_get, replicate_prediction_wait, replicate_predictions_list,
+    replicate_token_clear, replicate_token_set, replicate_token_status,
 };
 use service::{
     service_cancel, service_describe, service_get, service_invoke, service_list, service_list_runs,
@@ -370,6 +370,7 @@ pub fn run() {
             replicate_models_crawl_cancel,
             replicate_models_check_new,
             replicate_model_update,
+            replicate_model_fetch_full,
             replicate_model_run,
             replicate_model_run_cancel,
             replicate_pick_local_file,

@@ -17,7 +17,6 @@ import {
   type StagedClipFraming,
   type StagedClipTransform,
 } from "./stagedClip";
-import type { BakeInfo } from "../../library/slideshowMedia";
 import {
   DEFAULT_SLIDESHOW_SENSITIVITY,
   isBeatSlideshowMode,
@@ -70,8 +69,6 @@ type StagingFieldsProps = {
     offsetY: number;
     onChange: (patch: Partial<{ zoom: number; offsetX: number; offsetY: number }>) => void;
   } | null;
-  /** Runtime slideshow bake status when editing a timeline clip. */
-  bakeInfo?: BakeInfo | null;
 };
 
 type ClipDragHandleProps = {
@@ -104,7 +101,6 @@ export function StagingFields({
   sourceDurationSec,
   onDraftChange,
   imageView = null,
-  bakeInfo = null,
 }: StagingFieldsProps) {
   const speed = stagedClipSpeed(draft);
   const playthrough = stagedClipPlaythroughUnit(draft);
@@ -252,11 +248,6 @@ export function StagingFields({
                 {SENSITIVITY_LABELS[slideshowMode]?.high}
               </span>
             </label>
-          ) : null}
-          {bakeInfo?.status === "failed" ? (
-            <p className="editor-staging-error" role="alert">
-              {bakeInfo.error?.trim() || "Slideshow render failed"}
-            </p>
           ) : null}
         </>
       ) : null}
@@ -466,12 +457,6 @@ export function StagingFields({
             </label>
           ) : null}
         </>
-      ) : null}
-
-      {draft.kind === "video" && bakeInfo?.status === "failed" ? (
-        <p className="editor-staging-error" role="alert">
-          {bakeInfo.error?.trim() || "Extend bake failed"}
-        </p>
       ) : null}
 
       {draft.kind === "video" || draft.kind === "audio" ? (

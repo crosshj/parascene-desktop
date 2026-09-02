@@ -9,6 +9,7 @@ import {
   makeImageToImageGeneration,
   mergeAddAssetGenerationIntoRemoteJson,
   mergeStampWithDerivedGeneration,
+  normalizeAddAssetGeneration,
   preserveDesktopAddAssetGeneration,
   resolveAddAssetGenerationFromCreation,
   shouldStampCatalogAddAssetGeneration,
@@ -26,6 +27,25 @@ const generation: AddAssetGeneration = {
   methodId: "replicate_timeline_fill",
   startFrameFraming: "fill",
 };
+
+describe("normalizeAddAssetGeneration", () => {
+  it("keeps typed Generate refs for Form review", () => {
+    expect(
+      normalizeAddAssetGeneration({
+        prompt: "walk",
+        generatedAt: "2026-09-02T00:00:00.000Z",
+        creationId: "out-1",
+        inputVideoAssetId: "vid-1",
+        referenceImageAssetIds: ["img-1", ""],
+        startOffsetSeconds: 1.25,
+      }),
+    ).toMatchObject({
+      inputVideoAssetId: "vid-1",
+      referenceImageAssetIds: ["img-1"],
+      startOffsetSeconds: 1.25,
+    });
+  });
+});
 
 function baseCreation(remoteJson: string | null = "{}"): Creation {
   return {
@@ -226,6 +246,51 @@ describe("deriveAddAssetGenerationFromParasceneMeta", () => {
     expect(isImageToImageGeneration(derived)).toBe(true);
   });
 
+  it("derives reference2video as reference_to_video", () => {
+    const creation = baseCreation(
+      parasceneRemoteJson({
+        method: "reference2video",
+        server_id: 6,
+        server_name: "Parascene Blue",
+        completed_at: "2026-09-02T22:30:00.000Z",
+        args: {
+          model: "minimax_r2v",
+          prompt: "character dances to <Audio 1>",
+          input_images: ["https://sh.parascene.com/api/share/v1/AGSm/image"],
+        },
+      }),
+    );
+    creation.mediaType = "video";
+    const derived = deriveAddAssetGenerationFromParasceneMeta(creation);
+    expect(derived).toMatchObject({
+      intentId: "reference_to_video",
+      methodId: "reference_to_video",
+      model: "minimax_r2v",
+    });
+  });
+
+  it("derives video2video as video_to_video", () => {
+    const creation = baseCreation(
+      parasceneRemoteJson({
+        method: "video2video",
+        server_id: 6,
+        server_name: "Parascene Blue",
+        completed_at: "2026-09-02T22:30:00.000Z",
+        args: {
+          model: "bernini_r_v2v",
+          prompt: "restyle the shot",
+        },
+      }),
+    );
+    creation.mediaType = "video";
+    const derived = deriveAddAssetGenerationFromParasceneMeta(creation);
+    expect(derived).toMatchObject({
+      intentId: "video_to_video",
+      methodId: "video_to_video",
+      model: "bernini_r_v2v",
+    });
+  });
+
   it("skips uploadImage even when a prompt column exists", () => {
     const creation = baseCreation(
       parasceneRemoteJson({
@@ -403,6 +468,33 @@ describe("stampIntentFromVideoRun", () => {
     ).toEqual({
       intentId: "text_to_video",
       methodId: "text_to_video",
+    });
+  });
+
+  it("keeps reference_to_video for r2v models instead of image_to_video", () => {
+    expect(
+      stampIntentFromVideoRun({
+        mode: "start_frame",
+        model: "minimax_r2v",
+        draftIntentId: "reference_to_video",
+        draftMethodId: "reference_to_video",
+      }),
+    ).toEqual({
+      intentId: "reference_to_video",
+      methodId: "reference_to_video",
+    });
+  });
+
+  it("infers video_to_video for v2v models", () => {
+    expect(
+      stampIntentFromVideoRun({
+        mode: "start_frame",
+        model: "bernini_r_v2v",
+        draftIntentId: "video_to_video",
+      }),
+    ).toEqual({
+      intentId: "video_to_video",
+      methodId: "video_to_video",
     });
   });
 });

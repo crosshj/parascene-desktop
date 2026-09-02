@@ -404,6 +404,48 @@ describe("projectStore", () => {
     });
   });
 
+  it("round-trips Generate media refs on drafts and generations", () => {
+    const clip = normalizeTimelineClip({
+      id: "ph-refs",
+      label: "0:09",
+      startSec: 0,
+      endSec: 9,
+      isAddAssetPlaceholder: true,
+      addAssetDraft: {
+        prompt: "same character",
+        intentId: "reference_to_video",
+        server: "blue_direct",
+        inputVideoAssetId: "vid-drive",
+        characterImageAssetId: "char-1",
+        referenceImageAssetIds: ["img-1", "img-2"],
+        referenceVideoAssetIds: ["vid-ref"],
+        referenceAudioAssetIds: ["aud-1"],
+        timelineAudio: "full_mix",
+        startOffsetSeconds: 2,
+      },
+      addAssetGeneration: {
+        prompt: "same character",
+        generatedAt: "2026-09-02T00:00:00.000Z",
+        creationId: "out-1",
+        inputVideoAssetId: "vid-drive",
+        referenceImageAssetIds: ["img-1"],
+      },
+    });
+    expect(clip?.addAssetDraft).toMatchObject({
+      inputVideoAssetId: "vid-drive",
+      characterImageAssetId: "char-1",
+      referenceImageAssetIds: ["img-1", "img-2"],
+      referenceVideoAssetIds: ["vid-ref"],
+      referenceAudioAssetIds: ["aud-1"],
+      timelineAudio: "full_mix",
+      startOffsetSeconds: 2,
+    });
+    expect(clip?.addAssetGeneration).toMatchObject({
+      inputVideoAssetId: "vid-drive",
+      referenceImageAssetIds: ["img-1"],
+    });
+  });
+
   it("persists slideshow recipe and bake metadata", () => {
     const a = createStoredProject("Demo", ["i1", "i2"]);
     const withClips = setStoredProjectTimeline(a, [

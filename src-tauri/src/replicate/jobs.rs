@@ -1,5 +1,7 @@
 use crate::replicate::cache::{self, CrawlCheckpoint, CrawlStatus, ModelDetailDto};
 use crate::replicate::client;
+use crate::replicate::features;
+use crate::replicate::schema_page;
 use crate::replicate::token;
 use serde::Serialize;
 use serde_json::Value;
@@ -395,10 +397,49 @@ async fn run_check_new_inner(app: &AppHandle) -> Result<u64, String> {
     Ok(added_or_changed)
 }
 
+async fn fetch_model_into_catalog(
+    token: &str,
+    owner: &str,
+    name: &str,
+    full: bool,
+) -> Result<ModelDetailDto, String> {
+    let url = format!("https://api.replicate.com/v1/models/{owner}/{name}");
+    let mut raw = client::get_json(token, &url).await?;
+    if full && !features::has_input_schema(&raw) {
+        let page_url = format!("https://replicate.com/{owner}/{name}/api");
+        let html = client::get_html(&page_url).await?;
+        let page = schema_page::parse_api_page_schema(&html)?;
+        schema_page::apply_page_schema(&mut raw, &page)?;
+        if !features::has_input_schema(&raw) {
+            return Err(format!(
+                "Replicate’s model API has no OpenAPI for {owner}/{name}, and the public API page did not fill it."
+            ));
+        }
+    }
+    cache::save_model_detail(owner, name, &raw)
+}
+
 pub async fn update_model(
     app: AppHandle,
     owner: String,
     name: String,
+) -> Result<ModelDetailDto, String> {
+    fetch_model_with_progress(app, owner, name, false).await
+}
+
+pub async fn fetch_model_full(
+    app: AppHandle,
+    owner: String,
+    name: String,
+) -> Result<ModelDetailDto, String> {
+    fetch_model_with_progress(app, owner, name, true).await
+}
+
+async fn fetch_model_with_progress(
+    app: AppHandle,
+    owner: String,
+    name: String,
+    full: bool,
 ) -> Result<ModelDetailDto, String> {
     let token = token::require_token()?;
     emit_progress(
@@ -409,14 +450,16 @@ pub async fn update_model(
             fetched: 0,
             merged: 0,
             status: "running".into(),
-            message: Some(format!("Updating {owner}/{name}…")),
+            message: Some(if full {
+                format!("Fetching full schema for {owner}/{name}…")
+            } else {
+                format!("Updating {owner}/{name}…")
+            }),
             error: None,
             done: false,
         },
     );
-    let url = format!("https://api.replicate.com/v1/models/{owner}/{name}");
-    let raw = client::get_json(&token, &url).await?;
-    let dto = cache::save_model_detail(&owner, &name, &raw)?;
+    let dto = fetch_model_into_catalog(&token, &owner, &name, full).await?;
     emit_progress(
         &app,
         ProgressEvent {
@@ -425,7 +468,21 @@ pub async fn update_model(
             fetched: 1,
             merged: 1,
             status: "complete".into(),
-            message: Some(format!("Updated {owner}/{name}")),
+            message: Some(if full {
+                if dto.schema_cached {
+                    format!("Full schema cached for {owner}/{name}")
+                } else {
+                    format!(
+                        "Fetched {owner}/{name} but Replicate still has no OpenAPI. Try Fetch full schema."
+                    )
+                }
+            } else if dto.schema_cached {
+                format!("Updated {owner}/{name}")
+            } else {
+                format!(
+                    "Updated {owner}/{name} (no OpenAPI on the model API — use Fetch full schema)"
+                )
+            }),
             error: None,
             done: true,
         },

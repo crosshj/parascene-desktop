@@ -225,6 +225,20 @@ export type AddAssetDraft = {
   firstFrameSource?: AddAssetFrameSource;
   /** Last still source when continuity is first_last. */
   lastFrameSource?: AddAssetFrameSource;
+  /** Driving video for Video to Video. */
+  inputVideoAssetId?: string | null;
+  /** Optional character still for v2v models that need one. */
+  characterImageAssetId?: string | null;
+  /** Refs to Video — pictures, in prompt order. */
+  referenceImageAssetIds?: string[];
+  /** Refs to Video — videos, in prompt order. */
+  referenceVideoAssetIds?: string[];
+  /** Refs to Video — audio, in prompt order. */
+  referenceAudioAssetIds?: string[];
+  /** Clip this placeholder’s window from the timeline mix. */
+  timelineAudio?: "none" | "full_mix" | "vocals";
+  /** Source window into the driving video (seconds). */
+  startOffsetSeconds?: number;
   /**
    * Preview of the first/start still (cloned from a prior generation so Form
    * can show frames before neighbors/assets resolve).
@@ -278,6 +292,20 @@ export type AddAssetGeneration = {
   startFramePreviewUrl?: string;
   /** Preview URL of the last-frame still when mode is first_last. */
   endFramePreviewUrl?: string;
+  /** Driving video used for Video to Video (Form review after run). */
+  inputVideoAssetId?: string | null;
+  /** Character / start still used for Video to Video. */
+  characterImageAssetId?: string | null;
+  /** Refs to Video — pictures, in prompt order. */
+  referenceImageAssetIds?: string[];
+  /** Refs to Video — videos, in prompt order. */
+  referenceVideoAssetIds?: string[];
+  /** Refs to Video — audio, in prompt order. */
+  referenceAudioAssetIds?: string[];
+  /** Clip this placeholder’s window from the timeline mix. */
+  timelineAudio?: "none" | "full_mix" | "vocals";
+  /** Source window into the driving video (seconds). */
+  startOffsetSeconds?: number;
   /** User opted into nearest allowed Replicate duration. */
   useNearestDuration?: boolean;
   /** Optional Replicate model params captured at generate time. */

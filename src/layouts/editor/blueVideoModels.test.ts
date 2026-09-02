@@ -65,6 +65,27 @@ const MODELS: BlueVideoModelOption[] = [
     flf: false,
     nativeAudio: true,
   },
+  {
+    id: "ltx_ic_lora",
+    label: "LTX IC-LoRA",
+    method: "video2video",
+    flf: false,
+    nativeAudio: true,
+  },
+  {
+    id: "bernini_r_v2v",
+    label: "Bernini-R",
+    method: "video2video",
+    flf: false,
+    nativeAudio: true,
+  },
+  {
+    id: "minimax_r2v",
+    label: "MiniMax H3 r2v",
+    method: "reference2video",
+    flf: false,
+    nativeAudio: true,
+  },
 ];
 
 describe("blueVideoModels", () => {
@@ -142,5 +163,26 @@ describe("blueVideoModels", () => {
         models: MODELS,
       }),
     ).toBe("ltx_i2v");
+  });
+
+  it("defaults Bernini for v2v and MiniMax H3 for r2v", () => {
+    expect(
+      resolveBlueVideoModelId({
+        selected: null,
+        method: "video2video",
+        continuity: "start_frame",
+        blueDirect: true,
+        models: MODELS,
+      }),
+    ).toBe("bernini_r_v2v");
+    expect(
+      resolveBlueVideoModelId({
+        selected: null,
+        method: "reference2video",
+        continuity: "start_frame",
+        blueDirect: true,
+        models: MODELS,
+      }),
+    ).toBe("minimax_r2v");
   });
 });

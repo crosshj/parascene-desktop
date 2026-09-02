@@ -244,7 +244,21 @@ export function parasceneServerIdForIntent(
 }
 
 export function serverCaps(serverId: ParasceneProductServerId | number) {
-  return CAPS.servers?.[String(serverId)] ?? null;
+  const raw = CAPS.servers?.[String(serverId)];
+  if (!raw) return null;
+  if (raw.methods) return raw;
+  const nested = (
+    raw as { server_config?: { methods?: Record<string, ParasceneMethodDef> } }
+  ).server_config;
+  if (!nested?.methods) return raw;
+  return {
+    ...raw,
+    methods: nested.methods,
+    capability_matrix:
+      raw.capability_matrix ??
+      (nested as { capability_matrix?: ParasceneCapabilityMatrixRow[] })
+        .capability_matrix,
+  };
 }
 
 function optionsFromMethod(

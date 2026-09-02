@@ -26,7 +26,11 @@ import {
   isProjectAspectRatio,
   type ProjectAspectRatio,
 } from "./aspectRatios";
-import { normalizeAddAssetGeneration } from "./desktopAddAssetGeneration";
+import {
+  generateMediaRefFieldsAreEmpty,
+  normalizeAddAssetGeneration,
+  pickGenerateMediaRefFields,
+} from "./desktopAddAssetGeneration";
 import {
   resolveFirstFrameSource,
   resolveLastFrameSource,
@@ -408,7 +412,8 @@ function strictReferenceIds(value: StoredProject): Set<string> {
   const ids = new Set<string>();
   const add = (candidate: unknown) => {
     if (typeof candidate === "string" && candidate.trim()) {
-      ids.add(candidate.trim());
+      const id = candidate.trim();
+      if (!id.startsWith("__")) ids.add(id);
     }
   };
   const object = (candidate: unknown): Record<string, unknown> | null =>
@@ -429,11 +434,33 @@ function strictReferenceIds(value: StoredProject): Set<string> {
       const draft = object(clip.addAssetDraft);
       const generation = object(clip.addAssetGeneration);
       add(draft?.startFrameAssetId);
+      add(draft?.inputVideoAssetId);
+      add(draft?.characterImageAssetId);
+      if (Array.isArray(draft?.referenceImageAssetIds)) {
+        for (const id of draft.referenceImageAssetIds) add(id);
+      }
+      if (Array.isArray(draft?.referenceVideoAssetIds)) {
+        for (const id of draft.referenceVideoAssetIds) add(id);
+      }
+      if (Array.isArray(draft?.referenceAudioAssetIds)) {
+        for (const id of draft.referenceAudioAssetIds) add(id);
+      }
       const draftFirst = object(draft?.firstFrameSource);
       if (draftFirst?.kind === "asset") add(draftFirst.assetId);
       const draftLast = object(draft?.lastFrameSource);
       if (draftLast?.kind === "asset") add(draftLast.assetId);
       add(generation?.startFrameAssetId);
+      add(generation?.inputVideoAssetId);
+      add(generation?.characterImageAssetId);
+      if (Array.isArray(generation?.referenceImageAssetIds)) {
+        for (const id of generation.referenceImageAssetIds) add(id);
+      }
+      if (Array.isArray(generation?.referenceVideoAssetIds)) {
+        for (const id of generation.referenceVideoAssetIds) add(id);
+      }
+      if (Array.isArray(generation?.referenceAudioAssetIds)) {
+        for (const id of generation.referenceAudioAssetIds) add(id);
+      }
       const genFirst = object(generation?.firstFrameSource);
       if (genFirst?.kind === "asset") add(genFirst.assetId);
       const genLast = object(generation?.lastFrameSource);
@@ -761,6 +788,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
   const legacyStartFrameAssetId =
     startFrameAssetId ??
     (firstFrameSource?.kind === "asset" ? firstFrameSource.assetId : undefined);
+  const mediaRefs = pickGenerateMediaRefFields(row);
   if (
     prompt === undefined &&
     audioMode === undefined &&
@@ -780,7 +808,8 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     legacyStartFrameAssetId === undefined &&
     startFrameFraming === undefined &&
     firstFrameSource === undefined &&
-    lastFrameSource === undefined
+    lastFrameSource === undefined &&
+    generateMediaRefFieldsAreEmpty(mediaRefs)
   ) {
     return undefined;
   }
@@ -804,6 +833,13 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     startFrameFraming,
     firstFrameSource,
     lastFrameSource,
+    inputVideoAssetId: mediaRefs.inputVideoAssetId,
+    characterImageAssetId: mediaRefs.characterImageAssetId,
+    referenceImageAssetIds: mediaRefs.referenceImageAssetIds,
+    referenceVideoAssetIds: mediaRefs.referenceVideoAssetIds,
+    referenceAudioAssetIds: mediaRefs.referenceAudioAssetIds,
+    timelineAudio: mediaRefs.timelineAudio,
+    startOffsetSeconds: mediaRefs.startOffsetSeconds,
   };
 }
 

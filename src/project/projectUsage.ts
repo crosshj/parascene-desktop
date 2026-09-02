@@ -23,7 +23,7 @@ export function collectProjectAssetUsage(
     ownerLabel: string,
   ) => {
     const id = creationId?.trim();
-    if (!id) return;
+    if (!id || id.startsWith("__")) return;
     const key = `${id}\0${usageKind}\0${ownerId}`;
     rows.set(key, {
       creationId: id,
@@ -84,6 +84,48 @@ export function collectProjectAssetUsage(
       clip.id,
       label,
     );
+    add(
+      clip.addAssetDraft?.inputVideoAssetId,
+      "generation_media_ref",
+      clip.id,
+      label,
+    );
+    add(
+      clip.addAssetDraft?.characterImageAssetId,
+      "generation_media_ref",
+      clip.id,
+      label,
+    );
+    for (const id of clip.addAssetDraft?.referenceImageAssetIds ?? []) {
+      add(id, "generation_media_ref", clip.id, label);
+    }
+    for (const id of clip.addAssetDraft?.referenceVideoAssetIds ?? []) {
+      add(id, "generation_media_ref", clip.id, label);
+    }
+    for (const id of clip.addAssetDraft?.referenceAudioAssetIds ?? []) {
+      add(id, "generation_media_ref", clip.id, label);
+    }
+    add(
+      clip.addAssetGeneration?.inputVideoAssetId,
+      "generation_media_ref",
+      clip.id,
+      label,
+    );
+    add(
+      clip.addAssetGeneration?.characterImageAssetId,
+      "generation_media_ref",
+      clip.id,
+      label,
+    );
+    for (const id of clip.addAssetGeneration?.referenceImageAssetIds ?? []) {
+      add(id, "generation_media_ref", clip.id, label);
+    }
+    for (const id of clip.addAssetGeneration?.referenceVideoAssetIds ?? []) {
+      add(id, "generation_media_ref", clip.id, label);
+    }
+    for (const id of clip.addAssetGeneration?.referenceAudioAssetIds ?? []) {
+      add(id, "generation_media_ref", clip.id, label);
+    }
     add(
       clip.addAssetGeneration?.creationId,
       "generated_timeline_clip",
@@ -266,6 +308,47 @@ export function pruneMissingProjectReferences(
         draft = { ...draft, lastFrameSource: undefined };
         changed = true;
       }
+      const nextImages = (draft.referenceImageAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
+      const nextVideos = (draft.referenceVideoAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
+      const nextAudios = (draft.referenceAudioAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
+      if (
+        draft.inputVideoAssetId &&
+        missing.has(draft.inputVideoAssetId)
+      ) {
+        draft = { ...draft, inputVideoAssetId: null };
+        changed = true;
+      }
+      if (
+        draft.characterImageAssetId &&
+        missing.has(draft.characterImageAssetId)
+      ) {
+        draft = { ...draft, characterImageAssetId: null };
+        changed = true;
+      }
+      if (
+        nextImages.length !== (draft.referenceImageAssetIds ?? []).length
+      ) {
+        draft = { ...draft, referenceImageAssetIds: nextImages };
+        changed = true;
+      }
+      if (
+        nextVideos.length !== (draft.referenceVideoAssetIds ?? []).length
+      ) {
+        draft = { ...draft, referenceVideoAssetIds: nextVideos };
+        changed = true;
+      }
+      if (
+        nextAudios.length !== (draft.referenceAudioAssetIds ?? []).length
+      ) {
+        draft = { ...draft, referenceAudioAssetIds: nextAudios };
+        changed = true;
+      }
       if (changed) {
         next = { ...next, addAssetDraft: draft };
       }
@@ -293,13 +376,38 @@ export function pruneMissingProjectReferences(
       }
       const creationId =
         gen.creationId && missing.has(gen.creationId) ? undefined : gen.creationId;
+      const inputVideoAssetId =
+        gen.inputVideoAssetId && missing.has(gen.inputVideoAssetId)
+          ? null
+          : gen.inputVideoAssetId;
+      const characterImageAssetId =
+        gen.characterImageAssetId && missing.has(gen.characterImageAssetId)
+          ? null
+          : gen.characterImageAssetId;
+      const referenceImageAssetIds = (gen.referenceImageAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
+      const referenceVideoAssetIds = (gen.referenceVideoAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
+      const referenceAudioAssetIds = (gen.referenceAudioAssetIds ?? []).filter(
+        (id) => !missing.has(id),
+      );
       if (!creationId) {
         next = { ...next, addAssetGeneration: undefined };
       } else if (
         startFrameAssetId !== gen.startFrameAssetId ||
         firstFrameSource !== gen.firstFrameSource ||
         lastFrameSource !== gen.lastFrameSource ||
-        creationId !== gen.creationId
+        creationId !== gen.creationId ||
+        inputVideoAssetId !== gen.inputVideoAssetId ||
+        characterImageAssetId !== gen.characterImageAssetId ||
+        referenceImageAssetIds.length !==
+          (gen.referenceImageAssetIds ?? []).length ||
+        referenceVideoAssetIds.length !==
+          (gen.referenceVideoAssetIds ?? []).length ||
+        referenceAudioAssetIds.length !==
+          (gen.referenceAudioAssetIds ?? []).length
       ) {
         next = {
           ...next,
@@ -309,6 +417,11 @@ export function pruneMissingProjectReferences(
             firstFrameSource,
             lastFrameSource,
             creationId,
+            inputVideoAssetId,
+            characterImageAssetId,
+            referenceImageAssetIds,
+            referenceVideoAssetIds,
+            referenceAudioAssetIds,
           },
         };
       }

@@ -106,6 +106,14 @@ pub fn features_from_model(model: &Value) -> Vec<String> {
     tags
 }
 
+pub fn has_input_schema(model: &Value) -> bool {
+    model
+        .pointer("/latest_version/openapi_schema/components/schemas/Input/properties")
+        .and_then(|v| v.as_object())
+        .map(|o| !o.is_empty())
+        .unwrap_or(false)
+}
+
 /// Compact input field summary for detail UI.
 pub fn input_summary(model: &Value) -> Vec<InputFieldSummary> {
     let Some(props) = model

@@ -226,18 +226,18 @@ export const INTENT_SERVER_CAPABILITIES: readonly IntentServerCapability[] = [
   },
 
   { intentId: "video_to_video", server: "parascene_blue", status: "wired" },
-  { intentId: "video_to_video", server: "blue_direct", status: "coming_soon" },
+  { intentId: "video_to_video", server: "blue_direct", status: "wired" },
   { intentId: "video_to_video", server: "replicate", status: "coming_soon" },
 
   {
     intentId: "reference_to_video",
     server: "parascene_blue",
-    status: "coming_soon",
+    status: "wired",
   },
   {
     intentId: "reference_to_video",
     server: "blue_direct",
-    status: "coming_soon",
+    status: "wired",
   },
   {
     intentId: "reference_to_video",

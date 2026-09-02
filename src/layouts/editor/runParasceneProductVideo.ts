@@ -24,6 +24,20 @@ import {
 } from "./addAssetStartFrame";
 import type { LyricAlignment } from "../../project/types";
 import type { TimelineClip } from "../../project/types";
+import {
+  isTimelineImageRefId,
+  normalizeGenerateMediaRefs,
+  validateGenerateMediaRefs,
+  type GenerateMediaRefs,
+} from "./generateMediaRefs";
+import { planAdvancedVideoSend } from "./generateAdvancedVideoSend";
+import {
+  attachParasceneTimelineAudioToCreateArgs,
+  attachParasceneAudioClipId,
+  isGenericPromptAudioUrl,
+  resolveParasceneAudioAssetForCreate,
+} from "./timelineReferenceAudio";
+import { resolveReferenceImageStill } from "./timelineReferenceImages";
 
 function remoteMediaUrl(c: Creation): string | null {
   if (c.remoteUrl?.trim()) return c.remoteUrl.trim();
@@ -85,9 +99,10 @@ export async function runParasceneProductVideoGeneration(opts: {
   prompt: string;
   model: string;
   startFrame: StartFramePreview;
-  /** Optional driving / source video (V2V). */
+  mediaRefs?: GenerateMediaRefs;
+  /** @deprecated Prefer mediaRefs.inputVideoAssetId */
   inputVideoCreationId?: string | null;
-  /** Optional reference stills (R2V / V2V models that need ref image). */
+  /** @deprecated Prefer mediaRefs.referenceImageAssetIds */
   referenceCreationIds?: string[];
   onProgress: (note: string) => void;
   onPendingCreation?: (id: string | null) => void;
@@ -118,43 +133,110 @@ export async function runParasceneProductVideoGeneration(opts: {
     opts.lyricAlignment ?? null,
   );
 
-  const args: Record<string, unknown> = {
+  const refs = normalizeGenerateMediaRefs(opts.mediaRefs);
+  if (!refs.inputVideoAssetId && opts.inputVideoCreationId?.trim()) {
+    refs.inputVideoAssetId = opts.inputVideoCreationId.trim();
+  }
+  if (
+    refs.referenceImageAssetIds.length === 0 &&
+    opts.referenceCreationIds?.length
+  ) {
+    refs.referenceImageAssetIds = opts.referenceCreationIds.filter(Boolean);
+  }
+  if (!refs.characterImageAssetId && opts.startFrame.sourceAssetId?.trim()) {
+    refs.characterImageAssetId = opts.startFrame.sourceAssetId.trim();
+  }
+  const invalid = validateGenerateMediaRefs({
+    intentId: opts.intentId,
+    refs,
+    modelId: model,
+  });
+  if (invalid) throw new Error(invalid);
+
+  const plan = planAdvancedVideoSend({
+    intentId: opts.intentId,
+    lane: "parascene",
     prompt,
     model,
-    aspect_ratio: opts.aspectRatio,
-  };
-  if (durationSec > 0) args.duration_seconds = durationSec;
+    aspectRatio: opts.aspectRatio,
+    durationSec,
+    refs,
+  });
+  const args: Record<string, unknown> = { ...plan.args };
 
-  if (opts.intentId === "video_to_video") {
-    const videoId =
-      opts.inputVideoCreationId?.trim() ||
-      opts.startFrame.sourceAssetId?.trim() ||
-      "";
-    if (!videoId) {
-      throw new Error(
-        "Choose a source video (timeline neighbor or Assets video).",
-      );
+  opts.onProgress(
+    opts.intentId === "video_to_video"
+      ? "Resolving source video…"
+      : "Resolving references…",
+  );
+  if (plan.slotIds.images.length > 0) {
+    const urls: string[] = [];
+    for (const id of plan.slotIds.images) {
+      if (isTimelineImageRefId(id)) {
+        const still = await resolveReferenceImageStill({
+          id,
+          timeline: opts.timeline,
+          placeholder: opts.placeholder,
+          aspectRatio: opts.aspectRatio,
+        });
+        const url = await resolveStartImageUrl(still);
+        if (!url) {
+          throw new Error(
+            "Could not upload the timeline still to Parascene.",
+          );
+        }
+        urls.push(url);
+      } else {
+        urls.push(await resolveCreationUrl(id));
+      }
     }
-    opts.onProgress("Resolving source video…");
-    const videoUrl = await resolveCreationUrl(videoId);
-    args.input_video_urls = [videoUrl];
-
+    args[plan.mediaFields.images] = urls;
+  } else if (opts.intentId === "video_to_video") {
     const refUrl = await resolveStartImageUrl(opts.startFrame);
     if (refUrl) args.input_images = [refUrl];
-  } else {
-    const refs = opts.referenceCreationIds ?? [];
-    const startId = opts.startFrame.sourceAssetId?.trim();
-    const allIds = [...refs];
-    if (startId && !allIds.includes(startId)) allIds.unshift(startId);
-    if (allIds.length === 0) {
-      throw new Error("Add at least one reference image from Assets.");
-    }
-    opts.onProgress("Resolving reference images…");
+  }
+  if (plan.slotIds.videos.length > 0) {
     const urls: string[] = [];
-    for (const id of allIds) {
+    for (const id of plan.slotIds.videos) {
       urls.push(await resolveCreationUrl(id));
     }
-    args.input_images = urls;
+    args[plan.mediaFields.videos] = urls;
+  }
+  const audioUrls: string[] = [];
+  if (refs.timelineAudio !== "none") {
+    await attachParasceneTimelineAudioToCreateArgs({
+      args,
+      mode: refs.timelineAudio,
+      mainAudioCreationId: opts.mainAudioCreationId,
+      timeline: opts.timeline,
+      placeholder: opts.placeholder,
+      lyricAlignment: opts.lyricAlignment ?? null,
+      onProgress: opts.onProgress,
+    });
+  }
+  const timelineOwnsAudio =
+    args.audio_clip_id != null || args.audio_creation_id != null;
+  if (plan.slotIds.audios.length > 0 && !timelineOwnsAudio) {
+    for (const id of plan.slotIds.audios) {
+      const extra = await resolveParasceneAudioAssetForCreate(id);
+      if (extra.kind === "clip") {
+        if (args.audio_clip_id != null) {
+          throw new Error(
+            "Parascene can only send one uploaded audio clip. Remove extra audio refs or use a Parascene audio asset.",
+          );
+        }
+        attachParasceneAudioClipId(args, extra.clipId);
+      } else if (!isGenericPromptAudioUrl(extra.url)) {
+        audioUrls.push(extra.url);
+      }
+    }
+  }
+  if (
+    audioUrls.length > 0 &&
+    args.audio_clip_id == null &&
+    args.audio_creation_id == null
+  ) {
+    args[plan.mediaFields.audios] = audioUrls;
   }
 
   opts.onProgress(`Starting ${method} on Parascene…`);

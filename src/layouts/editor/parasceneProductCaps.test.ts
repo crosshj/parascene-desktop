@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import productCaps from "../../../docs/parascene-product-server-caps.json";
 import {
   formatParasceneCredits,
   parasceneBlueStillModels,
@@ -18,6 +19,8 @@ import {
 describe("parasceneProductCaps", () => {
   it("orders product servers from caps metadata", () => {
     expect(productCapsServerIds()).toEqual([1, 6]);
+    expect(JSON.stringify(productCaps)).not.toMatch(/auth_token/);
+    expect(Object.keys(productCaps.servers ?? {}).sort()).toEqual(["1", "6"]);
   });
 
   it("maps video intents to server 6 Blue methods", () => {
@@ -29,6 +32,10 @@ describe("parasceneProductCaps", () => {
   it("uses Blue method names for video", () => {
     expect(parasceneMethodForIntent("text_to_video")).toBe("text2video");
     expect(parasceneMethodForIntent("image_to_video")).toBe("image2video");
+    expect(parasceneMethodForIntent("video_to_video")).toBe("video2video");
+    expect(parasceneMethodForIntent("reference_to_video")).toBe(
+      "reference2video",
+    );
   });
 
   it("wires product-path intents from snapshot", () => {
@@ -38,7 +45,7 @@ describe("parasceneProductCaps", () => {
     expect(parasceneIntentIsWired("image_to_video")).toBe(true);
     expect(parasceneIntentIsWired("image_audio_to_video")).toBe(true);
     expect(parasceneIntentIsWired("video_to_video")).toBe(true);
-    expect(parasceneIntentIsWired("reference_to_video")).toBe(false);
+    expect(parasceneIntentIsWired("reference_to_video")).toBe(true);
     expect(parasceneIntentIsWired("text_to_music")).toBe(false);
     expect(parasceneIntentIsWired("text_to_speech")).toBe(false);
   });
@@ -117,9 +124,11 @@ describe("parasceneProductCaps", () => {
     const t2v = parasceneVideoModelsForIntent("text_to_video");
     expect(t2v.some((m) => m.id === "wan_t2v")).toBe(true);
     const v2v = parasceneVideoModelsForIntent("video_to_video");
-    expect(v2v.some((m) => m.id === "wan_v2v" || m.id === "wan_motion")).toBe(
+    expect(v2v.some((m) => m.id === "bernini_r_v2v" || m.id === "wan_animate")).toBe(
       true,
     );
+    const r2v = parasceneVideoModelsForIntent("reference_to_video");
+    expect(r2v.some((m) => m.id === "minimax_r2v")).toBe(true);
     expect(parasceneVideoModels().length).toBeGreaterThan(3);
   });
 });
