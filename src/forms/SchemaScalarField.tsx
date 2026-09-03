@@ -9,6 +9,7 @@ import {
   projectAspectCss,
 } from "../project/aspectRatios";
 import { AspectRatioChooser } from "../ui/AspectRatioChooser";
+import { AutosizeTextarea } from "./AutosizeTextarea";
 import {
   aspectChooserOptionsForField,
   clampNumericString,
@@ -197,10 +198,8 @@ export function SchemaScalarField({
                   ))}
             </select>
           ) : isPromptLike ? (
-            <textarea
-              className="control"
+            <AutosizeTextarea
               aria-label={showFieldChrome ? undefined : label}
-              rows={3}
               value={value}
               disabled={disabled}
               onChange={(e) => setValue(e.target.value)}

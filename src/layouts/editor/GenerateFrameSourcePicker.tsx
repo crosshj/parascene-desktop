@@ -1,5 +1,5 @@
 /**
- * Modal picker for generate stills: timeline neighbor, Assets image, or none.
+ * Modal picker for generate stills or videos: timeline neighbor, Assets, or none.
  */
 
 import { useState } from "react";
@@ -53,6 +53,8 @@ export function GenerateFrameSourcePicker({
   timelineAllowed = true,
   timelineDisallowReason,
   timelineSlots,
+  mediaKind = "image",
+  showNone = true,
   onCancel,
   onUse,
   onUseAssets,
@@ -76,6 +78,9 @@ export function GenerateFrameSourcePicker({
   timelineDisallowReason?: string;
   /** Previous + next clip as addable stills (Refs to Video pictures). */
   timelineSlots?: readonly TimelineNeighborSlot[];
+  mediaKind?: "image" | "video";
+  /** Hide the unused-slot option (required source video). */
+  showNone?: boolean;
   onCancel: () => void;
   onUse: (source: AddAssetFrameSource) => void;
   onUseAssets?: (assetIds: string[]) => void;
@@ -131,20 +136,28 @@ export function GenerateFrameSourcePicker({
         Boolean(draft.assetId.trim()) &&
         assets.some((a) => a.id === draft.assetId)
       : draft.kind === "none"
-        ? true
+        ? showNone
         : draft.kind === "timeline"
           ? timelineAllowed && timelineReady
           : assetsAllowed &&
             Boolean(draft.assetId.trim()) &&
             assets.some((a) => a.id === draft.assetId);
 
+  const noun = mediaKind === "video" ? "video" : "image";
   const title =
-    titleOverride ?? (assetsOnly ? "Source image" : titleForRole(role));
+    titleOverride ??
+    (assetsOnly
+      ? mediaKind === "video"
+        ? "Source video"
+        : "Source image"
+      : titleForRole(role));
   const description =
     descriptionOverride ??
     (assetsOnly
-      ? "Pick a still from this project's Assets."
-      : "Choose a timeline neighbor, a project image, or none.");
+      ? `Pick a ${noun} from this project's Assets.`
+      : mediaKind === "video"
+        ? "Choose the previous timeline clip or a project video."
+        : "Choose a timeline neighbor, a project image, or none.");
 
   const renderTimelineButton = (
     slotRole: GenerateFrameSourcePickerRole,
@@ -196,7 +209,9 @@ export function GenerateFrameSourcePicker({
             </span>
           ) : (
             <span className="muted generate-frame-source-option-reason">
-              Use the neighbor still from the timeline
+              {mediaKind === "video"
+                ? "Use the previous clip as the source video"
+                : "Use the neighbor still from the timeline"}
             </span>
           )}
         </span>
@@ -253,6 +268,7 @@ export function GenerateFrameSourcePicker({
             </div>
           ) : !assetsOnly ? (
             <>
+          {showNone ? (
           <button
             type="button"
             className={
@@ -278,6 +294,7 @@ export function GenerateFrameSourcePicker({
               </span>
             ) : null}
           </button>
+          ) : null}
 
           <div className="generate-frame-source-timeline">
             <span className="generate-frame-source-section-label">Timeline</span>
@@ -294,13 +311,19 @@ export function GenerateFrameSourcePicker({
               </p>
             ) : assets.length === 0 ? (
               <p className="muted" style={{ margin: 0 }}>
-                No image assets in this project yet.
+                {mediaKind === "video"
+                  ? "No video assets in this project yet."
+                  : "No image assets in this project yet."}
               </p>
             ) : (
               <div
                 className="generate-frame-source-assets-grid"
                 role="listbox"
-                aria-label="Project image assets"
+                aria-label={
+                  mediaKind === "video"
+                    ? "Project video assets"
+                    : "Project image assets"
+                }
               >
                 {assets.map((asset) => {
                   const selected = multi
@@ -346,7 +369,9 @@ export function GenerateFrameSourcePicker({
                       {thumb ? (
                         <img src={thumb} alt="" draggable={false} />
                       ) : (
-                        <span className="muted">Image</span>
+                        <span className="muted">
+                          {mediaKind === "video" ? "Video" : "Image"}
+                        </span>
                       )}
                       {selected ? (
                         <span className="generate-frame-source-asset-check" aria-hidden>

@@ -15,6 +15,7 @@ import {
 } from "./addAssetGenerate";
 import type { StartFramePreview } from "./addAssetStartFrame";
 import {
+  creationIdFromWaitTimeoutError,
   draftAudioMode,
   draftContinuityMode,
   findResumableAddAssetPlaceholders,
@@ -36,6 +37,7 @@ import {
   resumeBlueDirectServiceJob,
 } from "./addAssetBlueDirectGenerate";
 import { addAssetClipDurationSec } from "./stagedClip";
+import { cancelGenerateStillJob } from "../../services/generateStill";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 import {
   durableFrameSourceFromPreview,
@@ -159,6 +161,11 @@ export type AddAssetGenerationFailure = {
   replicatePredictionId?: string | null;
   /** Same idea for Direct to Blue download retry. */
   blueJobId?: string | null;
+  /**
+   * Parascene creation to keep waiting on after a local wait timeout.
+   * Distinct from a hard provider failure — do not post a new create.
+   */
+  pendingCreationId?: string | null;
 };
 
 export type AddAssetGenerationInFlight = {
@@ -179,6 +186,10 @@ export type AddAssetGenerationApplier = {
 
 const sessions = new Map<string, AddAssetGenerationStoreSession>();
 const inflightClips = new Set<string>();
+/** Kernel job id per clip so Cancel can stop the backend run. */
+const activeServiceJobByClip = new Map<string, string>();
+/** Cancel clicked before the kernel job id was known — fire when it arrives. */
+const cancelRequestedClips = new Set<string>();
 let lastSessionClipId: string | null = null;
 let sessionEpoch = 0;
 let applier: AddAssetGenerationApplier | null = null;
@@ -369,6 +380,7 @@ function applyJobFailure(
         : null,
     blueJobId:
       error instanceof BlueDirectPendingDownloadError ? error.blueJobId : null,
+    pendingCreationId: creationIdFromWaitTimeoutError(message),
   });
   if (sessions.get(clipId)) {
     patchSession(clipId, {
@@ -491,6 +503,13 @@ export function startAddAssetGenerationJob(
         blueJobId: remote.blueJobId,
         serviceJobId: remote.serviceJobId ?? activeRemote.serviceJobId,
       };
+      const serviceJobId = activeRemote.serviceJobId?.trim();
+      if (serviceJobId) {
+        activeServiceJobByClip.set(clipId, serviceJobId);
+        if (cancelRequestedClips.has(clipId)) {
+          void cancelGenerateStillJob(serviceJobId).catch(() => {});
+        }
+      }
       persistInFlight(projectId, clipId, {
         status: "waiting",
         provider: remote.provider,
@@ -601,6 +620,14 @@ export function startAddAssetGenerationJob(
       setClipSession(clipId, null);
     })
     .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      // User-cancelled runs return to the form — no error card, no stale
+      // generationJob marker to resume on restart.
+      if (cancelRequestedClips.has(clipId) || message === "Cancelled") {
+        applier?.clearFailure(projectId, clipId);
+        setClipSession(clipId, null);
+        return;
+      }
       applyJobFailure(
         projectId,
         clipId,
@@ -613,9 +640,38 @@ export function startAddAssetGenerationJob(
     .finally(() => {
       inflightClips.delete(clipId);
       resumeAttempted.delete(clipId);
+      activeServiceJobByClip.delete(clipId);
+      cancelRequestedClips.delete(clipId);
     });
 
   return true;
+}
+
+/**
+ * Cancel this clip's in-flight generation. Stops the kernel job when its id is
+ * known (or as soon as it becomes known) and returns the clip to the form.
+ * The backend job is best-effort cancelled; a run that completes anyway still
+ * files its asset via applySuccess.
+ */
+export function cancelAddAssetGeneration(clipId: string): void {
+  const id = clipId.trim();
+  if (!id) return;
+  if (!inflightClips.has(id)) {
+    // No live promise owns this clip (e.g. stale session after restart) —
+    // just clear it so the editor is usable again.
+    const stale = sessions.get(id);
+    if (stale) {
+      applier?.clearFailure(stale.projectId, id);
+      setClipSession(id, null);
+    }
+    return;
+  }
+  cancelRequestedClips.add(id);
+  patchSession(id, { progressNote: "Cancelling…" });
+  const serviceJobId = activeServiceJobByClip.get(id);
+  if (serviceJobId) {
+    void cancelGenerateStillJob(serviceJobId).catch(() => {});
+  }
 }
 
 export type RetryAddAssetDownloadJobOpts = {
@@ -724,6 +780,115 @@ export function retryAddAssetDownloadJob(
   return true;
 }
 
+export type ResumeTimedOutParasceneWaitOpts = {
+  projectId: string;
+  projectTitle: string;
+  clipId: string;
+  pendingCreationId: string;
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  prompt: string;
+  audioMode: AddAssetAudioMode;
+  continuityMode: AddAssetContinuityMode;
+  durationSec: number;
+  model: string;
+};
+
+/**
+ * Local wait budget expired — poll the same Parascene creation again.
+ * Does not POST a new create.
+ */
+export function resumeTimedOutParasceneWait(
+  opts: ResumeTimedOutParasceneWaitOpts,
+): boolean {
+  const clipId = opts.clipId.trim();
+  const pendingCreationId = opts.pendingCreationId.trim();
+  if (!clipId || !pendingCreationId) return false;
+  if (inflightClips.has(clipId)) return false;
+  inflightClips.add(clipId);
+  resumeAttempted.add(clipId);
+  const baseSession = createRunningAddAssetGenerationSession(
+    clipId,
+    opts.audioMode,
+    opts.durationSec,
+    opts.continuityMode,
+  );
+  baseSession.steps = [
+    { id: "generate", label: "Generate video", status: "active" },
+    { id: "file", label: "Add to project", status: "pending" },
+  ];
+  baseSession.progressNote = `Checking creation ${pendingCreationId}…`;
+  setClipSession(clipId, {
+    ...baseSession,
+    projectId: opts.projectId,
+  });
+  persistInFlight(opts.projectId, clipId, {
+    status: "waiting",
+    provider: "parascene_blue",
+    startedAt: new Date().toISOString(),
+    pendingCreationId,
+    model: opts.model,
+  });
+
+  void resumeParasceneAddAssetGeneration({
+    pendingCreationId,
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+    continuityMode: opts.continuityMode,
+    model: opts.model,
+    onSteps: (steps) => patchSession(clipId, { steps }),
+    onProgress: (progressNote) => patchSession(clipId, { progressNote }),
+  })
+    .then(async (result) => {
+      const success: AddAssetGenerationSuccess = {
+        projectId: opts.projectId,
+        clipId,
+        creationId: result.creationId,
+        projectCreationIds: generateFolderIdsToFile({
+          projectCreationIds: result.projectCreationIds,
+          videosGroupId: result.videosGroupId,
+          imagesGroupId: result.imagesGroupId,
+        }),
+        videosGroupId: result.videosGroupId,
+        imagesGroupId: result.imagesGroupId,
+        prompt: opts.prompt,
+        lyricsText: "",
+        audioMode: opts.audioMode,
+        mode: result.mode,
+        model: result.model,
+      };
+      markRemoteJobConsumed({ pendingCreationId });
+      await applier?.applySuccess(success);
+      setClipSession(clipId, null);
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (cancelRequestedClips.has(clipId) || message === "Cancelled") {
+        applier?.clearFailure(opts.projectId, clipId);
+        setClipSession(clipId, null);
+        return;
+      }
+      applyJobFailure(
+        opts.projectId,
+        clipId,
+        opts.audioMode,
+        opts.durationSec,
+        opts.continuityMode,
+        error,
+      );
+    })
+    .finally(() => {
+      inflightClips.delete(clipId);
+      resumeAttempted.delete(clipId);
+      activeServiceJobByClip.delete(clipId);
+      cancelRequestedClips.delete(clipId);
+    });
+
+  return true;
+}
+
 export type ReconcileAddAssetGenerationsOpts = {
   projectId: string;
   projectTitle: string;
@@ -807,6 +972,7 @@ export function reconcileAddAssetGenerations(
 
   inflightClips.add(clipId);
   resumeAttempted.add(clipId);
+  if (serviceJobId) activeServiceJobByClip.set(clipId, serviceJobId);
   const baseSession = initialResumeSessionSteps(
     job.provider,
     continuityMode,
@@ -930,6 +1096,12 @@ export function reconcileAddAssetGenerations(
       setClipSession(clipId, null);
     })
     .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (cancelRequestedClips.has(clipId) || message === "Cancelled") {
+        applier?.clearFailure(opts.projectId, clipId);
+        setClipSession(clipId, null);
+        return;
+      }
       applyJobFailure(
         opts.projectId,
         clipId,
@@ -942,6 +1114,8 @@ export function reconcileAddAssetGenerations(
     .finally(() => {
       inflightClips.delete(clipId);
       resumeAttempted.delete(clipId);
+      activeServiceJobByClip.delete(clipId);
+      cancelRequestedClips.delete(clipId);
       // Do not re-enter with this stale `opts.timeline` snapshot — it still
       // contains the placeholder we just filled, which re-imports the same
       // remote output in a loop. ShellProvider's resume effect re-runs when
@@ -979,4 +1153,6 @@ export function __resetAddAssetGenerationStoreForTests(): void {
   listeners.clear();
   resumeAttempted.clear();
   consumedRemoteJobs.clear();
+  activeServiceJobByClip.clear();
+  cancelRequestedClips.clear();
 }

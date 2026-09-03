@@ -705,6 +705,11 @@ async function runParasceneProductVideoIntent(
   if (!model) {
     throw new Error("Choose a Parascene video model.");
   }
+  // Replace the default I2V checklist — this lane has no framed-still prep.
+  opts.onSteps([
+    { id: "generate", label: "Generate video", status: "active" },
+    { id: "file", label: "Add to project", status: "pending" },
+  ]);
   const result = await runParasceneProductVideoGeneration({
     intentId: opts.intentId,
     placeholder: opts.placeholder,

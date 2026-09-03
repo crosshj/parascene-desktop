@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ReplicateInputField } from "../replicate/replicateClient";
+import { promptSchemaField } from "./schemaForm";
 import { SchemaScalarField } from "./SchemaScalarField";
 
 const modelField: ReplicateInputField = {
@@ -41,5 +42,23 @@ describe("SchemaScalarField enum groups", () => {
     expect(
       [...groups[1]!.querySelectorAll("option")].map((o) => o.value),
     ).toEqual(["flux1", "sd15"]);
+  });
+});
+
+describe("SchemaScalarField prompt fields", () => {
+  it("renders prompt-like strings as autosizing textareas", () => {
+    render(
+      <SchemaScalarField
+        field={promptSchemaField("prompt", { description: "" })}
+        values={{ prompt: "a cat on a roof" }}
+        onChange={() => {}}
+        showFieldChrome={false}
+      />,
+    );
+    const area = screen.getByRole("textbox", { name: "Prompt" });
+    expect(area.tagName).toBe("TEXTAREA");
+    expect(area).toHaveClass("is-auto-size");
+    expect(area).toHaveAttribute("rows", "3");
+    expect(area.parentElement).toHaveClass("autosize-textarea");
   });
 });

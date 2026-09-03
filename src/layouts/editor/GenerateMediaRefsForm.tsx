@@ -28,119 +28,41 @@ import {
 const TIMELINE_AUDIO_FULL_MIX = "__timeline_full_mix__";
 const TIMELINE_AUDIO_VOCALS = "__timeline_vocals__";
 
-function AssetSelect({
-  label,
-  assets,
-  disabled,
-  onPick,
-  emptyLabel,
-  excludeIds = [],
-}: {
-  label: string;
-  assets: readonly ProjectAsset[];
-  disabled: boolean;
-  onPick: (id: string) => void;
-  emptyLabel: string;
-  excludeIds?: readonly string[];
-}) {
-  const taken = new Set(excludeIds);
-  const available = assets.filter((asset) => !taken.has(asset.id));
-  return (
-    <label className="add-asset-generate-field">
-      <span>{label}</span>
-      <select
-        className="control"
-        disabled={disabled || available.length === 0}
-        value=""
-        onChange={(event) => {
-          const id = event.target.value.trim();
-          if (id) onPick(id);
-          event.currentTarget.value = "";
-        }}
-      >
-        <option value="">
-          {assets.length === 0 ? emptyLabel : `Add ${label.toLowerCase()}…`}
-        </option>
-        {available.map((asset) => (
-          <option key={asset.id} value={asset.id}>
-            {asset.name || asset.id}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function RefChips({
-  ids,
-  assets,
-  disabled,
-  onRemove,
-  startIndex = 1,
-}: {
-  ids: readonly string[];
-  assets: readonly ProjectAsset[];
-  disabled: boolean;
-  onRemove: (id: string) => void;
-  startIndex?: number;
-}) {
-  if (ids.length === 0) return null;
-  const nameOf = (id: string) =>
-    timelineImageRefLabel(id) ||
-    assets.find((a) => a.id === id)?.name?.trim() ||
-    id;
-  return (
-    <ul className="generate-media-ref-chips">
-      {ids.map((id, index) => (
-        <li key={`${id}-${index}`}>
-          <span>
-            {index + startIndex}. {nameOf(id)}
-          </span>
-          {disabled ? null : (
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => onRemove(id)}
-            >
-              Remove
-            </button>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function ImageRefSlot({
   label,
   ids,
   assets,
   previews,
   emptyLabel,
+  emptyThumbLabel = "Image",
   disabled,
   onChoose,
   onRemove,
+  labelForId,
 }: {
   label: string;
   ids: readonly string[];
   assets: readonly ProjectAsset[];
   previews: Record<string, string | null>;
   emptyLabel: string;
+  emptyThumbLabel?: string;
   disabled: boolean;
   onChoose: () => void;
   onRemove: (id: string) => void;
+  labelForId?: (id: string) => string | null;
 }) {
+  const nameOf = (id: string) =>
+    labelForId?.(id) ||
+    timelineImageRefLabel(id) ||
+    assets.find((a) => a.id === id)?.name?.trim() ||
+    id;
   const caption =
     ids.length === 0
       ? emptyLabel
       : ids
-          .map((id, index) => {
-            const name =
-              timelineImageRefLabel(id) ||
-              assets.find((a) => a.id === id)?.name?.trim() ||
-              id;
-            return ids.length > 1 ? `${index + 1}. ${name}` : name;
-          })
+          .map((id, index) =>
+            ids.length > 1 ? `${index + 1}. ${nameOf(id)}` : nameOf(id),
+          )
           .join(" · ");
   return (
     <div className="add-asset-generate-field add-asset-generate-frame-field">
@@ -153,10 +75,7 @@ function ImageRefSlot({
         <ul className="generate-media-ref-thumbs">
           {ids.map((id, index) => {
             const thumb = previews[id];
-            const name =
-              timelineImageRefLabel(id) ||
-              assets.find((a) => a.id === id)?.name?.trim() ||
-              id;
+            const name = nameOf(id);
             return (
               <li key={`${id}-${index}`}>
                 <button
@@ -176,7 +95,7 @@ function ImageRefSlot({
                   {thumb ? (
                     <img src={thumb} alt="" draggable={false} />
                   ) : (
-                    <span className="muted">Image</span>
+                    <span className="muted">{emptyThumbLabel}</span>
                   )}
                 </button>
                 {disabled ? null : (
@@ -254,7 +173,9 @@ export function GenerateMediaRefsForm({
     showTimelineFullMix ||
     showTimelineVocals ||
     pickableAudioAssets.length > 0;
-  const [picker, setPicker] = useState<"pictures" | "character" | null>(null);
+  const [picker, setPicker] = useState<
+    "pictures" | "character" | "sourceVideo" | "videos" | null
+  >(null);
   // Keyed peek result: "loading" is derived from key mismatch instead of a
   // synchronous setState at effect start.
   const peekKey = [
@@ -304,6 +225,27 @@ export function GenerateMediaRefsForm({
     [TIMELINE_IMAGE_PREVIOUS]: neighborPreviews.first?.previewUrl ?? null,
     [TIMELINE_IMAGE_NEXT]: neighborPreviews.last?.previewUrl ?? null,
   };
+  const videoPreviews: Record<string, string | null> = {
+    ...assetPreviews,
+    ...(neighborId
+      ? {
+          [neighborId]:
+            assetPreviews[neighborId] ??
+            neighborPreviews.first?.previewUrl ??
+            null,
+        }
+      : {}),
+  };
+  const neighborVideoPreview = neighborId
+    ? {
+        previewUrl: videoPreviews[neighborId] ?? null,
+        note: "",
+        framePath: neighborId,
+        frameTimeSec: null,
+      }
+    : null;
+  const videoLabelForId = (id: string) =>
+    neighborId && id === neighborId ? "Previous clip" : null;
 
   const patch = (next: Partial<GenerateMediaRefs>) =>
     onChange({ ...refs, ...next });
@@ -352,32 +294,17 @@ export function GenerateMediaRefsForm({
             Driving footage for restyle / control. Optional still is required
             for some models.
           </p>
-          <div className="add-asset-generate-frame-slot-actions">
-            <p className="muted add-asset-generate-frame-source-caption">
-              {refs.inputVideoAssetId
-                ? videoAssets.find((a) => a.id === refs.inputVideoAssetId)?.name ||
-                  refs.inputVideoAssetId
-                : "No source video"}
-            </p>
-            {neighborId && !disabled ? (
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => patch({ inputVideoAssetId: neighborId })}
-              >
-                Use previous clip
-              </button>
-            ) : null}
-          </div>
-          <AssetSelect
-            label="Assets video"
+          <ImageRefSlot
+            label="Source video"
+            ids={refs.inputVideoAssetId ? [refs.inputVideoAssetId] : []}
             assets={videoAssets}
+            previews={videoPreviews}
+            emptyLabel="Pick the previous clip or a project video."
+            emptyThumbLabel="Video"
             disabled={disabled}
-            excludeIds={
-              refs.inputVideoAssetId ? [refs.inputVideoAssetId] : []
-            }
-            onPick={(id) => patch({ inputVideoAssetId: id })}
-            emptyLabel="No project videos"
+            labelForId={videoLabelForId}
+            onChoose={() => setPicker("sourceVideo")}
+            onRemove={() => patch({ inputVideoAssetId: null })}
           />
           <label className="add-asset-generate-field">
             <span>Start offset (seconds)</span>
@@ -445,10 +372,20 @@ export function GenerateMediaRefsForm({
               })
             }
           />
-          <RefChips
+          <ImageRefSlot
+            label="Videos"
             ids={refs.referenceVideoAssetIds}
             assets={videoAssets}
+            previews={videoPreviews}
+            emptyLabel={
+              videoAssets.length === 0
+                ? "Add project videos to reference."
+                : "Pick project videos."
+            }
+            emptyThumbLabel="Video"
             disabled={disabled}
+            labelForId={videoLabelForId}
+            onChoose={() => setPicker("videos")}
             onRemove={(id) =>
               patch({
                 referenceVideoAssetIds: refs.referenceVideoAssetIds.filter(
@@ -456,20 +393,6 @@ export function GenerateMediaRefsForm({
                 ),
               })
             }
-          />
-          <AssetSelect
-            label="Videos"
-            assets={videoAssets}
-            disabled={disabled}
-            excludeIds={refs.referenceVideoAssetIds}
-            onPick={(id) =>
-              patch({
-                referenceVideoAssetIds: [
-                  ...new Set([...refs.referenceVideoAssetIds, id]),
-                ].slice(0, H3_R2V_LIMITS.maxVideos),
-              })
-            }
-            emptyLabel="No project videos"
           />
           <label className="add-asset-generate-field">
             <span>Audio</span>
@@ -564,28 +487,73 @@ export function GenerateMediaRefsForm({
       {picker && !disabled ? (
         <GenerateFrameSourcePicker
           role="first"
-          selection={picker === "pictures" ? "multiple" : "single"}
+          mediaKind={
+            picker === "sourceVideo" || picker === "videos" ? "video" : "image"
+          }
+          showNone={picker !== "sourceVideo" && picker !== "videos"}
+          selection={
+            picker === "pictures" || picker === "videos" ? "multiple" : "single"
+          }
           selectedAssetIds={
-            picker === "pictures" ? refs.referenceImageAssetIds : undefined
+            picker === "pictures"
+              ? refs.referenceImageAssetIds
+              : picker === "videos"
+                ? refs.referenceVideoAssetIds
+                : undefined
           }
           maxAssets={
-            picker === "pictures" ? H3_R2V_LIMITS.maxImages : undefined
+            picker === "pictures"
+              ? H3_R2V_LIMITS.maxImages
+              : picker === "videos"
+                ? H3_R2V_LIMITS.maxVideos
+                : undefined
           }
-          title={picker === "pictures" ? "Pictures" : "Character image"}
+          title={
+            picker === "pictures"
+              ? "Pictures"
+              : picker === "character"
+                ? "Character image"
+                : picker === "videos"
+                  ? "Videos"
+                  : "Source video"
+          }
           description={
             picker === "pictures"
               ? `Previous clip, next clip, and Assets stills (up to ${H3_R2V_LIMITS.maxImages}). Order is Picture 1, Picture 2, …`
-              : "Choose the previous clip still or a project image."
+              : picker === "videos"
+                ? `Project videos (up to ${H3_R2V_LIMITS.maxVideos}).`
+                : picker === "sourceVideo"
+                  ? "Choose the previous timeline clip or a project video."
+                  : "Choose the previous clip still or a project image."
           }
+          mode={picker === "videos" ? "assets-only" : "full"}
           current={
             picker === "character" && refs.characterImageAssetId
               ? isTimelineImageRefId(refs.characterImageAssetId)
                 ? { kind: "timeline" }
                 : { kind: "asset", assetId: refs.characterImageAssetId }
-              : { kind: "none" }
+              : picker === "sourceVideo" && refs.inputVideoAssetId
+                ? neighborId && refs.inputVideoAssetId === neighborId
+                  ? { kind: "timeline" }
+                  : { kind: "asset", assetId: refs.inputVideoAssetId }
+                : { kind: "none" }
           }
-          timelinePreview={neighborPreviews.first}
-          timelineLoading={neighborPeeking}
+          timelinePreview={
+            picker === "sourceVideo"
+              ? neighborVideoPreview
+              : neighborPreviews.first
+          }
+          timelineLoading={
+            picker === "sourceVideo" ? false : neighborPeeking
+          }
+          timelineAllowed={
+            picker === "sourceVideo" ? Boolean(neighborId) : true
+          }
+          timelineDisallowReason={
+            picker === "sourceVideo"
+              ? "No previous video clip on the timeline."
+              : undefined
+          }
           timelineSlots={
             picker === "pictures"
               ? [
@@ -602,8 +570,16 @@ export function GenerateMediaRefsForm({
                 ]
               : undefined
           }
-          assets={[...imageAssets]}
-          assetPreviews={picturePreviews}
+          assets={[
+            ...(picker === "sourceVideo" || picker === "videos"
+              ? videoAssets
+              : imageAssets),
+          ]}
+          assetPreviews={
+            picker === "sourceVideo" || picker === "videos"
+              ? videoPreviews
+              : picturePreviews
+          }
           onCancel={() => setPicker(null)}
           onUse={(source) => {
             if (picker === "character") {
@@ -614,13 +590,25 @@ export function GenerateMediaRefsForm({
               } else {
                 patch({ characterImageAssetId: null });
               }
+            } else if (picker === "sourceVideo") {
+              if (source.kind === "timeline" && neighborId) {
+                patch({ inputVideoAssetId: neighborId });
+              } else if (source.kind === "asset") {
+                patch({ inputVideoAssetId: source.assetId });
+              }
             }
             setPicker(null);
           }}
           onUseAssets={(ids) => {
-            patch({
-              referenceImageAssetIds: ids.slice(0, H3_R2V_LIMITS.maxImages),
-            });
+            if (picker === "videos") {
+              patch({
+                referenceVideoAssetIds: ids.slice(0, H3_R2V_LIMITS.maxVideos),
+              });
+            } else {
+              patch({
+                referenceImageAssetIds: ids.slice(0, H3_R2V_LIMITS.maxImages),
+              });
+            }
             setPicker(null);
           }}
         />

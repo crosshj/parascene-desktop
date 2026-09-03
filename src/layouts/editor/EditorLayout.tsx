@@ -74,12 +74,19 @@ import {
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
 import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
 import {
+  cancelAddAssetGeneration,
   clearAddAssetGenerationError,
   clearAddAssetGenerationIfClipMissing,
   retryAddAssetDownloadJob,
+  resumeTimedOutParasceneWait,
   startAddAssetGenerationJob,
   useAddAssetGenerationSession,
 } from "./addAssetGenerationStore";
+import {
+  creationIdFromWaitTimeoutError,
+  draftAudioMode,
+  draftContinuityMode,
+} from "./addAssetGenerationResume";
 import { findTimelineGenerationForAsset } from "./addAssetGenerate";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import {
@@ -2336,7 +2343,7 @@ export function EditorLayout() {
   }, [addAssetGenerationSession, project.timeline]);
 
   const startAddAssetGeneration = (request: StartAddAssetGenerationRequest) => {
-    startAddAssetGenerationJob({
+    const started = startAddAssetGenerationJob({
       projectId: project.id,
       request,
       runOpts: {
@@ -2350,6 +2357,58 @@ export function EditorLayout() {
         videosGroupId: project.videosGroupId,
       },
     });
+    // A refused start used to be a silent no-op — the user retried into the
+    // void while an old run held the clip. Say so instead.
+    if (!started) {
+      void confirm({
+        title: "Generation already running",
+        message:
+          "This clip already has a generation in flight. Cancel it from the Result view (or wait for it to finish) before starting another.",
+        confirmLabel: "OK",
+      });
+    }
+  };
+
+  const resumeTimedOutWait = () => {
+    const clip = generateTargetClip;
+    if (!clip) return;
+    const draft = clip.addAssetDraft;
+    const errorText =
+      addAssetGenerationSession?.errorMessage?.trim() ||
+      draft?.lastError?.trim() ||
+      "";
+    const pendingCreationId =
+      creationIdFromWaitTimeoutError(errorText) ||
+      draft?.generationJob?.pendingCreationId?.trim() ||
+      "";
+    if (!pendingCreationId) {
+      clearAddAssetGenerationError({
+        projectId: project.id,
+        clipId: clip.id,
+      });
+      return;
+    }
+    const started = resumeTimedOutParasceneWait({
+      projectId: project.id,
+      projectTitle: project.title,
+      clipId: clip.id,
+      pendingCreationId,
+      imagesGroupId: project.imagesGroupId,
+      videosGroupId: project.videosGroupId,
+      prompt: draft?.prompt?.trim() || "",
+      audioMode: draftAudioMode(draft),
+      continuityMode: draftContinuityMode(draft),
+      durationSec: addAssetClipDurationSec(clip),
+      model: draft?.blueModel?.trim() || draft?.generationJob?.model || "blue",
+    });
+    if (!started) {
+      void confirm({
+        title: "Generation already running",
+        message:
+          "This clip already has a generation in flight. Cancel it from the Result view (or wait for it to finish) before starting another.",
+        confirmLabel: "OK",
+      });
+    }
   };
 
   const retryAddAssetDownload = () => {
@@ -2697,6 +2756,8 @@ export function EditorLayout() {
           });
         }}
         onRetryAddAssetDownload={retryAddAssetDownload}
+        onResumeTimedOutWait={resumeTimedOutWait}
+        onCancelAddAssetGeneration={cancelAddAssetGeneration}
         imageAssets={imageAssets}
         videoAssets={videoAssets}
         audioAssets={audioAssets}

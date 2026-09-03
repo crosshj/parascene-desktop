@@ -33,6 +33,16 @@ export type ResumableAddAssetPlaceholder = {
   job: AddAssetGenerationJob;
 };
 
+/** Local wait budget expired — the Parascene creation may still be running. */
+export function creationIdFromWaitTimeoutError(
+  message: string | null | undefined,
+): string | null {
+  const m = String(message ?? "").match(
+    /timed out waiting for creation\s+(\d+)\b/i,
+  );
+  return m?.[1] ?? null;
+}
+
 /** Placeholders with a persisted remote job that can be reattached. */
 export function findResumableAddAssetPlaceholders(
   timeline: readonly TimelineClip[],
@@ -42,6 +52,8 @@ export function findResumableAddAssetPlaceholders(
     if (!clip.isAddAssetPlaceholder) continue;
     const job = clip.addAssetDraft?.generationJob;
     if (!job) continue;
+    // Timed-out waits stay on the error card until the user clicks Keep waiting.
+    if (job.status === "timed_out") continue;
     const hasRemote =
       Boolean(job.replicatePredictionId?.trim()) ||
       Boolean(job.pendingCreationId?.trim()) ||

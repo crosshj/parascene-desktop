@@ -29,6 +29,8 @@ type GenerateResultPaneProps = {
   /** Finished still/video preview for Result (library generates). */
   resultPreviewUrl?: string | null;
   resultMediaKind?: "image" | "video" | null;
+  /** Stop the backend job and return to the form. Shown while running. */
+  onCancel?: () => void;
 };
 
 function providerLabel(generation: AddAssetGeneration): string {
@@ -54,6 +56,7 @@ export function GenerateResultPane({
   doneMessage = null,
   resultPreviewUrl = null,
   resultMediaKind = "image",
+  onCancel,
 }: GenerateResultPaneProps) {
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [heldStart, setHeldStart] = useState<number | null>(null);
@@ -117,6 +120,15 @@ export function GenerateResultPane({
               </li>
             ))}
           </ul>
+        ) : null}
+        {onCancel ? (
+          <button
+            type="button"
+            className="btn ghost generate-result-cancel"
+            onClick={onCancel}
+          >
+            Cancel generation
+          </button>
         ) : null}
       </div>
     );

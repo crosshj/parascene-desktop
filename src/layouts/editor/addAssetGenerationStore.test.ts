@@ -325,9 +325,83 @@ describe("addAssetGenerationStore", () => {
       errorMessage: "boom",
       replicatePredictionId: null,
       blueJobId: null,
+      pendingCreationId: null,
     });
     clearAddAssetGenerationError();
     expect(getAddAssetGenerationSession()).toBeNull();
+    expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-1");
+  });
+
+  it("cancel returns the clip to the form — no error card, no stale job", async () => {
+    const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure,
+      applyInFlight: vi.fn(),
+    });
+    let rejectJob!: (err: Error) => void;
+    runMock.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectJob = reject;
+      }),
+    );
+    startAddAssetGenerationJob({
+      projectId: "proj-1",
+      request: makeRequest(),
+      runOpts: {
+        timeline: [],
+        mainAudioCreationId: null,
+        aspectRatio: "16:9",
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        imagesGroupId: null,
+        videosGroupId: null,
+      },
+    });
+    const { cancelAddAssetGeneration } = await import(
+      "./addAssetGenerationStore"
+    );
+    cancelAddAssetGeneration("ph-1");
+    expect(getAddAssetGenerationSession()?.progressNote).toBe("Cancelling…");
+
+    rejectJob(new Error("Cancelled"));
+    await vi.waitFor(() => {
+      expect(getAddAssetGenerationSession()).toBeNull();
+      expect(isAddAssetGenerationInflight()).toBe(false);
+    });
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-1");
+  });
+
+  it("a kernel-cancelled run never shows an error card", async () => {
+    const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure,
+      applyInFlight: vi.fn(),
+    });
+    runMock.mockRejectedValue(new Error("Cancelled"));
+    startAddAssetGenerationJob({
+      projectId: "proj-1",
+      request: makeRequest(),
+      runOpts: {
+        timeline: [],
+        mainAudioCreationId: null,
+        aspectRatio: "16:9",
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        imagesGroupId: null,
+        videosGroupId: null,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(getAddAssetGenerationSession()).toBeNull();
+    });
+    expect(applyFailure).not.toHaveBeenCalled();
     expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-1");
   });
 

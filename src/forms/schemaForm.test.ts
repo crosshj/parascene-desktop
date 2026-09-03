@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { enumGroupsFromColonLabels } from "./schemaForm";
+import type { ReplicateInputField } from "../replicate/replicateClient";
+import {
+  enumGroupsFromColonLabels,
+  isPromptLikeField,
+  promptSchemaField,
+} from "./schemaForm";
+
+function stringField(
+  overrides: Partial<ReplicateInputField> & Pick<ReplicateInputField, "name">,
+): ReplicateInputField {
+  return {
+    title: overrides.name,
+    typeName: "string",
+    required: false,
+    fileLike: false,
+    arrayItemFileLike: false,
+    ...overrides,
+  };
+}
 
 describe("enumGroupsFromColonLabels", () => {
   it("groups Blue checkpoints by prefix in first-seen order", () => {
@@ -22,5 +40,34 @@ describe("enumGroupsFromColonLabels", () => {
         { id: "b", label: "flux: other" },
       ]),
     ).toBeUndefined();
+  });
+});
+
+describe("isPromptLikeField", () => {
+  it("treats prompt-named strings as prompt-like", () => {
+    expect(isPromptLikeField(promptSchemaField())).toBe(true);
+    expect(isPromptLikeField(stringField({ name: "negative_prompt" }))).toBe(
+      true,
+    );
+  });
+
+  it("treats long-description strings as prompt-like", () => {
+    expect(
+      isPromptLikeField(
+        stringField({
+          name: "notes",
+          description: "x".repeat(81),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves short named strings and enums as single-line", () => {
+    expect(isPromptLikeField(stringField({ name: "seed" }))).toBe(false);
+    expect(
+      isPromptLikeField(
+        stringField({ name: "prompt", enumValues: ["a", "b"] }),
+      ),
+    ).toBe(false);
   });
 });

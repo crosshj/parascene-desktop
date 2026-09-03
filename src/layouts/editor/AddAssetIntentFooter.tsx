@@ -95,6 +95,18 @@ export function TryAgainButton({ onClick }: { onClick?: () => void }) {
   );
 }
 
+export function KeepWaitingButton({ onClick }: { onClick?: () => void }) {
+  return (
+    <button
+      type="button"
+      className="editor-cartridge-grip is-action editor-add-asset-generate"
+      onClick={onClick}
+    >
+      <span className="editor-cartridge-grip-label">Keep waiting</span>
+    </button>
+  );
+}
+
 export function DiscardButton({ onClick }: { onClick?: () => void }) {
   return (
     <button
@@ -112,19 +124,31 @@ export function AddAssetIntentFooter({
   clone,
   timeline,
   retry,
+  keepWaiting,
   discard,
 }: {
   generate?: ReactNode;
   clone?: ReactNode;
   timeline: TimelinePlacementState;
   retry?: ReactNode;
+  keepWaiting?: ReactNode;
   discard?: ReactNode;
 }) {
   const showTimeline = timeline.mode !== "hidden";
-  if (!generate && !clone && !showTimeline && !retry && !discard) return null;
+  if (
+    !generate &&
+    !clone &&
+    !showTimeline &&
+    !retry &&
+    !keepWaiting &&
+    !discard
+  ) {
+    return null;
+  }
 
   return (
     <div className="add-asset-generate-footer preview-intent-footer">
+      {keepWaiting}
       {retry}
       {discard}
       {generate}

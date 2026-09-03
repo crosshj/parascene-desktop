@@ -774,10 +774,24 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             const nextTimeline = timeline.map((clip) => {
               if (clip.id !== result.clipId) return clip;
               const draft = { ...clip.addAssetDraft };
+              const existingJob = clip.addAssetDraft?.generationJob;
               const err = result.errorMessage.trim();
               if (err) draft.lastError = err;
               else delete draft.lastError;
-              delete draft.generationJob;
+              const keepWaitingId = result.pendingCreationId?.trim();
+              if (keepWaitingId) {
+                draft.generationJob = {
+                  status: "timed_out",
+                  provider: existingJob?.provider ?? "parascene_blue",
+                  startedAt:
+                    existingJob?.startedAt ?? new Date().toISOString(),
+                  pendingCreationId: keepWaitingId,
+                  serviceJobId: existingJob?.serviceJobId,
+                  model: existingJob?.model,
+                };
+              } else {
+                delete draft.generationJob;
+              }
               if (result.replicatePredictionId !== undefined) {
                 if (result.replicatePredictionId?.trim()) {
                   draft.replicatePredictionId =

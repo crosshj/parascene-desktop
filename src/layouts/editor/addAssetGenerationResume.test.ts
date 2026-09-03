@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  creationIdFromWaitTimeoutError,
   draftAudioMode,
   draftContinuityMode,
   findResumableAddAssetPlaceholders,
@@ -50,6 +51,21 @@ describe("findResumableAddAssetPlaceholders", () => {
     expect(found[0]?.job.replicatePredictionId).toBe("pred-1");
   });
 
+  it("skips timed-out waits so they do not auto-resume", () => {
+    const timeline = [
+      placeholder("t", {
+        lastError: "Timed out waiting for creation 27660",
+        generationJob: {
+          status: "timed_out",
+          provider: "parascene_blue",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          pendingCreationId: "27660",
+        },
+      }),
+    ];
+    expect(findResumableAddAssetPlaceholders(timeline)).toHaveLength(0);
+  });
+
   it("includes starting jobs so reconcile can mark them interrupted", () => {
     const timeline = [
       placeholder("s", {
@@ -61,6 +77,17 @@ describe("findResumableAddAssetPlaceholders", () => {
       }),
     ];
     expect(findResumableAddAssetPlaceholders(timeline)).toHaveLength(1);
+  });
+});
+
+describe("creationIdFromWaitTimeoutError", () => {
+  it("reads the creation id from a local wait timeout", () => {
+    expect(
+      creationIdFromWaitTimeoutError("Timed out waiting for creation 27660"),
+    ).toBe("27660");
+    expect(creationIdFromWaitTimeoutError("Video generation failed (27651)")).toBe(
+      null,
+    );
   });
 });
 

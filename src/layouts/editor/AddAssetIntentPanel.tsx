@@ -38,6 +38,7 @@ import {
   AddAssetIntentFooter,
   AssetsGenerateButton,
   DiscardButton,
+  KeepWaitingButton,
   TryAgainButton,
 } from "./AddAssetIntentFooter";
 import {
@@ -101,6 +102,7 @@ type AddAssetIntentPanelProps = {
   errorRecovery?: {
     onDiscard?: () => void;
     onRetry?: () => void;
+    onKeepWaiting?: () => void;
   };
 };
 
@@ -287,10 +289,17 @@ export function AddAssetIntentPanel({
     const recoveryActive = Boolean(
       locked &&
         errorRecovery &&
-        (errorRecovery.onDiscard || errorRecovery.onRetry),
+        (errorRecovery.onDiscard ||
+          errorRecovery.onRetry ||
+          errorRecovery.onKeepWaiting),
     );
     return (
       <AddAssetIntentFooter
+        keepWaiting={
+          recoveryActive && errorRecovery?.onKeepWaiting ? (
+            <KeepWaitingButton onClick={errorRecovery.onKeepWaiting} />
+          ) : undefined
+        }
         retry={
           recoveryActive && errorRecovery?.onRetry ? (
             <TryAgainButton onClick={errorRecovery.onRetry} />

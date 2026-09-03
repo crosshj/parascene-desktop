@@ -104,6 +104,7 @@ select {
 }
 
 .control:focus,
+.control.autosize-textarea:focus-within,
 .lab-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
 .lab-form textarea:focus,
 .lab-form select:focus,
@@ -141,6 +142,43 @@ textarea.control,
 .settings-form textarea {
   resize: vertical;
   min-height: 4.5rem;
+}
+
+/* Replica + textarea share one grid cell. Replica height = text, min 3 lines. */
+.autosize-textarea {
+  display: grid;
+  max-height: min(40vh, 22rem);
+  overflow: auto;
+}
+
+.autosize-textarea::after {
+  content: attr(data-autosize) "\A";
+  grid-area: 1 / 1;
+  visibility: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-height: calc(1.4em * 3);
+}
+
+.autosize-textarea > textarea {
+  grid-area: 1 / 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: calc(1.4em * 3);
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
 }
 
 input[type="checkbox"].control,
@@ -6988,7 +7026,7 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 }
 
 .add-asset-generate-pane .add-asset-generate-prompt.is-auto-size {
-  min-height: 2.75rem;
+  min-height: 0;
   max-height: min(40vh, 22rem);
   overflow-y: auto;
   resize: none;
@@ -7299,6 +7337,11 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
   padding-left: 1.1rem;
   font-size: 0.82rem;
   color: var(--muted);
+}
+
+.generate-result-cancel {
+  margin-top: 0.9rem;
+  align-self: flex-start;
 }
 
 .generate-result-steps li[data-status="done"] {
@@ -7998,6 +8041,11 @@ body.is-timeline-clip-moving * {
   min-height: 0;
   max-height: min(62vh, 36rem);
   padding-right: 0.15rem;
+}
+
+.add-asset-generate-body > :last-child:not(.add-asset-generate-embedded),
+.add-asset-generate-embedded-body > :last-child {
+  margin-bottom: 2rem;
 }
 
 .add-asset-generate-section h3 {
@@ -9519,9 +9567,12 @@ body:has(.lab-replicate-split-resizer.is-dragging) {
 }
 
 .lab-replicate-run-field textarea.control {
+  font: inherit;
+}
+
+.lab-replicate-run-field textarea.control:not(.is-auto-size) {
   resize: vertical;
   min-height: 4.5rem;
-  font: inherit;
 }
 
 .lab-replicate-run-help,

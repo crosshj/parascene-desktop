@@ -38,6 +38,7 @@ import {
   resolveParasceneAudioAssetForCreate,
 } from "./timelineReferenceAudio";
 import { resolveReferenceImageStill } from "./timelineReferenceImages";
+import { resolveParasceneVideoRefUrl } from "./parasceneCreationMediaUrl";
 
 function remoteMediaUrl(c: Creation): string | null {
   if (c.remoteUrl?.trim()) return c.remoteUrl.trim();
@@ -68,6 +69,12 @@ async function resolveCreationUrl(creationId: string): Promise<string> {
   throw new Error(
     `Asset ${creationId} has no public Parascene URL — sync or download it first.`,
   );
+}
+
+async function resolveCreationVideoUrl(creationId: string): Promise<string> {
+  const [row] = await getCreations([creationId]);
+  if (!row) throw new Error(`Asset ${creationId} not found in Library.`);
+  return resolveParasceneVideoRefUrl(row);
 }
 
 async function resolveStartImageUrl(
@@ -198,7 +205,7 @@ export async function runParasceneProductVideoGeneration(opts: {
   if (plan.slotIds.videos.length > 0) {
     const urls: string[] = [];
     for (const id of plan.slotIds.videos) {
-      urls.push(await resolveCreationUrl(id));
+      urls.push(await resolveCreationVideoUrl(id));
     }
     args[plan.mediaFields.videos] = urls;
   }

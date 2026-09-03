@@ -131,6 +131,7 @@ import {
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
 import { GenerateResultPane } from "./GenerateResultPane";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
+import { creationIdFromWaitTimeoutError } from "./addAssetGenerationResume";
 import {
   defaultGenerateDualView,
   resolveGenerateDualPhase,
@@ -200,6 +201,10 @@ type PreviewPaneProps = {
   onAddAssetDraftChange?: (draft: AddAssetDraft) => void;
   onClearAddAssetGenerationError?: () => void;
   onRetryAddAssetDownload?: () => void;
+  /** Re-poll a Parascene creation after a local wait timeout. */
+  onResumeTimedOutWait?: () => void;
+  /** Stop the in-flight generation for this placeholder clip. */
+  onCancelAddAssetGeneration?: (clipId: string) => void;
   /** Ordered Assets-pane multi-selection (source monitor). */
   selectedAssetIds?: string[];
   /** Project image assets for Parascene Blue start-frame picker. */
@@ -421,6 +426,8 @@ export function PreviewPane({
   onAddAssetDraftChange,
   onClearAddAssetGenerationError,
   onRetryAddAssetDownload,
+  onResumeTimedOutWait,
+  onCancelAddAssetGeneration,
   selectedAssetIds = [],
   imageAssets = [],
   videoAssets = [],
@@ -1583,6 +1590,20 @@ export function PreviewPane({
   const generateDualErrorRecovery =
     generateDualPhase === "error"
       ? {
+          onKeepWaiting: (() => {
+            if (!showAddAssetGenerate || !onResumeTimedOutWait) return undefined;
+            const errorText = generateDualErrorMessage ?? "";
+            const timeoutId =
+              creationIdFromWaitTimeoutError(errorText) ??
+              addAssetPlaceholderClip?.addAssetDraft?.generationJob
+                ?.pendingCreationId?.trim() ??
+              "";
+            if (!timeoutId) return undefined;
+            return () => {
+              onResumeTimedOutWait();
+              setGenerateDualView("result");
+            };
+          })(),
           onDiscard:
             showLibraryAssetPlaceholderDual && onDiscardLibraryAssetPlaceholder
               ? onDiscardLibraryAssetPlaceholder
@@ -3211,6 +3232,14 @@ export function PreviewPane({
                         : null
                     }
                     nowMs={generateDualNowMs}
+                    onCancel={
+                      onCancelAddAssetGeneration
+                        ? () =>
+                            onCancelAddAssetGeneration(
+                              addAssetPlaceholderClip.id,
+                            )
+                        : undefined
+                    }
                   />
                 </div>
                 </>

@@ -151,7 +151,7 @@ export type AddAssetFrameSource =
  * or Parascene creation and finish download/import.
  */
 export type AddAssetGenerationJob = {
-  status: "starting" | "waiting" | "downloading" | "importing";
+  status: "starting" | "waiting" | "downloading" | "importing" | "timed_out";
   provider: "replicate" | "parascene_blue" | "blue_direct";
   /** ISO timestamp when Generate was pressed. */
   startedAt: string;

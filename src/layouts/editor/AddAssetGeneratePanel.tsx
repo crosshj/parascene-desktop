@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { WorkflowForm } from "../../forms/WorkflowForm";
 import { promptSchemaField } from "../../forms/schemaForm";
 import { LAB_A2V_PROMPT } from "../../lab/labPrompts";
@@ -101,6 +108,7 @@ import {
   CloneButton,
   DiscardButton,
   GenerateTargetButton,
+  KeepWaitingButton,
   TryAgainButton,
 } from "./AddAssetIntentFooter";
 
@@ -157,6 +165,7 @@ type AddAssetGeneratePanelProps = {
   errorRecovery?: {
     onDiscard?: () => void;
     onRetry?: () => void;
+    onKeepWaiting?: () => void;
   };
 };
 
@@ -331,15 +340,21 @@ function GenerateActions({
   errorRecovery?: {
     onDiscard?: () => void;
     onRetry?: () => void;
+    onKeepWaiting?: () => void;
   };
 }) {
   if (
     formLocked &&
     errorRecovery &&
-    (errorRecovery.onDiscard || errorRecovery.onRetry)
+    (errorRecovery.onDiscard ||
+      errorRecovery.onRetry ||
+      errorRecovery.onKeepWaiting)
   ) {
     return (
       <div className="add-asset-generate-footer preview-intent-footer">
+        {errorRecovery.onKeepWaiting ? (
+          <KeepWaitingButton onClick={errorRecovery.onKeepWaiting} />
+        ) : null}
         {errorRecovery.onRetry ? (
           <TryAgainButton onClick={errorRecovery.onRetry} />
         ) : null}
@@ -1266,11 +1281,11 @@ export function AddAssetGeneratePanel({
     prompt,
   ]);
 
-  // Load thumbnails for the frame-source Assets picker.
+  // Load thumbnails for the frame-source / video Assets pickers.
   useEffect(() => {
-    if (imageAssets.length === 0) return;
+    const ids = [...imageAssets, ...videoAssets].map((asset) => asset.id);
+    if (ids.length === 0) return;
     let cancelled = false;
-    const ids = imageAssets.map((asset) => asset.id);
     void (async () => {
       const rows = await getCreations(ids);
       if (cancelled) return;
@@ -1283,13 +1298,40 @@ export function AddAssetGeneratePanel({
     return () => {
       cancelled = true;
     };
-  }, [imageAssets]);
+  }, [imageAssets, videoAssets]);
 
   // Persist form choices on the placeholder so they survive clip switches.
   // Skip while error/running — job lifecycle fields (lastError, generationJob)
   // are owned by the generation store; rewriting them here races "Try again".
+  // Debounce: each keystroke used to rewrite the whole project JSON and
+  // re-render the editor (setOpenProjectTimeline → persistStoredProjects).
+  const onDraftChangeRef = useRef(onDraftChange);
+  const clipDraftRef = useRef(clip.addAssetDraft);
+  const pendingDraftRef = useRef<AddAssetDraft | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!fieldsInteractive) return;
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+  useEffect(() => {
+    clipDraftRef.current = clip.addAssetDraft;
+  }, [clip.addAssetDraft]);
+
+  const flushPendingDraft = useCallback(() => {
+    if (persistTimerRef.current != null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    const pending = pendingDraftRef.current;
+    pendingDraftRef.current = null;
+    if (!pending || draftsEqual(pending, clipDraftRef.current)) return;
+    onDraftChangeRef.current?.(pending);
+  }, []);
+
+  useEffect(() => {
+    if (!fieldsInteractive) {
+      flushPendingDraft();
+      return;
+    }
     const next: AddAssetDraft = {
       prompt,
       audioMode: resolvedAudioMode,
@@ -1321,7 +1363,11 @@ export function AddAssetGeneratePanel({
       startOffsetSeconds: effectiveMediaRefs.startOffsetSeconds || undefined,
     };
     if (draftsEqual(next, clip.addAssetDraft)) return;
-    onDraftChange?.(next);
+    pendingDraftRef.current = next;
+    if (persistTimerRef.current != null) {
+      window.clearTimeout(persistTimerRef.current);
+    }
+    persistTimerRef.current = window.setTimeout(flushPendingDraft, 400);
   }, [
     phase,
     prompt,
@@ -1337,11 +1383,13 @@ export function AddAssetGeneratePanel({
     firstFrameSource,
     lastFrameSource,
     effectiveMediaRefs,
-    onDraftChange,
     fieldsInteractive,
     currentIntentId,
     currentServer,
+    flushPendingDraft,
   ]);
+
+  useEffect(() => () => flushPendingDraft(), [flushPendingDraft]);
 
   // Fill missing stamp URLs from catalog (locked Form included).
   useEffect(() => {
@@ -1503,6 +1551,7 @@ export function AddAssetGeneratePanel({
 
   const handleGenerate = () => {
     if (!fieldsInteractive || !prompt.trim()) return;
+    flushPendingDraft();
 
     const abortGenerate = (reason: string, message: string) => {
       recordUiOpTrace({
@@ -1991,7 +2040,6 @@ export function AddAssetGeneratePanel({
   }
 
   const showMotionMatch = resolvedContinuityMode === "motion_match";
-  const showImagesNone = useT2vWorkflowForm;
   const firstPreview = bridge?.first ?? startFrame;
   const lastPreview = bridge?.last ?? null;
 
@@ -2083,14 +2131,6 @@ export function AddAssetGeneratePanel({
         {useBlueWorkflowForm ? (
           <section className="add-asset-generate-section">
             <h3>Model</h3>
-            {useT2vWorkflowForm ? (
-              <div className="add-asset-generate-callout" role="note">
-                <p className="muted" style={{ margin: 0 }}>
-                  Text to Video — prompt only, no start image (
-                  {resolvedBlueModel}).
-                </p>
-              </div>
-            ) : null}
             {blueModelsError ? (
               <p className="add-asset-generate-error">{blueModelsError}</p>
             ) : null}
@@ -2411,16 +2451,7 @@ export function AddAssetGeneratePanel({
           </section>
         ) : null}
 
-        {showImagesNone ? (
-          <section className="add-asset-generate-section">
-            <div className="add-asset-generate-callout" role="note">
-              <p className="muted" style={{ margin: 0 }}>
-                No start image — generation uses your prompt only (
-                {resolvedBlueModel}).
-              </p>
-            </div>
-          </section>
-        ) : isAdvancedVideo ? (
+        {useT2vWorkflowForm ? null : isAdvancedVideo ? (
           <GenerateMediaRefsForm
             intentId={currentIntentId}
             modelId={resolvedBlueModel}
@@ -2573,8 +2604,7 @@ export function AddAssetGeneratePanel({
 
         {!isReplicate &&
         (currentIntentId === "image_to_video" ||
-          currentIntentId === "image_audio_to_video" ||
-          currentIntentId === "text_to_video") ? (
+          currentIntentId === "image_audio_to_video") ? (
           <section className="add-asset-generate-section">
             <h3>Source audio</h3>
             <div
@@ -2586,9 +2616,7 @@ export function AddAssetGeneratePanel({
                 <button
                   type="button"
                   className={resolvedAudioMode === "none" ? "is-active" : ""}
-                  disabled={
-                    !fieldsInteractive || currentIntentId === "text_to_video"
-                  }
+                  disabled={!fieldsInteractive}
                   onClick={() => selectSourceAudio("none")}
                   aria-pressed={resolvedAudioMode === "none"}
                 >
@@ -2603,19 +2631,16 @@ export function AddAssetGeneratePanel({
                 disabled={
                   !fieldsInteractive ||
                   (!isA2v && sourceAudioLocked) ||
-                  currentIntentId === "text_to_video" ||
                   (isA2v && (!hasMainAudio || !hasA2vModels))
                 }
                 onClick={() => selectSourceAudio("full_mix")}
                 aria-pressed={resolvedAudioMode === "full_mix"}
                 title={
-                  currentIntentId === "text_to_video"
-                    ? "Text to Video has no audio processing"
-                    : !hasA2vModels
-                      ? "No audio-to-video models available"
-                      : !hasMainAudio
-                        ? "Add main audio to the timeline first"
-                        : undefined
+                  !hasA2vModels
+                    ? "No audio-to-video models available"
+                    : !hasMainAudio
+                      ? "Add main audio to the timeline first"
+                      : undefined
                 }
               >
                 Full mix
@@ -2627,19 +2652,16 @@ export function AddAssetGeneratePanel({
                   disabled={
                     !fieldsInteractive ||
                     (!isA2v && sourceAudioLocked) ||
-                    currentIntentId === "text_to_video" ||
                     (isA2v && (!hasMainAudio || !hasA2vModels))
                   }
                   onClick={() => selectSourceAudio("vocals")}
                   aria-pressed={resolvedAudioMode === "vocals"}
                   title={
-                    currentIntentId === "text_to_video"
-                      ? "Text to Video has no audio processing"
-                      : !hasA2vModels
-                        ? "No audio-to-video models available"
-                        : !hasMainAudio
-                          ? "Add main audio to the timeline first"
-                          : undefined
+                    !hasA2vModels
+                      ? "No audio-to-video models available"
+                      : !hasMainAudio
+                        ? "Add main audio to the timeline first"
+                        : undefined
                   }
                 >
                   Vocals

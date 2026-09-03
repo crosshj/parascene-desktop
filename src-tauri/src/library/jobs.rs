@@ -678,14 +678,17 @@ fn stamp_creation_token(payload: &mut Value) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobReuseAction {
     Attach,
-    Requeue,
     Fresh,
 }
 
+/// Live jobs attach (never double-post a create for the same clip).
+/// Terminal jobs — failed, cancelled, done — must NOT be requeued: the old
+/// row re-runs with its original payload and resumes its checkpointed
+/// creation, so a retry after a provider failure re-waited on the same dead
+/// creation forever instead of posting a fresh create with the new args.
 fn job_reuse_action(status: &str) -> JobReuseAction {
     match status {
         "queued" | "running" | "waiting" => JobReuseAction::Attach,
-        "failed" | "cancelled" => JobReuseAction::Requeue,
         _ => JobReuseAction::Fresh,
     }
 }
@@ -710,21 +713,6 @@ fn find_latest_job_for_client_request_id(
         }
     }
     Ok(None)
-}
-
-fn requeue_job(conn: &Connection, id: &str) -> Result<(), String> {
-    clear_cancel_request(id);
-    conn.execute(
-        "UPDATE jobs SET
-            status = 'queued',
-            progress_note = 'Retrying…',
-            error = NULL,
-            updated_at = ?2
-         WHERE id = ?1",
-        params![id, now_rfc3339()],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 fn party_name(project_title: &str, kind: &str) -> String {
@@ -2605,6 +2593,17 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     .await?;
     throw_if_cancelled(&job.id)?;
     if creation_status(&done) == "failed" {
+        // A failed creation can never complete — drop the resume checkpoint so
+        // nothing (restart resume, legacy reuse) re-waits on the dead creation.
+        let _ = patch_job(
+            app,
+            &job.id,
+            None,
+            None,
+            Some(&json!({ "name": "failed" })),
+            None,
+            None,
+        );
         let fail_label = if cabinet == "videos" {
             "Video generation"
         } else {
@@ -3029,16 +3028,6 @@ pub fn jobs_enqueue(app: AppHandle, request: EnqueueJobRequest) -> Result<Job, S
                         start_jobs_worker(app);
                         return Ok(job);
                     }
-                    JobReuseAction::Requeue => {
-                        let job = with_conn(|conn| {
-                            requeue_job(conn, &job.id)?;
-                            get_job_conn(conn, &job.id)?
-                                .ok_or_else(|| format!("job {} not found", job.id))
-                        })?;
-                        emit_job(&app, &job);
-                        start_jobs_worker(app);
-                        return Ok(job);
-                    }
                     JobReuseAction::Fresh => {}
                 }
             }
@@ -3210,8 +3199,10 @@ mod tests {
     fn reuses_in_flight_and_failed_jobs() {
         assert_eq!(job_reuse_action("waiting"), JobReuseAction::Attach);
         assert_eq!(job_reuse_action("queued"), JobReuseAction::Attach);
-        assert_eq!(job_reuse_action("failed"), JobReuseAction::Requeue);
-        assert_eq!(job_reuse_action("cancelled"), JobReuseAction::Requeue);
+        // Terminal states start a fresh job — requeuing a failed job re-ran
+        // its stale payload and resumed its dead checkpointed creation.
+        assert_eq!(job_reuse_action("failed"), JobReuseAction::Fresh);
+        assert_eq!(job_reuse_action("cancelled"), JobReuseAction::Fresh);
         assert_eq!(job_reuse_action("done"), JobReuseAction::Fresh);
     }
 

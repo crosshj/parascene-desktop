@@ -2,8 +2,9 @@
  * Shared state + UI for Parascene credits Image → Image into Assets.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useShell } from "../../app/ShellProvider";
+import { AutosizeTextarea } from "../../forms/AutosizeTextarea";
 import { getCreations } from "../../library/catalogClient";
 import { creationPreviewUrl } from "../../library/previewUrl";
 import {
@@ -103,7 +104,6 @@ export function useParasceneImageToImageForm(
     url: string | null;
   } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
 
   const fieldsLocked = locked || doneLocked;
   const selected =
@@ -119,13 +119,6 @@ export function useParasceneImageToImageForm(
   const reportState = (state: LibraryGenerateUiState) => {
     onGenerateStateChange?.(state);
   };
-
-  useEffect(() => {
-    const el = promptRef.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [prompt]);
 
   const reviewIdentity = reviewGenerationIdentity(reviewGeneration);
   const lockedReviewKey =
@@ -321,12 +314,9 @@ export function useParasceneImageToImageForm(
       <section className="add-asset-generate-section">
         <h3>Prompt</h3>
         <label className="add-asset-generate-field">
-          <textarea
-            ref={promptRef}
+          <AutosizeTextarea
             id={`${idPrefix}-prompt`}
-            className="control"
             aria-label="Prompt"
-            rows={3}
             value={prompt}
             disabled={fieldsLocked}
             onChange={(e) => setPrompt(e.target.value)}
