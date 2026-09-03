@@ -1,5 +1,7 @@
 import { normalizeStoredTimeline, type StoredProject } from "./projectStore";
 import { normalizeStillWorkstreams } from "./stillWorkstream";
+import { isProjectOwnedCreation } from "./projectOwnership";
+import type { TimelineClip } from "./types";
 
 export type ProjectAssetUsage = {
   creationId: string;
@@ -8,12 +10,25 @@ export type ProjectAssetUsage = {
   usageOwnerLabel: string;
 };
 
+/** Normalized project fields needed to collect referenced creation ids. */
+export type ProjectReferenceScan = {
+  id: string;
+  timeline?: readonly TimelineClip[] | null;
+  stillWorkstreams?: StoredProject["stillWorkstreams"];
+  mainAudioCreationId?: string | null;
+  lyricAlignment?: StoredProject["lyricAlignment"];
+  storyboardProposal?: StoredProject["storyboardProposal"];
+  imagesGroupId?: string | null;
+  videosGroupId?: string | null;
+  assets?: readonly { id: string }[];
+};
+
 /**
  * The single registry of persisted creation references that protect Library
  * removal/deletion. Add every new project reference type here with a test.
  */
 export function collectProjectAssetUsage(
-  project: StoredProject,
+  project: ProjectReferenceScan,
 ): ProjectAssetUsage[] {
   const rows = new Map<string, ProjectAssetUsage>();
   const add = (
@@ -177,11 +192,32 @@ export function collectProjectAssetUsage(
 }
 
 export function collectProjectReferencedCreationIds(
-  project: StoredProject,
+  project: ProjectReferenceScan,
 ): string[] {
   return [
     ...new Set(collectProjectAssetUsage(project).map((row) => row.creationId)),
   ];
+}
+
+/** Referenced ids that are not filed in the project folder or cabinets. */
+export function outsideOwnedReferenceIds(
+  project: ProjectReferenceScan,
+  cabinetOwnedMemberIds: readonly string[],
+): string[] {
+  const folderMembers = (project.assets ?? []).map((asset) => asset.id);
+  const cabinetMembers = new Set(cabinetOwnedMemberIds);
+  return collectProjectReferencedCreationIds(project).filter(
+    (id) =>
+      !isProjectOwnedCreation(
+        {
+          creationIds: folderMembers,
+          imagesGroupId: project.imagesGroupId,
+          videosGroupId: project.videosGroupId,
+        },
+        id,
+        cabinetMembers,
+      ),
+  );
 }
 
 export type MissingProjectReference = {

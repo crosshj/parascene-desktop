@@ -215,7 +215,18 @@ export type PartitionedStoredProjects = {
   orderedIds: string[];
 };
 
+let storedProjectParseCount = 0;
+
+export function getStoredProjectParseCount(): number {
+  return storedProjectParseCount;
+}
+
+export function __resetStoredProjectParseCountForTests(): void {
+  storedProjectParseCount = 0;
+}
+
 function readStoredProjectsArray(): unknown[] {
+  storedProjectParseCount += 1;
   const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
   if (!raw) return [];
   let parsed: unknown;

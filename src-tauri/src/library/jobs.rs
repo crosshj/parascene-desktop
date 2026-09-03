@@ -84,6 +84,10 @@ fn parallel_inflight() -> &'static AtomicUsize {
     N.get_or_init(|| AtomicUsize::new(0))
 }
 
+/// Desktop default: two generation jobs. Acquire the slot before claim/spawn
+/// so backlog size cannot create unbounded waiting tasks.
+const GENERATION_CONCURRENCY: usize = 2;
+
 fn is_parallel_job_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -2920,13 +2924,17 @@ fn recover_interrupted_jobs(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn claim_next_job(conn: &Connection) -> Result<Option<Job>, String> {
-    let mut stmt = conn
-        .prepare(&format!(
+fn claim_next_job(conn: &Connection, allow_parallel: bool) -> Result<Option<Job>, String> {
+    let sql = if allow_parallel {
+        format!("{JOB_SELECT} WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+    } else {
+        format!(
             "{JOB_SELECT} WHERE status = 'queued'
+             AND kind NOT IN ('blue_generate', 'replicate_generate', 'parascene_generate')
              ORDER BY created_at ASC LIMIT 1"
-        ))
-        .map_err(|e| e.to_string())?;
+        )
+    };
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let job = row_from_query(row).map_err(|e| e.to_string())?;
@@ -2942,7 +2950,9 @@ async fn jobs_worker(app: AppHandle) {
         eprintln!("[jobs] recover failed: {err}");
     }
     loop {
-        let next = with_conn(claim_next_job);
+        let allow_parallel =
+            parallel_inflight().load(Ordering::SeqCst) < GENERATION_CONCURRENCY;
+        let next = with_conn(|conn| claim_next_job(conn, allow_parallel));
         let job = match next {
             Ok(Some(j)) => j,
             Ok(None) => {
@@ -3193,6 +3203,73 @@ mod tests {
         assert!(is_parallel_job_kind("replicate_generate"));
         assert!(!is_parallel_job_kind("sync_full"));
         assert!(!is_parallel_job_kind("publisher_render"));
+    }
+
+    #[derive(Clone)]
+    struct JobSim {
+        kind: &'static str,
+        status: &'static str,
+    }
+
+    fn worker_claim_index(jobs: &[JobSim], parallel_inflight: usize) -> Option<usize> {
+        let allow_parallel = parallel_inflight < GENERATION_CONCURRENCY;
+        jobs.iter().position(|job| {
+            if job.status != "queued" {
+                return false;
+            }
+            if !allow_parallel && is_parallel_job_kind(job.kind) {
+                return false;
+            }
+            true
+        })
+    }
+
+    fn drain_generation_claims(jobs: &mut [JobSim]) -> (usize, usize, usize) {
+        let mut inflight = 0usize;
+        loop {
+            let Some(index) = worker_claim_index(jobs, inflight) else {
+                break;
+            };
+            jobs[index].status = "running";
+            if is_parallel_job_kind(jobs[index].kind) {
+                inflight += 1;
+            }
+        }
+        let running = jobs.iter().filter(|job| job.status == "running").count();
+        let queued = jobs.iter().filter(|job| job.status == "queued").count();
+        (running, queued, inflight)
+    }
+
+    #[test]
+    fn generation_cap_leaves_excess_queued_without_spawned_waiters() {
+        let mut jobs: Vec<JobSim> = (0..5)
+            .map(|_| JobSim {
+                kind: "blue_generate",
+                status: "queued",
+            })
+            .collect();
+        let (running, queued, inflight) = drain_generation_claims(&mut jobs);
+        assert_eq!(running, GENERATION_CONCURRENCY);
+        assert_eq!(queued, 5 - GENERATION_CONCURRENCY);
+        assert_eq!(inflight, GENERATION_CONCURRENCY);
+        assert_eq!(running, inflight);
+    }
+
+    #[test]
+    fn interrupted_generation_recovery_is_capped() {
+        let mut jobs: Vec<JobSim> = (0..4)
+            .map(|_| JobSim {
+                kind: "replicate_generate",
+                status: "running",
+            })
+            .collect();
+        for job in &mut jobs {
+            job.status = "queued";
+        }
+        let (running, queued, inflight) = drain_generation_claims(&mut jobs);
+        assert_eq!(running, GENERATION_CONCURRENCY);
+        assert_eq!(queued, 2);
+        assert_eq!(inflight, GENERATION_CONCURRENCY);
     }
 
     #[test]

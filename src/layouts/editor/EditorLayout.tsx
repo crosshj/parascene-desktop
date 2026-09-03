@@ -16,14 +16,12 @@ import {
 } from "../../library/catalogClient";
 import { runLocalMerge } from "../../services/localMerge";
 import {
-  loadStoredProjectStrict,
   normalizeTimelinePlayheadSec,
 } from "../../project/projectStore";
 import { usePreviewQuality } from "../../settings/previewQuality";
-import { collectProjectReferencedCreationIds } from "../../project/projectUsage";
+import { outsideOwnedReferenceIds } from "../../project/projectUsage";
 import {
   collectCabinetMemberIdsFromCovers,
-  isProjectOwnedCreation,
 } from "../../project/projectOwnership";
 import { recoverMissingCabinetIdsFromCreations } from "../../project/desktopProjectGroups";
 import {
@@ -58,7 +56,7 @@ import {
   type EditorLayoutPrefs,
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
-import { useProjectPickerAssets } from "./projectImagePickerAssets";
+import { useProjectPickerCatalog } from "./projectImagePickerAssets";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import { pasteAppendStartSec } from "./timelineAppend";
 import {
@@ -509,27 +507,10 @@ export function EditorLayout() {
     project.videosGroupId,
     setOpenProjectGroupIds,
   ]);
-  const outsideReferenceIds = (() => {
-    try {
-      const stored = loadStoredProjectStrict(project.id);
-      const folderMembers = project.assets.map((asset) => asset.id);
-      const cabinetMembers = new Set(cabinetOwnedMemberIds);
-      return collectProjectReferencedCreationIds(stored).filter(
-        (id) =>
-          !isProjectOwnedCreation(
-            {
-              creationIds: folderMembers,
-              imagesGroupId: project.imagesGroupId,
-              videosGroupId: project.videosGroupId,
-            },
-            id,
-            cabinetMembers,
-          ),
-      );
-    } catch {
-      return [];
-    }
-  })();
+  const outsideReferenceIds = useMemo(
+    () => outsideOwnedReferenceIds(project, cabinetOwnedMemberIds),
+    [project, cabinetOwnedMemberIds],
+  );
   useEffect(() => {
     const cabinetIds = [project.imagesGroupId, project.videosGroupId]
       .map((id) => (id ? String(id).trim() : ""))
@@ -581,11 +562,18 @@ export function EditorLayout() {
     }),
     [project.imagesGroupId, project.videosGroupId],
   );
-  const pickerAssets = useProjectPickerAssets(project.assets, {
-    projectId: project.id,
-    projectTitle: project.title,
-    projectCabinets,
-  });
+  const pickerContext = useMemo(
+    () => ({
+      projectId: project.id,
+      projectTitle: project.title,
+      projectCabinets,
+    }),
+    [project.id, project.title, projectCabinets],
+  );
+  const { assets: pickerAssets } = useProjectPickerCatalog(
+    project.assets,
+    pickerContext,
+  );
   const imageAssets = useMemo(
     () => pickerAssets.filter((asset) => asset.kind === "image"),
     [pickerAssets],

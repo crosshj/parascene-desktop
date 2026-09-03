@@ -12,6 +12,7 @@ import {
   groupEmbeddedSourceCreations,
   groupSourceCreationIds,
 } from "../../library/creationFlags";
+import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation } from "../../library/types";
 import { type ProjectCabinetIds } from "../../project/desktopProjectGroups";
 import type { ProjectAsset } from "../../project/types";
@@ -19,6 +20,10 @@ import {
   flattenProjectAssetsForBrowserDisplay,
   projectContainerCoverIdsForMemberLoad,
 } from "./assetBrowserDisplay";
+import {
+  bumpEditorWorkCounter,
+  bumpEditorWorkGauge,
+} from "./editorWorkCounters";
 import { mapGroupSourceCreations } from "../../sync/manifestSync";
 
 export type ProjectImagePickerContext = {
@@ -28,6 +33,11 @@ export type ProjectImagePickerContext = {
 };
 
 export type ProjectPickerAssetKind = ProjectAsset["kind"];
+
+export type ProjectPickerCatalog = {
+  assets: ProjectAsset[];
+  previews: Record<string, string | null>;
+};
 
 /** Flatten project assets (including cabinet members), optionally by kind. */
 export function projectPickerAssets(
@@ -57,6 +67,79 @@ export function projectImagePickerAssets(
   return projectPickerAssets(assets, creationsById, context, ["image"]);
 }
 
+export function creationPickerFingerprint(row: Creation): string {
+  return [
+    row.id,
+    row.updatedAt,
+    String(row.downloadState),
+    String(row.mediaType),
+    row.localPath ?? "",
+    row.localThumbPath ?? "",
+    row.fitThumbnailUrl ?? "",
+    row.thumbnailUrl ?? "",
+    row.remoteJson ?? "",
+  ].join("\0");
+}
+
+export function creationsByIdUnchanged(
+  prev: Readonly<Record<string, Creation>>,
+  next: Readonly<Record<string, Creation>>,
+): boolean {
+  const prevKeys = Object.keys(prev);
+  const nextKeys = Object.keys(next);
+  if (prevKeys.length !== nextKeys.length) return false;
+  for (const id of nextKeys) {
+    const a = prev[id];
+    const b = next[id];
+    if (!a || !b) return false;
+    if (creationPickerFingerprint(a) !== creationPickerFingerprint(b)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function pickerAssetsFingerprint(
+  assets: readonly ProjectAsset[],
+): string {
+  return assets
+    .map(
+      (asset) =>
+        `${asset.id}\0${asset.kind}\0${asset.name}\0${asset.durationLabel ?? ""}`,
+    )
+    .join("|");
+}
+
+export function pickerPreviewsFingerprint(
+  previews: Readonly<Record<string, string | null>>,
+): string {
+  return Object.keys(previews)
+    .sort()
+    .map((id) => `${id}\0${previews[id] ?? ""}`)
+    .join("|");
+}
+
+/**
+ * Call `off()` even when the listen promise resolves after effect cleanup.
+ */
+export function bindAsyncUnlisten(
+  pending: Promise<() => void>,
+): () => void {
+  let disposed = false;
+  let off: (() => void) | undefined;
+  void pending.then((fn) => {
+    if (disposed) {
+      fn();
+      return;
+    }
+    off = fn;
+  });
+  return () => {
+    disposed = true;
+    off?.();
+  };
+}
+
 async function loadProjectAssetCreations(
   assetIds: readonly string[],
   context: ProjectImagePickerContext,
@@ -64,6 +147,7 @@ async function loadProjectAssetCreations(
   const ids = [...new Set(assetIds.map((id) => id.trim()).filter(Boolean))];
   if (ids.length === 0) return {};
 
+  bumpEditorWorkCounter("catalogLoads");
   const rows = await getCreations(ids);
   const next: Record<string, Creation> = {};
   for (const row of rows) next[row.id] = row;
@@ -113,16 +197,27 @@ async function loadProjectAssetCreations(
   return next;
 }
 
-export function useProjectPickerAssets(
+export function useProjectPickerCatalog(
   assets: readonly ProjectAsset[],
   context: ProjectImagePickerContext,
   kinds?: readonly ProjectPickerAssetKind[],
-): ProjectAsset[] {
+): ProjectPickerCatalog {
   const assetIdsKey = useMemo(
     () => assets.map((asset) => asset.id).join("\0"),
     [assets],
   );
   const kindsKey = (kinds ?? []).join(",");
+  const projectId = context.projectId;
+  const projectTitle = context.projectTitle;
+  const imagesGroupId = context.projectCabinets?.imagesGroupId ?? "";
+  const videosGroupId = context.projectCabinets?.videosGroupId ?? "";
+  const projectCabinets = useMemo(
+    () => ({
+      imagesGroupId: imagesGroupId || null,
+      videosGroupId: videosGroupId || null,
+    }),
+    [imagesGroupId, videosGroupId],
+  );
   const [creationsById, setCreationsById] = useState<
     Record<string, Creation>
   >({});
@@ -134,42 +229,92 @@ export function useProjectPickerAssets(
     }
 
     let cancelled = false;
-    void loadProjectAssetCreations(ids, context)
+    const loadContext: ProjectImagePickerContext = {
+      projectId,
+      projectTitle,
+      projectCabinets: {
+        imagesGroupId: imagesGroupId || null,
+        videosGroupId: videosGroupId || null,
+      },
+    };
+    void loadProjectAssetCreations(ids, loadContext)
       .then((next) => {
-        if (!cancelled) setCreationsById(next);
+        if (cancelled) return;
+        setCreationsById((prev) =>
+          creationsByIdUnchanged(prev, next) ? prev : next,
+        );
       })
       .catch(() => {
-        if (!cancelled) setCreationsById({});
+        if (cancelled) return;
+        setCreationsById((prev) =>
+          Object.keys(prev).length === 0 ? prev : {},
+        );
       });
 
-    let unlisten: (() => void) | undefined;
-    void listen<Creation>("library-creation-updated", (event) => {
-      const row = event.payload;
-      setCreationsById((prev) => {
-        if (prev[row.id] || ids.includes(row.id)) {
-          return { ...prev, [row.id]: row };
-        }
-        return prev;
-      });
-    }).then((off) => {
-      unlisten = off;
-    });
+    const stop = bindAsyncUnlisten(
+      listen<Creation>("library-creation-updated", (event) => {
+        const row = event.payload;
+        setCreationsById((prev) => {
+          if (!(prev[row.id] || ids.includes(row.id))) return prev;
+          const next = { ...prev, [row.id]: row };
+          return creationsByIdUnchanged(prev, next) ? prev : next;
+        });
+      }).then((off) => {
+        bumpEditorWorkGauge("libraryListeners", 1);
+        return () => {
+          bumpEditorWorkGauge("libraryListeners", -1);
+          off();
+        };
+      }),
+    );
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      stop();
     };
-  }, [assetIdsKey, context]);
+  }, [assetIdsKey, projectId, projectTitle, imagesGroupId, videosGroupId]);
 
-  return useMemo(() => {
+  const catalogAssets = useMemo(() => {
     const resolvedCreationsById = assetIdsKey ? creationsById : {};
     return projectPickerAssets(
       assets,
       resolvedCreationsById,
-      context,
+      {
+        projectId,
+        projectTitle,
+        projectCabinets,
+      },
       kindsKey ? (kindsKey.split(",") as ProjectPickerAssetKind[]) : undefined,
     );
-  }, [assetIdsKey, assets, context, creationsById, kindsKey]);
+  }, [
+    assetIdsKey,
+    creationsById,
+    kindsKey,
+    projectId,
+    projectTitle,
+    projectCabinets,
+    assets,
+  ]);
+
+  const catalogPreviews = useMemo(() => {
+    const out: Record<string, string | null> = {};
+    for (const asset of catalogAssets) {
+      const row = creationsById[asset.id];
+      if (!row) continue;
+      out[asset.id] = creationPreviewUrl(row);
+    }
+    return out;
+  }, [catalogAssets, creationsById]);
+
+  return { assets: catalogAssets, previews: catalogPreviews };
+}
+
+export function useProjectPickerAssets(
+  assets: readonly ProjectAsset[],
+  context: ProjectImagePickerContext,
+  kinds?: readonly ProjectPickerAssetKind[],
+): ProjectAsset[] {
+  return useProjectPickerCatalog(assets, context, kinds).assets;
 }
 
 export function useProjectImagePickerAssets(

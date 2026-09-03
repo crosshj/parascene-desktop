@@ -434,4 +434,38 @@ describe("createTimelineFragmentCache", () => {
 
     cache.destroy();
   });
+
+  it("does not notify or reconcile when setClips produces an identical plan", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    const cache = createTimelineFragmentCache({
+      debounceMs: 750,
+      bake: async ({ fragment }) => resultFor(fragment),
+    });
+    const clips = [clip({ id: "a", startSec: 0, endSec: 2, assetId: "v1" })];
+    let notifies = 0;
+    cache.subscribe(() => {
+      notifies += 1;
+    });
+    cache.setClips({ projectId: "p1", aspectRatio: "16:9", clips });
+    const afterFirst = notifies;
+    const snapshotCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        (call) => call[0] === "library_read_timeline_preview_snapshot",
+      ).length;
+    cache.setClips({
+      projectId: "p1",
+      aspectRatio: "16:9",
+      clips: [...clips],
+    });
+    expect(notifies).toBe(afterFirst);
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(
+          (call) => call[0] === "library_read_timeline_preview_snapshot",
+        ).length,
+    ).toBe(snapshotCalls);
+    cache.destroy();
+  });
 });

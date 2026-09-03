@@ -148,10 +148,11 @@ export function useParasceneImageToImageForm(
     setSourceAssetId(source || null);
   }
 
+  const imageAssetIdsKey = imageAssets.map((asset) => asset.id).join("\0");
   useEffect(() => {
-    if (fieldsLocked || imageAssets.length === 0) return;
+    if (fieldsLocked || imageAssetIdsKey.length === 0) return;
     let cancelled = false;
-    const ids = imageAssets.map((asset) => asset.id);
+    const ids = imageAssetIdsKey.split("\0");
     void (async () => {
       const rows = await getCreations(ids);
       if (cancelled) return;
@@ -164,7 +165,7 @@ export function useParasceneImageToImageForm(
     return () => {
       cancelled = true;
     };
-  }, [fieldsLocked, imageAssets]);
+  }, [fieldsLocked, imageAssetIdsKey]);
 
   // Locked review: load start still only when sync preview is missing.
   useEffect(() => {

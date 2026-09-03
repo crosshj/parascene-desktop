@@ -21,6 +21,7 @@ import {
 import type { TimelineClip } from "../../project/types";
 import { GenerateFrameSourcePicker } from "./GenerateFrameSourcePicker";
 import {
+  neighborFramePeekKey,
   peekTimelineFrameSlot,
   type StartFramePreview,
 } from "./addAssetStartFrame";
@@ -156,6 +157,7 @@ export function GenerateMediaRefsForm({
   onChange: (next: GenerateMediaRefs) => void;
 }) {
   const neighborId = previousTimelineVideoAssetId(timeline, placeholder);
+  const peekKey = neighborFramePeekKey(timeline, placeholder, aspectRatio);
   const needsCharacter = v2vModelNeedsCharacter(modelId);
   const isV2v = intentId === "video_to_video";
   const tagHint = referencePromptTagHint(refs);
@@ -176,14 +178,6 @@ export function GenerateMediaRefsForm({
   const [picker, setPicker] = useState<
     "pictures" | "character" | "sourceVideo" | "videos" | null
   >(null);
-  // Keyed peek result: "loading" is derived from key mismatch instead of a
-  // synchronous setState at effect start.
-  const peekKey = [
-    placeholder.id,
-    placeholder.startSec,
-    placeholder.endSec,
-    aspectRatio ?? "",
-  ].join("|");
   const [neighborPeek, setNeighborPeek] = useState<{
     key: string;
     first: StartFramePreview | null;
@@ -197,6 +191,7 @@ export function GenerateMediaRefsForm({
 
   useEffect(() => {
     let cancelled = false;
+    const key = peekKey;
     void (async () => {
       const [first, last] = await Promise.all([
         peekTimelineFrameSlot({
@@ -213,7 +208,12 @@ export function GenerateMediaRefsForm({
         }),
       ]);
       if (cancelled) return;
-      setNeighborPeek({ key: peekKey, first, last });
+      setNeighborPeek((prev) => {
+        if (prev?.key === key && prev.first === first && prev.last === last) {
+          return prev;
+        }
+        return { key, first, last };
+      });
     })();
     return () => {
       cancelled = true;

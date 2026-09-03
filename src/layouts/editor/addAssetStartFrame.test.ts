@@ -2,13 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import type { Creation } from "../../library/types";
 import type { TimelineClip } from "../../project/types";
 import {
+  __resetTimelineFramePeekCacheForTests,
   clipSongTimeRangeFromTimeline,
   firstFrameSourceSec,
   framePathBasename,
   lastFrameSourceSec,
   looksLikeImagePath,
+  neighborFramePeekKey,
   nextVideoClipAfter,
   parasceneImageUrlFromCreation,
+  peekTimelineFrameSlot,
   priorVideoClipBefore,
   resolveAddAssetGenerationTiming,
   resolveEditorMainAudioCreationId,
@@ -19,6 +22,10 @@ import {
   visualLayerBeforePlaceholder,
 } from "./addAssetStartFrame";
 import { resolveTimelineFrame } from "./timelineCompose";
+import {
+  getEditorWorkCounters,
+  resetEditorWorkCounters,
+} from "./editorWorkCounters";
 
 vi.mock("../../library/catalogClient", () => ({
   getCreations: vi.fn(),
@@ -593,5 +600,86 @@ describe("framePathBasename", () => {
     expect(framePathBasename("/Users/me/media/17995.png")).toBe("17995.png");
     expect(framePathBasename("C:\\Cache\\framed\\a-v2.jpg")).toBe("a-v2.jpg");
     expect(framePathBasename("  ")).toBe("");
+  });
+});
+
+describe("neighborFramePeekKey", () => {
+  it("ignores prompt-only placeholder identity changes", () => {
+    const prev = clip({
+      id: "v1",
+      startSec: 0,
+      endSec: 4,
+      assetId: "vid-1",
+    });
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "slot",
+      startSec: 4,
+      endSec: 8,
+      lane: "video",
+      kind: "video",
+      isAddAssetPlaceholder: true,
+      addAssetDraft: { prompt: "one" },
+    };
+    const a = neighborFramePeekKey([prev, placeholder], placeholder, "16:9");
+    const b = neighborFramePeekKey(
+      [prev, { ...placeholder, addAssetDraft: { prompt: "two" } }],
+      { ...placeholder, addAssetDraft: { prompt: "two" } },
+      "16:9",
+    );
+    expect(a).toBe(b);
+  });
+
+  it("changes when the neighboring clip source changes", () => {
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "slot",
+      startSec: 4,
+      endSec: 8,
+      lane: "video",
+      kind: "video",
+      isAddAssetPlaceholder: true,
+    };
+    const before = neighborFramePeekKey(
+      [clip({ id: "v1", startSec: 0, endSec: 4, assetId: "vid-1" }), placeholder],
+      placeholder,
+      "16:9",
+    );
+    const after = neighborFramePeekKey(
+      [clip({ id: "v1", startSec: 0, endSec: 4, assetId: "vid-2" }), placeholder],
+      placeholder,
+      "16:9",
+    );
+    expect(before).not.toBe(after);
+  });
+});
+
+describe("peekTimelineFrameSlot cache", () => {
+  it("dedupes identical in-flight peeks and caches the result", async () => {
+    __resetTimelineFramePeekCacheForTests();
+    resetEditorWorkCounters();
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "slot",
+      startSec: 0,
+      endSec: 4,
+      lane: "video",
+      kind: "video",
+      isAddAssetPlaceholder: true,
+    };
+    const opts = {
+      role: "first" as const,
+      timeline: [placeholder],
+      placeholder,
+      aspectRatio: "16:9",
+    };
+    const [a, b] = await Promise.all([
+      peekTimelineFrameSlot(opts),
+      peekTimelineFrameSlot(opts),
+    ]);
+    expect(a).toEqual(b);
+    expect(getEditorWorkCounters().framePeeksStarted).toBe(1);
+    await peekTimelineFrameSlot({ ...opts, timeline: [...opts.timeline] });
+    expect(getEditorWorkCounters().framePeeksStarted).toBe(1);
   });
 });

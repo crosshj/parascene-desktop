@@ -36,6 +36,7 @@ import {
   type StagedClipFraming,
 } from "./stagedClip";
 import { recordUiOpTrace } from "./uiOpTrace";
+import { bumpEditorWorkCounter } from "./editorWorkCounters";
 
 export type StartFramePreview = {
   previewUrl: string | null;
@@ -193,6 +194,55 @@ export function priorVideoClipBefore(
   }
 
   return best;
+}
+
+function visualClipPeekKey(clip: TimelineClip | undefined): string {
+  if (!clip) return "";
+  return [
+    clip.id,
+    clip.assetId ?? "",
+    clip.startSec.toFixed(3),
+    clip.endSec.toFixed(3),
+    clip.inSec ?? 0,
+    clip.outSec ?? "",
+    clip.reverse ? 1 : 0,
+    clip.extendPingPong === true ? 1 : 0,
+    clip.extendSourceSpanSec ?? "",
+    clip.speed ?? 1,
+    clip.framing ?? "fit",
+    clip.zoom ?? 1,
+    clip.centerX ?? 0.5,
+    clip.centerY ?? 0.5,
+  ].join(":");
+}
+
+/** Fingerprint of neighbor still sources — ignores prompt and other draft fields. */
+export function neighborFramePeekKey(
+  timeline: readonly TimelineClip[],
+  placeholder: TimelineClip,
+  aspectRatio: string = "16:9",
+): string {
+  const before = visualLayerBeforePlaceholder(timeline, placeholder);
+  const after = visualLayerAfterPlaceholder(timeline, placeholder);
+  return [
+    placeholder.id,
+    placeholder.startSec.toFixed(3),
+    placeholder.endSec.toFixed(3),
+    aspectRatio,
+    visualClipPeekKey(before?.clip),
+    String(before?.sourceSec ?? ""),
+    visualClipPeekKey(after?.clip),
+    String(after?.sourceSec ?? ""),
+  ].join("|");
+}
+
+const peekInflight = new Map<string, Promise<StartFramePreview>>();
+const peekResults = new Map<string, StartFramePreview>();
+const PEEK_RESULT_CACHE_MAX = 48;
+
+export function __resetTimelineFramePeekCacheForTests(): void {
+  peekInflight.clear();
+  peekResults.clear();
 }
 
 /**
@@ -999,13 +1049,35 @@ export async function peekTimelineFrameSlot(opts: {
   placeholder: TimelineClip;
   aspectRatio?: string;
 }): Promise<StartFramePreview> {
-  return resolveFrameSlot({
+  const aspectRatio = opts.aspectRatio ?? "16:9";
+  const key = `${opts.role}|${neighborFramePeekKey(opts.timeline, opts.placeholder, aspectRatio)}`;
+  const cached = peekResults.get(key);
+  if (cached) return cached;
+  const inflight = peekInflight.get(key);
+  if (inflight) return inflight;
+  bumpEditorWorkCounter("framePeeksStarted");
+  const work = resolveFrameSlot({
     role: opts.role,
     source: { kind: "timeline" },
     timeline: opts.timeline,
     placeholder: opts.placeholder,
-    aspectRatio: opts.aspectRatio,
-  });
+    aspectRatio,
+  })
+    .then((result) => {
+      peekResults.set(key, result);
+      peekInflight.delete(key);
+      if (peekResults.size > PEEK_RESULT_CACHE_MAX) {
+        const first = peekResults.keys().next().value;
+        if (first) peekResults.delete(first);
+      }
+      return result;
+    })
+    .catch((error: unknown) => {
+      peekInflight.delete(key);
+      throw error;
+    });
+  peekInflight.set(key, work);
+  return work;
 }
 
 /**

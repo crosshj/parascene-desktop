@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createStoredProject, type StoredProject } from "./projectStore";
 import {
+  getStoredProjectParseCount,
+  __resetStoredProjectParseCountForTests,
+} from "./projectStore";
+import {
   collectProjectAssetUsage,
   collectProjectReferencedCreationIds,
   describeMissingProjectReferences,
   formatMissingProjectReferenceLines,
+  outsideOwnedReferenceIds,
   pruneMissingProjectReferences,
 } from "./projectUsage";
 
@@ -187,5 +192,30 @@ describe("collectProjectAssetUsage", () => {
     expect(pruned.storyboardProposal?.generationPlan?.steps[0]?.creationId).toBeUndefined();
     expect(pruned.imagesGroupId).toBeNull();
     expect(collectProjectReferencedCreationIds(pruned)).not.toContain("gone-clip");
+  });
+
+  it("computes outside references from the already-normalized project", () => {
+    const project = createStoredProject("Usage");
+    project.creationIds = ["owned"];
+    project.timeline = [
+      {
+        id: "clip",
+        label: "Clip",
+        startSec: 0,
+        endSec: 2,
+        lane: "video",
+        kind: "video",
+        assetId: "outside-id",
+      },
+    ];
+    const ui = {
+      ...project,
+      assets: [{ id: "owned" }],
+    };
+    expect(outsideOwnedReferenceIds(ui, [])).toEqual(["outside-id"]);
+    expect(outsideOwnedReferenceIds(ui, ["outside-id"])).toEqual([]);
+    __resetStoredProjectParseCountForTests();
+    outsideOwnedReferenceIds(ui, []);
+    expect(getStoredProjectParseCount()).toBe(0);
   });
 });

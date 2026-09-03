@@ -1282,8 +1282,11 @@ export function AddAssetGeneratePanel({
   ]);
 
   // Load thumbnails for the frame-source / video Assets pickers.
+  const pickerAssetIdsKey = [...imageAssets, ...videoAssets]
+    .map((asset) => asset.id)
+    .join("\0");
   useEffect(() => {
-    const ids = [...imageAssets, ...videoAssets].map((asset) => asset.id);
+    const ids = pickerAssetIdsKey ? pickerAssetIdsKey.split("\0") : [];
     if (ids.length === 0) return;
     let cancelled = false;
     void (async () => {
@@ -1293,12 +1296,22 @@ export function AddAssetGeneratePanel({
       for (const row of rows) {
         next[row.id] = creationPreviewUrl(row);
       }
-      setAssetPreviews(next);
+      setAssetPreviews((prev) => {
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(next);
+        if (
+          prevKeys.length === nextKeys.length &&
+          nextKeys.every((id) => prev[id] === next[id])
+        ) {
+          return prev;
+        }
+        return next;
+      });
     })();
     return () => {
       cancelled = true;
     };
-  }, [imageAssets, videoAssets]);
+  }, [pickerAssetIdsKey]);
 
   // Persist form choices on the placeholder so they survive clip switches.
   // Skip while error/running — job lifecycle fields (lastError, generationJob)

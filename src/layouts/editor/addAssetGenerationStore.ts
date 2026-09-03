@@ -47,6 +47,10 @@ import {
 } from "../../project/addAssetFrameSource";
 import type { AddAssetFrameSource } from "../../project/types";
 import { importLocalPathsForProject } from "../../project/projectAssetLanding";
+import {
+  bumpEditorWorkCounter,
+  setEditorWorkGauge,
+} from "./editorWorkCounters";
 
 /**
  * Prefer an existing image asset; otherwise file the local still into the
@@ -432,6 +436,7 @@ export function startAddAssetGenerationJob(
   if (inflightClips.has(clipId)) return false;
   const continuityMode = request.continuityMode ?? "start_frame";
   inflightClips.add(clipId);
+  setEditorWorkGauge("activeGeneration", inflightClips.size);
   resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
@@ -639,6 +644,7 @@ export function startAddAssetGenerationJob(
     })
     .finally(() => {
       inflightClips.delete(clipId);
+      setEditorWorkGauge("activeGeneration", inflightClips.size);
       resumeAttempted.delete(clipId);
       activeServiceJobByClip.delete(clipId);
       cancelRequestedClips.delete(clipId);
@@ -705,6 +711,7 @@ export function retryAddAssetDownloadJob(
     modelId,
   } = opts;
   inflightClips.add(clipId);
+  setEditorWorkGauge("activeGeneration", inflightClips.size);
   resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
@@ -774,6 +781,7 @@ export function retryAddAssetDownloadJob(
     })
     .finally(() => {
       inflightClips.delete(clipId);
+      setEditorWorkGauge("activeGeneration", inflightClips.size);
       resumeAttempted.delete(clipId);
     });
 
@@ -806,6 +814,7 @@ export function resumeTimedOutParasceneWait(
   if (!clipId || !pendingCreationId) return false;
   if (inflightClips.has(clipId)) return false;
   inflightClips.add(clipId);
+  setEditorWorkGauge("activeGeneration", inflightClips.size);
   resumeAttempted.add(clipId);
   const baseSession = createRunningAddAssetGenerationSession(
     clipId,
@@ -881,6 +890,7 @@ export function resumeTimedOutParasceneWait(
     })
     .finally(() => {
       inflightClips.delete(clipId);
+      setEditorWorkGauge("activeGeneration", inflightClips.size);
       resumeAttempted.delete(clipId);
       activeServiceJobByClip.delete(clipId);
       cancelRequestedClips.delete(clipId);
@@ -897,6 +907,19 @@ export type ReconcileAddAssetGenerationsOpts = {
   videosGroupId: string | null;
 };
 
+function remoteIdsForResume(clip: TimelineClip, job: AddAssetGenerationJob) {
+  const draft = clip.addAssetDraft;
+  return {
+    predictionId:
+      job.replicatePredictionId?.trim() ||
+      draft?.replicatePredictionId?.trim() ||
+      "",
+    pendingCreationId: job.pendingCreationId?.trim() || "",
+    blueJobId: job.blueJobId?.trim() || draft?.blueJobId?.trim() || "",
+    serviceJobId: job.serviceJobId?.trim() || "",
+  };
+}
+
 /**
  * After project load / app restart: reattach to remote jobs persisted on
  * placeholders. One job per clip; different clips can run together.
@@ -905,6 +928,8 @@ export function reconcileAddAssetGenerations(
   opts: ReconcileAddAssetGenerationsOpts,
 ): boolean {
   if (!applier) return false;
+  bumpEditorWorkCounter("reconciliationCalls");
+  setEditorWorkGauge("activeGeneration", inflightClips.size);
   const candidates = findResumableAddAssetPlaceholders(opts.timeline).filter(
     (c) =>
       !resumeAttempted.has(c.clip.id) &&
@@ -919,16 +944,35 @@ export function reconcileAddAssetGenerations(
   );
   if (candidates.length === 0) return false;
 
-  // Prefer a job that already has a remote id.
-  const withRemote =
-    candidates.find(
-      (c) =>
-        Boolean(c.job.serviceJobId?.trim()) ||
-        Boolean(c.job.replicatePredictionId?.trim()) ||
-        Boolean(c.job.pendingCreationId?.trim()) ||
-        Boolean(c.job.blueJobId?.trim()),
-    ) ?? candidates[0];
-  if (!withRemote) return false;
+  let withRemote: (typeof candidates)[number] | undefined;
+  let failedStale = false;
+  for (const candidate of candidates) {
+    const ids = remoteIdsForResume(candidate.clip, candidate.job);
+    const hasRemote = Boolean(
+      ids.serviceJobId ||
+        ids.predictionId ||
+        ids.pendingCreationId ||
+        ids.blueJobId,
+    );
+    if (candidate.job.status === "starting" && !hasRemote) {
+      resumeAttempted.add(candidate.clip.id);
+      const staleDraft = candidate.clip.addAssetDraft;
+      applyJobFailure(
+        opts.projectId,
+        candidate.clip.id,
+        draftAudioMode(staleDraft),
+        addAssetClipDurationSec(candidate.clip),
+        draftContinuityMode(staleDraft),
+        new Error(
+          "Generation was interrupted before a remote job was created. Please try again.",
+        ),
+      );
+      failedStale = true;
+      continue;
+    }
+    if (!withRemote && hasRemote) withRemote = candidate;
+  }
+  if (!withRemote) return failedStale;
 
   const { clip, job } = withRemote;
   const clipId = clip.id;
@@ -938,39 +982,15 @@ export function reconcileAddAssetGenerations(
   const durationSec = addAssetClipDurationSec(clip);
   const prompt = draft?.prompt?.trim() || "";
   const lyricsText = "";
-  const predictionId =
-    job.replicatePredictionId?.trim() ||
-    draft?.replicatePredictionId?.trim() ||
-    "";
-  const pendingCreationId = job.pendingCreationId?.trim() || "";
-  const blueJobId =
-    job.blueJobId?.trim() || draft?.blueJobId?.trim() || "";
-  const serviceJobId = job.serviceJobId?.trim() || "";
-
-  if (
-    job.status === "starting" &&
-    !predictionId &&
-    !pendingCreationId &&
-    !blueJobId &&
-    !serviceJobId
-  ) {
-    resumeAttempted.add(clipId);
-    applyJobFailure(
-      opts.projectId,
-      clipId,
-      audioMode,
-      durationSec,
-      continuityMode,
-      new Error(
-        "Generation was interrupted before a remote job was created. Please try again.",
-      ),
-    );
-    resumeAttempted.delete(clipId);
-    // Try next candidate if any.
-    return reconcileAddAssetGenerations(opts);
-  }
+  const {
+    predictionId,
+    pendingCreationId,
+    blueJobId,
+    serviceJobId,
+  } = remoteIdsForResume(clip, job);
 
   inflightClips.add(clipId);
+  setEditorWorkGauge("activeGeneration", inflightClips.size);
   resumeAttempted.add(clipId);
   if (serviceJobId) activeServiceJobByClip.set(clipId, serviceJobId);
   const baseSession = initialResumeSessionSteps(
@@ -1113,6 +1133,7 @@ export function reconcileAddAssetGenerations(
     })
     .finally(() => {
       inflightClips.delete(clipId);
+      setEditorWorkGauge("activeGeneration", inflightClips.size);
       resumeAttempted.delete(clipId);
       activeServiceJobByClip.delete(clipId);
       cancelRequestedClips.delete(clipId);
@@ -1155,4 +1176,10 @@ export function __resetAddAssetGenerationStoreForTests(): void {
   consumedRemoteJobs.clear();
   activeServiceJobByClip.clear();
   cancelRequestedClips.clear();
+  setEditorWorkGauge("activeGeneration", 0);
+}
+
+/** Simulate HMR / reload loss of in-memory resume guards. */
+export function __clearAddAssetResumeGuardsForTests(): void {
+  resumeAttempted.clear();
 }

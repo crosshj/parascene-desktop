@@ -30,6 +30,7 @@ import { runAddAssetGeneration } from "./addAssetGenerate";
 import { resumeBlueDirectAddAssetWait } from "./addAssetBlueDirectGenerate";
 import { importLocalPathsForProject } from "../../project/projectAssetLanding";
 import {
+  __clearAddAssetResumeGuardsForTests,
   __resetAddAssetGenerationStoreForTests,
   bindAddAssetGenerationApplier,
   clearAddAssetGenerationError,
@@ -629,6 +630,185 @@ describe("addAssetGenerationStore", () => {
         projectCreationIdsToRemove: ["local-bridge-extract"],
       }),
     );
+  });
+
+  function staleStartingClip(id: string) {
+    return {
+      id,
+      label: "0:04",
+      startSec: 0,
+      endSec: 4,
+      lane: "video" as const,
+      kind: "video" as const,
+      isAddAssetPlaceholder: true,
+      addAssetDraft: {
+        prompt: "glow",
+        continuityMode: "start_frame" as const,
+        provider: "blue_direct" as const,
+        generationJob: {
+          status: "starting" as const,
+          provider: "blue_direct" as const,
+          startedAt: new Date().toISOString(),
+          model: "ltx_i2v",
+        },
+      },
+    };
+  }
+
+  it("marks a stale starting job failed once without recursing", () => {
+    const applyFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+    const opts = {
+      projectId: "proj-1",
+      projectTitle: "Demo",
+      timeline: [staleStartingClip("ph-stale")],
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+    expect(reconcileAddAssetGenerations(opts)).toBe(true);
+    expect(applyFailure).toHaveBeenCalledTimes(1);
+    expect(reconcileAddAssetGenerations(opts)).toBe(false);
+    expect(applyFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails each stale starting candidate at most once", () => {
+    const applyFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+    const many = Array.from({ length: 12 }, (_, i) =>
+      staleStartingClip(`ph-${i}`),
+    );
+    expect(
+      reconcileAddAssetGenerations({
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        timeline: many,
+        imagesGroupId: null,
+        videosGroupId: null,
+      }),
+    ).toBe(true);
+    expect(applyFailure).toHaveBeenCalledTimes(12);
+    expect(
+      reconcileAddAssetGenerations({
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        timeline: many,
+        imagesGroupId: null,
+        videosGroupId: null,
+      }),
+    ).toBe(false);
+    expect(applyFailure).toHaveBeenCalledTimes(12);
+  });
+
+  it("does not let a stale starting job block a resumable remote job", async () => {
+    const applyFailure = vi.fn();
+    const applySuccess = vi.fn().mockResolvedValue(undefined);
+    bindAddAssetGenerationApplier({
+      applySuccess,
+      applyFailure,
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+    resumeBlueMock.mockResolvedValue({
+      creationId: "vid-1",
+      projectCreationIds: ["vid-1"],
+      videosGroupId: null,
+      imagesGroupId: null,
+      startFrameCreationId: null,
+      endFrameCreationId: null,
+      mode: "start_frame" as const,
+      model: "ltx_i2v",
+    });
+    const remote = {
+      id: "ph-remote",
+      label: "0:04",
+      startSec: 4,
+      endSec: 8,
+      lane: "video" as const,
+      kind: "video" as const,
+      isAddAssetPlaceholder: true,
+      addAssetDraft: {
+        prompt: "glow",
+        continuityMode: "start_frame" as const,
+        provider: "blue_direct" as const,
+        generationJob: {
+          status: "waiting" as const,
+          provider: "blue_direct" as const,
+          startedAt: new Date().toISOString(),
+          blueJobId: "blue-job-1",
+          model: "ltx_i2v",
+        },
+      },
+    };
+    expect(
+      reconcileAddAssetGenerations({
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        timeline: [staleStartingClip("ph-stale"), remote],
+        imagesGroupId: null,
+        videosGroupId: null,
+      }),
+    ).toBe(true);
+    expect(applyFailure).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(applySuccess).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("repeated sweeps stay no-ops after a stale starting failure", () => {
+    const applyFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+    const opts = {
+      projectId: "proj-1",
+      projectTitle: "Demo",
+      timeline: [staleStartingClip("ph-stale")],
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+    reconcileAddAssetGenerations(opts);
+    for (let i = 0; i < 8; i += 1) {
+      expect(reconcileAddAssetGenerations(opts)).toBe(false);
+    }
+    expect(applyFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("HMR loss of resume guards does not overflow", () => {
+    const applyFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure: vi.fn(),
+      applyInFlight: vi.fn(),
+    });
+    const many = Array.from({ length: 20 }, (_, i) =>
+      staleStartingClip(`ph-${i}`),
+    );
+    const opts = {
+      projectId: "proj-1",
+      projectTitle: "Demo",
+      timeline: many,
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+    expect(reconcileAddAssetGenerations(opts)).toBe(true);
+    __clearAddAssetResumeGuardsForTests();
+    expect(reconcileAddAssetGenerations(opts)).toBe(true);
+    expect(applyFailure).toHaveBeenCalledTimes(40);
+    expect(reconcileAddAssetGenerations(opts)).toBe(false);
   });
 
 });

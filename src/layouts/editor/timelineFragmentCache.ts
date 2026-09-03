@@ -20,6 +20,7 @@ import {
   type TimelineFragmentPlan,
   type TimelineFragmentSpec,
 } from "./timelineFragmentPlan";
+import { setEditorWorkGauge } from "./editorWorkCounters";
 
 export type TimelineFragmentBakeResult = {
   path: string;
@@ -524,8 +525,10 @@ export function createTimelineFragmentCache(
       const spec = nextJob();
       if (!spec) break;
       activeBakes += 1;
+      setEditorWorkGauge("activePreviewBakes", activeBakes);
       void bakeOne(spec).finally(() => {
         activeBakes = Math.max(0, activeBakes - 1);
+        setEditorWorkGauge("activePreviewBakes", activeBakes);
         notify();
         maybePump();
       });
@@ -597,10 +600,13 @@ export function createTimelineFragmentCache(
       plan.aspectRatio !== nextPlan.aspectRatio ||
       plan.fragmentCount !== nextPlan.fragmentCount ||
       dirtyFragmentIndices(plan, nextPlan).length > 0;
+    if (!planChanged) {
+      if (spawn === "now") scheduleJobs(true);
+      return;
+    }
     applyPlan(nextPlan);
     notify();
     void reconcileSnapshot();
-    if (!planChanged && spawn !== "now") return;
     if (spawn === "skip") return;
     scheduleJobs(spawn === "now");
   };
