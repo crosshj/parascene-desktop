@@ -6,8 +6,8 @@
 //! the create/wait/group coordination loop.
 
 use super::catalog::{
-    default_paths, delete_creation_local, get_creation_by_id, ingest_remote_creation_json,
-    list_creations, ready_connection, Creation,
+    default_paths, delete_creation_local, existing_creation_ids, get_creation_by_id,
+    ingest_remote_creation_json, list_creations, ready_connection, Creation,
 };
 use super::cloud_repair::run_cloud_repair;
 use super::download::{
@@ -484,6 +484,15 @@ async fn finish_wait_creation(
             let _ = load_and_emit(app, job_id);
         }
         ingest_and_cache_generation(app, row).await;
+    } else {
+        // Local output already exists; still fill thumbs/media gaps so Sync
+        // does not later ask to cache this Generate result.
+        if let Err(err) = cache_generation_files(app, creation_id).await {
+            eprintln!("[jobs] cache after wait failed for {creation_id}: {err}");
+            enqueue_thumbs(app.clone(), vec![creation_id.to_string()], true);
+            enqueue_media(app.clone(), vec![creation_id.to_string()], true);
+        }
+        emit_creation_updated(app, creation_id);
     }
     Ok(row.clone())
 }
@@ -849,6 +858,21 @@ fn embedded_source_creations(row: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Sparse `source_creations` snapshots must not upsert over a Generate cache.
+fn embedded_sources_not_in_catalog(
+    sources: Vec<Value>,
+    existing: &HashSet<String>,
+) -> Vec<Value> {
+    sources
+        .into_iter()
+        .filter(|source| {
+            creation_id(source)
+                .map(|id| !existing.contains(&id))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 fn local_group_source_creations(group_id: &str) -> Vec<Value> {
     let Ok(paths) = default_paths() else {
         return Vec::new();
@@ -868,10 +892,34 @@ fn local_group_source_creations(group_id: &str) -> Vec<Value> {
     }
 }
 
-fn ingest_embedded_group_members(stamped: &Value) {
-    for source in embedded_source_creations(stamped) {
-        if let Err(err) = ingest_remote_creation_json(&source) {
-            eprintln!("[jobs] group member ingest failed: {err}");
+async fn ingest_embedded_group_members(app: &AppHandle, stamped: &Value) {
+    let sources = embedded_source_creations(stamped);
+    let ids: Vec<String> = sources.iter().filter_map(|row| creation_id(row)).collect();
+    let existing: HashSet<String> = {
+        let Ok(paths) = default_paths() else {
+            return;
+        };
+        let Ok(conn) = ready_connection(&paths) else {
+            return;
+        };
+        existing_creation_ids(&conn, &ids)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    };
+    for source in embedded_sources_not_in_catalog(sources, &existing) {
+        match ingest_remote_creation_json(&source) {
+            Ok(id) => {
+                if let Err(err) = cache_generation_files(app, &id).await {
+                    eprintln!("[jobs] cache after member ingest failed for {id}: {err}");
+                    enqueue_thumbs(app.clone(), vec![id.clone()], true);
+                    enqueue_media(app.clone(), vec![id.clone()], true);
+                }
+                emit_creation_updated(app, &id);
+            }
+            Err(err) => {
+                eprintln!("[jobs] group member ingest failed: {err}");
+            }
         }
     }
 }
@@ -1210,8 +1258,10 @@ async fn group_members(
     extras.extend(new_member_rows.iter().cloned());
     let stamped =
         stamp_group_membership_json(&full, &live, project_id, kind, project_title, &extras);
-    ingest_and_warm(app, &stamped).await;
-    ingest_embedded_group_members(&stamped);
+    // Cover artwork often switches to the new member — await cache so Sync
+    // does not ask to re-download a generate we just filed.
+    ingest_and_cache_generation(app, &stamped).await;
+    ingest_embedded_group_members(app, &stamped).await;
     Ok(group_id)
 }
 
@@ -2150,7 +2200,8 @@ async fn run_group_creations(app: &AppHandle, job: &Job) -> Result<Value, String
     let grouped = group_creations(&ids, party.as_deref(), meta.as_ref()).await?;
     let group_id = creation_id(&grouped).ok_or_else(|| "group missing id".to_string())?;
     let full = get_creation(&group_id).await?;
-    ingest_and_warm(app, &full).await;
+    ingest_and_cache_generation(app, &full).await;
+    ingest_embedded_group_members(app, &full).await;
     Ok(json!({ "groupId": group_id, "creation": full }))
 }
 
@@ -3411,5 +3462,17 @@ mod tests {
             .as_array()
             .expect("snapshots");
         assert!(sources.iter().any(|s| s["filename"] == "26_26053_x.png"));
+    }
+
+    #[test]
+    fn skips_embedded_members_already_in_catalog() {
+        let sources = vec![
+            json!({ "id": 1, "url": "https://cdn.example/sparse.png" }),
+            json!({ "id": 26053, "url": "https://cdn.example/new.png" }),
+        ];
+        let existing = HashSet::from(["1".to_string()]);
+        let next = embedded_sources_not_in_catalog(sources, &existing);
+        assert_eq!(next.len(), 1);
+        assert_eq!(creation_id(&next[0]).as_deref(), Some("26053"));
     }
 }

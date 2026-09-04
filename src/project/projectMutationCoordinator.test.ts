@@ -1,11 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { LibraryFolder } from "../library/folderClient";
 
 const native = vi.hoisted(() => ({
   existingCreationIds: vi.fn<(ids: string[]) => Promise<string[]>>(),
   getCreations: vi.fn(),
-  markProjectUsageStale: vi.fn<() => Promise<void>>(),
+  markProjectUsageStale: vi.fn<
+    (
+      projectId: string,
+      expectedDocumentRevision: string | null,
+      nextDocumentRevision: string,
+      allowExistingStale?: boolean,
+    ) => Promise<void>
+  >(),
   repairProjectUsage: vi.fn<() => Promise<void>>(),
   replaceProjectUsage: vi.fn<() => Promise<void>>(),
+  listFolders: vi.fn<() => Promise<LibraryFolder[]>>(),
 }));
 
 vi.mock("../library/catalogClient", () => ({
@@ -17,6 +26,10 @@ vi.mock("./projectFolderClient", () => ({
   markProjectUsageStale: native.markProjectUsageStale,
   repairProjectUsage: native.repairProjectUsage,
   replaceProjectUsage: native.replaceProjectUsage,
+}));
+
+vi.mock("../library/folderClient", () => ({
+  listFolders: native.listFolders,
 }));
 
 import {
@@ -33,7 +46,25 @@ import {
   mutateStoredProjects,
   repairCorruptProjectTimeline,
 } from "./projectMutationCoordinator";
+import { MEMBERSHIP_MIRROR_STALE_MESSAGE } from "./projectFolderMembership";
 import { collectProjectAssetUsage } from "./projectUsage";
+
+function projectFolder(
+  projectId: string,
+  memberIds: string[],
+): LibraryFolder {
+  return {
+    id: `folder-${projectId}`,
+    title: "Folder",
+    description: "",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    memberIds,
+    memberCount: memberIds.length,
+    kind: "project",
+    projectId,
+  };
+}
 
 describe("projectMutationCoordinator", () => {
   beforeEach(() => {
@@ -44,6 +75,7 @@ describe("projectMutationCoordinator", () => {
     native.markProjectUsageStale.mockResolvedValue();
     native.repairProjectUsage.mockResolvedValue();
     native.replaceProjectUsage.mockResolvedValue();
+    native.listFolders.mockResolvedValue([]);
   });
 
   it("rejects a newly owned creation that disappeared before the document commit", async () => {
@@ -188,9 +220,10 @@ describe("projectMutationCoordinator", () => {
     };
     saveStoredProjects([project]);
 
-    const next = await mirrorStoredProjectsAfterNativeMembership((projects) =>
-      projects.map((row) => ({ ...row, creationIds: ["owned"] })),
-    );
+    native.listFolders.mockResolvedValue([
+      projectFolder(project.id, ["owned"]),
+    ]);
+    const next = await mirrorStoredProjectsAfterNativeMembership();
 
     expect(next[0].creationIds).toEqual(["owned"]);
     expect(
@@ -199,6 +232,29 @@ describe("projectMutationCoordinator", () => {
       ),
     ).toBe(true);
     expect(native.replaceProjectUsage).toHaveBeenCalled();
+  });
+
+  it("remirrors folder membership and retries instead of failing a document save", async () => {
+    const project = {
+      ...createStoredProject("Live Cut", ["old-cover"]),
+      lifecycle: "ready" as const,
+    };
+    saveStoredProjects([project]);
+    native.markProjectUsageStale
+      .mockRejectedValueOnce(new Error(MEMBERSHIP_MIRROR_STALE_MESSAGE))
+      .mockResolvedValue(undefined);
+    native.listFolders.mockResolvedValue([
+      projectFolder(project.id, ["videos-cover"]),
+    ]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({ ...row, title: "Live Cut retitled" })),
+    );
+
+    expect(next[0].title).toBe("Live Cut retitled");
+    expect(next[0].creationIds).toEqual(["videos-cover"]);
+    expect(native.markProjectUsageStale).toHaveBeenCalledTimes(2);
+    expect(native.markProjectUsageStale.mock.calls[1]?.[3]).toBe(true);
   });
 
   it("mutates a healthy project while leaving a corrupt sibling raw row intact", async () => {

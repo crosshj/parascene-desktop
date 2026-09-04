@@ -1174,9 +1174,14 @@ fn sync_status(conn: &Connection, paths: &ParascenePaths) -> Result<SyncStatus, 
     })
 }
 
+fn url_slot(value: Option<&str>) -> &str {
+    value.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("")
+}
+
 fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result<(), String> {
-    // Group covers (and any row) can change cloud URLs when membership updates.
-    // Keep stale local media/thumbs only when the remote pointers are unchanged.
+    // Wipe local files only when the playable media URL changes. Thumb/fit URLs
+    // often arrive later (Generate wait vs Newest list) and must not delete a
+    // cache this app already wrote.
     let prev = match conn.query_row(
         r#"
         SELECT remote_url, thumbnail_url, fit_thumbnail_url, video_url,
@@ -1200,13 +1205,13 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
         Err(e) => return Err(format!("Lookup creation before upsert failed: {e}")),
     };
 
-    let urls_changed = prev
+    // Only the playable media pointer invalidates local files. Generate wait
+    // often lands a video/image before Parascene has thumbnail_url; Newest
+    // sync then fills thumbs. That is metadata enrichment, not a new asset.
+    let media_changed = prev
         .as_ref()
-        .map(|(remote, thumb, fit, video, _, _)| {
-            remote.as_deref() != row.remote_url.as_deref()
-                || thumb.as_deref() != row.thumbnail_url.as_deref()
-                || fit.as_deref() != row.fit_thumbnail_url.as_deref()
-                || video.as_deref() != row.video_url.as_deref()
+        .map(|(remote, _, _, _, _, _)| {
+            url_slot(remote.as_deref()) != url_slot(row.remote_url.as_deref())
         })
         .unwrap_or(false);
 
@@ -1280,12 +1285,12 @@ fn upsert_creation(conn: &Connection, row: &CreationUpsert, now: &str) -> Result
             if row.nsfw { 1 } else { 0 },
             if row.is_moderated_error { 1 } else { 0 },
             row.remote_json,
-            urls_changed,
+            media_changed,
         ],
     )
     .map_err(|e| format!("Upsert creation failed: {e}"))?;
 
-    if urls_changed {
+    if media_changed {
         if let Some((_, _, _, _, local_path, local_thumb)) = prev {
             if let Ok(paths) = default_paths() {
                 remove_file_under_root(&paths.media, local_path.as_deref());
@@ -2002,6 +2007,7 @@ pub(crate) fn ingest_remote_creation_json(raw: &serde_json::Value) -> Result<Str
     let conn = ready_connection(&paths)?;
     let now = Utc::now().to_rfc3339();
     upsert_creation(&conn, &row, &now)?;
+    meta_set(&conn, "last_sync_at", &now)?;
     Ok(id)
 }
 
@@ -2378,6 +2384,99 @@ mod tests {
         let status = sync_status(&conn, &paths).expect("status");
         assert_eq!(status.total, 1);
         assert!(status.last_sync_at.is_some());
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn newest_thumb_urls_do_not_wipe_generate_cache() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(
+            &conn,
+            &[CreationUpsert {
+                id: "99".into(),
+                title: "Gen".into(),
+                media_type: "video".into(),
+                remote_url: Some("https://cdn.example/v.mp4".into()),
+                thumbnail_url: None,
+                fit_thumbnail_url: None,
+                video_url: Some("https://cdn.example/v.mp4".into()),
+                published: false,
+                published_at: None,
+                created_at: "2026-01-02T00:00:00Z".into(),
+                download_state: "remote".into(),
+                prompt: None,
+                filename: Some("v.mp4".into()),
+                description: None,
+                color: None,
+                status: Some("completed".into()),
+                width: Some(1280),
+                height: Some(720),
+                aspect_ratio: Some("16:9".into()),
+                nsfw: false,
+                is_moderated_error: false,
+                remote_json: r#"{"id":"99"}"#.into(),
+            }],
+        )
+        .expect("ingest");
+        let media = paths.media.join("99.mp4");
+        let thumb = paths.thumbs.join("99.jpg");
+        fs::create_dir_all(&paths.media).expect("media dir");
+        fs::create_dir_all(&paths.thumbs).expect("thumbs dir");
+        fs::write(&media, b"video").expect("media");
+        fs::write(&thumb, b"thumb").expect("thumb");
+        mark_downloaded(
+            &conn,
+            "99",
+            &media.display().to_string(),
+            Some(&thumb.display().to_string()),
+        )
+        .expect("mark");
+
+        apply_manifest(
+            &conn,
+            &[CreationUpsert {
+                id: "99".into(),
+                title: "Gen".into(),
+                media_type: "video".into(),
+                remote_url: Some("https://cdn.example/v.mp4".into()),
+                thumbnail_url: Some("https://cdn.example/t.jpg".into()),
+                fit_thumbnail_url: Some("https://cdn.example/t.jpg?variant=fit".into()),
+                video_url: Some("https://cdn.example/v.mp4".into()),
+                published: false,
+                published_at: None,
+                created_at: "2026-01-02T00:00:00Z".into(),
+                download_state: "remote".into(),
+                prompt: None,
+                filename: Some("v.mp4".into()),
+                description: None,
+                color: None,
+                status: Some("completed".into()),
+                width: Some(1280),
+                height: Some(720),
+                aspect_ratio: Some("16:9".into()),
+                nsfw: false,
+                is_moderated_error: false,
+                remote_json: r#"{"id":"99","thumbnail_url":"https://cdn.example/t.jpg"}"#.into(),
+            }],
+        )
+        .expect("newest");
+
+        let row = get_creation_by_id(&conn, "99")
+            .expect("get")
+            .expect("exists");
+        let media_s = media.display().to_string();
+        let thumb_s = thumb.display().to_string();
+        assert_eq!(row.local_path.as_deref(), Some(media_s.as_str()));
+        assert_eq!(row.local_thumb_path.as_deref(), Some(thumb_s.as_str()));
+        assert_eq!(row.download_state, "local");
+        assert!(media.exists());
+        assert!(thumb.exists());
+        assert_eq!(
+            row.thumbnail_url.as_deref(),
+            Some("https://cdn.example/t.jpg")
+        );
 
         let _ = fs::remove_dir_all(&paths.root);
     }

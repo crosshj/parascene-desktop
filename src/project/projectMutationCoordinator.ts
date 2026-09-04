@@ -11,8 +11,13 @@ import {
   repairProjectUsage,
   replaceProjectUsage,
 } from "./projectFolderClient";
+import {
+  isMembershipMirrorStaleError,
+  mirrorProjectFolderMembership,
+} from "./projectFolderMembership";
 import { collectProjectAssetUsage } from "./projectUsage";
 import { existingCreationIds, getCreations } from "../library/catalogClient";
+import { listFolders } from "../library/folderClient";
 import {
   collectCabinetMemberIdsFromCovers,
   isProjectOwnedCreation,
@@ -253,13 +258,34 @@ export function mutateStoredProjects(
   updater: (projects: StoredProject[]) => StoredProject[],
   options?: { allowLegacyOutsideTransition?: boolean },
 ): Promise<StoredProject[]> {
-  return enqueue(() =>
-    persistStoredProjects(loadMutationSnapshot(), updater, {
+  return enqueue(async () => {
+    const persistOptions = {
       ...options,
       allowExistingStaleBarrier:
         options?.allowLegacyOutsideTransition === true,
-    }),
-  );
+    };
+    try {
+      return await persistStoredProjects(
+        loadMutationSnapshot(),
+        updater,
+        persistOptions,
+      );
+    } catch (error) {
+      if (!isMembershipMirrorStaleError(error)) throw error;
+      const folders = await listFolders();
+      return persistStoredProjects(
+        loadMutationSnapshot(),
+        (projects) => updater(mirrorProjectFolderMembership(projects, folders)),
+        {
+          ...persistOptions,
+          allowExistingStaleBarrier: true,
+          // Native membership already moved; cabinet members may sit outside
+          // creationIds until this remirror lands.
+          allowLegacyOutsideTransition: true,
+        },
+      );
+    }
+  });
 }
 
 /**
@@ -329,14 +355,22 @@ export function mutateStoredProjectsWithNativeMutation<T>(
   });
 }
 
-/** Mirror a native folder event whose destructive side already committed. */
+/**
+ * Mirror native folder membership into project JSON. Always reads current
+ * folders inside the mutation queue — event payloads can predate a later
+ * collapse/remove in the same generate/sync burst.
+ */
 export function mirrorStoredProjectsAfterNativeMembership(
-  updater: (projects: StoredProject[]) => StoredProject[],
+  updater?: (projects: StoredProject[]) => StoredProject[],
 ): Promise<StoredProject[]> {
   return enqueue(async () => {
+    const folders = await listFolders();
     const projects = await persistStoredProjects(
       loadMutationSnapshot(),
-      updater,
+      (current) => {
+        const mirrored = mirrorProjectFolderMembership(current, folders);
+        return updater ? updater(mirrored) : mirrored;
+      },
       {
         leaveStaleOnSaveFailure: true,
         allowExistingStaleBarrier: true,

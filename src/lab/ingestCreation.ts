@@ -1,6 +1,6 @@
 /** Ingest a completed remote creation into local Library + optional project. */
 
-import { applyManifest } from "../library/catalogClient";
+import { applyManifest, ensureLocal } from "../library/catalogClient";
 import { mapRemoteCreation } from "../sync/manifestSync";
 import type { RemoteCreateImage } from "../sdk/parascene";
 import { absolutizeAssetUrl } from "../sdk/parascene";
@@ -26,7 +26,9 @@ export async function ingestRemoteCreation(
   };
   const upsert = mapRemoteCreation(absolutized);
   await applyManifest([upsert]);
-  return String(row.id);
+  const id = String(row.id);
+  await ensureLocal([id], { fullMedia: true, urgent: true });
+  return id;
 }
 
 export function newCreationToken(): string {

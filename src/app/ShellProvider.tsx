@@ -89,6 +89,10 @@ import {
 } from "../library/folderClient";
 import { listen } from "@tauri-apps/api/event";
 import {
+  isMembershipMirrorStaleError,
+  mirrorProjectFolderMembership,
+} from "../project/projectFolderMembership";
+import {
   collectProjectGroupCoverIdsToRefresh,
   reconcileStoredProjectsFromLibrary,
 } from "../project/reconcileProjectLibrary";
@@ -337,19 +341,18 @@ function sortByUpdatedDesc(projects: StoredProject[]): StoredProject[] {
   );
 }
 
-function mirrorProjectFolderMembership(
-  projects: StoredProject[],
-  folders: readonly LibraryFolder[],
-): StoredProject[] {
-  const projectFolders = new Map(
-    folders
-      .filter((folder) => folder.kind === "project" && folder.projectId)
-      .map((folder) => [folder.projectId as string, folder]),
-  );
-  return projects.map((project) => {
-    const folder = projectFolders.get(project.id);
-    return folder ? replaceStoredProjectAssets(project, folder.memberIds) : project;
-  });
+let lastProjectSaveAlert = { message: "", at: 0 };
+
+function shouldSuppressDuplicateSaveAlert(message: string): boolean {
+  const now = Date.now();
+  if (
+    message === lastProjectSaveAlert.message &&
+    now - lastProjectSaveAlert.at < 2000
+  ) {
+    return true;
+  }
+  lastProjectSaveAlert = { message, at: now };
+  return false;
 }
 
 export function ShellProvider({ children }: { children: ReactNode }) {
@@ -539,10 +542,10 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<LibraryFolder[]>("library-folders-updated", (event) => {
-      void mirrorStoredProjectsAfterNativeMembership((projects) =>
-        mirrorProjectFolderMembership(projects, event.payload),
-      ).then(publishStoredProjects).catch((error) => {
+    void listen("library-folders-updated", () => {
+      void mirrorStoredProjectsAfterNativeMembership()
+        .then(publishStoredProjects)
+        .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         console.error("Failed to mirror project-folder membership", error);
         setChromeStatus(`Project folder sync: ${message}`);
@@ -601,17 +604,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             await mutateStoredProjectsWithNativeMutation(
               async () => {
                 await addProjectAssets(result.projectId, folderIds);
+                await collapseCabinetMembersFromProjectFolder({
+                  projectId: result.projectId,
+                  imagesGroupId: result.imagesGroupId ?? null,
+                  videosGroupId: result.videosGroupId ?? null,
+                });
                 return { folders: await listFolders() };
               },
               (current, payload) =>
                 mirrorProjectFolderMembership(current, payload.folders),
               { allowLegacyOutsideTransition: true },
             );
-            await collapseCabinetMembersFromProjectFolder({
-              projectId: result.projectId,
-              imagesGroupId: result.imagesGroupId ?? null,
-              videosGroupId: result.videosGroupId ?? null,
-            });
           } catch (error) {
             console.error(
               "Failed to file generate output into project folder",
@@ -988,10 +991,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         prev.map((p) => (p.id === id ? patch(p) : p)),
       ).catch((error) => {
         console.error("Failed to save project", error);
-        window.alert(error instanceof Error ? error.message : String(error));
+        if (isMembershipMirrorStaleError(error)) {
+          setChromeStatus("Updating project files…");
+          return;
+        }
+        const message =
+          error instanceof Error ? error.message : String(error);
+        if (shouldSuppressDuplicateSaveAlert(message)) return;
+        window.alert(message);
       });
     },
-    [openProjectId, updateStoredProjects],
+    [openProjectId, setChromeStatus, updateStoredProjects],
   );
 
   const project = !openProjectId

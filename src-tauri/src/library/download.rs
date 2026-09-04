@@ -1624,15 +1624,15 @@ pub(crate) async fn cache_generation_files(app: &AppHandle, id: &str) -> Result<
         let conn = ready_connection(&paths)?;
         get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?
     };
-    if needs_thumb(&creation) {
-        let _ = download_thumbs_only(app, &paths, vec![creation.clone()]).await;
+    if needs_download(&creation) {
+        download_media_only(app, &paths, creation).await?;
     }
     let creation = {
         let conn = ready_connection(&paths)?;
         get_creation_by_id(&conn, id)?.ok_or_else(|| format!("Creation {id} not found"))?
     };
-    if needs_download(&creation) {
-        download_media_only(app, &paths, creation).await?;
+    if needs_thumb(&creation) {
+        let _ = download_thumbs_only(app, &paths, vec![creation.clone()]).await;
     }
     Ok(())
 }
