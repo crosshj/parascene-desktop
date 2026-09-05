@@ -106,6 +106,14 @@ export function isAppendOnlyIdList(prev: string[], next: string[]): boolean {
   return true;
 }
 
+/** True when at least one previously packed id is gone (delete / unfile). */
+// eslint-disable-next-line react-refresh/only-export-components
+export function listLostIds(prev: string[], next: string[]): boolean {
+  if (prev.length === 0) return false;
+  const living = new Set(next);
+  return prev.some((id) => !living.has(id));
+}
+
 /**
  * Masonry board from catalog aspect ratios (SQLite).
  *
@@ -176,6 +184,7 @@ export function VirtualCreationsGrid({
     assignment: new Map<string, number>(),
   }));
   const rafScroll = useRef(0);
+  const [prevItemIds, setPrevItemIds] = useState<string[]>([]);
 
   const boardItems = useMemo<BoardItem[]>(() => {
     const items: BoardItem[] = folders.map((folder) => ({
@@ -189,18 +198,31 @@ export function VirtualCreationsGrid({
     return items;
   }, [creations, folders]);
 
-  // Only wipe sticky columns on filter / folder-view / column-count changes.
-  // Membership edits (file into folder, new folder tile) must keep existing
-  // cards in place so scroll and packing don't jump.
+  const itemIds = useMemo(
+    () => boardItems.map((item) => item.id),
+    [boardItems],
+  );
+
+  // Sticky columns are only for infinite-scroll appends. Delete, unfile, or a
+  // new leading folder must repack or leftover tiles sit in holes.
+  const idsChanged =
+    prevItemIds.length > 0 && !isAppendOnlyIdList(prevItemIds, itemIds);
   if (
     packState.resetKey !== layoutResetKey ||
-    packState.columnCount !== layout.columnCount
+    packState.columnCount !== layout.columnCount ||
+    idsChanged
   ) {
     setPackState({
       resetKey: layoutResetKey,
       columnCount: layout.columnCount,
       assignment: new Map(),
     });
+  }
+  if (
+    prevItemIds.length !== itemIds.length ||
+    prevItemIds.some((id, i) => id !== itemIds[i])
+  ) {
+    setPrevItemIds(itemIds);
   }
 
   const { cards, totalHeight } = useMemo(() => {

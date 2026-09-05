@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sync — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">All topics</a>
+    </header>
+    <main>
+      <h1>Sync</h1>
+      <p>
+        Sync pulls this account’s cloud creations onto this computer and removes
+        rows that were deleted in the cloud. You do this from the Sync tab —
+        not from Library.
+      </p>
+      <figure>
+        <img
+          src="desktop/screens/sync.png"
+          alt="Sync screen showing Ready, last synced, Sync newest, and one creation"
+        />
+        <figcaption>Ready — one creation, then Sync newest.</figcaption>
+      </figure>
+
+      <h2>Sync newest</h2>
+      <ol class="steps">
+        <li>Click <strong>Sync</strong> in the top bar.</li>
+        <li>Wait until the status says <strong>Ready</strong>.</li>
+        <li>Click <strong>Sync newest</strong>.</li>
+        <li>
+          Watch the counts: Creations, Previews, Media, Folders, and On disk.
+        </li>
+      </ol>
+      <p>
+        Newest is the usual step. It updates recent creations; it does not
+        hammer the full catalog.
+      </p>
+
+      <h2>Previews, media, and folders</h2>
+      <p>
+        After the catalog is current, extra buttons appear only when work
+        remains:
+      </p>
+      <ul class="steps">
+        <li>
+          <strong>Cache N previews</strong> — download thumbnails so Library
+          cards show pictures.
+        </li>
+        <li>
+          <strong>Cache N media</strong> — download the full files you will
+          edit or generate from.
+        </li>
+        <li>
+          <strong>Sync N folder changes</strong> — pull cloud folders and push
+          pending local folder edits.
+        </li>
+      </ul>
+      <p class="note">
+        Folder sync is a separate step from Sync newest. A catalog can be
+        current while folders are still empty or still waiting to upload.
+      </p>
+
+      <h2>Conflicts</h2>
+      <p>
+        If a folder disagrees with the cloud, Sync lists the conflict. Choose
+        This desktop or Cloud for each one, then
+        <strong>Apply resolutions and retry</strong>.
+      </p>
+
+      <h2>Advanced</h2>
+      <p>Open Advanced only when newest is not enough:</p>
+      <ul class="steps">
+        <li>
+          <strong>Sync full catalog</strong> — rebuild the whole catalog. Slow;
+          not the everyday button.
+        </li>
+        <li><strong>Sync folders</strong> — same folder pass as above, on demand.</li>
+        <li><strong>Sync group members</strong> — repair grouped creations.</li>
+        <li><strong>Repair thumbs</strong> — rebuild mismatched previews.</li>
+      </ul>
+      <p>
+        The path under Advanced is this account’s folder on disk. Recent jobs
+        lists what just ran.
+      </p>
+
+      <p class="more">
+        Next: <a href="projects.html">Projects</a>
+        · <a href="overview.html#sync">Overview</a>
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

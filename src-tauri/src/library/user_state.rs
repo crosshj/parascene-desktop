@@ -55,7 +55,7 @@ fn sha256_hex(s: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn open_user_db(path: &Path) -> Result<Connection, String> {
+pub(crate) fn open_user_db(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Could not create account dir: {e}"))?;
     }
@@ -79,6 +79,16 @@ fn open_user_db(path: &Path) -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS queues (
           kind TEXT PRIMARY KEY NOT NULL,
           json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_documents (
+          id TEXT PRIMARY KEY NOT NULL,
+          sort_index INTEGER NOT NULL,
+          json TEXT NOT NULL,
+          sha256 TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_meta (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL
         );
         "#,
     )

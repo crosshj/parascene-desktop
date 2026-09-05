@@ -105,25 +105,28 @@ First set (high value, already somewhat stable, first things a user must do):
 
 Auth: fail fast if not logged in.
 
-Done: those workflows run against the live app, through the API, from setup/teardown, with deterministic pass/fail, no screenshots, no LLM. Next is Phase 3 help over the same journeys.
+Done: those workflows run against the live app, through the API, from setup/teardown, with deterministic pass/fail, no screenshots, no LLM.
 
-# Phase 3 — In-app desktop help
+# Phase 3 — In-app desktop help (done 2026-09-05)
 
 Help is part of this app. Do not stand up a second docs platform and do not land articles only on the website.
 
-Articles are the human prose for those same journeys, not a new outline:
+Shipped: separate Help window (not a modal). macOS Help → Parascene Desktop Help. Windows: account menu / login Help / F1 (frameless, no menu strip). `?` when not typing. `help.open` `{ topicId? }`.
 
-- getting started
-- creating/opening a project
-- importing / library folders vs project folders where they differ
-- generating an image (Parascene)
-- exporting later, after the first slice is proven
+Articles are static HTML under `public/help/`, linked with a back control on detail pages. First-run screenshots in `public/help/desktop/screens/` (1280×900, one-still new account):
 
-Screenshots are replaceable generated assets (`help/desktop/timeline/split-clip.webp`), not hand-maintained forever. Behavioral truth stays the agent API.
+- getting started — login, Library (one still), Sync, empty Projects, Director, Editor, New asset
+- sync
+- projects (create / open / close / delete)
+- folders (regular vs project)
+- generate an image (Parascene Text to Image)
+- overview of the main screens
 
-A coding agent should be able to read an article, follow it against the running app, and report mismatches.
+Export later, after this slice is proven.
 
-Done when several in-app articles exist, match tested journeys, can be followed through the API, and stale copy can be detected.
+Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started`, `overview`, `projects`, `folders`, `sync`, `generate`, plus screen jumps `library`, `director`, `editor`.
+
+Done: several in-app articles exist, match the tested journeys and the first-run screens, and stale button-label copy can be detected. Follow-the-API help audit and screenshot regen stay Phase 4.
 
 # Phase 4 — Expand coverage
 

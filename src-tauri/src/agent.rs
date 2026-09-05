@@ -11,11 +11,13 @@ use std::net::TcpListener;
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager};
 
 const TOKEN_HEADER: &str = "authorization";
 const LOG_CAP: usize = 200;
 const UI_TIMEOUT: Duration = Duration::from_secs(90);
+const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 900.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,7 +180,76 @@ fn actions() -> Vec<AgentAction> {
             status: "wired".into(),
             summary: "Generate a still via Parascene product text2image".into(),
         },
+        AgentAction {
+            id: "window.setSize".into(),
+            scope: "window".into(),
+            status: "wired".into(),
+            summary: "Unmaximize and set the main window size (default 1280x900)".into(),
+        },
+        AgentAction {
+            id: "shell.show".into(),
+            scope: "shell".into(),
+            status: "wired".into(),
+            summary: "Show a page (Library, Sync, Project chooser, Director, Editor) without mutating data".into(),
+        },
+        AgentAction {
+            id: "help.open".into(),
+            scope: "help".into(),
+            status: "wired".into(),
+            summary: "Open the Help window, optionally a topic page".into(),
+        },
     ]
+}
+
+fn arg_f64(args: &Value, key: &str) -> Option<f64> {
+    args.get(key).and_then(|v| {
+        v.as_f64()
+            .or_else(|| v.as_i64().map(|n| n as f64))
+            .or_else(|| v.as_u64().map(|n| n as f64))
+    })
+}
+
+fn window_snapshot(app: &AppHandle) -> Value {
+    let Some(window) = app.get_webview_window("main") else {
+        return json!(null);
+    };
+    let maximized = window.is_maximized().ok();
+    let (width, height) = match (window.inner_size(), window.scale_factor()) {
+        (Ok(size), Ok(scale)) if scale > 0.0 => (
+            (f64::from(size.width) / scale).round() as i64,
+            (f64::from(size.height) / scale).round() as i64,
+        ),
+        _ => {
+            return json!({ "maximized": maximized });
+        }
+    };
+    json!({ "width": width, "height": height, "maximized": maximized })
+}
+
+fn set_window_size(app: &AppHandle, args: &Value) -> Result<Value, String> {
+    let width = arg_f64(args, "width").unwrap_or(DEFAULT_WINDOW_WIDTH);
+    let height = arg_f64(args, "height").unwrap_or(DEFAULT_WINDOW_HEIGHT);
+    if !(width.is_finite() && height.is_finite()) || width < 400.0 || height < 400.0 {
+        return Err("Window size must be at least 400x400".into());
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+    let _ = window.unmaximize();
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|e| format!("Could not set window size: {e}"))?;
+    // macOS reports maximized for a beat after unmaximize.
+    thread::sleep(Duration::from_millis(40));
+    let mut out = window_snapshot(app);
+    if out.is_null() {
+        out = json!({
+            "width": width.round() as i64,
+            "height": height.round() as i64,
+            "maximized": false,
+        });
+    }
+    Ok(out)
 }
 
 fn require_signed_in() -> Result<Value, String> {
@@ -232,7 +303,7 @@ fn wait_ui(app: &AppHandle, action: &str, args: Value) -> Result<Value, String> 
     }
 }
 
-fn get_state(scope: Option<&str>) -> Result<Value, String> {
+fn get_state(app: &AppHandle, scope: Option<&str>) -> Result<Value, String> {
     let ui = ui_state()
         .lock()
         .map_err(|_| "UI state lock poisoned".to_string())?
@@ -264,6 +335,7 @@ fn get_state(scope: Option<&str>) -> Result<Value, String> {
         "shell": ui.get("shell").cloned().unwrap_or(json!(null)),
         "projects": ui.get("projects").cloned().unwrap_or(json!([])),
         "library": library,
+        "window": window_snapshot(app),
     });
     Ok(match scope.unwrap_or("").trim() {
         "" | "all" => all,
@@ -287,10 +359,16 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         | "sync.thumbs"
         | "sync.media"
         | "library.clearLocal"
-        | "library.lookup" => {
+        | "library.lookup"
+        | "shell.show" => {
             let _ = require_signed_in()?;
             wait_ui(app, action, args)
         }
+        "help.open" => crate::help_window::show_help(
+            app,
+            args.get("topicId").and_then(|v| v.as_str()),
+        ),
+        "window.setSize" => set_window_size(app, &args),
         other => Err(format!("Unknown action: {other}")),
     }
 }
@@ -396,7 +474,7 @@ fn handle(app: &AppHandle, token: &str, req: ParsedRequest) -> Vec<u8> {
     let body_json: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/agent/v1/health") => json_response(200, &json!({ "ok": true, "service": "parascene-agent" })),
-        ("GET", "/agent/v1/state") => match get_state(req.query.get("scope").map(String::as_str)) {
+        ("GET", "/agent/v1/state") => match get_state(app, req.query.get("scope").map(String::as_str)) {
             Ok(v) => json_response(200, &v),
             Err(e) => json_response(400, &json!({ "error": e })),
         },

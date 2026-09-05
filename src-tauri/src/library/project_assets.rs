@@ -1180,6 +1180,19 @@ pub fn library_remove_project_assets(
 }
 
 #[tauri::command]
+pub fn library_project_document_revision(project_id: String) -> Result<Option<String>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    conn.query_row(
+        "SELECT document_revision FROM project_usage_revisions WHERE project_id = ?1",
+        params![project_id.trim()],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn library_mark_project_usage_stale(
     project_id: String,
     expected_document_revision: Option<String>,

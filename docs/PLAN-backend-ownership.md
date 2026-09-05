@@ -30,7 +30,7 @@ This matches how **downloads** and **generation jobs** already work, and how **c
 1. **No Parascene multi-step protocols in React.** Create → wait → group → delete → catalog sync → folder reconcile → cloud repair belong in Rust (commands and/or the `jobs` queue).
 2. **FE tracks UUIDs / status, not recipes.** Enqueue work, `listen` for events, paint. Safety-net poll is OK; owning the loop is not.
 3. **One mapper for remote → catalog.** Rust `map_remote_creation_json` is the authority; FE must not diverge with a second “almost the same” mapper for production ingest (FE may keep thin display helpers).
-4. **Secrets and product state leave `localStorage`.** Tokens/keys → Keychain (or Rust secure store). Projects → disk / SQLite under `~/Movies/Parascene/Projects/`.
+4. **Secrets and product state leave `localStorage`.** Tokens/keys → Keychain (or Rust secure store). Projects → `user.sqlite` `project_documents` (account bundle).
 5. **Pure UI stays FE.** Grids, panes, selection, prefs chrome, confirm dialogs — no need to move.
 6. **Prefer generic primitives over Lab-named APIs.** Job kinds like `create_media` / `wait_creation` / `sync_catalog` — not `lab_*`. Surfaces (Lab, Director, Editor) compose them.
 
@@ -52,7 +52,7 @@ Disk layout (settled):
   Library/catalog.sqlite   # creations, folders, jobs, sync_meta, …
   Library/media/
   Library/thumbs/
-  Projects/                # target for project JSON (today: FE localStorage)
+  users/<id>/user.sqlite   # project_documents (native project store)
   Exports/
   Cache/
 ```
@@ -100,7 +100,7 @@ Triggered from Library Sync UI (`LibraryView.tsx`) via enqueue + listen — not 
 
 | Today | Target |
 | --- | --- |
-| `parascene.projects.v1` in `projectStore.ts` | Files or SQLite under `Projects/`; Rust read/write commands; FE patches via shell API |
+| `parascene.projects.v1` in `projectStore.ts` | **Done:** `user.sqlite` `project_documents`; FE holds memory only; one-way import from kv/FE |
 | OpenAI key in `localStorage` (`openaiClient.ts`) | Keychain / secure Rust store |
 | Lab session `labSession.v2.*` | Thin UI prefs OK; durable job identity stays in `jobs` |
 
@@ -139,7 +139,7 @@ UI prefs (sidebar width, editor pane sizes, shell tab) may stay in `localStorage
 2. **Retire FE production ingest path for sync** — same mapper as jobs (`map_remote_creation_json`).
 3. **Lab create / mutate / a2v → existing job kinds** — mirror groups attach/cancel/detach behavior.
 4. **Folder sync + cloud repair → Rust** — after catalog sync is stable.
-5. **Projects on disk** — migrate `projectStore` off `localStorage`.
+5. **Projects in `user.sqlite`** — done (`project_documents` + `projects_migrate_and_load` / `projects_save`).
 6. **Secrets** — OpenAI key out of `localStorage`.
 7. **Shrink SDK** — only what UI still needs for non-job one-shots (e.g. credits display until that is a command).
 

@@ -7,21 +7,22 @@ import {
   projectAspectCss,
   type ProjectAspectRatio,
 } from "../../project/aspectRatios";
-import {
-  isLookEnabled,
-  PROJECT_LOOK_OPTIONS,
-  type ProjectLookId,
-} from "../../project/looks";
+// Looks / scenes UI is parked until those Director features ship.
+// import {
+//   isLookEnabled,
+//   PROJECT_LOOK_OPTIONS,
+//   type ProjectLookId,
+// } from "../../project/looks";
 import { getProjectFolder } from "../../project/projectFolderClient";
 
 export function DirectorLayout() {
   const {
     project,
-    selectedSceneId,
-    setSelectedSceneId,
+    // selectedSceneId,
+    // setSelectedSceneId,
     renameOpenProject,
     setOpenProjectAspectRatio,
-    setOpenProjectLookEnabled,
+    // setOpenProjectLookEnabled,
     closeProject,
   } = useShell();
   const [titleDraft, setTitleDraft] = useState(project.title);
@@ -71,9 +72,9 @@ export function DirectorLayout() {
     if (next !== project.aspectRatio) setOpenProjectAspectRatio(next);
   };
 
-  const onLookToggle = (id: ProjectLookId) => {
-    setOpenProjectLookEnabled(id, !isLookEnabled(project.looks, id));
-  };
+  // const onLookToggle = (id: ProjectLookId) => {
+  //   setOpenProjectLookEnabled(id, !isLookEnabled(project.looks, id));
+  // };
 
   return (
     <div className="layout director">
@@ -162,6 +163,7 @@ export function DirectorLayout() {
           </div>
         </div>
 
+        {/* Looks, Scenes, Instruction, and Sequence — hidden until they work.
         <div className="director-looks" role="radiogroup" aria-label="Project look">
           <span className="director-looks-label">Looks</span>
           <div className="director-looks-options">
@@ -233,6 +235,7 @@ export function DirectorLayout() {
             </span>
           ))}
         </div>
+        */}
         <div className="director-side-footer">
           <button
             type="button"

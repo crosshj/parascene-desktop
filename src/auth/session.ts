@@ -22,12 +22,14 @@ import {
   mapEnsureAccessTokenError,
 } from "./errors";
 import {
+  accountCheckpoint,
   accountLogout,
   accountStartup,
   bindAndHydrate,
   relaunchIfNeeded,
   snapshotLocalStorage,
 } from "./accountClient";
+import { PROJECTS_STORAGE_KEY } from "../project/projectStore";
 import { clearOpenAiApiKeyCache } from "../lab/openaiClient";
 import { resetGenerateServerCredentialCaches } from "../layouts/editor/generateServerCredentials";
 
@@ -277,7 +279,24 @@ export async function restoreSession(): Promise<AuthSession | null> {
       memorySession = session;
       try {
         await accountStartup();
-        await bindAndHydrate(session.user.sub, true);
+        try {
+          await accountCheckpoint({
+            localStorage: snapshotLocalStorage(),
+            identity: {
+              sub: session.user.sub,
+              preferred_username: session.user.preferred_username,
+              name: session.user.name,
+              picture: session.user.picture,
+            },
+          });
+        } catch {
+          /* still hydrate from the last compact */
+        }
+        await bindAndHydrate(
+          session.user.sub,
+          true,
+          window.localStorage.getItem(PROJECTS_STORAGE_KEY),
+        );
       } catch {
         /* keep session; next logout/login can repair */
       }
@@ -313,7 +332,11 @@ export async function restoreSession(): Promise<AuthSession | null> {
   };
   await persistSession(session);
   try {
-    await bindAndHydrate(session.user.sub, true);
+    await bindAndHydrate(
+      session.user.sub,
+      true,
+      window.localStorage.getItem(PROJECTS_STORAGE_KEY),
+    );
   } catch {
     /* ignore bind on legacy keychain migrate */
   }
@@ -462,7 +485,11 @@ export async function loginWithParascene(opts?: {
   // they log out. Reconnect must not be treated as a new account.
   const allowLegacy = getMemorySession()?.user?.sub === user.sub;
   const bind = await step("Open account folder", () =>
-    bindAndHydrate(user.sub, allowLegacy),
+    bindAndHydrate(
+      user.sub,
+      allowLegacy,
+      allowLegacy ? window.localStorage.getItem(PROJECTS_STORAGE_KEY) : null,
+    ),
   );
   await step("Store session", () => persistSession({ tokens, user }));
   await relaunchIfNeeded(bind.relaunch);

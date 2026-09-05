@@ -105,6 +105,14 @@ export function releaseOrphanProjectFolder(folderId: string): Promise<LibraryFol
   return invoke("library_release_orphan_project_folder", { folderId });
 }
 
+export function getProjectDocumentRevision(
+  projectId: string,
+): Promise<string | null> {
+  return invoke<string | null>("library_project_document_revision", {
+    projectId,
+  });
+}
+
 export function markProjectUsageStale(
   projectId: string,
   expectedDocumentRevision: string | null,

@@ -14,6 +14,7 @@ import {
   removeCreationIds,
   renameStoredProject,
   repairMalformedTimelineClips,
+  resetProjectStoreForTests,
   saveStoredProjects,
   saveStoredProjectsPreservingCorrupt,
   setStoredProjectAspectRatio,
@@ -36,6 +37,7 @@ import {
 
 describe("projectStore", () => {
   beforeEach(() => {
+    resetProjectStoreForTests();
     localStorage.removeItem(PROJECTS_STORAGE_KEY);
   });
 

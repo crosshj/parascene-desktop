@@ -1,4 +1,5 @@
 import {
+  flushProjectStore,
   partitionStoredProjects,
   repairMalformedTimelineClips,
   nextProjectDocumentRevision,
@@ -230,6 +231,7 @@ async function persistStoredProjects(
         remainingCorrupt,
         snapshot.orderedIds,
       );
+      await flushProjectStore();
     } catch (error) {
       if (options?.leaveStaleOnSaveFailure !== true) {
         for (const row of changed) {
@@ -313,6 +315,7 @@ export function repairCorruptProjectTimeline(id: string): Promise<StoredProject>
       remainingCorrupt,
       snapshot.orderedIds,
     );
+    await flushProjectStore();
     await replaceProjectUsage(
       repaired.id,
       revisionOf(repaired),

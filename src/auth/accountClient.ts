@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { resetGenerateServerCredentialCaches } from "../layouts/editor/generateServerCredentials";
 import {
+  PROJECTS_STORAGE_KEY,
+  flushProjectStore,
+  getProjectStoreSource,
+  hydrateProjectStoreFromNative,
+} from "../project/projectStore";
+import {
   clearOpenAiApiKeyCache,
   hydrateOpenAiApiKey,
 } from "../lab/openaiClient";
@@ -46,6 +52,9 @@ export function applyHydrate(hydrate: AccountHydrate): void {
   if (!hydrate.present) return;
   window.localStorage.clear();
   for (const [key, value] of Object.entries(hydrate.localStorage ?? {})) {
+    if (key === PROJECTS_STORAGE_KEY && getProjectStoreSource() === "native") {
+      continue;
+    }
     window.localStorage.setItem(key, value);
   }
   window.dispatchEvent(new Event("parascene:preview-quality-changed"));
@@ -83,6 +92,19 @@ export async function accountRestoreSecrets(): Promise<void> {
   await invoke("account_restore_secrets");
 }
 
+export async function accountCheckpoint(input: {
+  localStorage: Record<string, string>;
+  identity: {
+    sub: string;
+    preferred_username?: string;
+    name?: string;
+    picture?: string;
+  };
+}): Promise<void> {
+  await flushProjectStore().catch(() => undefined);
+  await invoke("account_checkpoint", { request: input });
+}
+
 export async function accountLogout(input: {
   localStorage: Record<string, string>;
   identity: {
@@ -92,6 +114,7 @@ export async function accountLogout(input: {
     picture?: string;
   };
 }): Promise<AccountLogoutResult> {
+  await flushProjectStore().catch(() => undefined);
   return invoke<AccountLogoutResult>("account_logout", { request: input });
 }
 
@@ -107,8 +130,10 @@ async function notifyAccountReady(): Promise<void> {
 export async function bindAndHydrate(
   userId: string,
   allowLegacy: boolean,
+  liveFeJson?: string | null,
 ): Promise<AccountLoginResult> {
   const result = await accountLogin(userId, allowLegacy);
+  await hydrateProjectStoreFromNative(liveFeJson ?? null);
   const hydrate = await accountHydrate();
   if (hydrate.present) {
     await accountRestoreSecrets();

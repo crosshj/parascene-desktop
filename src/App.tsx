@@ -11,18 +11,26 @@ import { LabLayout } from "./layouts/lab/LabLayout";
 import { LibraryView } from "./library/LibraryView";
 import { ProjectWelcome } from "./project/ProjectWelcome";
 import { AgentBridge } from "./agent/AgentBridge";
+import { useHelpShortcut } from "./help/useHelpShortcut";
+import { useLabsEnabled } from "./settings/labsEnabled";
 import { AppErrorBoundary } from "./ui/AppErrorBoundary";
 import { Wordmark } from "./ui/Wordmark";
 import "./styles.css";
 
 function LayoutRouter() {
   const { primaryTab, mode, openProjectId } = useShell();
+  const labsEnabled = useLabsEnabled();
   // Lab mounts media/waveform UIs (esp. MV Scenes). Fully unmounting that tree
   // when switching tabs beachballs WebKit — keep it alive once opened.
   const [labMountedForProject, setLabMountedForProject] = useState<
     string | null
   >(null);
-  if (openProjectId && mode === "lab" && labMountedForProject !== openProjectId) {
+  if (
+    labsEnabled &&
+    openProjectId &&
+    mode === "lab" &&
+    labMountedForProject !== openProjectId
+  ) {
     setLabMountedForProject(openProjectId);
   }
   if (!openProjectId && labMountedForProject !== null) {
@@ -30,7 +38,10 @@ function LayoutRouter() {
   }
 
   const labActive =
-    primaryTab === "project" && Boolean(openProjectId) && mode === "lab";
+    labsEnabled &&
+    primaryTab === "project" &&
+    Boolean(openProjectId) &&
+    mode === "lab";
   const keepLab =
     Boolean(openProjectId) && labMountedForProject === openProjectId;
 
@@ -43,7 +54,7 @@ function LayoutRouter() {
     main = <EditorLayout />;
   } else if (mode === "hook") {
     main = <HookLayout />;
-  } else if (mode === "lab") {
+  } else if (labsEnabled && mode === "lab") {
     main = null;
   } else {
     main = <DirectorLayout />;
@@ -69,6 +80,7 @@ function Root() {
   const auth = useAuthOptional();
   const status = auth?.status ?? "reconnecting";
   const session = auth?.session ?? null;
+  useHelpShortcut();
 
   useEffect(() => {
     void import("@tauri-apps/api/window")

@@ -39,6 +39,9 @@ describe("agent API", () => {
     expect(ids).toContain("generation.start");
     expect(ids).toContain("cloud.delete");
     expect(ids).toContain("library.lookup");
+    expect(ids).toContain("window.setSize");
+    expect(ids).toContain("shell.show");
+    expect(ids).toContain("help.open");
     expect(body.actions?.find((row) => row.id === "project.create")?.status).toBe(
       "wired",
     );

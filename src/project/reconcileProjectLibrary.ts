@@ -11,11 +11,15 @@ import {
 } from "../library/creationFlags";
 import { listFolders, type LibraryFolder } from "../library/folderClient";
 import {
+  createStoredProject,
+  flushProjectStore,
   loadStoredProjects,
   normalizeFolderIds,
   normalizeStoredTimeline,
+  saveStoredProjects,
   type StoredProject,
 } from "./projectStore";
+import { getProjectDocumentRevision } from "./projectFolderClient";
 import { mutateStoredProjects } from "./projectMutationCoordinator";
 
 function cabinetIdsFor(project: StoredProject): string[] {
@@ -165,9 +169,25 @@ export async function collectExtraneousExpandedGroupMemberIds(
 
 export type ReconcileProjectsResult = {
   projectsUpdated: number;
+  projectsAdopted: number;
   creationsMerged: number;
   creationsRemoved: number;
 };
+
+async function projectFromFolder(folder: LibraryFolder): Promise<StoredProject> {
+  const projectId = folder.projectId?.trim() ?? "";
+  const created = createStoredProject(folder.title, folder.memberIds);
+  const documentRevision =
+    (await getProjectDocumentRevision(projectId).catch(() => null)) ??
+    created.documentRevision;
+  return {
+    ...created,
+    id: projectId,
+    lifecycle: "ready",
+    updatedAt: folder.updatedAt || created.updatedAt,
+    documentRevision,
+  };
+}
 
 /**
  * Strip mistaken ordinary-group expansions, then merge missing folder/cabinet
@@ -178,9 +198,11 @@ export async function reconcileStoredProjectsFromLibrary(
 ): Promise<{ projects: StoredProject[]; result: ReconcileProjectsResult }> {
   const folders = await listFolders();
   let projectsUpdated = 0;
+  let projectsAdopted = 0;
   let creationsMerged = 0;
   let creationsRemoved = 0;
   const next: StoredProject[] = [];
+  const knownIds = new Set(projects.map((project) => project.id));
 
   for (const project of projects) {
     const canonical = folders.find(
@@ -222,9 +244,24 @@ export async function reconcileStoredProjectsFromLibrary(
     next.push(working);
   }
 
+  for (const folder of folders) {
+    const projectId = folder.projectId?.trim() ?? "";
+    if (folder.kind !== "project" || !projectId || knownIds.has(projectId)) {
+      continue;
+    }
+    next.push(await projectFromFolder(folder));
+    knownIds.add(projectId);
+    projectsAdopted += 1;
+  }
+
   return {
     projects: next,
-    result: { projectsUpdated, creationsMerged, creationsRemoved },
+    result: {
+      projectsUpdated,
+      projectsAdopted,
+      creationsMerged,
+      creationsRemoved,
+    },
   };
 }
 
@@ -232,6 +269,10 @@ export async function reconcileStoredProjectsFromLibrary(
 export async function reconcileAndSaveStoredProjects(): Promise<ReconcileProjectsResult> {
   const loaded = loadStoredProjects();
   const { projects, result } = await reconcileStoredProjectsFromLibrary(loaded);
+  if (result.projectsAdopted > 0) {
+    saveStoredProjects(projects);
+    await flushProjectStore();
+  }
   if (result.projectsUpdated > 0) {
     await mutateStoredProjects(() => projects);
   }

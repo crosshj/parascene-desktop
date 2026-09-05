@@ -148,11 +148,20 @@ export function usePackedColumns(
     columnCount: layout.columnCount,
     assignment: new Map<string, number>(),
   }));
-  if (packState.columnCount !== layout.columnCount) {
+  const itemIds = items.map((item) => item.id);
+  const [prevIds, setPrevIds] = useState(itemIds);
+  const lostPackedIds = prevIds.some((id) => !itemIds.includes(id));
+  if (packState.columnCount !== layout.columnCount || lostPackedIds) {
     setPackState({
       columnCount: layout.columnCount,
       assignment: new Map(),
     });
+  }
+  if (
+    prevIds.length !== itemIds.length ||
+    prevIds.some((id, i) => id !== itemIds[i])
+  ) {
+    setPrevIds(itemIds);
   }
 
   return useMemo(

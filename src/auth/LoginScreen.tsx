@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "./AuthProvider";
+import { openHelpWindow } from "../help/openHelpWindow";
 import { Wordmark } from "../ui/Wordmark";
 
 export function LoginScreen() {
@@ -70,6 +71,13 @@ export function LoginScreen() {
             Log in
           </button>
         )}
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => void openHelpWindow()}
+        >
+          Help
+        </button>
       </div>
     </div>
   );

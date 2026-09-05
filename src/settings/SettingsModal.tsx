@@ -31,6 +31,7 @@ import {
   savePreviewQuality,
   type PreviewQuality,
 } from "./previewQuality";
+import { loadLabsEnabled, saveLabsEnabled } from "./labsEnabled";
 
 type Props = {
   open: boolean;
@@ -61,6 +62,7 @@ export function SettingsModal({ open, onClose }: Props) {
   const [previewQuality, setPreviewQuality] = useState<PreviewQuality>(() =>
     loadPreviewQuality(),
   );
+  const [labsEnabled, setLabsEnabled] = useState(() => loadLabsEnabled());
 
   const refreshDeps = async () => {
     setDepsError(null);
@@ -103,6 +105,7 @@ export function SettingsModal({ open, onClose }: Props) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setInstallNote(null);
     setPreviewQuality(loadPreviewQuality());
+    setLabsEnabled(loadLabsEnabled());
     void refreshDeps();
     void refreshReplicate();
     void refreshBlue();
@@ -275,6 +278,23 @@ export function SettingsModal({ open, onClose }: Props) {
               Clear Blue credentials
             </button>
           ) : null}
+
+          <h3 className="settings-section-title">Features</h3>
+          <label className="lab-checkbox-row">
+            <input
+              type="checkbox"
+              checked={labsEnabled}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setLabsEnabled(next);
+                saveLabsEnabled(next);
+              }}
+            />
+            Show Labs
+          </label>
+          <p className="muted settings-hint">
+            Adds a Labs tab on the open project. Anyone can turn this on.
+          </p>
 
           <h3 className="settings-section-title">Editor preview</h3>
           <label htmlFor="settings-preview-quality">

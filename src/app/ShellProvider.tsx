@@ -15,11 +15,14 @@ import { ConfirmProvider } from "../ui/ConfirmDialog";
 import {
   createStoredProject,
   deleteStoredProjectDocument,
+  ensureProjectStoreHydrated,
   emptyUiProject,
+  flushProjectStore,
   findCorruptStoredProject,
   isIntentionalLegacyOpen,
   isTrulyLegacyProject,
   loadStoredProjects,
+  saveStoredProjects,
   loadStoredProjectStrict,
   markStoredProjectLegacyOpen,
   mergeCreationIds,
@@ -447,19 +450,23 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     return sorted;
   }, [refreshCorruptProjectIds]);
 
-  // Heal in-memory project list when localStorage still has rows React lost
-  // (HMR / healthy-only publish while a sibling was corrupt). Runs once after mount.
+  // Re-bind native projects after HMR, then heal React state if storage has
+  // rows the first render missed (corrupt siblings / module reload).
   useEffect(() => {
-    const again = sortByUpdatedDesc(loadStoredProjects());
-    if (
-      !shouldHealStoredProjectsFromStorage(
-        storedProjects.map((project) => project.id),
-        again.map((project) => project.id),
-      )
-    ) {
-      return;
-    }
-    queueMicrotask(() => {
+    let cancelled = false;
+    void ensureProjectStoreHydrated().then(() => {
+      if (cancelled) return;
+      const again = sortByUpdatedDesc(loadStoredProjects());
+      if (
+        !shouldHealStoredProjectsFromStorage(
+          storedProjects.map((project) => project.id),
+          again.map((project) => project.id),
+        ) &&
+        again.length === storedProjects.length
+      ) {
+        refreshCorruptProjectIds();
+        return;
+      }
       setStoredProjects(again);
       refreshCorruptProjectIds();
       const session = loadShellSession(new Set(again.map((p) => p.id)));
@@ -470,6 +477,9 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         setPrimaryTab(session.primaryTab);
       }
     });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount heal only
   }, []);
 
@@ -568,14 +578,19 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     void (async () => {
       try {
         const current = loadStoredProjects();
-        if (current.length === 0) return;
-
-        await syncGroupMembersManifest();
-        if (cancelled) return;
+        if (current.length > 0) {
+          await syncGroupMembersManifest();
+          if (cancelled) return;
+        }
 
         const { projects, result } =
           await reconcileStoredProjectsFromLibrary(loadStoredProjects());
         if (cancelled) return;
+        if (result.projectsAdopted > 0) {
+          saveStoredProjects(projects);
+          await flushProjectStore();
+          publishStoredProjects();
+        }
         if (result.projectsUpdated > 0) {
           await updateStoredProjects(() => projects);
         }
@@ -591,7 +606,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [setChromeStatus, updateStoredProjects]);
+  }, [publishStoredProjects, setChromeStatus, updateStoredProjects]);
 
   // Keep add-asset generation able to commit results after Editor unmounts
   // (e.g. user browses Library while a job is running).
@@ -1543,6 +1558,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
         // Native first — never leave a marked folder without a document.
         await deleteProjectNative(target);
         deleteStoredProjectDocument(target);
+        await flushProjectStore();
         if (openProjectId === target) {
           setOpenProjectId(null);
           setSelectedSceneId(null);
@@ -1879,12 +1895,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       await syncGroupMembersManifest();
       const { projects, result } =
         await reconcileStoredProjectsFromLibrary(current);
+      if (result.projectsAdopted > 0) {
+        saveStoredProjects(projects);
+        await flushProjectStore();
+        publishStoredProjects();
+      }
       if (result.projectsUpdated > 0) {
         await updateStoredProjects(() => projects);
       }
       return result;
     },
-    [updateStoredProjects],
+    [publishStoredProjects, updateStoredProjects],
   );
 
   const removeCreationsFromProject = useCallback(

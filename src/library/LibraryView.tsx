@@ -2170,14 +2170,19 @@ function CreationsPanel({
         errorTitle: "Could not delete folder",
         onConfirm: async () => {
           const errors: string[] = [];
+          const removed = new Set<string>();
           for (const folder of deletable) {
             try {
               await deleteFolder(folder.id);
+              removed.add(folder.id);
             } catch (error) {
               errors.push(
                 `${folder.title}: ${error instanceof Error ? error.message : String(error)}`,
               );
             }
+          }
+          if (removed.size > 0) {
+            setFolders((prev) => prev.filter((folder) => !removed.has(folder.id)));
           }
           await refreshFolders();
           if (errors.length > 0) {
@@ -2961,56 +2966,44 @@ function SyncPanel({
             </div>
           </header>
 
-          <div className="sync-sections">
-            <section className="sync-section" aria-label="Catalog">
-              <h3 className="sync-section-title">Catalog</h3>
-              <p className="muted sync-section-help">
-                Newest pulls ~100 latest creations and clears recent remote
-                deletions. Sync full catalog refreshes every creation cover.
-                Group members are separate — expand them after the catalog is
-                current.
-              </p>
-              <div className="sync-section-actions">
-                <CatalogSyncButton
-                  mode="newest"
-                  primary
-                  active={
-                    (syncing && catalogSyncMode === "newest") ||
-                    (backgroundCatalogLive && backgroundCatalogMode === "newest")
-                  }
-                  disabled={catalogLocked}
-                  onSync={onNewestSync}
-                  progress={progress}
-                />
-                <CatalogSyncButton
-                  mode="full"
-                  active={
-                    (syncing && catalogSyncMode === "full") ||
-                    (backgroundCatalogLive && backgroundCatalogMode === "full")
-                  }
-                  disabled={catalogLocked}
-                  onSync={onFullSync}
-                  progress={progress}
-                />
+          <div className="sync-primary">
+            <div className="sync-primary-actions">
+              <CatalogSyncButton
+                mode="newest"
+                primary
+                active={
+                  (syncing && catalogSyncMode === "newest") ||
+                  (backgroundCatalogLive && backgroundCatalogMode === "newest")
+                }
+                disabled={catalogLocked}
+                onSync={onNewestSync}
+                progress={progress}
+              />
+              {cachingThumbs || missingThumbs > 0 ? (
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={onGroupMembersSync}
-                  disabled={catalogLocked}
-                  title="Upsert members embedded in local group covers that are not standalone catalog rows yet"
+                  onClick={onCacheThumbs}
+                  disabled={cacheLocked || (!cachingThumbs && missingThumbs === 0)}
                 >
-                  {syncingGroups ? "Syncing group members…" : "Sync group members"}
+                  {cachingThumbs
+                    ? `Previews ${progress?.done ?? 0}/${progress?.total ?? 0}`
+                    : `Cache ${missingThumbs.toLocaleString()} previews`}
                 </button>
-              </div>
-            </section>
-
-            <section className="sync-section" aria-label="Library files">
-              <h3 className="sync-section-title">Library</h3>
-              <p className="muted sync-section-help">
-                Folders and on-disk caches. Previews/media only download what is
-                still missing.
-              </p>
-              <div className="sync-section-actions">
+              ) : null}
+              {cachingMedia || missingMedia > 0 ? (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onCacheMedia}
+                  disabled={cacheLocked || (!cachingMedia && missingMedia === 0)}
+                >
+                  {cachingMedia
+                    ? `Media ${progress?.done ?? 0}/${progress?.total ?? 0}`
+                    : `Cache ${missingMedia.toLocaleString()} media`}
+                </button>
+              ) : null}
+              {folderPending > 0 ? (
                 <button
                   type="button"
                   className="btn ghost"
@@ -3020,76 +3013,14 @@ function SyncPanel({
                 >
                   {folderSyncing
                     ? "Syncing folders…"
-                    : folderPending > 0
-                      ? `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`
-                      : "Sync folders"}
+                    : `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`}
                 </button>
-                {cachingThumbs || missingThumbs > 0 ? (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={onCacheThumbs}
-                    disabled={cacheLocked || (!cachingThumbs && missingThumbs === 0)}
-                  >
-                    {cachingThumbs
-                      ? `Previews ${progress?.done ?? 0}/${progress?.total ?? 0}`
-                      : `Cache ${missingThumbs.toLocaleString()} previews`}
-                  </button>
-                ) : (
-                  <span
-                    className="muted sync-cache-status"
-                    title={
-                      unsyncableThumbs > 0
-                        ? "No downloadable preview URLs for the remaining items"
-                        : "All cacheable previews are on disk"
-                    }
-                  >
-                    {unsyncableThumbs > 0
-                      ? "No cacheable previews"
-                      : "Previews cached"}
-                  </span>
-                )}
-                {cachingMedia || missingMedia > 0 ? (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={onCacheMedia}
-                    disabled={cacheLocked || (!cachingMedia && missingMedia === 0)}
-                  >
-                    {cachingMedia
-                      ? `Media ${progress?.done ?? 0}/${progress?.total ?? 0}`
-                      : `Cache ${missingMedia.toLocaleString()} media`}
-                  </button>
-                ) : (
-                  <span
-                    className="muted sync-cache-status"
-                    title={
-                      unsyncableMedia > 0
-                        ? "No downloadable media URLs for the remaining items"
-                        : "All cacheable media is on disk"
-                    }
-                  >
-                    {unsyncableMedia > 0
-                      ? "No cacheable media"
-                      : "Media cached"}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={onCloudRepair}
-                  disabled={catalogLocked || foldersLocked}
-                  title="Rebuild mismatched thumbs and upload fit; Parascene only for leftovers"
-                >
-                  {repairing
-                    ? typeof progress?.currentId === "string" &&
-                      progress.currentId
-                      ? progress.currentId
-                      : "Repairing…"
-                    : "Repair thumbs"}
-                </button>
-              </div>
-            </section>
+              ) : null}
+            </div>
+            <p className="muted sync-primary-help">
+              Updates the newest creations and removes ones deleted in the
+              cloud.
+            </p>
           </div>
 
           <dl className="sync-metrics" aria-label="Library summary">
@@ -3107,18 +3038,11 @@ function SyncPanel({
             </div>
             <div>
               <dt>Folders</dt>
-              <dd>
-                {folderCount.toLocaleString()}
-                <span className="muted"> · {folderRevision}</span>
-              </dd>
+              <dd>{folderCount.toLocaleString()}</dd>
             </div>
             <div>
               <dt>On disk</dt>
               <dd>{diskParts[0] ?? diskLabel}</dd>
-            </div>
-            <div className="sync-metrics-path">
-              <dt>Library path</dt>
-              <dd title={status.rootPath}>{status.rootPath}</dd>
             </div>
           </dl>
           {folderPending > 0 ? (
@@ -3307,51 +3231,105 @@ function SyncPanel({
             </section>
           ) : null}
 
-          <section className="sync-recent" aria-label="Recent jobs">
-            <div className="sync-recent-head">
-              <h3 className="sync-section-title">Recent jobs</h3>
+          <details className="sync-advanced">
+            <summary>Advanced</summary>
+            <div className="sync-advanced-actions">
+              <CatalogSyncButton
+                mode="full"
+                active={
+                  (syncing && catalogSyncMode === "full") ||
+                  (backgroundCatalogLive && backgroundCatalogMode === "full")
+                }
+                disabled={catalogLocked}
+                onSync={onFullSync}
+                progress={progress}
+              />
               <button
                 type="button"
                 className="btn ghost"
-                onClick={onClearFinished}
-                disabled={
-                  jobItems.filter((j) => j.state !== "queued" && j.state !== "active")
-                    .length === 0
-                }
+                onClick={onGroupMembersSync}
+                disabled={catalogLocked}
+                title="Upsert members embedded in local group covers that are not standalone catalog rows yet"
               >
-                Clear
+                {syncingGroups ? "Syncing group members…" : "Sync group members"}
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={onFolderSync}
+                disabled={foldersLocked}
+                title="Pull cloud folders and upload pending folder changes"
+              >
+                {folderSyncing
+                  ? "Syncing folders…"
+                  : folderPending > 0
+                    ? `Sync ${folderPending.toLocaleString()} folder change${folderPending === 1 ? "" : "s"}`
+                    : "Sync folders"}
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={onCloudRepair}
+                disabled={catalogLocked || foldersLocked}
+                title="Rebuild mismatched thumbs and upload fit; Parascene only for leftovers"
+              >
+                {repairing
+                  ? typeof progress?.currentId === "string" &&
+                    progress.currentId
+                    ? progress.currentId
+                    : "Repairing…"
+                  : "Repair thumbs"}
               </button>
             </div>
-            {jobItems.length === 0 ? (
-              <p className="muted sync-recent-empty">
-                Catalog and folder runs show up here. Individual preview downloads
-                stay in “In progress” only while they run.
-              </p>
-            ) : (
-              <ul className="sync-recent-list">
-                {[...jobItems].reverse().map((item) => (
-                  <li
-                    key={item.key}
-                    className={`sync-recent-item is-${item.state}`}
-                  >
-                    <div className="sync-recent-main">
-                      <span className="sync-recent-title">{item.title}</span>
-                      {item.detail ? (
-                        <span className="muted sync-recent-detail">
-                          {item.detail}
-                        </span>
-                      ) : null}
-                    </div>
-                    <span
-                      className={`sync-queue-state state-${item.state}`}
+            <p className="muted sync-advanced-path" title={status.rootPath}>
+              {status.rootPath}
+              {folderRevision !== "—" ? ` · ${folderRevision}` : ""}
+            </p>
+            <section className="sync-recent" aria-label="Recent jobs">
+              <div className="sync-recent-head">
+                <h3 className="sync-section-title">Recent jobs</h3>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={onClearFinished}
+                  disabled={
+                    jobItems.filter((j) => j.state !== "queued" && j.state !== "active")
+                      .length === 0
+                  }
+                >
+                  Clear
+                </button>
+              </div>
+              {jobItems.length === 0 ? (
+                <p className="muted sync-recent-empty">
+                  Catalog and folder runs show up here.
+                </p>
+              ) : (
+                <ul className="sync-recent-list">
+                  {[...jobItems].reverse().map((item) => (
+                    <li
+                      key={item.key}
+                      className={`sync-recent-item is-${item.state}`}
                     >
-                      {syncItemStateLabel(item.state, item.kind)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+                      <div className="sync-recent-main">
+                        <span className="sync-recent-title">{item.title}</span>
+                        {item.detail ? (
+                          <span className="muted sync-recent-detail">
+                            {item.detail}
+                          </span>
+                        ) : null}
+                      </div>
+                      <span
+                        className={`sync-queue-state state-${item.state}`}
+                      >
+                        {syncItemStateLabel(item.state, item.kind)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </details>
         </div>
       ) : null}
     </section>

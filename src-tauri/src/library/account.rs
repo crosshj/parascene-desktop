@@ -703,12 +703,14 @@ pub fn account_logout(request: LogoutRequest) -> Result<LogoutResult, String> {
     super::download::quiesce_downloads();
     super::jobs::quiesce_jobs();
 
+    let current = account_root()?;
+    let mut local_storage = request.local_storage;
+    super::project_documents::inject_native_projects_backup(&current, &mut local_storage)?;
     let compact = CompactPayload {
-        local_storage: request.local_storage,
+        local_storage,
         identity: request.identity.clone(),
     };
     let live = collect_live_secrets()?;
-    let current = account_root()?;
     let secrets = merge_secrets_for_compact(&current, &live)?;
     let mut queues = BTreeMap::new();
     queues.insert(
@@ -740,6 +742,56 @@ pub fn account_logout(request: LogoutRequest) -> Result<LogoutResult, String> {
         account_root: dest.display().to_string(),
         user_id: sub.to_string(),
     })
+}
+
+fn live_projects_nonempty(local_storage: &BTreeMap<String, String>) -> bool {
+    local_storage
+        .get("parascene.projects.v1")
+        .map(|raw| {
+            let trimmed = raw.trim();
+            trimmed != "" && trimmed != "[]"
+        })
+        .unwrap_or(false)
+}
+
+/// Persist the live webview snapshot without logging out. Session restore
+/// calls this before hydrate so a rebuild does not replace in-session
+/// projects with the last logout compact. Empty live projects do not clobber
+/// a non-empty compact already on disk.
+#[tauri::command]
+pub fn account_checkpoint(request: LogoutRequest) -> Result<Value, String> {
+    let sub = request.identity.sub.trim();
+    if sub.is_empty() {
+        return Err("Checkpoint requires identity.sub".into());
+    }
+    let machine = machine_root()?;
+    let current = account_root()?;
+    if is_legacy_root(&machine, &current) {
+        return Ok(serde_json::json!({ "ok": true, "skipped": "legacy" }));
+    }
+    let disk = read_hydrate(&current)?;
+    let mut merged = disk.local_storage.clone();
+    for (key, value) in &request.local_storage {
+        merged.insert(key.clone(), value.clone());
+    }
+    if !live_projects_nonempty(&request.local_storage) {
+        if let Some(prev) = disk.local_storage.get("parascene.projects.v1") {
+            if prev.trim() != "" && prev.trim() != "[]" {
+                merged.insert("parascene.projects.v1".into(), prev.clone());
+            }
+        }
+    }
+    super::project_documents::inject_native_projects_backup(&current, &mut merged)?;
+    let compact = CompactPayload {
+        local_storage: merged,
+        identity: request.identity.clone(),
+    };
+    let live = collect_live_secrets()?;
+    let secrets = merge_secrets_for_compact(&current, &live)?;
+    let mut queues = BTreeMap::new();
+    queues.insert("downloads".into(), super::download::snapshot_queue());
+    compact_into_current_folder(&current, &compact, &secrets, &queues)?;
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 #[cfg(test)]

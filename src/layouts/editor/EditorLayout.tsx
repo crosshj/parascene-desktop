@@ -45,6 +45,8 @@ import {
 } from "./timelineFragmentCache";
 import { getCreation } from "../../library/catalogClient";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
+// Assistant is parked until the LLM path works. Keep the import + pane
+// behind SHOW_EDITOR_ASSISTANT so layout can come back in one flip.
 import { AssistantPane } from "./AssistantPane";
 import {
   ASSISTANT_COLLAPSED_STRIP,
@@ -224,6 +226,8 @@ function timelinePlacementKey(clips: readonly TimelineClip[]): string {
     .map((c) => `${c.id}:${c.startSec.toFixed(3)}:${c.endSec.toFixed(3)}`)
     .join("|");
 }
+
+const SHOW_EDITOR_ASSISTANT = false;
 
 export function EditorLayout() {
   const {
@@ -1023,9 +1027,11 @@ export function EditorLayout() {
     } catch {
       splitterCaptureRef.current = null;
     }
-    const reservedRight = !rightCollapsed
-      ? prefs.assistantWidth
-      : ASSISTANT_COLLAPSED_STRIP;
+    const reservedRight = !SHOW_EDITOR_ASSISTANT
+      ? 0
+      : !rightCollapsed
+        ? prefs.assistantWidth
+        : ASSISTANT_COLLAPSED_STRIP;
     const reservedLeft = !leftCollapsed ? prefs.assetsWidth : 0;
     dragRef.current = {
       kind,
@@ -1041,16 +1047,22 @@ export function EditorLayout() {
   };
 
   const assetsDocked = !narrow && !leftCollapsed;
-  const assistantDocked = !narrow && !rightCollapsed;
+  const assistantDocked =
+    SHOW_EDITOR_ASSISTANT && !narrow && !rightCollapsed;
   const showAssetsDrawer = narrow && assetsDrawerOpen;
-  const showAssistantDrawer = narrow && assistantDrawerOpen;
+  const showAssistantDrawer =
+    SHOW_EDITOR_ASSISTANT && narrow && assistantDrawerOpen;
   const showAssetsPane = assetsDocked || showAssetsDrawer;
   const showAssistantPane = assistantDocked || showAssistantDrawer;
 
   const workspaceClass = [
     "editor-workspace",
     assetsDocked ? "" : "assets-collapsed",
-    assistantDocked ? "" : "assistant-collapsed",
+    SHOW_EDITOR_ASSISTANT
+      ? assistantDocked
+        ? ""
+        : "assistant-collapsed"
+      : "assistant-hidden",
     narrow ? "is-narrow" : "",
     dragging ? `is-resizing-${dragging}` : "",
   ]
@@ -2861,7 +2873,7 @@ export function EditorLayout() {
         onToggleTimelinePlay={toggleTimelinePlaying}
       />
 
-      {assistantDocked ? (
+      {SHOW_EDITOR_ASSISTANT && assistantDocked ? (
         <button
           type="button"
           className={
@@ -2874,9 +2886,9 @@ export function EditorLayout() {
         />
       ) : null}
 
-      {showAssistantPane ? (
+      {SHOW_EDITOR_ASSISTANT && showAssistantPane ? (
         <AssistantPane onCollapse={collapseAssistant} drawer={narrow} />
-      ) : (
+      ) : SHOW_EDITOR_ASSISTANT ? (
         <button
           type="button"
           className="editor-pane-expand right"
@@ -2891,7 +2903,7 @@ export function EditorLayout() {
             />
           </svg>
         </button>
-      )}
+      ) : null}
 
       <button
         type="button"

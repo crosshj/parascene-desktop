@@ -20,6 +20,7 @@ mod parascene_api;
 pub(crate) mod paths;
 mod plate;
 mod project_assets;
+mod project_documents;
 mod render;
 mod reverse;
 mod slideshow;
@@ -32,7 +33,8 @@ mod timeline_fragments;
 mod user_state;
 
 pub use account::{
-    account_hydrate, account_login, account_logout, account_restore_secrets, account_startup,
+    account_checkpoint, account_hydrate, account_login, account_logout, account_restore_secrets,
+    account_startup,
 };
 pub use beats::library_detect_beats;
 pub use catalog::{
@@ -75,12 +77,14 @@ pub use parascene_api::{
 pub use plate::{
     library_bake_plate_still, library_cache_composition_run, library_delete_composition_run,
 };
+pub use project_documents::{projects_migrate_and_load, projects_save};
 pub use project_assets::{
     library_add_existing_project_asset, library_add_project_assets, library_check_creation_usage,
     library_delete_creation_checked, library_delete_project, library_delete_project_asset,
     library_get_project_bound_folder, library_get_project_folder,
     library_import_project_asset_paths, library_liberate_orphan_project_folders,
     library_list_project_asset_ids, library_mark_project_usage_stale,
+    library_project_document_revision,
     library_provision_project_folder, library_reconcile_legacy_project_folder,
     library_release_orphan_project_folder, library_remove_project_assets, library_rename_project,
     library_repair_project_usage, library_replace_project_usage, library_set_project_bound_folder,

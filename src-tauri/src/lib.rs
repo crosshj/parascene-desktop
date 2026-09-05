@@ -2,6 +2,7 @@ mod agent;
 mod auth_store;
 mod blue;
 mod clipboard;
+mod help_window;
 mod http_client;
 mod library;
 mod media_stream;
@@ -18,11 +19,13 @@ use blue::{
     blue_method_run, blue_method_run_cancel, blue_upload_file,
 };
 use clipboard::clipboard_write_text;
+use help_window::open_help_window;
 use http_client::{
     http_delete_bearer, http_get_bearer, http_post_bearer, http_post_bytes_bearer, http_post_json,
 };
 use library::{
-    account_hydrate, account_login, account_logout, account_restore_secrets, account_startup,
+    account_checkpoint, account_hydrate, account_login, account_logout, account_restore_secrets,
+    account_startup, projects_migrate_and_load, projects_save,
     jobs_cancel, jobs_enqueue, jobs_get, jobs_list, library_add_existing_project_asset,
     library_add_project_assets, library_add_to_folder, library_append_diag_log,
     library_apply_image_framing, library_apply_manifest, library_audio_waveform_peaks,
@@ -50,6 +53,7 @@ use library::{
     library_list_filed_creation_ids, library_list_filter_creations, library_list_folders,
     library_list_group_member_ids, library_list_project_asset_ids, library_local_fit_plan,
     library_mark_project_usage_stale, library_merge_timeline_clips, library_open_local_tools_doc,
+    library_project_document_revision,
     library_prepare_openai_whisper_audio, library_provision_project_folder,
     library_read_file_base64, library_read_local_thumb_base64, library_rebuild_reversed,
     library_reconcile_legacy_project_folder, library_release_orphan_project_folder,
@@ -159,9 +163,10 @@ pub fn run() {
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
 
-                // Native Help menu is macOS-only (system menu bar). On Windows it
-                // paints an ugly classic menu strip; those actions live in the
-                // account menu + keyboard shortcuts instead.
+                // Native app menu is macOS-only (system menu bar). On Windows the
+                // main window is frameless and a classic menu strip looks wrong;
+                // Help, updates, and diagnostics live in the account menu + F1
+                // instead. Both platforms open the same Help window.
                 //
                 // Edit must stay in the menu bar: on macOS, Cmd+C/V/X/A/Z for
                 // webview inputs only work when the matching PredefinedMenuItems
@@ -184,6 +189,14 @@ pub fn run() {
                         &[&undo, &redo, &edit_sep, &cut, &copy, &paste, &select_all],
                     )?;
 
+                    let desktop_help = MenuItem::with_id(
+                        app,
+                        "open_help",
+                        "Parascene Desktop Help",
+                        true,
+                        None::<&str>,
+                    )?;
+                    let help_sep = PredefinedMenuItem::separator(app)?;
                     let check_updates = MenuItem::with_id(
                         app,
                         "check_updates",
@@ -209,13 +222,22 @@ pub fn run() {
                         app,
                         "Help",
                         true,
-                        &[&check_updates, &diagnose, &unlock],
+                        &[
+                            &desktop_help,
+                            &help_sep,
+                            &check_updates,
+                            &diagnose,
+                            &unlock,
+                        ],
                     )?;
                     let menu = Menu::with_items(app, &[&edit, &help])?;
                     app.set_menu(menu)?;
 
                     let handle = app.handle().clone();
                     app.on_menu_event(move |_app, event| match event.id().as_ref() {
+                        "open_help" => {
+                            let _ = help_window::show_help(&handle, None);
+                        }
                         "check_updates" => {
                             let _ = handle.emit("parascene:check-updates", ());
                         }
@@ -250,8 +272,12 @@ pub fn run() {
             account_hydrate,
             account_restore_secrets,
             account_logout,
+            account_checkpoint,
+            projects_migrate_and_load,
+            projects_save,
             agent_report_ui_state,
             agent_complete,
+            open_help_window,
             start_oauth_listener,
             cancel_oauth_listener,
             oauth_take_callback,
@@ -299,6 +325,7 @@ pub fn run() {
             library_add_project_assets,
             library_remove_project_assets,
             library_mark_project_usage_stale,
+            library_project_document_revision,
             library_replace_project_usage,
             library_repair_project_usage,
             library_check_creation_usage,

@@ -46,27 +46,35 @@ State is compact. Not a screenshot, not a full dump.
 
 `GET /agent/v1/state?scope=library` includes sync counts (`total`, `remote`, `lastSyncAt`, `withThumb`, `withMedia`) and `needsSync` (true when `lastSyncAt` is empty).
 
+`GET /agent/v1/state?scope=window` is `{ width, height, maximized }` in logical pixels.
+
+`GET /agent/v1/state?scope=shell` includes `primaryTab`, `librarySurface`, `mode`, `openProjectId`, `openProjectTitle`.
+
 # Actions
 
-Wired (need a signed-in session; UI must be up):
+Wired (need a signed-in session unless noted; UI must be up):
 
-- `project.create` `{ title? }` — opens the project; returns bound project folder
-- `project.open` `{ id }`
-- `project.close`
-- `project.delete` `{ id }` — local project; leftover folder deleted when empty
-- `folder.create` `{ title? }` — Library folder, not a project folder
-- `folder.delete` `{ id }` — empty regular Library folder
-- `generation.start` `{ prompt?, projectId?, model? }` — Parascene Text to Image, default `sd15: lofi_V2pre` (~0.1 credit). Returns `creationId` and `imagesGroupId` (delete both).
-- `cloud.delete` `{ id?, imagesGroupId?, ids? }` — unfile, ungroup, soft-delete, drop local rows; fails if any remain
-- `library.lookup` `{ id?, ids? }` — which of those creation ids still exist locally
+Navigation (no data change):
 
-- `sync.start` — Sync Newest only
-- `sync.folders` — pull cloud folder membership (same step as the Sync page after catalog)
-- `sync.thumbs` — cache missing local previews; waits until idle
-- `sync.media` — cache missing full local media; waits until idle
-- `library.clearLocal` `{ confirm: true }` — drop cloud-backed local catalog + files (not cloud; keeps disk imports)
+- `shell.show` `{ tab?, surface?, mode?, panel? }` — show a page. `tab` is `library` | `project`. `surface` is `creations` | `sync` (implies Library). `mode` is `director` | `editor` | `hook` | `lab` (implies Project; editor/hook/lab need an open project). `panel: "newAsset"` opens Editor New asset without generating.
 
-Each action stays on the page a person would use and holds ~2s: Library for folders/delete, Sync for the sync journey, Project → Director for create/open, Project → Editor (New asset) for generate. Files still run one at a time. Those pages are the same ones help will describe.
+Domain actions still land on the page a person would use. That is not the only way to get there — use `shell.show` to go to a page without mutating.
+
+- `project.create` `{ title? }` — lands Director
+- `project.open` `{ id, mode? }` — default Director; pass `mode: "editor"` to open in Editor
+- `project.close` — Project chooser
+- `project.delete` `{ id }` — Project chooser; leftover folder deleted when empty
+- `folder.create` `{ title? }` — Library creations
+- `folder.delete` `{ id }` — Library creations
+- `generation.start` `{ prompt?, projectId?, model? }` — lands Editor, then generates. Default `sd15: lofi_V2pre` (~0.1 credit). Do not use this just to open Editor.
+- `cloud.delete` `{ id?, imagesGroupId?, ids? }` — Library creations
+- `library.lookup` `{ id?, ids? }` — no navigation (query only)
+- `sync.start` / `sync.folders` / `sync.thumbs` / `sync.media` — Sync page
+- `library.clearLocal` `{ confirm: true }` — Library creations
+- `window.setSize` `{ width?, height? }` — no navigation. Default **1280×900**. Does not require signed-in.
+- `help.open` `{ topicId? }` — open the Help window. Does not require signed-in. Omit topicId for the contents page. Articles are static HTML under `public/help/`. Topic ids: `getting-started` (or `start`), `overview` (or `screens`), `projects` (or `create-project` / `open-project`), `folders`, `sync`, `generate` (or `generate-image`). Screen jumps: `library`, `director`, `editor`.
+
+Each mutating action holds ~2s on its journey page. `shell.show` holds ~0.8s. Files still run one at a time.
 
 # Setup
 

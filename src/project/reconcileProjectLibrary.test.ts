@@ -4,6 +4,7 @@ import {
   collectExtraneousExpandedGroupMemberIds,
   collectProjectGroupCoverIdsToRefresh,
   collectProtectedCreationIds,
+  reconcileStoredProjectsFromLibrary,
 } from "./reconcileProjectLibrary";
 import type { StoredProject } from "./projectStore";
 import type { LibraryFolder } from "../library/folderClient";
@@ -19,6 +20,12 @@ vi.mock("../library/catalogClient", () => ({
 
 vi.mock("../library/folderClient", () => ({
   listFolders: (...args: unknown[]) => listFolders(...args),
+}));
+
+const getProjectDocumentRevision = vi.fn();
+vi.mock("./projectFolderClient", () => ({
+  getProjectDocumentRevision: (...args: unknown[]) =>
+    getProjectDocumentRevision(...args),
 }));
 
 function project(partial: Partial<StoredProject>): StoredProject {
@@ -53,6 +60,8 @@ describe("reconcileProjectLibrary", () => {
     getCreations.mockReset();
     listFolders.mockReset();
     listGroupMemberIds.mockReset();
+    getProjectDocumentRevision.mockReset();
+    getProjectDocumentRevision.mockResolvedValue("doc:kept");
   });
 
   it("collects cabinet and folder group covers to refresh", async () => {
@@ -184,5 +193,53 @@ describe("reconcileProjectLibrary", () => {
     );
 
     expect(extraneous.sort()).toEqual(["201", "202"]);
+  });
+
+  it("adopts a project folder that has no local project document", async () => {
+    listFolders.mockResolvedValue([
+      {
+        id: "f-my",
+        title: "MyProject",
+        description: "",
+        createdAt: "2026-09-05T17:00:00.000Z",
+        updatedAt: "2026-09-05T17:09:40.000Z",
+        memberIds: ["28062", "28063"],
+        memberCount: 2,
+        kind: "project",
+        projectId: "1e97253d-b0be-451a-9ec3-0eeb7a838d6f",
+      },
+    ]);
+
+    const { projects, result } = await reconcileStoredProjectsFromLibrary([]);
+    expect(result.projectsAdopted).toBe(1);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.id).toBe("1e97253d-b0be-451a-9ec3-0eeb7a838d6f");
+    expect(projects[0]?.title).toBe("MyProject");
+    expect(projects[0]?.creationIds).toEqual(["28062", "28063"]);
+    expect(projects[0]?.lifecycle).toBe("ready");
+    expect(projects[0]?.documentRevision).toBe("doc:kept");
+  });
+
+  it("does not adopt a folder that already has a project document", async () => {
+    listFolders.mockResolvedValue([
+      {
+        id: "f-my",
+        title: "MyProject",
+        description: "",
+        createdAt: "",
+        updatedAt: "",
+        memberIds: ["28062"],
+        memberCount: 1,
+        kind: "project",
+        projectId: "p1",
+      },
+    ]);
+
+    const { projects, result } = await reconcileStoredProjectsFromLibrary([
+      project({ creationIds: ["28062"] }),
+    ]);
+    expect(result.projectsAdopted).toBe(0);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.id).toBe("p1");
   });
 });

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   clampSensitivity,
   normalizeSlideshowMode,
@@ -168,6 +169,13 @@ export const DEFAULT_TIMELINE_ZOOM = 1;
 export const TIMELINE_ZOOM_MIN = 0.5;
 export const TIMELINE_ZOOM_MAX = 3;
 
+type ProjectStoreSource = "local" | "native";
+
+let projectStoreSource: ProjectStoreSource = "local";
+let nativeMemoryRows: unknown[] | null = null;
+let persistChain: Promise<void> = Promise.resolve();
+let persistAllowEmpty = false;
+
 function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -175,12 +183,117 @@ function newId(): string {
   return `proj-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export function loadStoredProjects(): StoredProject[] {
+export function getProjectStoreSource(): ProjectStoreSource {
+  return projectStoreSource;
+}
+
+export function resetProjectStoreForTests(): void {
+  projectStoreSource = "local";
+  nativeMemoryRows = null;
+  persistChain = Promise.resolve();
+  persistAllowEmpty = false;
+}
+
+function readLocalStorageRowsLenient(): unknown[] {
   try {
     const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readStoredRowsLenient(): unknown[] {
+  if (projectStoreSource === "native") {
+    return nativeMemoryRows ? [...nativeMemoryRows] : [];
+  }
+  return readLocalStorageRowsLenient();
+}
+
+function hasExistingNonEmptyRows(): boolean {
+  if (projectStoreSource === "native") {
+    return Array.isArray(nativeMemoryRows) && nativeMemoryRows.length > 0;
+  }
+  const existing = localStorage.getItem(PROJECTS_STORAGE_KEY);
+  return Boolean(existing && existing !== "[]");
+}
+
+async function persistNativeRows(): Promise<void> {
+  if (projectStoreSource !== "native") return;
+  const rows = nativeMemoryRows ?? [];
+  await invoke("projects_save", {
+    request: {
+      rows,
+      allowEmpty: persistAllowEmpty && rows.length === 0,
+    },
+  });
+}
+
+function queueNativePersist(allowEmpty: boolean): void {
+  persistAllowEmpty = allowEmpty;
+  persistChain = persistChain.then(persistNativeRows, persistNativeRows);
+}
+
+export async function flushProjectStore(): Promise<void> {
+  if (projectStoreSource !== "native") return;
+  await persistChain;
+}
+
+export async function hydrateProjectStoreFromNative(
+  feJson: string | null,
+): Promise<void> {
+  try {
+    const result = await invoke<{ rows?: unknown[] }>(
+      "projects_migrate_and_load",
+      { request: { feJson } },
+    );
+    nativeMemoryRows = Array.isArray(result.rows) ? result.rows : [];
+    projectStoreSource = "native";
+    try {
+      localStorage.removeItem(PROJECTS_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  } catch (error) {
+    console.warn(
+      "[projectStore] Native store unavailable; staying on localStorage",
+      error,
+    );
+    projectStoreSource = "local";
+    nativeMemoryRows = null;
+  }
+}
+
+/** Re-bind after HMR or if session restore already migrated the account. */
+export async function ensureProjectStoreHydrated(): Promise<void> {
+  if (projectStoreSource === "native") return;
+  const feJson = localStorage.getItem(PROJECTS_STORAGE_KEY);
+  await hydrateProjectStoreFromNative(feJson);
+}
+
+function writeStoredRows(
+  rows: unknown[],
+  options?: { allowEmpty?: boolean },
+): void {
+  if (rows.length === 0 && options?.allowEmpty !== true && hasExistingNonEmptyRows()) {
+    console.error(
+      "[saveStoredProjects] Refusing to overwrite non-empty projects with []",
+    );
+    return;
+  }
+  if (projectStoreSource === "native") {
+    nativeMemoryRows = rows;
+    queueNativePersist(options?.allowEmpty === true && rows.length === 0);
+    return;
+  }
+  localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(rows));
+}
+
+export function loadStoredProjects(): StoredProject[] {
+  try {
+    const parsed = readStoredRowsLenient();
     const out: StoredProject[] = [];
     for (const row of parsed) {
       if (!isStoredProject(row)) continue;
@@ -227,6 +340,9 @@ export function __resetStoredProjectParseCountForTests(): void {
 
 function readStoredProjectsArray(): unknown[] {
   storedProjectParseCount += 1;
+  if (projectStoreSource === "native") {
+    return nativeMemoryRows ? [...nativeMemoryRows] : [];
+  }
   const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
   if (!raw) return [];
   let parsed: unknown;
@@ -393,16 +509,7 @@ export function saveStoredProjectsPreservingCorrupt(
     seen.add(project.id);
   }
 
-  if (out.length === 0 && options?.allowEmpty !== true) {
-    const existing = localStorage.getItem(PROJECTS_STORAGE_KEY);
-    if (existing && existing !== "[]") {
-      console.error(
-        "[saveStoredProjectsPreservingCorrupt] Refusing to overwrite non-empty projects with []",
-      );
-      return;
-    }
-  }
-  localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(out));
+  writeStoredRows(out, options);
 }
 
 /** Remove one project document (healthy or corrupt). Allows an empty project list. */
@@ -1273,18 +1380,9 @@ function normalizeOptionalPrompt(value: unknown): string | null {
 }
 
 export function saveStoredProjects(projects: StoredProject[]): void {
-    // Never clobber a non-empty store with an empty write — usually means a
-    // failed load / HMR race, not an intentional delete-all.
-    if (projects.length === 0) {
-      const existing = localStorage.getItem(PROJECTS_STORAGE_KEY);
-      if (existing && existing !== "[]") {
-        console.error(
-          "[saveStoredProjects] Refusing to overwrite non-empty projects with []",
-        );
-        return;
-      }
-    }
-  localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+  // Never clobber a non-empty store with an empty write — usually means a
+  // failed load / HMR race, not an intentional delete-all.
+  writeStoredRows(projects);
 }
 
 export function nextProjectDocumentRevision(): string {

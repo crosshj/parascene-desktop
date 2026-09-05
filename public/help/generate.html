@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Generate an image — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">All topics</a>
+    </header>
+    <main>
+      <h1>Generate an image</h1>
+      <p>
+        The first generate path is Text to Image on Parascene (account credits,
+        a Creation in your library). You do this from the Editor of an open
+        project — not from Library, and not from Direct to Blue or Replicate.
+      </p>
+
+      <h2>Open Editor</h2>
+      <ol class="steps">
+        <li>
+          <a href="projects.html">Create or open a project</a>. New project
+          lands on Director.
+        </li>
+        <li>Click <strong>Editor</strong> in the top bar.</li>
+        <li>
+          In Assets (left), click the + tile labeled <strong>Add asset</strong>.
+        </li>
+      </ol>
+      <figure>
+        <img
+          src="desktop/screens/editor.png"
+          alt="Empty Editor with the Add asset plus tile and Select an asset preview"
+        />
+        <figcaption>Editor — the + tile opens New asset.</figcaption>
+      </figure>
+
+      <h2>Text to Image on Parascene</h2>
+      <ol class="steps">
+        <li>Choose <strong>Text to Image</strong> (Prompt → still).</li>
+        <li>
+          Under System, choose <strong>Parascene</strong> (Credits · Creations).
+          Skip Direct to Blue and Replicate — those need keys in Settings and
+          stay local-only.
+        </li>
+        <li>Write a prompt.</li>
+        <li>
+          Under Model, pick a cheap SD 1.5 option (labels look like
+          <code>sd15: lofi_V2pre</code>). Those cost a fraction of a credit.
+        </li>
+        <li>Click <strong>Generate</strong> and wait. The job can take a while.</li>
+      </ol>
+      <figure>
+        <img
+          src="desktop/screens/editor-new-asset.png"
+          alt="New asset panel with Text to Image and the Parascene system selected"
+        />
+        <figcaption>New asset — Text to Image, Parascene.</figcaption>
+      </figure>
+      <p class="note">
+        The still uses the project aspect ratio from Director. When it finishes
+        it lands in this project’s assets and in Library (and in the project
+        folder). Image to Image, video intents, and other systems are later
+        paths.
+      </p>
+
+      <p class="more">
+        Next: <a href="overview.html#editor">Overview</a>
+        · <a href="folders.html">Folders</a>
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

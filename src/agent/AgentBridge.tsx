@@ -57,6 +57,14 @@ function showProject(
   if (mode) shell.setMode(mode);
 }
 
+const SHELL_TABS = new Set(["library", "project"]);
+const LIBRARY_SURFACES = new Set(["creations", "sync"]);
+const PROJECT_MODES = new Set(["director", "editor", "hook", "lab"]);
+
+function parseProjectMode(raw: string): LayoutMode | null {
+  return PROJECT_MODES.has(raw) ? (raw as LayoutMode) : null;
+}
+
 function collectDeleteIds(
   args: Record<string, unknown> | undefined,
 ): string[] {
@@ -93,6 +101,8 @@ function watchHoldMs(action: string): number {
       return 2200;
     case "library.lookup":
       return 0;
+    case "shell.show":
+      return 800;
     default:
       return 1800;
   }
@@ -269,6 +279,7 @@ export function AgentBridge() {
       shell: shell
         ? {
             primaryTab: shell.primaryTab,
+            librarySurface: shell.librarySurface,
             mode: shell.mode,
             openProjectId: shell.openProjectId,
             openProjectTitle: shell.project?.title ?? null,
@@ -284,6 +295,7 @@ export function AgentBridge() {
     auth?.session?.user?.sub,
     auth?.status,
     shell,
+    shell?.librarySurface,
     shell?.mode,
     shell?.openProjectId,
     shell?.primaryTab,
@@ -343,12 +355,67 @@ async function runAction(
     }
     case "project.open": {
       if (!ctx.shell) throw new Error("Shell is not mounted");
-      showProject(ctx.shell, "director");
+      const mode = parseProjectMode(argString(args, "mode")) ?? "director";
       const id = argString(args, "id") || argString(args, "projectId");
       if (!id) throw new Error("project.open requires id");
       const ok = await ctx.shell.openProject(id, true);
       if (!ok) throw new Error("Could not open project");
-      return { projectId: id };
+      // openProject(focus) always lands Director; apply the requested mode after.
+      showProject(ctx.shell, mode);
+      return { projectId: id, mode };
+    }
+    case "shell.show": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const tabRaw = argString(args, "tab");
+      const surfaceRaw = argString(args, "surface");
+      const modeRaw = argString(args, "mode");
+      const panel = argString(args, "panel");
+      const surface = LIBRARY_SURFACES.has(surfaceRaw)
+        ? (surfaceRaw as "creations" | "sync")
+        : null;
+      const mode = parseProjectMode(modeRaw);
+      let tab = SHELL_TABS.has(tabRaw) ? tabRaw : "";
+      if (!tab) {
+        if (surface) tab = "library";
+        else if (mode || panel === "newAsset") tab = "project";
+        else throw new Error("shell.show requires tab, surface, or mode");
+      }
+      if (tab === "library") {
+        showLibrary(ctx.shell, surface ?? "creations");
+      } else {
+        const nextMode = mode ?? (panel === "newAsset" ? "editor" : undefined);
+        if (
+          (nextMode === "editor" ||
+            nextMode === "hook" ||
+            nextMode === "lab") &&
+          !ctx.shell.openProjectId
+        ) {
+          throw new Error("shell.show editor/hook/lab needs an open project");
+        }
+        showProject(ctx.shell, nextMode);
+      }
+      if (panel === "newAsset") {
+        if (!ctx.shell.openProjectId) {
+          throw new Error("shell.show panel=newAsset needs an open project");
+        }
+        showProject(ctx.shell, "editor");
+        await sleep(400);
+        requestOpenNewAsset({
+          intent: "text_to_image",
+          prompt: argString(args, "prompt") || undefined,
+          model: argString(args, "model") || undefined,
+        });
+      }
+      return {
+        primaryTab: tab,
+        librarySurface: tab === "library" ? (surface ?? "creations") : null,
+        mode:
+          tab === "project"
+            ? (mode ?? (panel === "newAsset" ? "editor" : ctx.shell.mode))
+            : null,
+        panel: panel || null,
+        openProjectId: ctx.shell.openProjectId,
+      };
     }
     case "project.close": {
       if (!ctx.shell) throw new Error("Shell is not mounted");

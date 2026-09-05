@@ -37,6 +37,7 @@ import {
   createStoredProject,
   loadStoredProjectsStrict,
   partitionStoredProjects,
+  resetProjectStoreForTests,
   saveStoredProjects,
   setStoredProjectSelectedAssetId,
   upsertStoredLibraryAssetPlaceholder,
@@ -68,6 +69,7 @@ function projectFolder(
 
 describe("projectMutationCoordinator", () => {
   beforeEach(() => {
+    resetProjectStoreForTests();
     localStorage.removeItem(PROJECTS_STORAGE_KEY);
     vi.clearAllMocks();
     native.existingCreationIds.mockImplementation(async (ids) => ids);

@@ -23,6 +23,7 @@ import {
 } from "./diagnosticsEvents";
 import { CHECK_UPDATES_EVENT, requestCheckUpdates } from "./updateEvents";
 import { SettingsModal } from "../settings/SettingsModal";
+import { openHelpWindow } from "../help/openHelpWindow";
 import { UiDiagnosticsModal } from "./UiDiagnosticsModal";
 import { UpdateCheckModal } from "./UpdateCheckModal";
 import { installPointerCaptureSpy, unlockUi } from "./uiDiagnostics";
@@ -31,6 +32,7 @@ import type { LayoutMode } from "../project/types";
 import { WindowControls } from "./WindowControls";
 import { isWindowsDesktop } from "./windowPlatform";
 import { ParasceneMark } from "../ui/ParasceneMark";
+import { useLabsEnabled } from "../settings/labsEnabled";
 
 type ShellTab =
   | { kind: "library"; surface: LibrarySurface; label: string }
@@ -109,6 +111,10 @@ export function AppChrome({ children }: { children: ReactNode }) {
     openProjectId,
     chromeStatus,
   } = useShell();
+  const labsEnabled = useLabsEnabled();
+  const visibleModes = labsEnabled
+    ? MODES
+    : MODES.filter((m) => m.id !== "lab");
   const { session, logout } = useAuth();
   const name = session ? displayName(session) : null;
   const profileUrl = session ? profilePageUrl(session) : null;
@@ -147,6 +153,10 @@ export function AppChrome({ children }: { children: ReactNode }) {
     setMode(next);
     setPrimaryTab("project");
   };
+
+  useEffect(() => {
+    if (!labsEnabled && mode === "lab") setMode("director");
+  }, [labsEnabled, mode, setMode]);
 
   useEffect(() => {
     if (!menuOpen || !accountRef.current) {
@@ -197,6 +207,11 @@ export function AppChrome({ children }: { children: ReactNode }) {
   const openSettings = () => {
     setMenuOpen(false);
     setSettingsOpen(true);
+  };
+
+  const openHelp = () => {
+    setMenuOpen(false);
+    void openHelpWindow();
   };
 
   const openDiagnostics = () => {
@@ -343,7 +358,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
                 <span className="chrome-divider" />
               </span>
               <nav className="context-tabs" aria-label="Layout mode">
-                {MODES.map((m) => {
+                {visibleModes.map((m) => {
                   const active = primaryTab === "project" && mode === m.id;
                   return (
                     <button
@@ -395,6 +410,14 @@ export function AppChrome({ children }: { children: ReactNode }) {
                       style={{ top: menuPos.top, right: menuPos.right }}
                       onPointerDown={(event) => event.stopPropagation()}
                     >
+                      <button
+                        type="button"
+                        className="auth-account-menu-item"
+                        role="menuitem"
+                        onClick={openHelp}
+                      >
+                        Help
+                      </button>
                       <button
                         type="button"
                         className="auth-account-menu-item"

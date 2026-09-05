@@ -357,6 +357,7 @@ describe("auth shell", () => {
     expect(screen.queryByRole("button", { name: "Publisher" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Account menu/i }));
+    expect(screen.getByRole("menuitem", { name: "Help" })).toBeInTheDocument();
     await user.click(screen.getByRole("menuitem", { name: "Log out" }));
     expect(
       await screen.findByRole("button", { name: "Log in" }),
@@ -381,13 +382,7 @@ describe("auth shell", () => {
       await screen.findByRole("button", { name: "Editor" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publisher" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Labs" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Labs" }));
-    expect(screen.getByLabelText("Lab")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Project groups" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Labs" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Editor" }));
     expect(screen.getByLabelText("Assets")).toBeInTheDocument();
@@ -418,6 +413,34 @@ describe("auth shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Untitled project" }));
     expect(await screen.findByLabelText("Video preview")).toBeInTheDocument();
+  }, 60_000);
+
+  it("shows Labs only when the setting is on", async () => {
+    const user = userEvent.setup();
+    const { saveLabsEnabled } = await import("../settings/labsEnabled");
+    render(<App />);
+
+    await logIn(user);
+    await screen.findByLabelText("Creations");
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    expect(await screen.findByLabelText("Video preview")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Labs" })).not.toBeInTheDocument();
+
+    saveLabsEnabled(true);
+    expect(await screen.findByRole("button", { name: "Labs" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Labs" }));
+    expect(screen.getByLabelText("Lab")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Project groups" }),
+    ).toBeInTheDocument();
+
+    saveLabsEnabled(false);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Labs" })).not.toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("Video preview")).toBeInTheDocument();
   }, 60_000);
 
   it("restores open project and tabs after remount", async () => {
@@ -500,18 +523,17 @@ describe("auth shell", () => {
     expect(screen.getByLabelText("Library summary")).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText(/Last synced Never/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Catalog" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Recent jobs" })).toBeInTheDocument();
-    expect(
-      screen.getByText(/Catalog and folder runs show up here/),
-    ).toBeInTheDocument();
     expect(screen.getByText("On disk")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Clear" }),
-    ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Sync newest" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Sync from cloud" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Previews cached")).not.toBeInTheDocument();
+    expect(screen.queryByText("Media cached")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Advanced"));
     expect(
       screen.getByRole("button", { name: "Sync full catalog" }),
     ).toBeInTheDocument();
@@ -519,15 +541,11 @@ describe("auth shell", () => {
       screen.getByRole("button", { name: "Sync group members" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Sync from cloud" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText("Previews cached")).toBeInTheDocument();
-    expect(screen.getByText("Media cached")).toBeInTheDocument();
+      screen.getByRole("heading", { name: "Recent jobs" }),
+    ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Previews cached" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Media cached" }),
-    ).not.toBeInTheDocument();
+      screen.getByText(/Catalog and folder runs show up here/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
   });
 });
