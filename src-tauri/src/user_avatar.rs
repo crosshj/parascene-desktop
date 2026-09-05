@@ -4,7 +4,7 @@
 //! unverified remote URL. Invalid / empty / HTML responses are rejected.
 
 use crate::auth_store;
-use crate::library::paths::{default_root, ensure_directories, resolve_paths};
+use crate::library::paths::{account_root, ensure_directories, resolve_paths};
 use futures_util::StreamExt;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
@@ -120,7 +120,7 @@ fn extension_hint(url: &str, content_type: Option<&str>) -> String {
 }
 
 fn avatars_dir() -> Result<PathBuf, String> {
-    let paths = resolve_paths(default_root()?);
+    let paths = resolve_paths(account_root()?);
     ensure_directories(&paths)?;
     let dir = paths.cache.join("avatars");
     std::fs::create_dir_all(&dir)

@@ -8,6 +8,7 @@ use super::folders::{emit_folders_updated, list_folders};
 use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
+use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -243,6 +244,26 @@ impl EnsureQueue {
 fn ensure_queue() -> &'static Mutex<EnsureQueue> {
     static Q: OnceLock<Mutex<EnsureQueue>> = OnceLock::new();
     Q.get_or_init(|| Mutex::new(EnsureQueue::new()))
+}
+
+pub(crate) fn snapshot_queue() -> serde_json::Value {
+    let Ok(q) = ensure_queue().lock() else {
+        return serde_json::json!({});
+    };
+    json!({
+        "mediaUrgent": q.media_urgent.iter().cloned().collect::<Vec<_>>(),
+        "thumbsHigh": q.thumbs_high.iter().cloned().collect::<Vec<_>>(),
+        "thumbsLow": q.thumbs_low.iter().cloned().collect::<Vec<_>>(),
+        "mediaHigh": q.media_high.iter().cloned().collect::<Vec<_>>(),
+        "mediaLow": q.media_low.iter().cloned().collect::<Vec<_>>(),
+    })
+}
+
+pub(crate) fn quiesce_downloads() {
+    if let Ok(mut q) = ensure_queue().lock() {
+        q.running = false;
+        *q = EnsureQueue::new();
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuthProvider, useAuthOptional } from "./auth/AuthProvider";
 import { LoginScreen } from "./auth/LoginScreen";
 import { ReauthOverlay } from "./auth/ReauthOverlay";
@@ -68,6 +68,12 @@ function Root() {
   const auth = useAuthOptional();
   const status = auth?.status ?? "reconnecting";
   const session = auth?.session ?? null;
+
+  useEffect(() => {
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().show())
+      .catch(() => {});
+  }, [status]);
 
   if (status === "reconnecting") {
     return (

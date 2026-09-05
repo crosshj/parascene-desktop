@@ -1,4 +1,4 @@
-use crate::library::paths::{default_root, ensure_directories, resolve_paths};
+use crate::library::paths::{account_root, ensure_directories, resolve_paths};
 use crate::replicate::enabled_models::{self, is_enabled};
 use crate::replicate::features::{
     features_from_model, has_input_schema, input_summary, InputFieldSummary,
@@ -18,7 +18,7 @@ fn now_ms() -> u64 {
 }
 
 pub fn replicate_dir() -> Result<PathBuf, String> {
-    let root = default_root()?;
+    let root = account_root()?;
     let paths = resolve_paths(root);
     ensure_directories(&paths)?;
     let dir = paths.cache.join("replicate");
@@ -234,6 +234,12 @@ struct IndexMemCache {
 fn index_mem() -> &'static Mutex<Option<IndexMemCache>> {
     static CACHE: OnceLock<Mutex<Option<IndexMemCache>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn reset_index_memory() {
+    if let Ok(mut guard) = index_mem().lock() {
+        *guard = None;
+    }
 }
 
 #[derive(Deserialize)]

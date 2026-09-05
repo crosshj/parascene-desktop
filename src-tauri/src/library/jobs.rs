@@ -79,6 +79,12 @@ fn runner_state() -> &'static Mutex<RunnerState> {
     STATE.get_or_init(|| Mutex::new(RunnerState { running: false }))
 }
 
+pub(crate) fn quiesce_jobs() {
+    if let Ok(mut state) = runner_state().lock() {
+        state.running = false;
+    }
+}
+
 fn parallel_inflight() -> &'static AtomicUsize {
     static N: OnceLock<AtomicUsize> = OnceLock::new();
     N.get_or_init(|| AtomicUsize::new(0))

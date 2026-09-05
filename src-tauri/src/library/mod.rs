@@ -1,3 +1,4 @@
+mod account;
 mod beats;
 mod catalog;
 pub(crate) mod clip_thumb;
@@ -28,7 +29,11 @@ mod sync_refresh;
 mod thumb_fill;
 mod preview_scheduler;
 mod timeline_fragments;
+mod user_state;
 
+pub use account::{
+    account_hydrate, account_login, account_logout, account_restore_secrets, account_startup,
+};
 pub use beats::library_detect_beats;
 pub use catalog::{
     library_apply_manifest, library_cloud_ids_since, library_ensure_ready,
@@ -107,3 +112,4 @@ pub async fn library_list_creations_page(limit: u32, offset: u32) -> Result<Crea
 
 #[cfg(debug_assertions)]
 pub(crate) use catalog::{auth_kv_delete, auth_kv_get, auth_kv_set};
+pub(crate) use user_state::mirror_live_secret;

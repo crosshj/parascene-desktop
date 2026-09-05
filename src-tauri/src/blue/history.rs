@@ -1,6 +1,6 @@
 //! Local history of Lab Blue jobs under Cache/blue/runs/.
 
-use crate::library::paths::{default_root, ensure_directories, resolve_paths};
+use crate::library::paths::{account_root, ensure_directories, resolve_paths};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ fn now_ms() -> u64 {
 }
 
 pub fn blue_dir() -> Result<PathBuf, String> {
-    let root = default_root()?;
+    let root = account_root()?;
     let paths = resolve_paths(root);
     ensure_directories(&paths)?;
     let dir = paths.cache.join("blue");

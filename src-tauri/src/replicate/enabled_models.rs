@@ -1,7 +1,7 @@
 //! Persisted allowlist of models that may open a run UI.
 //! Stored under Cache/replicate/enabled-models.json — edited via Lab UI / Tauri commands.
 
-use crate::library::paths::{default_root, ensure_directories, resolve_paths};
+use crate::library::paths::{account_root, ensure_directories, resolve_paths};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -18,8 +18,14 @@ fn store() -> &'static Mutex<Option<BTreeSet<String>>> {
     &STORE
 }
 
+pub(crate) fn reset_memory() {
+    if let Ok(mut guard) = store().lock() {
+        *guard = None;
+    }
+}
+
 fn enabled_path() -> Result<std::path::PathBuf, String> {
-    let root = default_root()?;
+    let root = account_root()?;
     let paths = resolve_paths(root);
     ensure_directories(&paths)?;
     let dir = paths.cache.join("replicate");

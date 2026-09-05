@@ -14,3 +14,9 @@ mod schema_page;
 mod token;
 
 pub use commands::*;
+
+/// Drop per-account Replicate memory when the bound user folder changes.
+pub(crate) fn reset_account_memory() {
+    enabled_models::reset_memory();
+    cache::reset_index_memory();
+}

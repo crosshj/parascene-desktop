@@ -20,6 +20,7 @@ use http_client::{
     http_delete_bearer, http_get_bearer, http_post_bearer, http_post_bytes_bearer, http_post_json,
 };
 use library::{
+    account_hydrate, account_login, account_logout, account_restore_secrets, account_startup,
     jobs_cancel, jobs_enqueue, jobs_get, jobs_list, library_add_existing_project_asset,
     library_add_project_assets, library_add_to_folder, library_append_diag_log,
     library_apply_image_framing, library_apply_manifest, library_audio_waveform_peaks,
@@ -230,6 +231,7 @@ pub fn run() {
                     focus_main_window(&handle);
                 });
             }
+            let _ = library::account_startup();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -238,6 +240,11 @@ pub fn run() {
             keychain_delete,
             auth_ensure_access_token,
             auth_ensure_user_avatar,
+            account_startup,
+            account_login,
+            account_hydrate,
+            account_restore_secrets,
+            account_logout,
             start_oauth_listener,
             cancel_oauth_listener,
             oauth_take_callback,

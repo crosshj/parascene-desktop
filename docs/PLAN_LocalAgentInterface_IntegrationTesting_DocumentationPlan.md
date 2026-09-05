@@ -6,17 +6,9 @@ This file is the full requirements capture after the 2026-09-04 design session. 
 
 # Hard constraint: no regressions for current users
 
-People already using the app with a synced library at `~/Movies/Parascene/` must see zero behavior or data-path change.
+Do not lose a current user’s library, projects, or settings. Phase 0a did relocate the existing tree into `users/<slug>/` on first logout (paths rewritten, same catalog and `parascene.projects.v1` keys). After that, each account is that folder only.
 
-- Same folder, catalog, projects, sync, session restore.
-- No move, copy, rename, or second Library for that tree.
-- `parascene.projects.v1` and `parascene.shellSession.v1` stay the keys for that user. Do not re-key in a way that empties the project list.
-- An app update must not point the running app at an empty scoped folder.
-- Logout only clears the session. Files stay. Signing back in as the same user picks up as if nothing happened.
-- Single-account machines (existing or new) keep today’s unscoped layout. New code paths run only when a second distinct user signs in on that machine.
-- Do not auto-migrate the first user into `users/<id>/`. “Eventually all scoped” is later, explicit, idle, reversible — not an update side effect.
-
-If a change could affect a current single-user install, do not make it.
+Original “keep `~/Movies/Parascene/` unscoped until a second user” is superseded. See Phase 0a.
 
 # Settled decisions
 
@@ -27,30 +19,22 @@ If a change could affect a current single-user install, do not make it.
 - Design the API so a future agent could use it. LLM/chat integration is out of scope. First consumer is integration tests.
 - First workflows: sync, create project, create folder, generate an image in a project (Parascene product / credits path). Folders and projects are still decoupled — test where behavior differs.
 - Tests assume the running app is logged in. Fail fast if not. Owner will use a cheaper test user, not the personal account.
-- Prerequisite before the agent API: account isolation, then cloud create/delete good enough for setup/teardown.
+- Prerequisite before the agent API: account isolation (done), then cloud create/delete good enough for setup/teardown.
 
-# Phase 0a — Account isolation (do this first)
+# Phase 0a — Account isolation (done 2026-09-05)
 
-Logout → login as another user must not read or write the previous user’s library, projects, or catalog. Switch back and the original local world is intact.
+Logout → other user → back must not touch the first user’s library, projects, catalog, settings, or API keys.
 
-Today logout only clears the session. Disk and UI state are global:
+Shipped (first logout relocates the existing tree; not the “keep unscoped until a second user” layout above):
 
-- `~/Movies/Parascene/` — Library, `catalog.sqlite`, media, Projects, Exports, Cache
-- `localStorage` — `parascene.projects.v1`, `parascene.shellSession.v1`
-- Debug builds store the session inside `catalog.sqlite`
+- Machine root: `accounts.json`, live `session.sqlite` (debug auth KV + OAuth), `users/`.
+- Each user: `users/<slug>/` with Library, Projects, Exports, Cache, and `user.sqlite` (localStorage, Settings secrets, identity, queues).
+- Fail-closed compact on logout; hydrate + secret restore on login. Legacy root migrates with a journal and path rewrite.
+- Empty ghost `Library/` at machine root is pruned once a user bundle exists.
+- New sub is refused while an unclaimed legacy library is still at the root. Same in-session user may keep that root until logout.
+- Debug Settings keys live in `session.sqlite`, not Keychain; compact reads that store and does not wipe `user.sqlite` secrets on an empty snapshot.
 
-The real failure mode is not “logout wipes files.” It is: sign in as the test user, then sync and folder/project mutations run against the original user’s catalog.
-
-Layout:
-
-- One account: keep `~/Movies/Parascene/` exactly as today.
-- Second account: new user only gets `~/Movies/Parascene/users/<userId>/`. Original tree stays put.
-- Fresh single-user install: still unscoped (same as today) until a second user appears.
-- `accounts.json` (or equivalent) is written only when a second account is actually added. Until then, path resolution is the current code path.
-
-Sign-out keeps the previous user’s files. Re-login as that user restores that tree. Re-OAuth is fine; data must not need to be rebuilt.
-
-Done when: owner can log out of the personal account, log in as the test user, work, log out, log back in as the personal account, and the original library/projects/sync state are unchanged.
+Done: personal and test accounts each keep their own folder; switch back restores that world.
 
 # Phase 0b — Cloud lifecycle (in parallel / next)
 

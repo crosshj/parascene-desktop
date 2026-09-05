@@ -52,6 +52,26 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     return null;
   }
   if (cmd === "auth_ensure_access_token") return "at";
+  if (cmd === "account_startup") return { ok: true };
+  if (cmd === "account_login") {
+    return {
+      kind: "folder",
+      userId: String(args?.userId ?? "u1"),
+      accountRoot: "/tmp/Movies/Parascene/users/u1",
+      relaunch: false,
+    };
+  }
+  if (cmd === "account_hydrate") {
+    return { localStorage: {}, present: false };
+  }
+  if (cmd === "account_restore_secrets") return null;
+  if (cmd === "account_logout") {
+    return {
+      relaunch: false,
+      accountRoot: "/tmp/Movies/Parascene/users/u1",
+      userId: "u1",
+    };
+  }
   if (cmd === "http_post_json") {
     return {
       status: 200,

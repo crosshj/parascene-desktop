@@ -207,6 +207,7 @@ export function SettingsModal({ open, onClose }: Props) {
       >
         <h2 id="settings-dialog-title">Settings</h2>
         <div className="settings-form">
+          <p className="muted settings-hint">Keys stay on this Mac.</p>
           <label>
             OpenAI API key
             <input
@@ -219,10 +220,7 @@ export function SettingsModal({ open, onClose }: Props) {
               placeholder="sk-…"
             />
           </label>
-          <p className="muted settings-hint">
-            Stored only on this Mac. Used by Lab tools that call OpenAI (raw
-            round-trip, MV storyboard planning).
-          </p>
+          <p className="muted settings-hint">Lab storyboard and alignment.</p>
 
           <label>
             Replicate API token
@@ -240,10 +238,7 @@ export function SettingsModal({ open, onClose }: Props) {
               }
             />
           </label>
-          <p className="muted settings-hint">
-            Stored in the system keychain. Used for Replicate Lab and Editor
-            timeline video fill — not sent through Parascene.
-          </p>
+          <p className="muted settings-hint">Lab and editor video fill.</p>
           {replicateConfigured ? (
             <button
               type="button"
@@ -270,15 +265,7 @@ export function SettingsModal({ open, onClose }: Props) {
               }
             />
           </label>
-          <p className="muted settings-hint">
-            Stored in the system keychain (same as Replicate). Direct Blue Lab
-            at <code>https://blue.parascene.com</code> — local import only, no
-            Parascene Creation. Optional fallback:{" "}
-            <code>PARASCENE_BLUE_TOKEN</code>,{" "}
-            <code>PARASCENE_BLUE_CF_ACCESS_CLIENT_ID</code>,{" "}
-            <code>PARASCENE_BLUE_CF_ACCESS_CLIENT_SECRET</code> in the process
-            env when Settings is empty.
-          </p>
+          <p className="muted settings-hint">Direct Blue Lab, local import.</p>
           {blueConfigured ? (
             <button
               type="button"
@@ -311,16 +298,12 @@ export function SettingsModal({ open, onClose }: Props) {
             ))}
           </div>
           <p className="muted settings-hint">
-            Resolution, bitrate, and frame rate of the timeline playback
-            preview (10 / 15 / 30 fps). Applies immediately — the preview
-            buffer re-renders at the new quality. Export quality is not
-            affected.
+            Timeline playback only. Export is unchanged.
           </p>
 
           <h3 className="settings-section-title">Local tools</h3>
           <p className="muted settings-hint">
-            FFmpeg and Demucs are system installs (not bundled). Full notes:{" "}
-            <code>LOCAL_TOOLS.md</code> in the repo.
+            System installs. See <code>LOCAL_TOOLS.md</code>.
           </p>
           {deps ? (
             <ul className="settings-tool-list">

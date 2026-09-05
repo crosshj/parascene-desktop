@@ -160,14 +160,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await logoutSession();
-    setSession(adoptSession(null));
-    clearUserAvatarDisplay();
-    setStatus("signed_out");
-    setError(null);
-    setReauthPending(false);
-    setReauthPhase(null);
-    setReauthError(null);
+    try {
+      await logoutSession();
+      setSession(adoptSession(null));
+      clearUserAvatarDisplay();
+      setStatus("signed_out");
+      setError(null);
+      setReauthPending(false);
+      setReauthPhase(null);
+      setReauthError(null);
+    } catch (e) {
+      setError(toAuthErrorInfo(e));
+    }
   }, []);
 
   const clearError = useCallback(() => setError(null), []);

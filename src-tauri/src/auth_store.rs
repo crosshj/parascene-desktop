@@ -2,13 +2,12 @@
 //!
 //! - **Release builds**: OS secure store via `keyring` (macOS Keychain / Windows
 //!   Credential Manager).
-//! - **Debug builds** (`tauri dev` / debug profile): SQLite `sync_meta` in the local
-//!   catalog DB — avoids repeated Keychain unlock prompts during development.
+//! - **Debug builds** (`tauri dev` / debug profile): SQLite `sync_meta` in
+//!   machine-plane `session.sqlite` — avoids repeated Keychain unlock prompts.
 //!
 //! Parascene rotates `prt_…` refresh tokens on every successful refresh. FE and Rust
 //! must not refresh concurrently or the loser keeps a dead refresh token.
 
-#[cfg(not(debug_assertions))]
 use keyring::Entry;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +15,6 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
-#[cfg(not(debug_assertions))]
 const SERVICE: &str = "com.parascene.desktop";
 
 const SESSION_KEY: &str = "parascene_session";
@@ -332,6 +330,76 @@ pub async fn auth_session_status() -> Result<Value, String> {
     }))
 }
 
+fn os_keychain_get(key: &str) -> Result<Option<String>, String> {
+    let entry = Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn os_keychain_set(key: &str, value: &str) -> Result<(), String> {
+    let entry = Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+    entry.set_password(value).map_err(|e| e.to_string())
+}
+
+#[cfg(not(debug_assertions))]
+fn os_keychain_delete(key: &str) -> Result<(), String> {
+    let entry = Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Read a secret from the OS store even in debug (where the live backend is SQLite).
+pub fn keychain_get_os(key: &str) -> Option<String> {
+    os_keychain_get(key)
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn keychain_set_live(key: &str, value: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        crate::library::auth_kv_set(key, value)?;
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        os_keychain_set(key, value)?;
+    }
+    if key == SESSION_KEY {
+        refresh_invalidated().store(false, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+fn keychain_delete_live(key: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        crate::library::auth_kv_delete(key)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        os_keychain_delete(key)
+    }
+}
+
+/// Write the live auth backend without mirroring into `user.sqlite`
+/// (restore / logout machine-store cleanup).
+pub fn keychain_set_machine(key: String, value: String) -> Result<(), String> {
+    keychain_set_live(&key, &value)
+}
+
+pub fn keychain_delete_machine(key: String) -> Result<(), String> {
+    keychain_delete_live(&key)
+}
+
 #[tauri::command]
 pub fn keychain_get(key: String) -> Result<Option<String>, String> {
     #[cfg(debug_assertions)]
@@ -340,45 +408,20 @@ pub fn keychain_get(key: String) -> Result<Option<String>, String> {
     }
     #[cfg(not(debug_assertions))]
     {
-        let entry = Entry::new(SERVICE, &key).map_err(|e| e.to_string())?;
-        match entry.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        }
+        os_keychain_get(&key)
     }
 }
 
 #[tauri::command]
 pub fn keychain_set(key: String, value: String) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    {
-        crate::library::auth_kv_set(&key, &value)?;
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let entry = Entry::new(SERVICE, &key).map_err(|e| e.to_string())?;
-        entry.set_password(&value).map_err(|e| e.to_string())?;
-    }
-    if key == SESSION_KEY {
-        refresh_invalidated().store(false, Ordering::SeqCst);
-    }
+    keychain_set_live(&key, &value)?;
+    crate::library::mirror_live_secret(&key, Some(&value));
     Ok(())
 }
 
 #[tauri::command]
 pub fn keychain_delete(key: String) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    {
-        crate::library::auth_kv_delete(&key)
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let entry = Entry::new(SERVICE, &key).map_err(|e| e.to_string())?;
-        match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
-    }
+    keychain_delete_live(&key)?;
+    crate::library::mirror_live_secret(&key, None);
+    Ok(())
 }

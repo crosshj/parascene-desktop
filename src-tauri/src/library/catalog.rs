@@ -1,8 +1,9 @@
-use super::paths::{default_root, ensure_directories, resolve_paths, ParascenePaths};
+use super::paths::{account_root, ensure_directories, resolve_paths, ParascenePaths};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -438,7 +439,7 @@ pub(crate) fn meta_delete(conn: &Connection, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Debug-build auth backend: session KV in catalog.sqlite (avoids Keychain prompts).
+/// Debug-build auth backend: session KV in machine `session.sqlite` (never the library catalog).
 const AUTH_KV_PREFIX: &str = "auth_store:";
 
 fn auth_meta_key(key: &str) -> String {
@@ -446,12 +447,14 @@ fn auth_meta_key(key: &str) -> String {
 }
 
 /// Lightweight open for auth KV only — never runs migrate / folder migration.
-/// `ready_connection` is far too heavy and contended for every token read.
+/// Lives on the machine plane (`session.sqlite`), never the active library catalog.
 fn open_auth_kv_connection() -> Result<Connection, String> {
-    let paths = default_paths()?;
-    ensure_directories(&paths)?;
-    let conn = open_db(&paths.catalog_db)?;
-    // Ensure sync_meta exists without the full catalog migrate path.
+    let machine = super::paths::machine_root()?;
+    fs::create_dir_all(&machine)
+        .map_err(|e| format!("Could not create machine root: {e}"))?;
+    let session_db = machine.join("session.sqlite");
+    migrate_auth_kv_from_catalog(&machine, &session_db)?;
+    let conn = Connection::open(&session_db).map_err(|e| e.to_string())?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sync_meta (
            key TEXT PRIMARY KEY NOT NULL,
@@ -459,7 +462,117 @@ fn open_auth_kv_connection() -> Result<Connection, String> {
          );",
     )
     .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&session_db, fs::Permissions::from_mode(0o600));
+    }
     Ok(conn)
+}
+
+fn migrate_auth_kv_from_catalog(machine: &Path, session_db: &Path) -> Result<(), String> {
+    let catalog = machine.join("Library").join("catalog.sqlite");
+    copy_auth_kv_from_catalog(&catalog, session_db)
+}
+
+/// Pull leftover `auth_store:*` rows from a library catalog into `session.sqlite`.
+/// Runs even when session.sqlite already exists — otherwise keys saved before
+/// the machine-plane split never leave `Library/catalog.sqlite`.
+fn copy_auth_kv_from_catalog(catalog: &Path, session_db: &Path) -> Result<(), String> {
+    if !catalog.is_file() {
+        return Ok(());
+    }
+    let src = Connection::open(&catalog).map_err(|e| e.to_string())?;
+    src.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_meta (
+           key TEXT PRIMARY KEY NOT NULL,
+           value TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+    let mut stmt = src
+        .prepare("SELECT key, value FROM sync_meta WHERE key LIKE 'auth_store:%'")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let dest = Connection::open(session_db).map_err(|e| e.to_string())?;
+    dest.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_meta (
+           key TEXT PRIMARY KEY NOT NULL,
+           value TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+    for (key, value) in &rows {
+        if value.trim().is_empty() {
+            let _ = src.execute("DELETE FROM sync_meta WHERE key = ?1", params![key]);
+            continue;
+        }
+        let existing: Option<String> = dest
+            .query_row(
+                "SELECT value FROM sync_meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .ok();
+        let dest_empty = existing
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty();
+        if dest_empty {
+            dest.execute(
+                "INSERT INTO sync_meta(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let _ = src.execute("DELETE FROM sync_meta WHERE key = ?1", params![key]);
+    }
+    Ok(())
+}
+
+/// Account secrets left in a library catalog (`auth_store:*`) from before
+/// session.sqlite existed. Used to recover keys the live store never copied.
+pub(crate) fn read_auth_store_secrets_from_catalog(
+    catalog: &Path,
+) -> BTreeMap<String, String> {
+    use super::user_state::is_account_secret_key;
+    let mut out = BTreeMap::new();
+    if !catalog.is_file() {
+        return out;
+    }
+    let Ok(conn) = Connection::open(catalog) else {
+        return out;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT key, value FROM sync_meta WHERE key LIKE 'auth_store:%'",
+    ) else {
+        return out;
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return out;
+    };
+    for row in rows.flatten() {
+        let name = row
+            .0
+            .strip_prefix(AUTH_KV_PREFIX)
+            .unwrap_or(row.0.as_str())
+            .to_string();
+        if is_account_secret_key(&name) && !row.1.trim().is_empty() {
+            out.insert(name, row.1);
+        }
+    }
+    out
 }
 
 pub(crate) fn auth_kv_get(key: &str) -> Result<Option<String>, String> {
@@ -1632,7 +1745,7 @@ pub(crate) fn ready_connection(paths: &ParascenePaths) -> Result<Connection, Str
 }
 
 pub(crate) fn default_paths() -> Result<ParascenePaths, String> {
-    Ok(resolve_paths(default_root()?))
+    Ok(resolve_paths(account_root()?))
 }
 
 pub(crate) fn sync_status_for(paths: &ParascenePaths) -> Result<SyncStatus, String> {

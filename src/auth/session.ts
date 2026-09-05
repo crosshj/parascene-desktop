@@ -21,6 +21,15 @@ import {
   formatUnknownError,
   mapEnsureAccessTokenError,
 } from "./errors";
+import {
+  accountLogout,
+  accountStartup,
+  bindAndHydrate,
+  relaunchIfNeeded,
+  snapshotLocalStorage,
+} from "./accountClient";
+import { clearOpenAiApiKeyCache } from "../lab/openaiClient";
+import { resetGenerateServerCredentialCaches } from "../layouts/editor/generateServerCredentials";
 
 export type AuthStatus =
   | "signed_out"
@@ -266,9 +275,17 @@ export async function restoreSession(): Promise<AuthSession | null> {
     const session = decodeSession(raw);
     if (session) {
       memorySession = session;
+      try {
+        await accountStartup();
+        await bindAndHydrate(session.user.sub, true);
+      } catch {
+        /* keep session; next logout/login can repair */
+      }
       return session;
     }
   }
+
+  // Journal recover already ran in Rust setup. Don't block the login screen.
 
   // One-time migrate from the old 4-item layout (then delete legacy keys).
   const accessToken = await keychainGet(LEGACY_KEYCHAIN_KEYS[0]);
@@ -295,6 +312,11 @@ export async function restoreSession(): Promise<AuthSession | null> {
     user,
   };
   await persistSession(session);
+  try {
+    await bindAndHydrate(session.user.sub, true);
+  } catch {
+    /* ignore bind on legacy keychain migrate */
+  }
   return session;
 }
 
@@ -436,7 +458,14 @@ export async function loginWithParascene(opts?: {
   );
 
   opts?.onProgress?.("saving");
+  // Same in-session user may still be on the unclaimed root library until
+  // they log out. Reconnect must not be treated as a new account.
+  const allowLegacy = getMemorySession()?.user?.sub === user.sub;
+  const bind = await step("Open account folder", () =>
+    bindAndHydrate(user.sub, allowLegacy),
+  );
   await step("Store session", () => persistSession({ tokens, user }));
+  await relaunchIfNeeded(bind.relaunch);
   return { tokens, user };
 }
 
@@ -445,5 +474,17 @@ export async function cancelLogin(): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
+  const session = memorySession;
+  if (session?.user?.sub) {
+    await accountLogout({
+      localStorage: snapshotLocalStorage(),
+      identity: session.user,
+    });
+    window.localStorage.clear();
+    clearOpenAiApiKeyCache();
+    resetGenerateServerCredentialCaches();
+    await clearSecureSession();
+    return;
+  }
   await clearSecureSession();
 }

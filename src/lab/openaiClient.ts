@@ -67,6 +67,12 @@ export async function hydrateOpenAiApiKey(): Promise<string> {
   return cachedKey;
 }
 
+/** Drop the in-memory key so the next hydrate re-reads the live store. */
+export function clearOpenAiApiKeyCache(): void {
+  cachedKey = "";
+  hydrated = false;
+}
+
 /** Sync read of the in-memory cache (hydrate first at startup). */
 export function loadOpenAiApiKey(): string {
   if (!hydrated) {

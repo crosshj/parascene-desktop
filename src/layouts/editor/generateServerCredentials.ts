@@ -152,11 +152,15 @@ export function settledEnabledGenerateServerIds(
   return cachedEnabledServerIds;
 }
 
-/** @internal test helper — clear module caches between cases. */
-export function resetGenerateServerCredentialCachesForTests(): void {
+/** Clear settled BYO-server caches (logout / account hydrate). */
+export function resetGenerateServerCredentialCaches(): void {
   cachedCredentialState = null;
   cachedEnabledServerIds = null;
 }
+
+/** @internal test helper — clear module caches between cases. */
+export const resetGenerateServerCredentialCachesForTests =
+  resetGenerateServerCredentialCaches;
 
 /** Settings-backed readiness for BYO servers (Blue credentials, Replicate token + models). */
 export function useGenerateServerCredentials(): GenerateServerCredentialState {

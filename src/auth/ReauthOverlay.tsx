@@ -1,5 +1,29 @@
 import { useAuth } from "./AuthProvider";
+import type { AuthErrorInfo } from "./errors";
 import type { LoginProgressPhase } from "./session";
+
+function usefulErrorLines(detail: string): string {
+  const skip =
+    /^(Step:|baseUrl:|clientId:|redirectUri:|loopbackPort:|cause:)/i;
+  return detail
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !skip.test(line))
+    .slice(0, 6)
+    .join("\n");
+}
+
+function ReauthErrorBody({ error }: { error: AuthErrorInfo }) {
+  const extra = usefulErrorLines(error.detail);
+  return (
+    <>
+      <p className="library-error" role="alert">
+        {error.summary}
+      </p>
+      {extra ? <p className="muted">{extra}</p> : null}
+    </>
+  );
+}
 
 function reauthCopy(phase: LoginProgressPhase | null): {
   title: string;
@@ -79,9 +103,7 @@ export function ReauthOverlay() {
         ) : (
           <>
             {reauthError ? (
-              <p className="library-error" role="alert">
-                {reauthError.summary}
-              </p>
+              <ReauthErrorBody error={reauthError} />
             ) : null}
             <div className="reauth-actions">
               <button

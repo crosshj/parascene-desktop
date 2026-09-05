@@ -12,7 +12,8 @@ use http_range::HttpRange;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::library::paths::{default_root, resolve_paths};
+use crate::library::paths::{account_root, resolve_paths};
+use std::sync::Mutex;
 
 /// Max bytes returned for a single range response.
 /// WebKit needs generous ranged chunks for smooth mid-stream playback of large
@@ -20,8 +21,16 @@ use crate::library::paths::{default_root, resolve_paths};
 /// the same file plays fine after Save. IO still runs off the UI thread.
 const MAX_RANGE_LEN: u64 = 8 * 1024 * 1024;
 
+static MEDIA_ROOTS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+
+pub fn refresh_media_roots() {
+    if let Ok(mut slot) = MEDIA_ROOTS.lock() {
+        *slot = None;
+    }
+}
+
 fn allowed_roots() -> Result<Vec<PathBuf>, String> {
-    let paths = resolve_paths(default_root()?);
+    let paths = resolve_paths(account_root()?);
     Ok(vec![
         paths.root.clone(),
         paths.library.clone(),
@@ -52,16 +61,19 @@ fn resolve_media_path(request_path: &str) -> Result<PathBuf, String> {
         return Err("Media path is not a file".into());
     }
 
-    // Cache canonical roots once — per-request canonicalize was wasteful.
-    use std::sync::OnceLock;
-    static ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-    let roots = ROOTS.get_or_init(|| {
-        allowed_roots()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|root| root.canonicalize().ok().or(Some(root)))
-            .collect()
-    });
+    let mut slot = MEDIA_ROOTS
+        .lock()
+        .map_err(|_| "Media roots lock poisoned".to_string())?;
+    if slot.is_none() {
+        *slot = Some(
+            allowed_roots()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|root| root.canonicalize().ok().or(Some(root)))
+                .collect(),
+        );
+    }
+    let roots = slot.as_ref().cloned().unwrap_or_default();
     if roots.is_empty() {
         return Err("Could not resolve Parascene media roots".into());
     }
@@ -226,7 +238,10 @@ mod tests {
     use http::Request;
 
     fn fixture_mp3() -> PathBuf {
-        let paths = resolve_paths(default_root().expect("default_root"));
+        let root = crate::library::paths::machine_root().expect("machine_root");
+        crate::library::paths::set_account_root(Some(root.clone()));
+        refresh_media_roots();
+        let paths = resolve_paths(root);
         std::fs::create_dir_all(&paths.media).expect("media dir");
         let path = paths.media.join("_media_stream_test_fixture.mp3");
         // Minimal ID3-less MPEG frame payload is enough for protocol tests.
