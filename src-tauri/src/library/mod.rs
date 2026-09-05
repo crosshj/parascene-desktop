@@ -36,7 +36,7 @@ pub use account::{
 };
 pub use beats::library_detect_beats;
 pub use catalog::{
-    library_apply_manifest, library_cloud_ids_since, library_ensure_ready,
+    current_sync_status, library_apply_manifest, library_cloud_ids_since, library_ensure_ready,
     library_existing_creation_ids, library_filter_counts, library_get_creation,
     library_get_creations, library_invalidate_thumbs, library_list_creations,
     library_list_filter_creations, library_list_group_member_ids, library_sync_status,
@@ -44,12 +44,13 @@ pub use catalog::{
 pub use clip_thumb::library_ensure_clip_thumb;
 pub use diag::library_append_diag_log;
 pub use download::{
-    library_cache_missing_media, library_cache_missing_thumbs, library_delete_local,
-    library_download_ids, library_download_pending, library_download_thumbs, library_ensure_local,
-    library_invalidate_mismatched_thumbs, library_local_fit_plan,
+    library_cache_missing_media, library_cache_missing_thumbs, library_clear_synced_local,
+    library_delete_local, library_download_ids, library_download_pending, library_download_thumbs,
+    library_ensure_local, library_invalidate_mismatched_thumbs, library_local_fit_plan,
 };
 pub use folders::{
-    library_add_to_folder, library_create_folder, library_delete_folder, library_folder_sync_state,
+    current_folder_snapshot, library_add_to_folder, library_create_folder, library_delete_folder,
+    library_folder_sync_state,
     library_folders_ack_ops, library_folders_apply_snapshot, library_folders_set_pending_ops,
     library_get_folder, library_list_filed_creation_ids, library_list_folders,
     library_remove_from_folder, library_rename_folder, library_set_folder_cover,

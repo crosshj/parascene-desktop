@@ -1631,6 +1631,62 @@ pub(crate) fn prune_stale_creation_usage(
     Ok(())
 }
 
+/// Drop cloud-backed catalog rows and their local files. Keeps disk imports.
+/// Does not touch Parascene cloud and does not enqueue folder unfile ops.
+pub(crate) fn clear_cloud_backed_local(
+    conn: &Connection,
+    paths: &ParascenePaths,
+) -> Result<u32, String> {
+    let sql = format!(
+        "SELECT id, local_path, local_thumb_path FROM creations WHERE {CLOUD_BACKED}"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, local_path, thumb) = row.map_err(|e| e.to_string())?;
+        remove_file_under_root(&paths.media, local_path.as_deref());
+        remove_file_under_root(&paths.thumbs, thumb.as_deref());
+        ids.push(id);
+    }
+    if !ids.is_empty() {
+        let in_cloud = format!("IN (SELECT id FROM creations WHERE {CLOUD_BACKED})");
+        conn.execute(
+            &format!("DELETE FROM folder_items WHERE creation_id {in_cloud}"),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            &format!("UPDATE folders SET cover_creation_id = NULL WHERE cover_creation_id {in_cloud}"),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            &format!("DELETE FROM project_assets WHERE creation_id {in_cloud}"),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            &format!("DELETE FROM project_asset_usage WHERE creation_id {in_cloud}"),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(&format!("DELETE FROM creations WHERE {CLOUD_BACKED}"), [])
+            .map_err(|e| e.to_string())?;
+    }
+    meta_delete(conn, "last_sync_at")?;
+    invalidate_disk_size_cache();
+    Ok(ids.len() as u32)
+}
+
 /// Delete a creation from the local catalog and remove its media/thumb files.
 /// Only removes files under Library/media or Library/thumbs. Does not touch Parascene cloud.
 ///
@@ -1751,6 +1807,10 @@ pub(crate) fn default_paths() -> Result<ParascenePaths, String> {
 pub(crate) fn sync_status_for(paths: &ParascenePaths) -> Result<SyncStatus, String> {
     let conn = ready_connection(paths)?;
     sync_status(&conn, paths)
+}
+
+pub fn current_sync_status() -> Result<SyncStatus, String> {
+    sync_status_for(&default_paths()?)
 }
 
 pub(crate) fn apply_manifest(conn: &Connection, rows: &[CreationUpsert]) -> Result<(), String> {
@@ -2663,6 +2723,64 @@ mod tests {
             )
             .expect("membership count");
         assert_eq!(membership_count, 0);
+
+        let _ = fs::remove_dir_all(&paths.root);
+    }
+
+    #[test]
+    fn clear_cloud_backed_keeps_local_imports_and_clears_last_sync() {
+        let paths = temp_paths();
+        let conn = ready_connection(&paths).expect("ready");
+        apply_manifest(
+            &conn,
+            &[CreationUpsert {
+                id: "cloud-1".into(),
+                title: "Cloud".into(),
+                media_type: "image".into(),
+                remote_url: Some("https://cdn.example/c.png".into()),
+                thumbnail_url: Some("https://cdn.example/t.png".into()),
+                fit_thumbnail_url: None,
+                video_url: None,
+                published: true,
+                published_at: None,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                download_state: "remote".into(),
+                prompt: None,
+                filename: Some("c.png".into()),
+                description: None,
+                color: None,
+                status: None,
+                width: Some(10),
+                height: Some(10),
+                aspect_ratio: Some("1:1".into()),
+                nsfw: false,
+                is_moderated_error: false,
+                remote_json: "{}".into(),
+            }],
+        )
+        .expect("apply");
+        let now = "2026-01-01T00:00:00Z";
+        conn.execute(
+            r#"
+            INSERT INTO creations (
+              id, title, media_type, remote_url, local_path, local_thumb_path,
+              published, created_at, download_state, updated_at, remote_json
+            ) VALUES ('local-1', 'Disk import', 'image', NULL, NULL, NULL, 0, ?1, 'local', ?1, NULL)
+            "#,
+            params![now],
+        )
+        .expect("local import");
+        let media = paths.media.join("cloud-1.png");
+        fs::create_dir_all(&paths.media).expect("media dir");
+        fs::write(&media, b"media").expect("media");
+        mark_downloaded(&conn, "cloud-1", &media.display().to_string(), None).expect("mark");
+
+        let cleared = clear_cloud_backed_local(&conn, &paths).expect("clear");
+        assert_eq!(cleared, 1);
+        assert!(!media.exists());
+        assert!(get_creation_by_id(&conn, "cloud-1").expect("get cloud").is_none());
+        assert!(get_creation_by_id(&conn, "local-1").expect("get local").is_some());
+        assert!(meta_get(&conn, "last_sync_at").expect("meta").is_none());
 
         let _ = fs::remove_dir_all(&paths.root);
     }

@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
@@ -11,6 +11,11 @@ export default defineConfig(async () => ({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     globals: false,
+    exclude: [
+      ...configDefaults.exclude,
+      "**/integration/**",
+      "**/*.integration.test.*",
+    ],
   },
   server: {
     port: 1420,

@@ -69,6 +69,10 @@ import {
   makeAddAssetIntent,
   normalizeGenerateServer,
 } from "./previewIntent";
+import {
+  OPEN_NEW_ASSET_EVENT,
+  type OpenNewAssetDetail,
+} from "./addAssetEvents";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
 import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
 import {
@@ -1164,6 +1168,47 @@ export function EditorLayout() {
     setAddAssetIntent(loadLastGenerateIntent());
     setAddAssetSlotActive(true);
   };
+
+  const openNewAssetGenerate = useCallback(
+    (detail?: OpenNewAssetDetail) => {
+      pauseTimelinePlayback();
+      setOpenCompositionId(null);
+      setSelectedClipId(null);
+      setSelectedClipIds([]);
+      setClipStagingSeed(null);
+      setSelectedAssetIds([]);
+      setSelectedAssetId(null);
+      setOpenProjectSelectedAssetId(null);
+      setOpenProjectSelectedTimelineClipId(null);
+      setOpenProjectTimelineMonitorActive(false);
+      setPendingStagedDraft(null);
+      setOpenProjectPendingStagedDraft(null);
+      const prompt = detail?.prompt?.trim() ?? "";
+      const model = detail?.model?.trim();
+      setLibraryGenerateSeed(
+        prompt || model ? { prompt, model: model || undefined } : null,
+      );
+      setAddAssetIntent(
+        makeAddAssetIntent("text_to_image", "parascene_blue", "assets"),
+      );
+      setAddAssetSlotActive(true);
+    },
+    [
+      pauseTimelinePlayback,
+      setOpenProjectPendingStagedDraft,
+      setOpenProjectSelectedAssetId,
+      setOpenProjectSelectedTimelineClipId,
+      setOpenProjectTimelineMonitorActive,
+    ],
+  );
+
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      openNewAssetGenerate((event as CustomEvent<OpenNewAssetDetail>).detail);
+    };
+    window.addEventListener(OPEN_NEW_ASSET_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_NEW_ASSET_EVENT, onOpen);
+  }, [openNewAssetGenerate]);
 
   const onSourceDraftChange = (draft: StagedClipDraft) => {
     // Image positioning belongs to the eventual timeline clip, not the

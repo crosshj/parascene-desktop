@@ -280,6 +280,11 @@ export async function cacheMissingMedia(): Promise<DownloadSummary> {
   return invoke<DownloadSummary>("library_cache_missing_media");
 }
 
+/** Drop cloud-backed catalog rows and files. Keeps disk imports. Not cloud. */
+export async function clearSyncedLocal(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("library_clear_synced_local");
+}
+
 /** Delete a creation from the local catalog and its media/preview files (not cloud). */
 export async function deleteLocal(id: string): Promise<SyncStatus> {
   return invoke<SyncStatus>("library_delete_local", { id });

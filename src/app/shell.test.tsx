@@ -95,7 +95,8 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   if (
     cmd === "library_ensure_ready" ||
     cmd === "library_sync_status" ||
-    cmd === "library_apply_manifest"
+    cmd === "library_apply_manifest" ||
+    cmd === "library_clear_synced_local"
   ) {
     return fixtureSyncStatus;
   }
@@ -229,6 +230,9 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
       folders: [],
       baselineFolders: [],
     };
+  }
+  if (cmd === "agent_report_ui_state" || cmd === "agent_complete") {
+    return null;
   }
   if (cmd === "library_lab_deps_status") {
     return {

@@ -7,6 +7,12 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   { ignores: ["dist", "src-tauri"] },
   {
+    files: ["integration/**/*.ts", "vitest.integration.config.ts"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
+  {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
     languageOptions: {

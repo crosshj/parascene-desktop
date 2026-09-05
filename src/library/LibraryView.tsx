@@ -348,6 +348,22 @@ function useCatalog(librarySurface: LibrarySurface) {
   }, [loadInitial]);
 
   useEffect(() => {
+    const onReload = () => {
+      void loadInitial();
+      void refreshFolderSync();
+    };
+    window.addEventListener("parascene-library-reload", onReload);
+    let off: (() => void) | undefined;
+    void listen("library-catalog-reload", onReload).then((fn) => {
+      off = fn;
+    });
+    return () => {
+      window.removeEventListener("parascene-library-reload", onReload);
+      off?.();
+    };
+  }, [loadInitial, refreshFolderSync]);
+
+  useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenRow: (() => void) | undefined;
     let unlistenDeleted: (() => void) | undefined;

@@ -1,3 +1,4 @@
+mod agent;
 mod auth_store;
 mod blue;
 mod clipboard;
@@ -9,6 +10,7 @@ mod replicate;
 mod service;
 mod user_avatar;
 
+use agent::{agent_complete, agent_report_ui_state};
 use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keychain_set};
 use blue::{
     blue_capabilities, blue_credentials_clear, blue_credentials_set, blue_credentials_status,
@@ -24,8 +26,9 @@ use library::{
     jobs_cancel, jobs_enqueue, jobs_get, jobs_list, library_add_existing_project_asset,
     library_add_project_assets, library_add_to_folder, library_append_diag_log,
     library_apply_image_framing, library_apply_manifest, library_audio_waveform_peaks,
-    library_bake_plate_still, library_bake_timeline_audio, library_bake_timeline_fragment, library_cache_composition_run, library_cache_missing_media,
+    library_bake_plate_still, library_bake_timeline_audio, library_bake_timeline_fragment, library_cache_composition_run,     library_cache_missing_media,
     library_cache_missing_thumbs, library_cached_full_vocals, library_check_creation_usage,
+    library_clear_synced_local,
     library_cloud_ids_since, library_create_folder, library_delete_composition_run,
     library_clear_timeline_fragments, library_concat_timeline_fragments,
     library_preview_lease_acquire, library_preview_lease_release,
@@ -232,6 +235,8 @@ pub fn run() {
                 });
             }
             let _ = library::account_startup();
+            #[cfg(debug_assertions)]
+            agent::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -245,6 +250,8 @@ pub fn run() {
             account_hydrate,
             account_restore_secrets,
             account_logout,
+            agent_report_ui_state,
+            agent_complete,
             start_oauth_listener,
             cancel_oauth_listener,
             oauth_take_callback,
@@ -272,6 +279,7 @@ pub fn run() {
             library_cache_missing_thumbs,
             library_cache_missing_media,
             library_ensure_local,
+            library_clear_synced_local,
             library_delete_local,
             library_import_from_disk,
             library_import_local_paths,

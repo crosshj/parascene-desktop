@@ -1,6 +1,6 @@
 //! Library folders with durable pending ops for Parascene cloud sync.
 
-use super::catalog::{default_paths, meta_get, meta_set, ready_connection};
+use super::catalog::{default_paths, meta_delete, meta_get, meta_set, ready_connection};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -1555,6 +1555,36 @@ fn sync_state(conn: &Connection) -> Result<FolderSyncState, String> {
 
 pub(crate) fn emit_folders_updated(app: &AppHandle, folders: &[LibraryFolder]) {
     let _ = app.emit("library-folders-updated", folders);
+}
+
+/// Drop local folder rows and pending ops. Does not enqueue cloud deletes.
+pub(crate) fn clear_local_folder_state(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM folder_items", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM folders", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM folder_pending_ops", [])
+        .map_err(|e| e.to_string())?;
+    meta_delete(conn, META_REVISION)?;
+    meta_delete(conn, META_BASELINE)?;
+    Ok(())
+}
+
+pub fn current_folder_snapshot() -> Result<Vec<JsonValue>, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    Ok(list_folders(&conn)?
+        .into_iter()
+        .map(|folder| {
+            json!({
+                "id": folder.id,
+                "title": folder.title,
+                "kind": folder.kind,
+                "memberCount": folder.member_count,
+                "projectId": folder.project_id,
+            })
+        })
+        .collect())
 }
 
 /// Creation ids that currently belong to any folder.

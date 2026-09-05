@@ -1,10 +1,10 @@
 use super::catalog::{
-    clear_local_media_path, clear_local_thumb_paths, default_paths, delete_creation_local,
-    get_creation_by_id, get_creations_by_ids, invalidate_disk_size_cache, list_all_creations,
-    list_creations, list_creations_page, mark_downloaded, ready_connection, set_download_state,
-    set_local_thumb_path, sync_status_for, Creation, SyncStatus,
+    clear_cloud_backed_local, clear_local_media_path, clear_local_thumb_paths, default_paths,
+    delete_creation_local, get_creation_by_id, get_creations_by_ids, invalidate_disk_size_cache,
+    list_all_creations, list_creations, list_creations_page, mark_downloaded, ready_connection,
+    set_download_state, set_local_thumb_path, sync_status_for, Creation, SyncStatus,
 };
-use super::folders::{emit_folders_updated, list_folders};
+use super::folders::{clear_local_folder_state, emit_folders_updated, list_folders};
 use super::thumb_fill::fill_and_record_local_thumb;
 use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
@@ -1158,6 +1158,9 @@ async fn download_thumbs_only(
             }
         }
     }
+    if downloaded > 0 {
+        invalidate_disk_size_cache();
+    }
     eprintln!("[library] thumb batch done: {downloaded}/{total} ok, {failed} failed");
     Ok((downloaded, thumb_paths))
 }
@@ -2018,6 +2021,20 @@ pub(crate) fn spawn_scroll_ahead(app: AppHandle, limit: u32, offset: u32) {
             .collect();
         enqueue_media(app, media_ids, false);
     });
+}
+
+/// Drop cloud-backed local catalog rows and files. Keeps disk imports. Not cloud.
+#[tauri::command]
+pub fn library_clear_synced_local(app: AppHandle) -> Result<SyncStatus, String> {
+    let paths = default_paths()?;
+    {
+        let conn = ready_connection(&paths)?;
+        clear_cloud_backed_local(&conn, &paths)?;
+        clear_local_folder_state(&conn)?;
+        emit_folders_updated(&app, &list_folders(&conn)?);
+    }
+    let _ = app.emit("library-catalog-reload", ());
+    sync_status_for(&paths)
 }
 
 /// Delete one creation from the local catalog and its on-disk files (not cloud).

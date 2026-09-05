@@ -14,12 +14,13 @@ Original “keep `~/Movies/Parascene/` unscoped until a second user” is supers
 
 - Help lives in this app, not parascene.com/help.
 - Tests have setup and teardown. Cloud leftovers on the test account are a product bug, not acceptable junk.
-- Live Parascene only (already-logged-in session). No Direct-to-Blue. No Replicate. Be gentle with the live API. Generate uses a cheap prompt (owner will name the cheap path).
+- Live Parascene only (already-logged-in session). No Direct-to-Blue. No Replicate. Be gentle with the live API. Generate: Text to Image, Parascene, `sd15: lofi_V2pre`, frog-in-a-princess-dress prompt.
 - Agent/tests connect to an already-running `tauri dev` app. Do not launch or control the process in this phase.
 - Design the API so a future agent could use it. LLM/chat integration is out of scope. First consumer is integration tests.
 - First workflows: sync, create project, create folder, generate an image in a project (Parascene product / credits path). Folders and projects are still decoupled — test where behavior differs.
 - Tests assume the running app is logged in. Fail fast if not. Owner will use a cheaper test user, not the personal account.
-- Prerequisite before the agent API: account isolation (done), then cloud create/delete good enough for setup/teardown.
+- Prerequisite before the agent API: account isolation (done). Cloud teardown (0b) shipped with Phase 2.
+- Tests and in-app help are the same journeys most of the time. A user-visible workflow gets a test and an article. The test stays on the page a person would use. Health and teardown-only steps can stay tests-only.
 
 # Phase 0a — Account isolation (done 2026-09-05)
 
@@ -36,17 +37,21 @@ Shipped (first logout relocates the existing tree; not the “keep unscoped unti
 
 Done: personal and test accounts each keep their own folder; switch back restores that world.
 
-# Phase 0b — Cloud lifecycle (in parallel / next)
+# Phase 0b — Cloud lifecycle (done 2026-09-05, with Phase 2)
 
-The client is weak at managing Parascene cloud artifacts. Tests cannot teardown if the app cannot create and delete what it creates.
+Do not build this before the agent API. First need a place that would call teardown.
 
-Extend existing Parascene delete/unbind paths (`deleteCreation`, `deleteFolder`, project-folder unbind) until a test can create a project, a folder, and a generated image, then remove those cloud objects.
+Parascene already soft-deletes creations (`DELETE /api/create/images/:id`). Folders/projects have similar cloud deletes. The gap is product UI, not the HTTP verb.
 
-Local `deleteProject` today removes the project on this device, keeps library media, and turns the project folder into a regular Library folder. That is not teardown.
+When Phase 2 tests need cleanup, expose those as agent actions (`cloud.delete`, later folder/project). Not a full Settings/Library delete rewrite.
 
-Done when: setup/teardown can manage the test user’s cloud folders, project bindings, and generations without leaving permanent junk, without hammering the API.
+Local `deleteProject` only drops the device document and keeps media. That is not teardown.
 
-# Phase 1 — Local dev-only agent API
+Shipped: `cloud.delete` unfiles, ungroups, soft-deletes, drops local rows, and fails if any remain. `project.delete` / `folder.delete` for leftovers. `library.lookup` checks they are gone.
+
+Done: setup/teardown can remove the test user’s generations and test folders without leaving `agent-test-*` junk, without hammering the API.
+
+# Phase 1 — Local dev-only agent API (done 2026-09-05)
 
 Connect only. Dev/test builds. Never in a normal production build.
 
@@ -55,7 +60,6 @@ interface AgentApi {
   getState(scope?: string): unknown
   getActions(scope?: string): AgentAction[]
   invoke(action: string, args?: unknown): AgentResult
-  loadFixture(name: string): AgentResult
   reset(): AgentResult
   getErrors(): AgentError[]
   getLogs(scope?: string): AgentLog[]
@@ -68,19 +72,29 @@ Prefer domain actions (`project.create`, `folder.create`, `sync.start`, `generat
 
 State is scoped and compact (`getState("timeline")`), not a full dump or screenshot. Actions should return what changed when practical.
 
-Fixtures exist for known states (`empty-project`, and later populated ones). First tests still favor live setup/teardown over pretending the cloud does not exist.
+Do not add `loadFixture`. Teleporting into a cooked app state is an anti-pattern here: the test would skip the same create/open/sync path a user (and help) must take. Setup is a sequence of `invoke` actions. Form fill, if needed, is an action on a live panel — not a saved world.
 
 Stable `data-agent-id` / aria-labels on important controls as a UI bridge when a domain action is not enough.
 
-Write `docs/dev/agent-interface.md`: enable, connect, commands, state scopes, actions, fixtures, errors, security, how features extend the API.
+Write `docs/dev/agent-interface.md`: enable, connect, commands, state scopes, actions, errors, security, how features extend the API.
 
-Done when an external client can: connect to the running dev app, load or set up a known state, inspect state, run several semantic actions, see the result, see errors, reset. No screenshot interpretation.
+Shipped: debug-only loopback HTTP, `~/Movies/Parascene/agent.json`, Bearer token, `docs/dev/agent-interface.md`. UI bridge runs domain actions. Concurrent accept so a long generate does not block health.
 
-# Phase 2 — First integration tests
+Done: an external client can connect to the running dev app, inspect state, run semantic actions, see the result, see errors, reset. No screenshot interpretation.
+
+# Phase 2 — First integration tests (+ 0b teardown) (done 2026-09-05)
+
+First set is live: health, sync, project, folder, generate + teardown. Suites are `01`–`05`, one file at a time. Actions stay on the page a person would use (Library, Sync, Project → Director / Editor New asset) and hold ~2s. `cloud.delete` must leave no catalog rows.
 
 Against the running app, through the agent API, no mocks of internals, no screenshots, no LLM on the normal run.
 
+Harness: `integration/NN-*.integration.test.*` (01 connect, 02 sync, 03 project, 04 folder, 05 generate), one file at a time. 90s default / 20m for sync. `npm test` excludes them. `npm run test:integration` is the only runner. Sync test: fail if signed out → `library.clearLocal` (catalog + local folder shells) → `needsSync` → `sync.start` (newest) → `sync.folders` → `sync.thumbs` → `sync.media`.
+
+Do Phase 0b here: agent actions that call Parascene soft-delete for whatever the test created.
+
 Pattern: setup → user-relevant actions → query state → assert → teardown.
+
+Write each first-set test as the journey a help article will later describe. Same pages, same order. Do not grow a second outline for docs.
 
 First set (high value, already somewhat stable, first things a user must do):
 
@@ -91,13 +105,13 @@ First set (high value, already somewhat stable, first things a user must do):
 
 Auth: fail fast if not logged in.
 
-Done when several of those workflows run against the live app, through the API, from setup/teardown, with deterministic pass/fail, no screenshots, no LLM.
+Done: those workflows run against the live app, through the API, from setup/teardown, with deterministic pass/fail, no screenshots, no LLM. Next is Phase 3 help over the same journeys.
 
 # Phase 3 — In-app desktop help
 
 Help is part of this app. Do not stand up a second docs platform and do not land articles only on the website.
 
-Articles correspond to the tested journeys, written for a person (not a serialized test):
+Articles are the human prose for those same journeys, not a new outline:
 
 - getting started
 - creating/opening a project
@@ -133,7 +147,7 @@ Do not touch tests or docs only because implementation files changed. Observable
 
 LLM is for understanding new work, discovering a workflow, diagnosing a failed deterministic test, deciding if help is affected, rewriting help, and odd failures. Normal test runs spend no LLM tokens.
 
-Prefer structured state, scoped queries, diffs, semantic actions, fixtures, deterministic tests, changed-feature metadata.
+Prefer structured state, scoped queries, diffs, semantic actions, deterministic tests, changed-feature metadata.
 
 Avoid full-repo dumps, full DOM, repeated screenshots, vision navigation, re-running known workflows through an LLM, reviewing the whole help corpus.
 

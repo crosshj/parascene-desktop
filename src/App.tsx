@@ -10,6 +10,7 @@ import { HookLayout } from "./layouts/hook/HookLayout";
 import { LabLayout } from "./layouts/lab/LabLayout";
 import { LibraryView } from "./library/LibraryView";
 import { ProjectWelcome } from "./project/ProjectWelcome";
+import { AgentBridge } from "./agent/AgentBridge";
 import { AppErrorBoundary } from "./ui/AppErrorBoundary";
 import { Wordmark } from "./ui/Wordmark";
 import "./styles.css";
@@ -87,11 +88,17 @@ function Root() {
   }
 
   if (!session || status === "signed_out" || status === "connecting") {
-    return <LoginScreen />;
+    return (
+      <>
+        <AgentBridge />
+        <LoginScreen />
+      </>
+    );
   }
 
   return (
     <ShellProvider>
+      <AgentBridge />
       <ReauthOverlay />
       <AppChrome>
         <LayoutRouter />
