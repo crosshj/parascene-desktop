@@ -20,6 +20,11 @@ const PAGES: &[(&str, &str)] = &[
     ("editor", "help/overview.html#editor"),
     ("generate", "help/generate.html"),
     ("generate-image", "help/generate.html"),
+    ("tools", "help/tools.html"),
+    ("local-tools", "help/tools.html"),
+    ("ffmpeg", "help/tools.html"),
+    ("demucs", "help/tools.html"),
+    ("whisper", "help/tools.html"),
 ];
 
 pub fn help_page(topic_id: Option<&str>) -> &'static str {
@@ -93,6 +98,8 @@ mod tests {
         assert_eq!(help_page(Some("folders")), "help/folders.html");
         assert_eq!(help_page(Some("sync")), "help/sync.html");
         assert_eq!(help_page(Some("generate")), "help/generate.html");
+        assert_eq!(help_page(Some("tools")), "help/tools.html");
+        assert_eq!(help_page(Some("ffmpeg")), "help/tools.html");
         assert_eq!(help_page(Some("library")), "help/overview.html#library");
         assert_eq!(help_page(Some("director")), "help/overview.html#director");
         assert_eq!(help_page(Some("nope")), "help/index.html");

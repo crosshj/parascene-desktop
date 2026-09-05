@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local tools — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body data-os="mac">
+    <header class="help-top">
+      <a class="back" href="index.html">All topics</a>
+      <p class="os-switch" role="group" aria-label="Show install steps for">
+        <button type="button" data-os="mac">Mac</button>
+        <button type="button" data-os="windows">Windows</button>
+      </p>
+    </header>
+    <main>
+      <h1>Local tools</h1>
+      <p>
+        Parascene Desktop uses a few programs on this computer. They are not
+        inside the app. Install them here, then confirm Settings can see them.
+      </p>
+
+      <h2>See what the app can find</h2>
+      <ol class="steps">
+        <li>Open the account menu (your avatar in the top bar).</li>
+        <li>Click <strong>Settings</strong>.</li>
+        <li>Scroll to <strong>Local tools</strong>.</li>
+      </ol>
+      <p>
+        Each tool shows <strong>ready</strong> or <strong>missing</strong>, and
+        the path when it is found. If it is missing, Settings prints the
+        install command for this computer. After you install something, click
+        <strong>Re-check</strong> (or quit and reopen the app). A tool on your
+        PATH that still says missing is not visible to the app yet.
+      </p>
+      <p class="note">
+        A terminal can see a tool while the app cannot. GUI apps often have a
+        thinner PATH than your shell. Re-check is the truth for Parascene, not
+        <code>which</code> or <code>where</code> alone.
+      </p>
+
+      <h2>FFmpeg — required</h2>
+      <p>
+        FFmpeg is a hard requirement for most media work: Editor preview and
+        thumbs, reverse, merge, Publisher render, audio slice, and Lab isolate
+        / extend. Library browse and Sync can run without it. Preview, thumbs,
+        and render cannot.
+      </p>
+      <div class="for-mac">
+        <ol class="steps">
+          <li>Install Homebrew if you do not have it, then run:</li>
+        </ol>
+        <pre><code>brew install ffmpeg
+ffmpeg -version</code></pre>
+      </div>
+      <div class="for-windows">
+        <ol class="steps">
+          <li>In Terminal or PowerShell:</li>
+        </ol>
+        <pre><code>winget install ffmpeg
+ffmpeg -version</code></pre>
+      </div>
+      <p>
+        Then Settings → Local tools → <strong>Re-check</strong>. FFmpeg should
+        say ready.
+      </p>
+
+      <h2>Demucs — optional</h2>
+      <p>
+        Demucs splits vocals from a mix (Python + PyTorch). Lab
+        <strong>Vocals / slice</strong> and <strong>a2v</strong> need it for a
+        vocals stem. Without Demucs you can still slice the full mix. a2v stays
+        blocked until Demucs is ready.
+      </p>
+      <p>
+        Needs Python 3.9+ on PATH. First install downloads PyTorch (large;
+        needs network).
+      </p>
+      <div class="for-mac">
+        <pre><code>python3 -m pip install --user demucs</code></pre>
+        <p>
+          The command usually lands in
+          <code>~/Library/Python/3.x/bin</code> or
+          <code>~/.local/bin</code>. Put that folder on PATH, or use
+          Settings → Local tools → <strong>Install demucs</strong> so the app
+          runs the same pip install and looks in those folders even when the
+          GUI PATH is thin.
+        </p>
+      </div>
+      <div class="for-windows">
+        <pre><code>python -m pip install --user demucs</code></pre>
+        <p>
+          Use Python from
+          <a href="https://www.python.org/downloads/">python.org</a> with
+          <strong>Add python.exe to PATH</strong>. Avoid the Microsoft Store
+          stub under WindowsApps. Scripts usually land in
+          <code>%APPDATA%\Python\Python3x\Scripts</code>.
+          Settings → Local tools → <strong>Install demucs</strong> runs the
+          same pip install and looks there.
+        </p>
+      </div>
+      <p>Re-check until Demucs says ready.</p>
+
+      <h2>Whisper — optional</h2>
+      <p>
+        Local Whisper transcribes audio for Lab <strong>Lyric align</strong>.
+        You can use the OpenAI Whisper API instead. Mapping lyrics onto
+        segments still needs an OpenAI key in Settings. Local Whisper is not
+        required for generate, Sync, or Library.
+      </p>
+      <div class="for-mac">
+        <pre><code>python3 -m pip install --user openai-whisper
+python3 -m pip show openai-whisper</code></pre>
+      </div>
+      <div class="for-windows">
+        <pre><code>python -m pip install --user openai-whisper
+python -m pip show openai-whisper</code></pre>
+      </div>
+      <p class="note">
+        The app looks for the package and the whisper command. It does not
+        require <code>whisper --help</code> to succeed — that import is slow
+        and a common false-negative. If the shim is off PATH but the package
+        is installed, the app runs <code>python -m whisper</code>.
+      </p>
+      <p>Re-check until Whisper says ready.</p>
+
+      <h2>If Settings still says missing</h2>
+      <ul class="steps">
+        <li>Quit the app and reopen it after changing PATH.</li>
+        <li>
+          <span class="for-mac">Use a current python3 from python.org or Homebrew, not an old system Python.</span>
+          <span class="for-windows">Confirm <code>where python</code> is not under WindowsApps.</span>
+        </li>
+        <li>Demucs and Whisper need disk and network — the first install is multi-GB.</li>
+        <li>
+          If Demucs errors about NumPy,
+          <span class="for-mac"><code>python3 -m pip install --user 'numpy&lt;2'</code></span>
+          <span class="for-windows"><code>python -m pip install --user "numpy&lt;2"</code></span>
+        </li>
+      </ul>
+
+      <p class="more">
+        Next: <a href="getting-started.html">Getting started</a>
+        · <a href="generate.html">Generate an image</a>
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

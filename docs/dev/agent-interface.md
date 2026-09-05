@@ -72,7 +72,7 @@ Domain actions still land on the page a person would use. That is not the only w
 - `sync.start` / `sync.folders` / `sync.thumbs` / `sync.media` — Sync page
 - `library.clearLocal` `{ confirm: true }` — Library creations
 - `window.setSize` `{ width?, height? }` — no navigation. Default **1280×900**. Does not require signed-in.
-- `help.open` `{ topicId? }` — open the Help window. Does not require signed-in. Omit topicId for the contents page. Articles are static HTML under `public/help/`. Topic ids: `getting-started` (or `start`), `overview` (or `screens`), `projects` (or `create-project` / `open-project`), `folders`, `sync`, `generate` (or `generate-image`). Screen jumps: `library`, `director`, `editor`.
+- `help.open` `{ topicId? }` — open the Help window. Does not require signed-in. Omit topicId for the contents page. Articles are static HTML under `public/help/`. Topic ids: `getting-started` (or `start`), `overview` (or `screens`), `projects` (or `create-project` / `open-project`), `folders`, `sync`, `generate` (or `generate-image`), `tools` (or `local-tools` / `ffmpeg` / `demucs` / `whisper`). Screen jumps: `library`, `director`, `editor`.
 
 Each mutating action holds ~2s on its journey page. `shell.show` holds ~0.8s. Files still run one at a time.
 

@@ -17,15 +17,22 @@ function readHelp(rel: string): string {
 }
 
 describe("help pages", () => {
-  it("lists journeys and Overview from the contents page", () => {
+  it("lists Start here, Topics, Setup, and Screens from the contents page", () => {
     const html = readHelp("index.html");
     expect(html).toContain("class=\"lead\"");
+    expect(html).toContain("Start here");
+    expect(html).toContain("Topics");
+    expect(html).toContain("Setup");
+    expect(html).toContain("Screens");
+    expect(html).not.toContain("Journeys");
     expect(html).toContain("Getting started");
     expect(html).toContain("getting-started.html");
     expect(html).toContain("sync.html");
     expect(html).toContain("projects.html");
     expect(html).toContain("folders.html");
     expect(html).toContain("generate.html");
+    expect(html).toContain("tools.html");
+    expect(html).toContain("Local tools");
     expect(html).toContain("Overview");
     expect(html).toContain("overview.html");
   });
@@ -44,7 +51,7 @@ describe("help pages", () => {
     expect(overview).toContain('src="help.js"');
   });
 
-  it("gives each journey a back link and the tested button labels", () => {
+  it("gives each topic a back link and the tested button labels", () => {
     for (const page of JOURNEYS) {
       const html = readHelp(page);
       expect(html, page).toContain('href="index.html">All topics</a>');
@@ -95,5 +102,28 @@ describe("help pages", () => {
     expect(generate).toContain("Parascene");
     expect(generate).toContain("sd15: lofi_V2pre");
     expect(generate).toContain("Generate");
+  });
+
+  it("tells users Settings shows whether the app can see each tool", () => {
+    const tools = readHelp("tools.html");
+    expect(tools).toContain('href="index.html">All topics</a>');
+    expect(tools).toContain('src="help.js"');
+    expect(tools).toContain("<h1>Local tools</h1>");
+    expect(tools).toContain("See what the app can find");
+    expect(tools).toContain("Settings");
+    expect(tools).toContain("Local tools");
+    expect(tools).toContain("ready");
+    expect(tools).toContain("missing");
+    expect(tools).toContain("Re-check");
+    expect(tools).toContain("Install demucs");
+    expect(tools).toContain("FFmpeg");
+    expect(tools).toContain("Demucs");
+    expect(tools).toContain("Whisper");
+    expect(tools).toContain("brew install ffmpeg");
+    expect(tools).toContain("winget install ffmpeg");
+    expect(tools).toContain('class="for-mac"');
+    expect(tools).toContain('class="for-windows"');
+    expect(tools).toContain('data-os="mac"');
+    expect(tools).toContain('data-os="windows"');
   });
 });

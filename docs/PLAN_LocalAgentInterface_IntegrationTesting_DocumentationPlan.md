@@ -120,11 +120,12 @@ Articles are static HTML under `public/help/`, linked with a back control on det
 - projects (create / open / close / delete)
 - folders (regular vs project)
 - generate an image (Parascene Text to Image)
+- local tools (FFmpeg required; Demucs / Whisper optional; Settings → Local tools)
 - overview of the main screens
 
 Export later, after this slice is proven.
 
-Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started`, `overview`, `projects`, `folders`, `sync`, `generate`, plus screen jumps `library`, `director`, `editor`.
+Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started`, `overview`, `projects`, `folders`, `sync`, `generate`, `tools`, plus screen jumps `library`, `director`, `editor`.
 
 Done: several in-app articles exist, match the tested journeys and the first-run screens, and stale button-label copy can be detected. Follow-the-API help audit and screenshot regen stay Phase 4.
 

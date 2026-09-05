@@ -31,6 +31,10 @@ body {
   position: sticky;
   top: 0;
   z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.75rem 1.25rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
@@ -199,5 +203,45 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--surface);
+}
+
+pre {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.85rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+pre code {
+  font-size: 0.86rem;
+}
+
+.os-switch {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.os-switch button {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.os-switch button[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+body[data-os="mac"] .for-windows,
+body[data-os="windows"] .for-mac {
+  display: none;
 }
 
