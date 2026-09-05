@@ -43,47 +43,8 @@
     });
   }
 
-  const closeHelp = () => {
-    if (typeof window.__parasceneCloseHelp === "function") {
-      window.__parasceneCloseHelp();
-      return;
-    }
-    try {
-      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-        window.__TAURI_INTERNALS__.invoke("close_help_window");
-        return;
-      }
-    } catch {
-      /* ignore */
-    }
-    try {
-      window.close();
-    } catch {
-      /* ignore */
-    }
-  };
-
-  let bar = document.querySelector(".help-top");
-  if (!bar) {
-    bar = document.createElement("header");
-    bar.className = "help-top";
-    document.body.insertBefore(bar, document.body.firstChild);
-  }
-  if (!bar.querySelector("[data-help-close]")) {
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.dataset.helpClose = "1";
-    closeBtn.className = "help-close";
-    closeBtn.textContent = "Close";
-    closeBtn.addEventListener("click", closeHelp);
-    bar.appendChild(closeBtn);
-  }
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeHelp();
-    }
-  });
+  const bar = document.querySelector(".help-top");
+  if (!bar) return;
 
   let lastY = window.scrollY;
   let away = false;

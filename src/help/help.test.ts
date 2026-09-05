@@ -35,7 +35,6 @@ describe("help pages", () => {
     expect(html).toContain("Local tools");
     expect(html).toContain("Overview");
     expect(html).toContain("overview.html");
-    expect(html).toContain('src="help.js"');
   });
 
   it("is one scrolling Overview with a back link", () => {
@@ -103,13 +102,6 @@ describe("help pages", () => {
     expect(generate).toContain("Parascene");
     expect(generate).toContain("sd15: lofi_V2pre");
     expect(generate).toContain("Generate");
-  });
-
-  it("can close the help window from the page", () => {
-    const js = readHelp("help.js");
-    expect(js).toContain("close_help_window");
-    expect(js).toContain("Escape");
-    expect(js).toContain("Close");
   });
 
   it("tells users Settings shows whether the app can see each tool", () => {

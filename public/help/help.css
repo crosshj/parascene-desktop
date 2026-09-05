@@ -240,18 +240,6 @@ pre code {
   border-color: var(--accent);
 }
 
-.help-close {
-  font: inherit;
-  font-size: 0.85rem;
-  color: var(--text);
-  margin-left: auto;
-  padding: 0.25rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  cursor: pointer;
-}
-
 body[data-os="mac"] .for-windows,
 body[data-os="windows"] .for-mac {
   display: none;
