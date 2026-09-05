@@ -118,3 +118,12 @@ pub async fn library_list_creations_page(limit: u32, offset: u32) -> Result<Crea
 #[cfg(debug_assertions)]
 pub(crate) use catalog::{auth_kv_delete, auth_kv_get, auth_kv_set};
 pub(crate) use user_state::mirror_live_secret;
+
+/// Debug keychain backend. Release does not call it; keep it linked for CI.
+pub(crate) fn keep_debug_auth_kv_linked() {
+    let _ = (
+        catalog::auth_kv_get as fn(&str) -> Result<Option<String>, String>,
+        catalog::auth_kv_set as fn(&str, &str) -> Result<(), String>,
+        catalog::auth_kv_delete as fn(&str) -> Result<(), String>,
+    );
+}

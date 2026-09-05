@@ -59,9 +59,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "../public/help": "help"
-    },
     "macOS": {
       "dmg": {
         "appPosition": {

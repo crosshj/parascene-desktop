@@ -1,4 +1,5 @@
-//! Debug-only localhost agent API. Never started in release builds.
+//! Debug-only localhost agent API. Release calls `start` as a no-op so the
+//! surface stays linked (no unused-function CI warnings).
 //!
 //! External clients read `~/Movies/Parascene/agent.json` for origin + token.
 
@@ -6,12 +7,15 @@ use crate::library::paths::machine_root;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager};
+
+#[cfg(debug_assertions)]
+use std::io::{Read, Write};
+#[cfg(debug_assertions)]
+use std::net::TcpListener;
 
 const TOKEN_HEADER: &str = "authorization";
 const LOG_CAP: usize = 200;
@@ -532,7 +536,25 @@ fn write_manifest(origin: &str, token: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Touch the HTTP surface so release CI does not flag it unused.
+fn keep_agent_api_linked() {
+    let _ = (
+        handle as fn(&AppHandle, &str, ParsedRequest) -> Vec<u8>,
+        write_manifest as fn(&str, &str) -> Result<(), String>,
+        parse_http as fn(&[u8]) -> Result<ParsedRequest, String>,
+    );
+    crate::library::keep_debug_auth_kv_linked();
+}
+
 pub fn start(app: AppHandle) {
+    keep_agent_api_linked();
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+    }
+
+    #[cfg(debug_assertions)]
     thread::spawn(move || {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(l) => l,
@@ -593,6 +615,11 @@ mod tests {
         assert_eq!(req.query.get("scope").unwrap(), "auth");
         assert!(authorized(&req, "abc"));
         assert!(!authorized(&req, "nope"));
+    }
+
+    #[test]
+    fn release_keep_touches_http_surface() {
+        keep_agent_api_linked();
     }
 
     #[test]

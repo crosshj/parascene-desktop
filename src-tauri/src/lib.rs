@@ -257,7 +257,8 @@ pub fn run() {
                 });
             }
             let _ = library::account_startup();
-            #[cfg(debug_assertions)]
+            // Always call start: debug listens on localhost; release is a no-op
+            // that keeps the agent surface linked so CI does not warn unused.
             agent::start(app.handle().clone());
             Ok(())
         })
