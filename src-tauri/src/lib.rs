@@ -19,7 +19,7 @@ use blue::{
     blue_method_run, blue_method_run_cancel, blue_upload_file,
 };
 use clipboard::clipboard_write_text;
-use help_window::open_help_window;
+use help_window::{close_help_window, open_help_window};
 use http_client::{
     http_delete_bearer, http_get_bearer, http_post_bearer, http_post_bytes_bearer, http_post_json,
 };
@@ -278,6 +278,7 @@ pub fn run() {
             agent_report_ui_state,
             agent_complete,
             open_help_window,
+            close_help_window,
             start_oauth_listener,
             cancel_oauth_listener,
             oauth_take_callback,
