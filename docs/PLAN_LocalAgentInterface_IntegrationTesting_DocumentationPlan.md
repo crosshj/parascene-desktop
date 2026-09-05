@@ -111,7 +111,7 @@ Done: those workflows run against the live app, through the API, from setup/tear
 
 Help is part of this app. Do not stand up a second docs platform and do not land articles only on the website.
 
-Shipped: separate Help window (not a modal). macOS Help → Parascene Desktop Help. Windows: account menu / login Help / F1 (frameless, no menu strip). `?` when not typing. `help.open` `{ topicId? }`.
+Shipped: Help opens in the default browser (not a second webview — Windows WebView2 popups can go blank and outlive the app). macOS Help → Parascene Desktop Help. Windows: account menu / login Help / F1. `?` when not typing. `help.open` `{ topicId? }`.
 
 Articles are static HTML under `public/help/`, linked with a back control on detail pages. First-run screenshots in `public/help/desktop/screens/` (1280×900, one-still new account):
 

@@ -166,7 +166,7 @@ pub fn run() {
                 // Native app menu is macOS-only (system menu bar). On Windows the
                 // main window is frameless and a classic menu strip looks wrong;
                 // Help, updates, and diagnostics live in the account menu + F1
-                // instead. Both platforms open the same Help window.
+                // instead. Help opens in the default browser (no second webview).
                 //
                 // Edit must stay in the menu bar: on macOS, Cmd+C/V/X/A/Z for
                 // webview inputs only work when the matching PredefinedMenuItems

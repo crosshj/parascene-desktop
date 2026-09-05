@@ -1,5 +1,9 @@
+use std::path::{Path, PathBuf};
+
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 pub const HELP_WINDOW_LABEL: &str = "help";
 
@@ -27,28 +31,6 @@ const PAGES: &[(&str, &str)] = &[
     ("whisper", "help/tools.html"),
 ];
 
-/// Runs before page JS so Escape still closes a blank / failed load.
-const HELP_CLOSE_SCRIPT: &str = r#"
-(function () {
-  function closeHelp() {
-    try {
-      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-        window.__TAURI_INTERNALS__.invoke("close_help_window");
-        return;
-      }
-    } catch (e) {}
-    try { window.close(); } catch (e) {}
-  }
-  window.__parasceneCloseHelp = closeHelp;
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      closeHelp();
-    }
-  });
-})();
-"#;
-
 pub fn help_page(topic_id: Option<&str>) -> &'static str {
     let key = topic_id.unwrap_or("").trim();
     PAGES
@@ -58,8 +40,6 @@ pub fn help_page(topic_id: Option<&str>) -> &'static str {
         .unwrap_or("help/index.html")
 }
 
-/// Forward-slash asset path. Never a Windows PathBuf (`help\index.html`
-/// misses the bundled file and Tauri falls back to the React app).
 fn help_asset_parts(page: &str) -> (String, Option<String>) {
     let page = page.trim().replace('\\', "/");
     let page = page.trim_start_matches('/');
@@ -69,77 +49,76 @@ fn help_asset_parts(page: &str) -> (String, Option<String>) {
     }
 }
 
-fn help_webview_url(app: &AppHandle, page: &str) -> Result<WebviewUrl, String> {
-    let main = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window missing".to_string())?;
-    let mut url = main.url().map_err(|e| e.to_string())?;
-    let (path, hash) = help_asset_parts(page);
-    url.set_path(&format!("/{path}"));
-    url.set_query(None);
-    url.set_fragment(hash.as_deref());
-    Ok(WebviewUrl::External(url))
-}
-
-fn focus_help(window: &WebviewWindow, page: &str, navigate: bool) -> Result<Value, String> {
-    if navigate {
-        navigate_help(window, page)?;
+fn path_to_file_url(path: &Path, hash: Option<&str>) -> String {
+    let mut href = path.to_string_lossy().replace('\\', "/");
+    // Windows canonicalize() prefixes \\?\ (and \\?\UNC\). Browsers reject those.
+    if let Some(rest) = href.strip_prefix("//?/UNC/") {
+        href = format!("//{rest}");
+    } else if let Some(rest) = href.strip_prefix("//?/") {
+        href = rest.to_string();
     }
-    let _ = window.show();
-    let _ = window.unminimize();
-    let _ = window.set_focus();
-    Ok(json!({ "ok": true, "focused": true, "page": page }))
-}
-
-fn navigate_help(window: &WebviewWindow, page: &str) -> Result<(), String> {
-    let mut url = window.url().map_err(|e| e.to_string())?;
-    let (path, hash) = help_asset_parts(page);
-    url.set_path(&format!("/{path}"));
-    url.set_query(None);
-    url.set_fragment(hash.as_deref());
-    window.navigate(url).map_err(|e| e.to_string())
-}
-
-fn create_help_window(app: &AppHandle, page: &str) -> Result<Value, String> {
-    if let Some(existing) = app.get_webview_window(HELP_WINDOW_LABEL) {
-        return focus_help(&existing, page, true);
+    let href = if href.starts_with("//") {
+        format!("file:{href}")
+    } else if href.starts_with('/') {
+        format!("file://{href}")
+    } else {
+        format!("file:///{href}")
+    };
+    let href = href.replace(' ', "%20");
+    match hash {
+        Some(h) if !h.is_empty() => format!("{href}#{h}"),
+        _ => href,
     }
+}
 
-    let url = help_webview_url(app, page)?;
-    let window = WebviewWindowBuilder::new(app, HELP_WINDOW_LABEL, url)
-        .title("Parascene Help")
-        .inner_size(880.0, 720.0)
-        .min_inner_size(560.0, 420.0)
-        .decorations(true)
-        .closable(true)
-        .center()
-        .initialization_script(HELP_CLOSE_SCRIPT)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let _ = window.show();
-    let _ = window.set_focus();
-    Ok(json!({ "ok": true, "opened": true, "page": page }))
+fn resolve_help_file(app: &AppHandle, rel: &str) -> Result<PathBuf, String> {
+    let file = rel.strip_prefix("help/").unwrap_or(rel);
+    let mut candidates = Vec::new();
+    // Checkout first so `tauri dev` opens the files you edit, not a stale bundle.
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../public/help")
+            .join(file),
+    );
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("help").join(file));
+        candidates.push(dir.join("public").join("help").join(file));
+    }
+    if let Ok(p) = app.path().resolve(format!("help/{file}"), BaseDirectory::Resource) {
+        candidates.push(p);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("resources").join("help").join(file));
+            candidates.push(dir.join("help").join(file));
+        }
+    }
+    if let Some(found) = candidates.iter().find(|p| p.is_file()) {
+        return Ok(std::fs::canonicalize(found).unwrap_or_else(|_| found.clone()));
+    }
+    Err(format!("Help page not found ({rel})"))
+}
+
+fn help_browser_target(app: &AppHandle, page: &str) -> Result<String, String> {
+    let (path, hash) = help_asset_parts(page);
+    let file = resolve_help_file(app, &path)?;
+    Ok(path_to_file_url(&file, hash.as_deref()))
+}
+
+fn dismiss_legacy_help_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(HELP_WINDOW_LABEL) {
+        let _ = window.destroy();
+    }
 }
 
 pub fn show_help(app: &AppHandle, topic_id: Option<&str>) -> Result<Value, String> {
     let page = help_page(topic_id);
-    if let Some(existing) = app.get_webview_window(HELP_WINDOW_LABEL) {
-        return focus_help(&existing, page, topic_id.is_some());
-    }
-
-    // WebView2 (and some packaged WKWebView builds) must create windows on
-    // the UI thread. Invoke/agent handlers are not that thread. Do not wait
-    // here — a menu event is already on the main thread and recv would deadlock.
-    let app_main = app.clone();
-    let page_owned = page.to_string();
-    app.run_on_main_thread(move || {
-        if let Err(error) = create_help_window(&app_main, &page_owned) {
-            eprintln!("help window: {error}");
-        }
-    })
-    .map_err(|e| e.to_string())?;
-
-    Ok(json!({ "ok": true, "opened": true, "page": page }))
+    dismiss_legacy_help_window(app);
+    let target = help_browser_target(app, page)?;
+    app.opener()
+        .open_url(&target, None::<String>)
+        .map_err(|e| format!("Could not open Help in the browser: {e}"))?;
+    Ok(json!({ "ok": true, "opened": true, "in": "browser", "page": page }))
 }
 
 #[tauri::command]
@@ -149,15 +128,14 @@ pub fn open_help_window(app: AppHandle, topic_id: Option<String>) -> Result<Valu
 
 #[tauri::command]
 pub fn close_help_window(app: AppHandle) -> Result<Value, String> {
-    if let Some(window) = app.get_webview_window(HELP_WINDOW_LABEL) {
-        window.close().map_err(|e| e.to_string())?;
-    }
+    dismiss_legacy_help_window(&app);
     Ok(json!({ "ok": true, "closed": true }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{help_asset_parts, help_page};
+    use super::{help_asset_parts, help_page, path_to_file_url};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn maps_known_topics_and_falls_back() {
@@ -187,5 +165,29 @@ mod tests {
         assert_eq!(path, "help/overview.html");
         assert_eq!(hash.as_deref(), Some("library"));
         assert!(!path.contains('\\'));
+    }
+
+    #[test]
+    fn checkout_help_lives_on_disk() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/help/index.html");
+        assert!(path.is_file(), "{}", path.display());
+    }
+
+    #[test]
+    fn file_urls_open_in_a_real_browser() {
+        let windows = path_to_file_url(Path::new(r"C:\Program Files\Parascene\help\index.html"), None);
+        assert_eq!(windows, "file:///C:/Program%20Files/Parascene/help/index.html");
+
+        let hashed = path_to_file_url(Path::new("/tmp/help/overview.html"), Some("library"));
+        assert_eq!(hashed, "file:///tmp/help/overview.html#library");
+
+        let verbatim = path_to_file_url(
+            Path::new(r"\\?\C:\Program Files\Parascene\help\index.html"),
+            None,
+        );
+        assert_eq!(
+            verbatim,
+            "file:///C:/Program%20Files/Parascene/help/index.html"
+        );
     }
 }

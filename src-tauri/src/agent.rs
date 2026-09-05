@@ -196,7 +196,7 @@ fn actions() -> Vec<AgentAction> {
             id: "help.open".into(),
             scope: "help".into(),
             status: "wired".into(),
-            summary: "Open the Help window, optionally a topic page".into(),
+            summary: "Open Help in the default browser, optionally a topic page".into(),
         },
     ]
 }
