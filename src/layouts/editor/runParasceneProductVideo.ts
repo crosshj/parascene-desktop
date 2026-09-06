@@ -39,6 +39,7 @@ import {
 } from "./timelineReferenceAudio";
 import { resolveReferenceImageStill } from "./timelineReferenceImages";
 import { resolveParasceneVideoRefUrl } from "./parasceneCreationMediaUrl";
+import { resolveLocalMediaPath } from "./resolveLocalMedia";
 
 function remoteMediaUrl(c: Creation): string | null {
   if (c.remoteUrl?.trim()) return c.remoteUrl.trim();
@@ -90,6 +91,50 @@ async function resolveStartImageUrl(
     return uploaded.url;
   }
   return null;
+}
+
+/** Hosted Creation URL, or ephemeral upload for local-only / timeline stills. */
+export async function resolveParasceneReferenceImageUrl(opts: {
+  id: string;
+  timeline: readonly TimelineClip[];
+  placeholder: TimelineClip;
+  aspectRatio: string;
+}): Promise<string> {
+  const id = opts.id.trim();
+  if (!id) throw new Error("Reference image is missing.");
+  if (!isTimelineImageRefId(id)) {
+    try {
+      return await resolveCreationUrl(id);
+    } catch {
+      /* local-only project image — Parascene cannot fetch local-* ids */
+    }
+    // Upload the original file. Do not require FFmpeg framing — missing
+    // ffmpeg is common and this still is already an image.
+    const sourcePath = await resolveLocalMediaPath(id, {
+      label: "reference image",
+    });
+    const uploaded = await uploadLocalImageFile(sourcePath, {
+      filename: "parascene-ref.jpg",
+      contentType: "image/jpeg",
+    });
+    if (uploaded.url?.trim()) return uploaded.url.trim();
+    throw new Error("Could not upload the reference image to Parascene.");
+  }
+  const still = await resolveReferenceImageStill({
+    id,
+    timeline: opts.timeline,
+    placeholder: opts.placeholder,
+    aspectRatio: opts.aspectRatio,
+  });
+  const url = await resolveStartImageUrl(still);
+  if (!url) {
+    throw new Error(
+      isTimelineImageRefId(id)
+        ? "Could not upload the timeline still to Parascene."
+        : "Could not upload the reference image to Parascene.",
+    );
+  }
+  return url;
 }
 
 export async function runParasceneProductVideoGeneration(opts: {
@@ -179,23 +224,14 @@ export async function runParasceneProductVideoGeneration(opts: {
   if (plan.slotIds.images.length > 0) {
     const urls: string[] = [];
     for (const id of plan.slotIds.images) {
-      if (isTimelineImageRefId(id)) {
-        const still = await resolveReferenceImageStill({
+      urls.push(
+        await resolveParasceneReferenceImageUrl({
           id,
           timeline: opts.timeline,
           placeholder: opts.placeholder,
           aspectRatio: opts.aspectRatio,
-        });
-        const url = await resolveStartImageUrl(still);
-        if (!url) {
-          throw new Error(
-            "Could not upload the timeline still to Parascene.",
-          );
-        }
-        urls.push(url);
-      } else {
-        urls.push(await resolveCreationUrl(id));
-      }
+        }),
+      );
     }
     args[plan.mediaFields.images] = urls;
   } else if (opts.intentId === "video_to_video") {

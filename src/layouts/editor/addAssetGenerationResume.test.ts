@@ -66,7 +66,7 @@ describe("findResumableAddAssetPlaceholders", () => {
     expect(findResumableAddAssetPlaceholders(timeline)).toHaveLength(0);
   });
 
-  it("includes starting jobs so reconcile can mark them interrupted", () => {
+  it("includes starting jobs so reconcile can return them to the form", () => {
     const timeline = [
       placeholder("s", {
         generationJob: {

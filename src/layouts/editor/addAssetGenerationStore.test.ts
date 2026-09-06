@@ -152,16 +152,7 @@ describe("addAssetGenerationStore", () => {
     expect(getAddAssetGenerationSession()?.clipId).toBe("ph-1");
     expect(getAddAssetGenerationSession()?.projectId).toBe("proj-1");
     expect(getAddAssetGenerationSession()?.phase).toBe("running");
-    expect(applyInFlight).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: "proj-1",
-        clipId: "ph-1",
-        job: expect.objectContaining({
-          status: "starting",
-          provider: "parascene_blue",
-        }),
-      }),
-    );
+    expect(applyInFlight).not.toHaveBeenCalled();
 
     // Second start on the same clip is ignored while inflight.
     expect(
@@ -319,7 +310,7 @@ describe("addAssetGenerationStore", () => {
     await Promise.resolve();
     expect(getAddAssetGenerationSession()?.phase).toBe("error");
     expect(getAddAssetGenerationSession()?.errorMessage).toBe("boom");
-    expect(applyInFlight).toHaveBeenCalled();
+    expect(applyInFlight).not.toHaveBeenCalled();
     expect(applyFailure).toHaveBeenCalledWith({
       projectId: "proj-1",
       clipId: "ph-1",
@@ -655,12 +646,13 @@ describe("addAssetGenerationStore", () => {
     };
   }
 
-  it("marks a stale starting job failed once without recursing", () => {
+  it("returns a stale starting job to the form once without recursing", () => {
     const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
     bindAddAssetGenerationApplier({
       applySuccess: vi.fn(),
       applyFailure,
-      clearFailure: vi.fn(),
+      clearFailure,
       applyInFlight: vi.fn(),
     });
     const opts = {
@@ -671,17 +663,20 @@ describe("addAssetGenerationStore", () => {
       videosGroupId: null,
     };
     expect(reconcileAddAssetGenerations(opts)).toBe(true);
-    expect(applyFailure).toHaveBeenCalledTimes(1);
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).toHaveBeenCalledTimes(1);
+    expect(clearFailure).toHaveBeenCalledWith("proj-1", "ph-stale");
     expect(reconcileAddAssetGenerations(opts)).toBe(false);
-    expect(applyFailure).toHaveBeenCalledTimes(1);
+    expect(clearFailure).toHaveBeenCalledTimes(1);
   });
 
-  it("fails each stale starting candidate at most once", () => {
+  it("clears each stale starting candidate at most once", () => {
     const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
     bindAddAssetGenerationApplier({
       applySuccess: vi.fn(),
       applyFailure,
-      clearFailure: vi.fn(),
+      clearFailure,
       applyInFlight: vi.fn(),
     });
     const many = Array.from({ length: 12 }, (_, i) =>
@@ -696,7 +691,8 @@ describe("addAssetGenerationStore", () => {
         videosGroupId: null,
       }),
     ).toBe(true);
-    expect(applyFailure).toHaveBeenCalledTimes(12);
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).toHaveBeenCalledTimes(12);
     expect(
       reconcileAddAssetGenerations({
         projectId: "proj-1",
@@ -706,16 +702,54 @@ describe("addAssetGenerationStore", () => {
         videosGroupId: null,
       }),
     ).toBe(false);
-    expect(applyFailure).toHaveBeenCalledTimes(12);
+    expect(clearFailure).toHaveBeenCalledTimes(12);
+  });
+
+  it("does not clear a live starting job that has not reached a remote id yet", () => {
+    runMock.mockReturnValue(new Promise(() => {}));
+    const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
+    bindAddAssetGenerationApplier({
+      applySuccess: vi.fn(),
+      applyFailure,
+      clearFailure,
+      applyInFlight: vi.fn(),
+    });
+    startAddAssetGenerationJob({
+      projectId: "proj-1",
+      request: makeRequest(),
+      runOpts: {
+        timeline: [],
+        mainAudioCreationId: "audio-1",
+        aspectRatio: "16:9",
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        imagesGroupId: null,
+        videosGroupId: null,
+      },
+    });
+    __clearAddAssetResumeGuardsForTests();
+    expect(
+      reconcileAddAssetGenerations({
+        projectId: "proj-1",
+        projectTitle: "Demo",
+        timeline: [staleStartingClip("ph-1")],
+        imagesGroupId: null,
+        videosGroupId: null,
+      }),
+    ).toBe(false);
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).not.toHaveBeenCalled();
   });
 
   it("does not let a stale starting job block a resumable remote job", async () => {
     const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
     const applySuccess = vi.fn().mockResolvedValue(undefined);
     bindAddAssetGenerationApplier({
       applySuccess,
       applyFailure,
-      clearFailure: vi.fn(),
+      clearFailure,
       applyInFlight: vi.fn(),
     });
     resumeBlueMock.mockResolvedValue({
@@ -758,18 +792,20 @@ describe("addAssetGenerationStore", () => {
         videosGroupId: null,
       }),
     ).toBe(true);
-    expect(applyFailure).toHaveBeenCalledTimes(1);
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => {
       expect(applySuccess).toHaveBeenCalledTimes(1);
     });
   });
 
-  it("repeated sweeps stay no-ops after a stale starting failure", () => {
+  it("repeated sweeps stay no-ops after a stale starting clear", () => {
     const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
     bindAddAssetGenerationApplier({
       applySuccess: vi.fn(),
       applyFailure,
-      clearFailure: vi.fn(),
+      clearFailure,
       applyInFlight: vi.fn(),
     });
     const opts = {
@@ -783,15 +819,17 @@ describe("addAssetGenerationStore", () => {
     for (let i = 0; i < 8; i += 1) {
       expect(reconcileAddAssetGenerations(opts)).toBe(false);
     }
-    expect(applyFailure).toHaveBeenCalledTimes(1);
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).toHaveBeenCalledTimes(1);
   });
 
   it("HMR loss of resume guards does not overflow", () => {
     const applyFailure = vi.fn();
+    const clearFailure = vi.fn();
     bindAddAssetGenerationApplier({
       applySuccess: vi.fn(),
       applyFailure,
-      clearFailure: vi.fn(),
+      clearFailure,
       applyInFlight: vi.fn(),
     });
     const many = Array.from({ length: 20 }, (_, i) =>
@@ -807,7 +845,8 @@ describe("addAssetGenerationStore", () => {
     expect(reconcileAddAssetGenerations(opts)).toBe(true);
     __clearAddAssetResumeGuardsForTests();
     expect(reconcileAddAssetGenerations(opts)).toBe(true);
-    expect(applyFailure).toHaveBeenCalledTimes(40);
+    expect(applyFailure).not.toHaveBeenCalled();
+    expect(clearFailure).toHaveBeenCalledTimes(40);
     expect(reconcileAddAssetGenerations(opts)).toBe(false);
   });
 

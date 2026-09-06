@@ -194,6 +194,8 @@ const inflightClips = new Set<string>();
 const activeServiceJobByClip = new Map<string, string>();
 /** Cancel clicked before the kernel job id was known — fire when it arrives. */
 const cancelRequestedClips = new Set<string>();
+/** Bumped on each start so a prior run's `finally` cannot drop a newer job's guards. */
+const startEpochByClip = new Map<string, number>();
 let lastSessionClipId: string | null = null;
 let sessionEpoch = 0;
 let applier: AddAssetGenerationApplier | null = null;
@@ -435,6 +437,8 @@ export function startAddAssetGenerationJob(
   const clipId = request.clip.id;
   if (inflightClips.has(clipId)) return false;
   const continuityMode = request.continuityMode ?? "start_frame";
+  const startEpoch = (startEpochByClip.get(clipId) ?? 0) + 1;
+  startEpochByClip.set(clipId, startEpoch);
   inflightClips.add(clipId);
   setEditorWorkGauge("activeGeneration", inflightClips.size);
   resumeAttempted.add(clipId);
@@ -474,13 +478,10 @@ export function startAddAssetGenerationJob(
     blueJobId?: string;
     serviceJobId?: string;
   } = {};
-  // applyInFlight clears lastError / stale prediction ids — avoid racing clearFailure.
-  persistInFlight(projectId, clipId, {
-    status: "starting",
-    provider,
-    startedAt,
-    model: modelHint,
-  });
+  // Do not persist `starting` with no remote id. Reload during ref upload
+  // used to leave that marker, and reconcile treated it as a hard failure
+  // ("interrupted before a remote job was created"). In-memory session
+  // covers the live UI; persist only once onRemoteJob has an id.
 
   void runAddAssetGeneration({
     ...runOpts,
@@ -643,6 +644,7 @@ export function startAddAssetGenerationJob(
       );
     })
     .finally(() => {
+      if (startEpochByClip.get(clipId) !== startEpoch) return;
       inflightClips.delete(clipId);
       setEditorWorkGauge("activeGeneration", inflightClips.size);
       resumeAttempted.delete(clipId);
@@ -955,18 +957,17 @@ export function reconcileAddAssetGenerations(
         ids.blueJobId,
     );
     if (candidate.job.status === "starting" && !hasRemote) {
+      // A live run already owns this clip — do not treat prep as abandoned.
+      if (inflightClips.has(candidate.clip.id)) {
+        resumeAttempted.add(candidate.clip.id);
+        continue;
+      }
+      // No remote id means nothing was submitted. Return to the form instead
+      // of a hard failure — reload / crash during ref upload is common.
       resumeAttempted.add(candidate.clip.id);
-      const staleDraft = candidate.clip.addAssetDraft;
-      applyJobFailure(
-        opts.projectId,
-        candidate.clip.id,
-        draftAudioMode(staleDraft),
-        addAssetClipDurationSec(candidate.clip),
-        draftContinuityMode(staleDraft),
-        new Error(
-          "Generation was interrupted before a remote job was created. Please try again.",
-        ),
-      );
+      applier?.clearFailure(opts.projectId, candidate.clip.id);
+      const session = sessions.get(candidate.clip.id);
+      if (session?.phase === "error") setClipSession(candidate.clip.id, null);
       failedStale = true;
       continue;
     }
@@ -1168,6 +1169,7 @@ export function useAddAssetGenerationSession(
 export function __resetAddAssetGenerationStoreForTests(): void {
   sessions.clear();
   inflightClips.clear();
+  startEpochByClip.clear();
   lastSessionClipId = null;
   sessionEpoch = 0;
   applier = null;
