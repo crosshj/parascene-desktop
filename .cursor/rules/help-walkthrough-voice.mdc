@@ -1,0 +1,27 @@
+---
+description: Help is a first-run walkthrough. Never mention tests. Each step shows the prompt, the UI, and the result.
+globs: public/help/**,integration/**,src/help/**,src/fixtures/agentTest*.ts
+alwaysApply: false
+---
+
+# Help walkthrough voice
+
+Help is for someone who just opened the app. They do not know we have tests.
+
+- Write as if you are sitting with them on one project.
+- Start here is a chain: Getting started → Generate an image → Generate a video with audio. Each page finishes its own step.
+- Do not hand-wave mid-page to another article for a piece of this step. Put the prompt, the filled-in UI, and the result right here.
+- Point forward only at the end, under **Where to go from here**. That is the next page in the chain.
+- The same project and the same still continue downstream. Generate's goblin is Audio to Video's start frame. Do not show a second character.
+- Image models is a Topics page: one prompt, then the still from every Text to Image model. No app screenshots. Grok sits with the other frontier stills; its tile is the Generate still.
+- Video models is a Topics page: intents (Text / Image / Audio / Video / Refs to Video), then Wan, LTX, MiniMax H3, and Replicate. No app screenshots. No integration test yet.
+- Never mention tests, fixtures, agent actions, or that a screenshot “was written by” a test.
+- Do not show repo paths (`desktop/media/…`, `agent-test-…`) in prose. File names in `src=` are fine.
+
+# Test tree
+
+Generate (`05`) writes the still and leaves the project. Audio to Video (`06`) opens that same project and that same still, then tears down.
+
+- Re-running generate means re-running audio-to-video and refreshing Help media on both pages.
+- Do not generate a new still in `06`. Do not sweep the journey project at the end of `05`.
+- `06` screenshots in order on the first pass: audio-only timeline (`generate: false`, no video clip), then the filled A2V form (`form: true`), then the finished clip.

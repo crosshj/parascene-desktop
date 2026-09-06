@@ -1,11 +1,14 @@
 /**
- * Assets pane: this project's Images/Videos containers expand to members and
- * never appear as tiles. Ordinary groups stay as covers.
+ * Assets pane: the current Images/Videos cabinets expand to members and never
+ * appear as tiles. A leftover cabinet from an earlier generate is hidden — it
+ * must not dump a second video (or a broken stub) into the grid. Ordinary
+ * groups stay as covers.
  */
 
 import { groupSourceCreationIds } from "../../library/creationFlags";
 import type { Creation } from "../../library/types";
 import {
+  identifyDesktopCabinet,
   isProjectCabinetId,
   isProjectContainerCoverForDisplay,
   type ProjectCabinetIds,
@@ -29,12 +32,44 @@ export type FlattenProjectAssetsForDisplayOpts = {
   projectCabinets: ProjectCabinetIds | null | undefined;
 };
 
-function isProjectContainerCover(
+function cabinetPointerForRole(
+  role: "project_images" | "project_videos",
+  cabinets: ProjectCabinetIds | null | undefined,
+): string {
+  if (role === "project_videos") {
+    return String(cabinets?.videosGroupId ?? "").trim();
+  }
+  return String(cabinets?.imagesGroupId ?? "").trim();
+}
+
+function isCurrentCabinetCover(
+  id: string,
+  opts: FlattenProjectAssetsForDisplayOpts,
+): boolean {
+  return isProjectCabinetId(id, opts.projectCabinets);
+}
+
+/** Stale Images/Videos cover after a second generate — hide, do not expand. */
+function isLeftoverDesktopCabinet(
+  creation: Creation | undefined,
+  opts: FlattenProjectAssetsForDisplayOpts,
+): boolean {
+  const identity = identifyDesktopCabinet(creation);
+  if (!identity) return false;
+  if (!cabinetPointerForRole(identity.role, opts.projectCabinets)) return false;
+  return isProjectContainerCoverForDisplay(creation, {
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+  });
+}
+
+function shouldExpandAsCabinet(
   id: string,
   creation: Creation | undefined,
   opts: FlattenProjectAssetsForDisplayOpts,
 ): boolean {
-  if (isProjectCabinetId(id, opts.projectCabinets)) return true;
+  if (isCurrentCabinetCover(id, opts)) return true;
+  if (isLeftoverDesktopCabinet(creation, opts)) return false;
   return isProjectContainerCoverForDisplay(creation, {
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
@@ -64,9 +99,16 @@ export function flattenProjectAssetsForBrowserDisplay(
 
   for (const asset of opts.rootAssets) {
     const creation = opts.creationsById[asset.id];
-    if (isProjectContainerCover(asset.id, creation, opts)) {
+    if (isLeftoverDesktopCabinet(creation, opts) && !isCurrentCabinetCover(asset.id, opts)) {
+      continue;
+    }
+    if (shouldExpandAsCabinet(asset.id, creation, opts)) {
+      const identity = identifyDesktopCabinet(creation);
       const cabinetKind =
-        asset.id === opts.projectCabinets?.videosGroupId ? "video" : "image";
+        asset.id === opts.projectCabinets?.videosGroupId ||
+        identity?.role === "project_videos"
+          ? "video"
+          : "image";
       for (const mid of creation ? groupSourceCreationIds(creation) : []) {
         pushId(mid, cabinetKind);
       }
@@ -93,9 +135,11 @@ export function projectContainerCoverIdsForMemberLoad(
   add(opts.projectCabinets?.imagesGroupId);
   add(opts.projectCabinets?.videosGroupId);
   for (const asset of opts.rootAssets) {
-    if (
-      isProjectContainerCover(asset.id, opts.creationsById[asset.id], opts)
-    ) {
+    const creation = opts.creationsById[asset.id];
+    if (isLeftoverDesktopCabinet(creation, opts) && !isCurrentCabinetCover(asset.id, opts)) {
+      continue;
+    }
+    if (shouldExpandAsCabinet(asset.id, creation, opts)) {
       add(asset.id);
     }
   }

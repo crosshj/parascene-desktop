@@ -271,6 +271,12 @@ type ShellState = {
   }>;
   /** Remove library creation IDs from the open project (no-op if none open). */
   removeCreationsFromOpenProject: (creationIds: string[]) => Promise<void>;
+  /**
+   * Drop creation IDs from the open project store only. Does not delete
+   * Library rows or call native membership (that path can throw on video
+   * cabinets). Used by Help A2V staging to hide leftover clips.
+   */
+  removeCreationsFromOpenProjectLocal: (creationIds: string[]) => void;
   /** Remove unused creations from any locally available project. */
   removeCreationsFromProject: (
     projectId: string,
@@ -1933,6 +1939,14 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [openProjectId, removeCreationsFromProject],
   );
 
+  const removeCreationsFromOpenProjectLocal = useCallback(
+    (creationIds: string[]) => {
+      if (creationIds.length === 0) return;
+      patchOpenProject((project) => removeCreationIds(project, creationIds));
+    },
+    [patchOpenProject],
+  );
+
   const deleteLibraryCreation = useCallback(
     async (creationId: string) => {
       await mutateStoredProjectsWithNativeMutation(
@@ -2261,6 +2275,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       addCreationsToProject,
       reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
+      removeCreationsFromOpenProjectLocal,
       removeCreationsFromProject,
       deleteLibraryCreation,
       syncProjectFolders,
@@ -2322,6 +2337,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       addCreationsToProject,
       reconcileProjectsAfterLibrarySync,
       removeCreationsFromOpenProject,
+      removeCreationsFromOpenProjectLocal,
       removeCreationsFromProject,
       deleteLibraryCreation,
       syncProjectFolders,

@@ -39,6 +39,7 @@ vite.config.ts.timestamp-*
 # Coverage / test
 coverage
 *.lcov
+integration/.journey-generate.json
 
 # Misc
 .DS_Store

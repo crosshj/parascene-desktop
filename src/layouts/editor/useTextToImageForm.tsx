@@ -108,15 +108,24 @@ export function useTextToImageForm(
     }));
   }, [parasceneRoutes]);
 
+  const resolvedInitialModelId = useMemo(() => {
+    const raw = initialModelId?.trim();
+    if (!raw) return null;
+    if (server === "parascene_blue") {
+      return parasceneResolveStillModel("text_to_image", raw)?.id ?? raw;
+    }
+    return raw;
+  }, [initialModelId, server]);
+
   const [models, setModels] = useState<ModelOption[] | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [replicateModels, setReplicateModels] = useState<
     ReplicateTextToImageModelOption[] | null
   >(null);
-  const [modelId, setModelId] = useState<string | null>(initialModelId);
+  const [modelId, setModelId] = useState<string | null>(resolvedInitialModelId);
   const [values, setValues] = useState<Record<string, string>>(() => ({
     prompt: initialPrompt,
-    ...(initialModelId ? { model: initialModelId } : {}),
+    ...(resolvedInitialModelId ? { model: resolvedInitialModelId } : {}),
   }));
   const [doneLocked, setDoneLocked] = useState(false);
   const [describeFields, setDescribeFields] = useState<ReplicateInputField[]>(
@@ -166,7 +175,7 @@ export function useTextToImageForm(
           setModels(rows.map((m) => ({ id: m.id, label: m.label })));
           if (fieldsLocked && selectedModelId) return;
           setModelId((prev) => {
-            const preferred = prev || initialModelId;
+            const preferred = prev || resolvedInitialModelId;
             if (preferred && rows.some((m) => m.id === preferred)) {
               return preferred;
             }
@@ -191,7 +200,8 @@ export function useTextToImageForm(
           setModels(rows.map((m) => ({ id: m.id, label: m.label, hint: m.hint })));
           if (!(fieldsLocked && selectedModelId)) {
             const picked =
-              pickBlueStillModel(rows, modelId ?? initialModelId)?.id ?? null;
+              pickBlueStillModel(rows, modelId ?? resolvedInitialModelId)?.id ??
+              null;
             setModelId(picked);
           }
         })
@@ -208,11 +218,11 @@ export function useTextToImageForm(
     return () => {
       cancelled = true;
     };
-  }, [server, fieldsLocked, selectedModelId, initialModelId, modelId]);
+  }, [server, fieldsLocked, selectedModelId, resolvedInitialModelId, modelId]);
 
   const formModels = parasceneModelOptions ?? models;
   if (formModels?.length && !(fieldsLocked && selectedModelId)) {
-    const preferred = modelId || initialModelId;
+    const preferred = modelId || resolvedInitialModelId;
     const nextModelId =
       preferred && formModels.some((m) => m.id === preferred)
         ? preferred
@@ -268,7 +278,7 @@ export function useTextToImageForm(
   }, [describeFields, formModels, parasceneFamilies]);
 
   const lockedReviewKey = locked
-    ? `${initialPrompt}\0${initialModelId ?? ""}`
+    ? `${initialPrompt}\0${resolvedInitialModelId ?? ""}`
     : "";
   const [appliedLockedReviewKey, setAppliedLockedReviewKey] =
     useState(lockedReviewKey);
@@ -276,9 +286,9 @@ export function useTextToImageForm(
     setAppliedLockedReviewKey(lockedReviewKey);
     setValues({
       prompt: initialPrompt,
-      ...(initialModelId ? { model: initialModelId } : {}),
+      ...(resolvedInitialModelId ? { model: resolvedInitialModelId } : {}),
     });
-    if (initialModelId) setModelId(initialModelId);
+    if (resolvedInitialModelId) setModelId(resolvedInitialModelId);
   }
 
   const canGenerate =

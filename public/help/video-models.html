@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video models — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
+    </header>
+    <main>
+      <h1>Video models</h1>
+      <p>
+        You pick an intent first — what you have, and what you want back —
+        then a system, then a model. Wan, LTX, and MiniMax H3 show up under
+        more than one intent. Replicate adds other labs for Text to Video and
+        Image to Video.
+      </p>
+
+      <h2>In the form</h2>
+      <ol class="steps">
+        <li>In Editor, add a video clip or click <strong>Add asset</strong>.</li>
+        <li>
+          Choose the intent:
+          <strong>Text to Video</strong>,
+          <strong>Image to Video</strong>,
+          <strong>Audio to Video</strong>,
+          <strong>Video to Video</strong>, or
+          <strong>Refs to Video</strong>.
+        </li>
+        <li>
+          Choose a system:
+          <strong>Parascene</strong> (credits),
+          <strong>Direct to Blue</strong>, or
+          <strong>Replicate</strong> (your token).
+        </li>
+        <li>Choose the model that matches that intent.</li>
+        <li>
+          Fill what the intent asks for — frames, source audio, a driving clip,
+          or refs — then <strong>Generate</strong>.
+        </li>
+      </ol>
+      <p>
+        Parascene today is Wan and LTX for Text to Video and Image to Video,
+        plus LTX Audio to Video (<code>ltx_a2v</code>). Direct to Blue is the
+        full Blue catalog, including MiniMax H3, Video to Video, and Refs to
+        Video. Replicate does not run Audio to Video, Video to Video, or Refs
+        to Video yet.
+      </p>
+
+      <h2>Wan</h2>
+      <p>
+        Fast. Text to Video and Image to Video stay silent unless you add audio
+        yourself. On Direct to Blue, Wan also edits a clip you already have.
+      </p>
+      <ul class="model-names">
+        <li>Wan — text-to-video (rapid AIO) — <code>wan_t2v</code></li>
+        <li>Wan — image-to-video — <code>wan_i2v</code> (first frame, or first and last)</li>
+        <li>Wan — Bernini-R video edit — <code>bernini_r_v2v</code></li>
+        <li>Wan — Animate 2 — <code>wan_animate</code> (needs a character still)</li>
+      </ul>
+
+      <h2>LTX</h2>
+      <p>
+        Often writes audio with the picture. This is the family for a talking
+        clip — the one we used after the goblin still.
+      </p>
+      <ul class="model-names">
+        <li>LTX — text-to-video — <code>ltx_t2v</code></li>
+        <li>LTX — image-to-video — <code>ltx_i2v</code></li>
+        <li>LTX — style transition — <code>ltx_style_transition</code> (first and last, plus a LoRA)</li>
+        <li>LTX — audio-to-video (ia2v) — <code>ltx_a2v</code></li>
+        <li>LTX — ID-LoRA talkvid — <code>ltx_id_lora</code></li>
+        <li>LTX — IC-LoRA video control — <code>ltx_ic_lora</code> (needs a character still)</li>
+        <li>LTX — IC-LoRA ingredients — <code>ltx_ingredients</code></li>
+      </ul>
+
+      <h2>MiniMax H3</h2>
+      <p>
+        Strong native audio (FL2VA / Ref2VA). These do not appear under
+        Parascene — use Direct to Blue, or Replicate for Text to Video and
+        Image to Video.
+      </p>
+      <ul class="model-names">
+        <li>MiniMax H3 — text-to-video (FL2VA) — <code>minimax_t2v</code></li>
+        <li>MiniMax H3 — image-to-video (FL2VA) — <code>minimax_i2v</code> (first frame, or first and last)</li>
+        <li>MiniMax H3 — reference-to-video (Ref2VA) — <code>minimax_r2v</code></li>
+      </ul>
+
+      <h2>Text to Video</h2>
+      <p>
+        A prompt. No still. The clip can land on the timeline or in Assets.
+        Parascene: Wan or LTX. Direct to Blue adds MiniMax H3. Replicate is
+        MiniMax H3, Seedance, Kling, Veo, Vidu, and the other video models you
+        have enabled.
+      </p>
+
+      <h2>Image to Video</h2>
+      <p>
+        A still becomes motion. <strong>First</strong> is the start frame.
+        <strong>Last</strong> is optional — when both are set, Wan, MiniMax H3,
+        and LTX style transition can land on the second still.
+      </p>
+      <p>
+        On Replicate you can also <strong>motion match</strong>: a character
+        still plus the previous clip on the timeline as the motion.
+      </p>
+
+      <h2>Audio to Video</h2>
+      <p>
+        Speech or a mix is already on the audio lane. First frame is the face.
+        Source audio is <strong>full mix</strong> or <strong>vocals</strong>.
+        The clip is shorter than the speech — later clips fill the rest the
+        same way.
+      </p>
+      <p>
+        Parascene and Direct to Blue: <code>ltx_a2v</code>. Direct to Blue
+        also has ID-LoRA talkvid. That is the clip in
+        <a href="audio.html">Generate a video with audio</a>.
+      </p>
+
+      <h2>Video to Video</h2>
+      <p>
+        A clip you already have, plus a prompt. Some models also want a
+        character still. Direct to Blue: Bernini-R, Wan Animate 2, and LTX
+        IC-LoRA.
+      </p>
+
+      <h2>Refs to Video</h2>
+      <p>
+        Stills — and sometimes clips or audio — as references: who is in the
+        shot, what they wear, where they are. Then a prompt.
+      </p>
+      <p>
+        MiniMax H3 Ref2VA takes up to nine stills, three clips, and three
+        audio files. LTX ingredients is the other recipe. Both run on Direct
+        to Blue.
+      </p>
+
+      <h2>Where to go from here</h2>
+      <p class="more">
+        <a href="audio.html">Generate a video with audio</a> — LTX Audio to
+        Video on the goblin still.
+      </p>
+      <p class="more">
+        <a href="image-models.html">Image models</a> — the stills these clips
+        start from.
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

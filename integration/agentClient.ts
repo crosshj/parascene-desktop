@@ -1,6 +1,10 @@
+import { request as httpRequest } from "node:http";
 import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+
+/** Grok / LTX can sit quiet past Node fetch's 5-minute header timeout. */
+const INVOKE_TIMEOUT_MS = 13 * 60_000;
 
 export type AgentManifest = {
   origin: string;
@@ -67,9 +71,44 @@ export async function agentInvoke<T = unknown>(
   action: string,
   args: Record<string, unknown> = {},
 ): Promise<{ status: number; body: AgentInvokeBody<T> }> {
-  return agentJson<AgentInvokeBody<T>>(manifest, "/agent/v1/invoke", {
-    method: "POST",
-    body: JSON.stringify({ action, args }),
+  const url = new URL("/agent/v1/invoke", manifest.origin);
+  const payload = JSON.stringify({ action, args });
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${manifest.token}`,
+          "Content-Type": "application/json",
+          "Content-Length": String(Buffer.byteLength(payload)),
+        },
+        timeout: INVOKE_TIMEOUT_MS,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(chunk as Buffer));
+        res.on("end", () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as AgentInvokeBody<T>,
+            });
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error(`${action} timed out after ${INVOKE_TIMEOUT_MS / 1000}s`));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
   });
 }
 

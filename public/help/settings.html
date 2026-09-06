@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Settings — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
+    </header>
+    <main>
+      <h1>Settings</h1>
+      <p>
+        Keys, Labs, timeline preview, and whether the app can see FFmpeg.
+        Everything here lives on this computer.
+      </p>
+
+      <h2>Open Settings</h2>
+      <ol class="steps">
+        <li>Click your avatar in the top bar (the account menu).</li>
+        <li>Click <strong>Settings</strong>.</li>
+      </ol>
+      <figure>
+        <img
+          src="desktop/screens/settings.png"
+          alt="Settings dialog with API keys, Show Labs, preview quality, and Local tools"
+        />
+        <figcaption>
+          Settings — account menu, upper right. Scroll for Editor preview and
+          Local tools.
+        </figcaption>
+      </figure>
+
+      <h2>OpenAI API key</h2>
+      <p>
+        Lab uses this for storyboard and alignment. Paste a key that starts
+        with <code>sk-</code>, then <strong>Save</strong>.
+      </p>
+
+      <h2>Replicate API token</h2>
+      <p>
+        Lab and Editor video fill. Paste a token that starts with
+        <code>r8_</code>, then <strong>Save</strong>. If one is already stored,
+        the field says Configured — paste again to replace it, or click
+        <strong>Clear Replicate token</strong> to remove it now.
+      </p>
+
+      <h2>Parascene Blue credentials</h2>
+      <p>
+        JSON for Direct Blue Lab and local import. Paste the JSON, then
+        <strong>Save</strong>. If credentials are already stored, paste again
+        to replace them, or click <strong>Clear Blue credentials</strong> to
+        remove them now.
+      </p>
+
+      <h2>Show Labs</h2>
+      <p>
+        Adds a Labs tab on the open project. Anyone can turn this on. The
+        checkbox applies as soon as you click it — you do not need Save.
+      </p>
+
+      <h2>Editor preview</h2>
+      <p>
+        Timeline preview quality: <strong>Low</strong>, <strong>Medium</strong>,
+        or <strong>High</strong>. This is playback in Editor only. Export is
+        unchanged. The slider applies as soon as you move it.
+      </p>
+
+      <h2>Local tools</h2>
+      <p>
+        FFmpeg, Demucs, and Whisper. Each one says <strong>ready</strong> or
+        <strong>missing</strong>, and shows the path when it is found. After
+        you install something, click <strong>Re-check</strong>.
+        <strong>Install demucs</strong> can run from here.
+        <strong>Open LOCAL_TOOLS.md</strong> opens the longer install notes
+        when that file is on disk.
+      </p>
+      <p>
+        FFmpeg is required for most media work.
+        <a href="tools.html">Local tools</a> has the install steps.
+      </p>
+
+      <h2>Save and Cancel</h2>
+      <p>
+        <strong>Save</strong> stores the keys and closes the dialog.
+        <strong>Cancel</strong> (or Escape, or click outside) closes without
+        storing key changes. Show Labs and Editor preview already stuck when
+        you changed them.
+      </p>
+
+      <h2>Where to go from here</h2>
+      <p class="more">
+        <a href="tools.html">Local tools</a> — install FFmpeg if Settings
+        says missing.
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

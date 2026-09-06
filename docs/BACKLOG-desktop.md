@@ -126,6 +126,10 @@ Composition and iterative still editing: [PLAN-image-compose-edit.md](./PLAN-ima
   Important for finishing and publishing, secondary to getting generation inputs right.
   More important once shot generation is no longer the bottleneck.
 
+- [ ] 21. Last still or clip cannot leave its cabinet — huge gap, near-term
+  Last Images member / last Videos member: UI Remove throws or the tile bounces. Empty cover is recovered on remount. Forced a second project just to recapture Help Audio to Video. Plan: [PLAN-last-cabinet-member-remove.md](./PLAN-last-cabinet-member-remove.md).
+  Done when: last still and last clip leave via Remove; Library keeps the file; reopen does not bounce.
+
 ## Recommended immediate sequence
 
 1. Local project and unified asset pool

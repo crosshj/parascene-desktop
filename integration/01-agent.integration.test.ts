@@ -37,6 +37,8 @@ describe("agent API", () => {
     expect(ids).toContain("sync.thumbs");
     expect(ids).toContain("sync.media");
     expect(ids).toContain("generation.start");
+    expect(ids).toContain("generation.a2v");
+    expect(ids).toContain("library.import");
     expect(ids).toContain("cloud.delete");
     expect(ids).toContain("library.lookup");
     expect(ids).toContain("window.setSize");

@@ -10,7 +10,11 @@ Local HTTP API on the running `tauri dev` app. Debug builds only. Not compiled i
 npm run test:integration
 ```
 
-Files live in `integration/*.integration.test.*`, numbered so they run in order: `01` connect, `02` sync, `03` project, `04` folder, `05` generate. They talk to the live loopback API only. One file at a time.
+Files live in `integration/*.integration.test.*`, numbered so they run in order: `01` connect, `02` sync, `03` project, `04` folder, `05` generate, `06` audio-to-video. They talk to the live loopback API only. One file at a time.
+
+`05` and `06` are one tree. `05` generates the Grok start still, publishes Help media, and leaves the project. `06` opens that same project, uses that same still, runs Audio to Video, publishes the clip, then tears down. Re-run `05` only if you will also re-run `06` — Help must show the same goblin on both pages.
+
+`07` is a sibling: the same goblin prompt on every Parascene Text to Image model. It reuses the Grok still from `05` and publishes the rest to `public/help/desktop/media/models/`. Image-edit / Kontext models (need a source still) are listed on the Topics page without thumbs and are not generated. Help articles are a first-run walkthrough — they never mention tests.
 
 # Enable / connect
 
@@ -66,13 +70,15 @@ Domain actions still land on the page a person would use. That is not the only w
 - `project.delete` `{ id }` — Project chooser; leftover folder deleted when empty
 - `folder.create` `{ title? }` — Library creations
 - `folder.delete` `{ id }` — Library creations
-- `generation.start` `{ prompt?, projectId?, model? }` — lands Editor, then generates. Default `sd15: lofi_V2pre` (~0.1 credit). Do not use this just to open Editor.
+- `generation.start` `{ prompt?, projectId?, model?, aspectRatio?, size? }` — lands Editor, then generates a still. Default `sd15: lofi_V2pre` (~0.1 credit). Walkthrough / Help still uses `xai/grok-imagine-image` and the shared goblin prompt. `size` is for models that reject aspect ratios (Recraft). Do not use this just to open Editor. Waits up to 12 minutes.
+- `generation.a2v` `{ projectId?, stillId, audioId? | audioPath?, prompt?, durationSec?, generate?, form?, videoId? }` — lands Editor and drops the **full** spoken file on the audio lane. Default (`generate` omitted or true) then places a `durationSec` (default 9) LTX `ltx_a2v` / full-mix clip at the start and waits (up to 12 minutes). First-time Help shots: `generate: false` is audio-only (empty video lane), then `generate: false, form: true` shows the 9s placeholder with Audio to Video / `ltx_a2v` / full mix / start frame, then a real generate writes the clip. `generate: false` must not place a video clip. `generate: false, videoId` puts that finished clip on the video lane.
+- `library.import` `{ paths, projectId? }` — copy local files into Library (and the project when `projectId` is set). No file dialog.
 - `cloud.delete` `{ id?, imagesGroupId?, ids? }` — Library creations
-- `library.lookup` `{ id?, ids? }` — no navigation (query only)
+- `library.lookup` `{ id?, ids?, titleContains?, pathContains? }` — no navigation (query only). Returns `localPath` when the row is on disk. `titleContains` / `pathContains` scan the local catalog (used by integration teardown).
 - `sync.start` / `sync.folders` / `sync.thumbs` / `sync.media` — Sync page
 - `library.clearLocal` `{ confirm: true }` — Library creations
 - `window.setSize` `{ width?, height? }` — no navigation. Default **1280×900**. Does not require signed-in.
-- `help.open` `{ topicId? }` — open Help in the default browser. Does not require signed-in. Omit topicId for the contents page. Articles are static HTML under `public/help/`. Topic ids: `getting-started` (or `start`), `overview` (or `screens`), `projects` (or `create-project` / `open-project`), `folders`, `sync`, `generate` (or `generate-image`), `tools` (or `local-tools` / `ffmpeg` / `demucs` / `whisper`). Screen jumps: `library`, `director`, `editor`.
+- `help.open` `{ topicId? }` — open Help in the default browser. Does not require signed-in. Omit topicId for the contents page. Articles are static HTML under `public/help/`. Topic ids: `getting-started` (or `start`), `overview` (or `screens`), `projects` (or `create-project` / `open-project`), `folders`, `sync`, `generate` (or `generate-image`), `image-models` (or `models`), `audio` (or `speech` / `a2v` / `audio-to-video`), `settings` (or `labs`), `tools` (or `local-tools` / `ffmpeg` / `demucs` / `whisper`). Screen jumps: `library`, `director`, `editor`.
 
 Each mutating action holds ~2s on its journey page. `shell.show` holds ~0.8s. Files still run one at a time.
 

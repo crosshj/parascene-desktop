@@ -1,4 +1,5 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from "react";
+import { LoginCard, LoginShell } from "../auth/LoginScreen";
 
 type Props = {
   children: ReactNode;
@@ -37,26 +38,31 @@ export class AppErrorBoundary extends Component<Props, State> {
     const { error, resetKey } = this.state;
     if (error) {
       return (
-        <div className="login-screen" role="alert">
-          <div className="login-card">
-            <p className="login-copy">Something went wrong.</p>
-            <div className="auth-error login-error">
-              <div className="login-error-summary">
-                <strong>{error.message || "Unexpected error"}</strong>
+        <LoginShell>
+          <LoginCard>
+            <div role="alert">
+              <h1 className="login-title">Something went wrong</h1>
+              <p className="login-copy">The last action hit an unexpected error.</p>
+              <div className="auth-error login-error">
+                <div className="login-error-summary">
+                  <strong>{error.message || "Unexpected error"}</strong>
+                </div>
+                <details className="login-error-details">
+                  <summary>Technical details</summary>
+                  <pre className="login-error-pre">{error.stack || String(error)}</pre>
+                </details>
               </div>
-              <details className="login-error-details">
-                <summary>Technical details</summary>
-                <pre className="login-error-pre">{error.stack || String(error)}</pre>
-              </details>
+              <div className="login-actions">
+                <button type="button" className="btn primary login-primary" onClick={this.reset}>
+                  Try again
+                </button>
+                <button type="button" className="btn login-secondary" onClick={this.reload}>
+                  Reload app
+                </button>
+              </div>
             </div>
-            <button type="button" className="btn primary-btn login-primary" onClick={this.reset}>
-              Try again
-            </button>
-            <button type="button" className="btn" onClick={this.reload}>
-              Reload app
-            </button>
-          </div>
-        </div>
+          </LoginCard>
+        </LoginShell>
       );
     }
 

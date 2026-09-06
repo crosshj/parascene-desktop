@@ -1,3 +1,4 @@
+import "@fontsource-variable/inter/wght.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { guardTauriUnregisterListener } from "./app/tauriEventGuard";
@@ -11,7 +12,7 @@ function renderBootstrapFailure(error: unknown): void {
     error instanceof Error ? error.message : String(error ?? "Unknown error");
   const stack = error instanceof Error ? error.stack ?? "" : "";
   root.innerHTML = `
-    <div style="padding:2rem;font-family:system-ui,sans-serif;background:#121214;color:#ececf0;min-height:100vh;box-sizing:border-box">
+    <div style="padding:2rem;font-family:'Inter Variable',system-ui,sans-serif;background:#121214;color:#ececf0;min-height:100vh;box-sizing:border-box">
       <h1 style="margin:0 0 1rem;font-size:1.25rem">Parascene failed to start</h1>
       <p style="margin:0 0 1rem;color:#a0a0ab">${message.replace(/</g, "&lt;")}</p>
       ${

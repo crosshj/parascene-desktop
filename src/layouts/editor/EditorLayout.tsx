@@ -62,6 +62,7 @@ import { useProjectPickerCatalog } from "./projectImagePickerAssets";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import { pasteAppendStartSec } from "./timelineAppend";
 import {
+  APPLY_EDITOR_SELECTION_EVENT,
   selectionFromProject,
   pendingDraftMatchesSelection,
 } from "./editorSelection";
@@ -1129,6 +1130,28 @@ export function EditorLayout() {
     setSelectedAssetId(assetId);
     setOpenProjectSelectedAssetId(assetId);
   }, [pauseTimelinePlayback, setOpenProjectSelectedAssetId]);
+
+  useEffect(() => {
+    const onApplySelection = () => {
+      const next = selectionFromProject(project);
+      setSelectedAssetId(next.selectedAssetId);
+      setSelectedAssetIds(next.selectedAssetIds);
+      setSelectedClipId(next.selectedClipId);
+      setSelectedClipIds(next.selectedClipIds);
+      setClipStagingSeed(next.clipStagingSeed);
+      setPendingStagedDraft(next.pendingStagedDraft);
+      setAddAssetSlotActive(false);
+      setAddAssetIntent(null);
+      setOpenCompositionId(null);
+    };
+    window.addEventListener(APPLY_EDITOR_SELECTION_EVENT, onApplySelection);
+    return () => {
+      window.removeEventListener(
+        APPLY_EDITOR_SELECTION_EVENT,
+        onApplySelection,
+      );
+    };
+  }, [project]);
 
   useEffect(() => {
     const onSelected = (event: Event) => {

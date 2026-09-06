@@ -6,6 +6,13 @@ import {
   type StagedClipDraft,
 } from "./stagedClip";
 
+export const APPLY_EDITOR_SELECTION_EVENT = "parascene-apply-editor-selection";
+
+/** Re-apply persisted project selection onto a mounted Editor. */
+export function requestApplyEditorSelection(): void {
+  window.dispatchEvent(new CustomEvent(APPLY_EDITOR_SELECTION_EVENT));
+}
+
 export type EditorSelectionState = {
   selectedAssetId: string | null;
   selectedAssetIds: string[];

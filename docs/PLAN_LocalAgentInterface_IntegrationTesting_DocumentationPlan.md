@@ -14,7 +14,7 @@ Original “keep `~/Movies/Parascene/` unscoped until a second user” is supers
 
 - Help lives in this app, not parascene.com/help.
 - Tests have setup and teardown. Cloud leftovers on the test account are a product bug, not acceptable junk.
-- Live Parascene only (already-logged-in session). No Direct-to-Blue. No Replicate. Be gentle with the live API. Generate: Text to Image, Parascene, `sd15: lofi_V2pre`, frog-in-a-princess-dress prompt.
+- Live Parascene only (already-logged-in session). No Direct-to-Blue. No Replicate. Be gentle with the live API. Generate: Text to Image, Parascene, `xai/grok-imagine-image`, same start still as Audio to Video (one project, one goblin).
 - Agent/tests connect to an already-running `tauri dev` app. Do not launch or control the process in this phase.
 - Design the API so a future agent could use it. LLM/chat integration is out of scope. First consumer is integration tests.
 - First workflows: sync, create project, create folder, generate an image in a project (Parascene product / credits path). Folders and projects are still decoupled — test where behavior differs.

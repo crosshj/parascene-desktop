@@ -124,7 +124,7 @@ describe("flattenProjectAssetsForBrowserDisplay", () => {
     ).toEqual(["m1", "m2", "solo"]);
   });
 
-  it("expands every project Images container and never shows their cards", () => {
+  it("hides a leftover Images cabinet instead of expanding its members", () => {
     const keeper = "images-keeper";
     const extra = "images-extra";
     const rootAssets = [asset(keeper), asset(extra), asset("solo")];
@@ -145,7 +145,7 @@ describe("flattenProjectAssetsForBrowserDisplay", () => {
         creationsById,
         projectCabinets: { imagesGroupId: keeper, videosGroupId: null },
       }).map((row) => row.id),
-    ).toEqual(["m1", "m2", "m3", "solo"]);
+    ).toEqual(["m1", "m2", "solo"]);
   });
 
   it("shows ordinary group covers as tiles", () => {

@@ -8,25 +8,37 @@
   </head>
   <body>
     <header class="help-top">
-      <a class="back" href="index.html">All topics</a>
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
     </header>
     <main>
       <h1>Getting started</h1>
       <p>
-        These are the screens a new account sees, in order. Sign in, land on
-        Library (one still), check Sync, then start a project. Director and
-        Editor stay hidden until that project is loaded.
+        We'll sign in, look at Library, check Sync, then start a project.
+        Director and Editor appear after that project is open.
       </p>
 
       <h2>Sign in</h2>
       <ol class="steps">
-        <li>On the login card, click <strong>Log in</strong>.</li>
+        <li>On the login screen, click <strong>Log in</strong>.</li>
         <li>
           Finish authorization in the browser, then return to the app. If the
           browser tab never finishes, click <strong>Cancel</strong> and try
           again.
         </li>
       </ol>
+      <figure>
+        <img
+          src="desktop/screens/login.png"
+          alt="Login screen with the Parascene wordmark, Sign in to continue, Log in, and Help documentation"
+        />
+        <figcaption>Sign in — Log in opens the browser to authorize this app.</figcaption>
+      </figure>
 
       <h2>Library</h2>
       <p>
@@ -106,9 +118,7 @@
       </figure>
       <p>
         Click the + tile. New asset opens on <strong>Text to Image</strong>
-        and System <strong>Parascene</strong>. Write a prompt and click
-        <strong>Generate</strong>.
-        <a href="generate.html">Generate an image</a> covers that form.
+        and System <strong>Parascene</strong>.
       </p>
       <figure>
         <img
@@ -118,10 +128,10 @@
         <figcaption>New asset — Text to Image on Parascene.</figcaption>
       </figure>
 
+      <h2>Where to go from here</h2>
       <p class="more">
-        Next: <a href="tools.html">Local tools</a>
-        · <a href="projects.html">Projects</a>
-        · <a href="generate.html">Generate an image</a>
+        <a href="generate.html">Generate an image</a> — same project, a prompt,
+        and the still that comes back.
       </p>
     </main>
     <script src="help.js"></script>

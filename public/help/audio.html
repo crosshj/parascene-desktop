@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Generate a video with audio — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
+    </header>
+    <main>
+      <h1>Generate a video with audio</h1>
+      <p>
+        We'll use the same image we generated in
+        <a href="generate.html">Generate an image</a>. Then add a spoken file
+        and make a short clip that lip-syncs to that speech.
+      </p>
+      <figure>
+        <img
+          src="desktop/media/agent-test-still.png"
+          alt="The purple goblin still already in this project"
+        />
+        <figcaption>Our start frame — the still from the last step.</figcaption>
+      </figure>
+
+      <h2>The spoken file</h2>
+      <p>Here's the clip we used — about 21 seconds.</p>
+      <figure>
+        <audio
+          controls
+          preload="metadata"
+          src="desktop/media/agent-test-speech.mp3"
+        >
+          Your browser cannot play this mp3.
+        </audio>
+        <figcaption>
+          Can you hear that? Every sound changes the picture. Now watch closely as the voice becomes movement, and the character begins to respond. Just like that, a still image becomes a scene.
+        </figcaption>
+      </figure>
+
+      <h2>Put the speech on the timeline</h2>
+      <ol class="steps">
+        <li>
+          In Library, click <strong>Add from disk…</strong> in the sidebar and
+          choose the spoken file.
+        </li>
+        <li>Open <strong>Editor</strong>.</li>
+        <li>
+          Drop the <strong>full</strong> file on the audio lane. Leave it whole
+          — don't trim it.
+        </li>
+      </ol>
+      <figure>
+        <img
+          src="desktop/screens/editor-audio-timeline.png"
+          alt="Editor with the full spoken file on the audio lane and an empty video lane"
+        />
+        <figcaption>
+          The spoken file is on the audio lane — the whole 21 seconds. The
+          video lane is still empty.
+        </figcaption>
+      </figure>
+
+      <h2>Lip-sync clip</h2>
+      <p>
+        Add a <strong>9 second</strong> video clip at the start of the timeline.
+        Choose <strong>Audio to Video</strong>, System <strong>Parascene</strong>,
+        model <code>ltx_a2v</code> (LTX), source audio <strong>full mix</strong>,
+        start frame = the goblin still.
+      </p>
+      <figure>
+        <img
+          src="desktop/screens/editor-a2v-form.png"
+          alt="New asset form set to Audio to Video, LTX ltx_a2v, full mix, goblin start frame"
+        />
+        <figcaption>
+          The form we used — Audio to Video, LTX, full mix, that still as the
+          start frame. Then the motion prompt, then <strong>Generate</strong>.
+        </figcaption>
+      </figure>
+      <p>This is the motion prompt we used:</p>
+      <pre><code>The same friendly purple goblin speaks straight to camera. Playful, not sinister. Mouth, lips, and jaw clearly open and close in exact sync with the words, nothing covering the mouth, cheeks, or ears. Huge bare ears and yellow forehead goggles stay on — no headset, no earpiece, no microphone. Excited on the first line, a short laugh on the second, then he leans in and watches the viewer. Soft hands gesture near his chest. Head stays mostly still, eyes on camera. Plain dark gray backdrop, soft lighting, no text, no extra props</code></pre>
+      <p>Click <strong>Generate</strong> and wait. Later clips fill the rest of the 21 seconds the same way.</p>
+      <figure>
+        <video
+          controls
+          playsinline
+          preload="metadata"
+          poster="desktop/media/agent-test-still.png"
+          src="desktop/media/agent-test-speech.mp4"
+        >
+          Your browser cannot play this video.
+        </video>
+        <figcaption>
+          First 9 seconds — LTX Audio to Video, full mix, lip-sync to the speech.
+        </figcaption>
+      </figure>
+      <figure>
+        <img
+          src="desktop/screens/editor-a2v.png"
+          alt="Editor after the lip-sync clip lands on the timeline"
+        />
+        <figcaption>
+          Editor after Generate — the clip is on the video lane, the full
+          speech is still on the audio lane.
+        </figcaption>
+      </figure>
+
+      <h2>Where to go from here</h2>
+      <p class="more">
+        <a href="tools.html">Local tools</a> — FFmpeg, Demucs, and Whisper on
+        this computer.
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

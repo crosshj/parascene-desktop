@@ -10,6 +10,9 @@ import {
   deleteLocal,
   getCreation,
   getSyncStatus,
+  importLocalPaths,
+  importProjectAssetPaths,
+  listCreations,
 } from "../library/catalogClient";
 import {
   groupSourceCreationIds,
@@ -22,6 +25,7 @@ import { parasceneResolveStillModel } from "../layouts/editor/parasceneProductCa
 import type { LayoutMode } from "../app/shellSession";
 import { getProjectFolder } from "../project/projectFolderClient";
 import { runLabParasceneGenerate } from "../services/labParasceneGenerate";
+import { runAgentA2v, waitForLocalPath } from "./runAgentA2v";
 import {
   deleteCreationViaService,
   ungroupCreationsViaService,
@@ -37,6 +41,36 @@ type AgentRequest = {
 function argString(args: Record<string, unknown> | undefined, key: string): string {
   const raw = args?.[key];
   return typeof raw === "string" ? raw.trim() : "";
+}
+
+function argPaths(args: Record<string, unknown> | undefined): string[] {
+  const raw = args?.paths;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function argNumber(args: Record<string, unknown> | undefined, key: string): number | undefined {
+  const raw = args?.[key];
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+function argBoolean(
+  args: Record<string, unknown> | undefined,
+  key: string,
+): boolean | undefined {
+  const raw = args?.[key];
+  if (typeof raw === "boolean") return raw;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return undefined;
 }
 
 function showLibrary(
@@ -91,7 +125,10 @@ function watchHoldMs(action: string): number {
     case "library.clearLocal":
       return 2800;
     case "generation.start":
+    case "generation.a2v":
       return 3200;
+    case "library.import":
+      return 1800;
     case "cloud.delete":
     case "project.create":
     case "project.delete":
@@ -168,10 +205,18 @@ async function purgeCreations(
           : {}),
       });
     }
+    const mainAudioId = shell.project?.mainAudioCreationId ?? null;
+    if (mainAudioId && queued.has(mainAudioId)) {
+      shell.setOpenProjectMainAudioCreationId(null);
+    }
+    shell.setOpenProjectTimeline((prev) =>
+      prev.filter((clip) => !clip.assetId || !queued.has(clip.assetId)),
+    );
+    await sleep(800);
     try {
       await shell.removeCreationsFromProject(shell.openProjectId, [...queued]);
     } catch {
-      /* may not be filed in the open project */
+      /* still on the timeline, or not filed in the open project */
     }
   }
   try {
@@ -193,7 +238,13 @@ async function purgeCreations(
 
   const ordered = [...queued];
   for (const id of ordered) {
-    await deleteCreationViaService(id);
+    if (!id.startsWith("local-")) {
+      try {
+        await deleteCreationViaService(id);
+      } catch {
+        /* never uploaded, already gone, or local-only */
+      }
+    }
     try {
       await dropLocalRow(id, shell);
     } catch {
@@ -207,7 +258,9 @@ async function purgeCreations(
   if (remaining.length > 0) {
     await sleep(600);
     for (const id of remaining) {
-      await deleteCreationViaService(id).catch(() => {});
+      if (!id.startsWith("local-")) {
+        await deleteCreationViaService(id).catch(() => {});
+      }
       await dropLocalRow(id, shell).catch(() => {});
     }
     remaining = (
@@ -224,7 +277,7 @@ async function purgeCreations(
 
 const DEFAULT_STILL_MODEL = "checkpoints/1.5/lofi_V2pre.safetensors";
 const DEFAULT_STILL_PROMPT =
-  "a beautiful frog in a princess dress with a tiny, little crown";
+  "Friendly playful wiry purple goblin, approachable Pixar character, not sinister, not scary, not a villain. Waist-up portrait facing the camera. Huge expressive pointed ears that are completely bare — nothing on the ears, nothing behind the ears, no headset, no earpiece, no boom microphone, no earbuds. Warm yellow-green eyes, mobile eyebrows, a small closed mischievous smile, not a wide evil grin. Yellow round goggles pushed onto his bald forehead. Plain dark coat, bare cheeks, mouth completely unobstructed. Soft purple hands visible at the bottom of the frame, no claws. Plain dark gray studio backdrop, soft even lighting, clean silhouette, no text, no clutter, no extra props";
 
 function stillRoute(modelId?: string) {
   const wanted = modelId?.trim() || DEFAULT_STILL_MODEL;
@@ -494,6 +547,11 @@ async function runAction(
       const route = stillRoute(argString(args, "model"));
       if (!route) throw new Error("No Parascene product still model is available");
       const prompt = argString(args, "prompt") || DEFAULT_STILL_PROMPT;
+      const aspectRatio =
+        argString(args, "aspectRatio") ||
+        ctx.shell.project?.aspectRatio ||
+        "1:1";
+      const size = argString(args, "size");
       showProject(ctx.shell, "editor");
       await sleep(400);
       requestOpenNewAsset({
@@ -502,6 +560,12 @@ async function runAction(
         model: route.value,
       });
       await sleep(700);
+      const generateArgs: Record<string, unknown> = {
+        prompt,
+        model: route.value,
+      };
+      if (size) generateArgs.size = size;
+      else generateArgs.aspect_ratio = aspectRatio;
       const result = await runLabParasceneGenerate({
         projectId,
         projectTitle: ctx.shell.project?.title ?? "Untitled project",
@@ -509,11 +573,7 @@ async function runAction(
         videosGroupId: ctx.shell.project?.videosGroupId,
         serverId: route.serverId,
         method: route.method,
-        args: {
-          prompt,
-          aspect_ratio: "1:1",
-          model: route.value,
-        },
+        args: generateArgs,
         mediaType: "image",
         intent: "text_to_image",
         label: route.label || route.method,
@@ -526,12 +586,83 @@ async function runAction(
           }),
         );
       }
+      const localPath = result.creationId
+        ? await waitForLocalPath(result.creationId, 60_000)
+        : null;
       return {
         creationId: result.creationId,
         projectId,
         imagesGroupId: result.imagesGroupId,
         model: route.value,
+        aspectRatio,
+        size: size || null,
+        localPath,
       };
+    }
+    case "library.import": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const paths = argPaths(args);
+      if (paths.length === 0) throw new Error("library.import needs paths");
+      const projectId =
+        argString(args, "projectId") || ctx.shell.openProjectId || "";
+      if (projectId && ctx.shell.openProjectId !== projectId) {
+        const opened = await ctx.shell.openProject(projectId, true);
+        if (!opened) throw new Error("Could not open project for import");
+        await sleep(400);
+      }
+      showProject(ctx.shell, projectId ? "editor" : undefined);
+      const imported = projectId
+        ? await importProjectAssetPaths(projectId, paths)
+        : await importLocalPaths(paths);
+      if (projectId && imported.creations.length) {
+        await ctx.shell.addCreationsToProject(
+          projectId,
+          imported.creations.map((row) => row.id),
+        );
+      }
+      window.dispatchEvent(new CustomEvent("parascene-library-reload"));
+      return {
+        imported: imported.imported,
+        projectId: projectId || null,
+        creations: imported.creations.map((row) => ({
+          id: row.id,
+          title: row.title,
+          mediaType: row.mediaType,
+          localPath: row.localPath,
+        })),
+      };
+    }
+    case "generation.a2v": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const projectId =
+        argString(args, "projectId") || ctx.shell.openProjectId || "";
+      if (!projectId) throw new Error("generation.a2v needs an open project");
+      if (ctx.shell.openProjectId !== projectId) {
+        showProject(ctx.shell, "director");
+        const opened = await ctx.shell.openProject(projectId, true);
+        if (!opened) throw new Error("Could not open project for A2V");
+        await sleep(800);
+      }
+      const stillId = argString(args, "stillId") || argString(args, "imageId");
+      if (!stillId) throw new Error("generation.a2v needs stillId");
+      showProject(ctx.shell, "editor");
+      await sleep(400);
+      const result = await runAgentA2v({
+        shell: ctx.shell,
+        projectId,
+        stillId,
+        audioId: argString(args, "audioId") || undefined,
+        audioPath: argString(args, "audioPath") || undefined,
+        prompt:
+          argString(args, "prompt") ||
+          "The person speaks clearly to the camera, mouth moving with the words.",
+        durationSec: argNumber(args, "durationSec"),
+        generate: argBoolean(args, "generate"),
+        form: argBoolean(args, "form"),
+        videoId: argString(args, "videoId") || undefined,
+      });
+      showProject(ctx.shell, "editor");
+      return { ...result, projectId };
     }
     case "cloud.delete": {
       const ids = collectDeleteIds(args);
@@ -543,12 +674,38 @@ async function runAction(
     }
     case "library.lookup": {
       const ids = collectDeleteIds(args);
-      const found: Array<{ id: string; title: string }> = [];
+      const titleContains = argString(args, "titleContains");
+      const pathContains = argString(args, "pathContains");
+      const found: Array<{
+        id: string;
+        title: string;
+        mediaType: string;
+        localPath: string | null;
+      }> = [];
+      const push = (row: NonNullable<Awaited<ReturnType<typeof catalogRow>>>) => {
+        found.push({
+          id: row.id,
+          title: row.title,
+          mediaType: String(row.mediaType ?? ""),
+          localPath: row.localPath,
+        });
+      };
       for (const id of ids) {
         const row = await catalogRow(id);
-        if (row) found.push({ id: row.id, title: row.title });
+        if (row) push(row);
       }
-      return { ids, found };
+      if (titleContains || pathContains) {
+        const rows = await listCreations();
+        for (const row of rows) {
+          const title = row.title ?? "";
+          const path = `${row.localPath ?? ""} ${row.filename ?? ""}`;
+          if (titleContains && !title.includes(titleContains)) continue;
+          if (pathContains && !path.includes(pathContains)) continue;
+          if (found.some((item) => item.id === row.id)) continue;
+          push(row);
+        }
+      }
+      return { ids, titleContains: titleContains || null, pathContains: pathContains || null, found };
     }
     case "sync.start": {
       showLibrary(ctx.shell, "sync");

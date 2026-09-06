@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { AGENT_TEST_GENERATE_PROMPT } from "../fixtures/agentTestGenerate";
+import { AGENT_TEST_SPEECH_TEXT } from "../fixtures/agentTestSpeech";
 
 const HELP_ROOT = join(process.cwd(), "public/help");
 
@@ -10,6 +12,9 @@ const JOURNEYS = [
   "projects.html",
   "folders.html",
   "generate.html",
+  "audio.html",
+  "image-models.html",
+  "video-models.html",
 ] as const;
 
 function readHelp(rel: string): string {
@@ -31,15 +36,40 @@ describe("help pages", () => {
     expect(html).toContain("projects.html");
     expect(html).toContain("folders.html");
     expect(html).toContain("generate.html");
+    expect(html).toContain("audio.html");
+    expect(html).toContain("Generate a video with audio");
+    expect(html).toContain("settings.html");
+    expect(html).toContain("Settings");
     expect(html).toContain("tools.html");
     expect(html).toContain("Local tools");
     expect(html).toContain("Overview");
     expect(html).toContain("overview.html");
+    expect(html).toContain('class="help-wordmark"');
+    expect(html).toContain('class="topic-icon"');
+    expect(html.match(/class="topic-icon"/g)?.length).toBe(11);
+    expect(html).toContain("image-models.html");
+    expect(html).toContain("Image models");
+    expect(html).toContain("video-models.html");
+    expect(html).toContain("Video models");
+  });
+
+  it("ships Inter with help pages", () => {
+    const css = readHelp("help.css");
+    expect(css).toContain("Inter Variable");
+    expect(css).toContain("fonts/inter-latin-wght-normal.woff2");
+    expect(css).toContain("fonts/inter-latin-ext-wght-normal.woff2");
+    expect(css).toContain(".help-lightbox");
+    expect(css).toContain(".model-names");
+    expect(css).toContain(".home-icon");
+    const js = readHelp("help.js");
+    expect(js).toContain("help-lightbox");
+    expect(js).toContain("Escape");
   });
 
   it("is one scrolling Overview with a back link", () => {
     const overview = readHelp("overview.html");
-    expect(overview).toContain('href="index.html">All topics</a>');
+    expect(overview).toContain('class="home-icon"');
+    expect(overview).toContain("All topics");
     expect(overview).toContain("<h1>Overview</h1>");
     expect(overview).toContain("id=\"projects\"");
     expect(overview).toContain("id=\"library\"");
@@ -54,13 +84,15 @@ describe("help pages", () => {
   it("gives each topic a back link and the tested button labels", () => {
     for (const page of JOURNEYS) {
       const html = readHelp(page);
-      expect(html, page).toContain('href="index.html">All topics</a>');
+      expect(html, page).toContain('class="home-icon"');
+      expect(html, page).toContain("All topics");
       expect(html, page).toContain('src="help.js"');
     }
 
     const start = readHelp("getting-started.html");
     expect(start).toContain("<h1>Getting started</h1>");
     expect(start).toContain("Log in");
+    expect(start).toContain("desktop/screens/login.png");
     expect(start).toContain("desktop/screens/library.png");
     expect(start).toContain("desktop/screens/sync.png");
     expect(start).toContain("desktop/screens/projects.png");
@@ -73,6 +105,9 @@ describe("help pages", () => {
     expect(start).toContain("Untitled project");
     expect(start).toContain("Add asset");
     expect(start).toContain("Text to Image");
+    expect(start).toContain("Where to go from here");
+    expect(start).toContain("generate.html");
+    expect(start).not.toContain("audio.html");
 
     const sync = readHelp("sync.html");
     expect(sync).toContain("<h1>Sync</h1>");
@@ -100,13 +135,154 @@ describe("help pages", () => {
     expect(generate).toContain("Add asset");
     expect(generate).toContain("Text to Image");
     expect(generate).toContain("Parascene");
-    expect(generate).toContain("sd15: lofi_V2pre");
+    expect(generate).toContain("X.ai Grok Imagine Image");
     expect(generate).toContain("Generate");
+    expect(generate).toContain(AGENT_TEST_GENERATE_PROMPT);
+    expect(generate).toContain("desktop/screens/editor-generate-prompt.png");
+    expect(generate).toContain("desktop/screens/editor-generate-result.png");
+    expect(generate).toContain("desktop/media/agent-test-still.png");
+    expect(generate).toContain("Where to go from here");
+    expect(generate).toContain("audio.html");
+
+    const index = readHelp("index.html");
+    const startHere = index.slice(
+      index.indexOf("Start here"),
+      index.indexOf("Topics"),
+    );
+    expect(startHere).toContain("getting-started.html");
+    expect(startHere).toContain("generate.html");
+    expect(startHere).toContain("audio.html");
+    const topics = index.slice(index.indexOf("Topics"), index.indexOf("Setup"));
+    expect(topics).not.toContain("audio.html");
+    expect(topics).toContain("image-models.html");
+    expect(topics).toContain("video-models.html");
+    expect(startHere).not.toContain("image-models.html");
+    expect(startHere).not.toContain("video-models.html");
+    const setup = index.slice(index.indexOf("Setup"), index.indexOf("Screens"));
+    expect(setup).toContain("settings.html");
+    expect(setup).toContain("tools.html");
+    expect(topics).not.toContain("settings.html");
+
+    const audio = readHelp("audio.html");
+    expect(audio).toContain("<h1>Generate a video with audio</h1>");
+    expect(audio).toContain('href="generate.html">Generate an image</a>');
+    expect(audio).not.toContain("Log in");
+    expect(audio).toContain("Add from disk…");
+    expect(audio).toContain("Audio to Video");
+    expect(audio).toContain("ltx_a2v");
+    expect(audio).toContain("full mix");
+    expect(audio).toContain("Where to go from here");
+    expect(audio).toContain("tools.html");
+    expect(audio).toContain(AGENT_TEST_SPEECH_TEXT);
+    expect(audio).toContain("desktop/media/agent-test-speech.mp3");
+    expect(audio).toContain("desktop/media/agent-test-speech.mp4");
+    expect(audio).toContain("9 seconds");
+    expect(audio).toContain("don't trim");
+    expect(audio).toContain("desktop/media/agent-test-still.png");
+    expect(audio).toContain("desktop/screens/editor-audio-timeline.png");
+    expect(audio).toContain("desktop/screens/editor-a2v-form.png");
+    expect(audio).toContain("desktop/screens/editor-a2v.png");
+    expect(audio).toContain("video lane is still empty");
+    expect(audio).toContain("<audio");
+    expect(audio).toContain("<video");
+    expect(audio).not.toMatch(/the (A2V |desktop )?test/i);
+    expect(audio).not.toContain("writes this screenshot");
+    expect(generate).not.toMatch(/the (A2V |desktop )?test/i);
+
+    const models = readHelp("image-models.html");
+    expect(models).toContain("<h1>Image models</h1>");
+    expect(models).toContain(AGENT_TEST_GENERATE_PROMPT);
+    expect(models).toContain("Where to go from here");
+    expect(models).toContain("generate.html");
+    expect(models).toContain("<h2>Z-Image</h2>");
+    expect(models).toContain("<h2>Image edit</h2>");
+    expect(models).toContain("class=\"model-names\"");
+    expect(models).not.toContain("desktop/media/models/replicate-prunaai-p-image-edit.png");
+    expect(models).not.toContain("desktop/media/models/replicate-qwen-image-edit.png");
+    expect(models).not.toContain(
+      "desktop/media/models/replicate-pro-bfl-flux-2-pro-multi-image-edit.png",
+    );
+    expect(models).not.toContain(
+      "desktop/media/models/blue-qwen-qwen-image-edit-fp8-e4m3fn.png",
+    );
+    expect(models).not.toContain(
+      "desktop/media/models/blue-flux-flux1-dev-kontext-fp8-scaled.png",
+    );
+    expect(models).not.toContain("desktop/screens/");
+
+    const videoModels = readHelp("video-models.html");
+    expect(videoModels).toContain("<h1>Video models</h1>");
+    expect(videoModels).toContain("Text to Video");
+    expect(videoModels).toContain("Image to Video");
+    expect(videoModels).toContain("Audio to Video");
+    expect(videoModels).toContain("Video to Video");
+    expect(videoModels).toContain("Refs to Video");
+    expect(videoModels).toContain("Wan");
+    expect(videoModels).toContain("LTX");
+    expect(videoModels).toContain("MiniMax H3");
+    expect(videoModels).toContain("ltx_a2v");
+    expect(videoModels).toContain("Direct to Blue");
+    expect(videoModels).toContain("Replicate");
+    expect(videoModels).toContain("Where to go from here");
+    expect(videoModels).toContain("audio.html");
+    expect(videoModels).toContain("image-models.html");
+    expect(videoModels).not.toContain("desktop/screens/");
+    expect(videoModels).not.toMatch(/general overview/i);
+    expect(generate).not.toContain("writes this screenshot");
+    expect(existsSync(join(HELP_ROOT, "desktop/media/agent-test-speech.wav"))).toBe(true);
+    expect(existsSync(join(HELP_ROOT, "desktop/media/agent-test-speech.mp3"))).toBe(true);
+    expect(existsSync(join(HELP_ROOT, "desktop/media/agent-test-speech.mp4"))).toBe(true);
+    expect(existsSync(join(HELP_ROOT, "desktop/media/agent-test-still.png"))).toBe(true);
+    expect(existsSync(join(HELP_ROOT, "desktop/screens/editor-audio-timeline.png"))).toBe(
+      true,
+    );
+    expect(existsSync(join(HELP_ROOT, "desktop/screens/editor-a2v.png"))).toBe(true);
+    expect(existsSync(join(HELP_ROOT, "desktop/screens/editor-a2v-form.png"))).toBe(
+      true,
+    );
+    const editorPng = readFileSync(join(HELP_ROOT, "desktop/screens/editor.png"));
+    const audioTl = readFileSync(
+      join(HELP_ROOT, "desktop/screens/editor-audio-timeline.png"),
+    );
+    const a2vForm = readFileSync(
+      join(HELP_ROOT, "desktop/screens/editor-a2v-form.png"),
+    );
+    const a2vScreen = readFileSync(join(HELP_ROOT, "desktop/screens/editor-a2v.png"));
+    expect(audioTl.equals(editorPng), "timeline shot must come from the A2V test").toBe(
+      false,
+    );
+    expect(a2vScreen.equals(editorPng), "after shot must come from the A2V test").toBe(
+      false,
+    );
+    expect(audioTl.equals(a2vScreen), "before and after shots must differ").toBe(false);
+    expect(audioTl.equals(a2vForm), "timeline shot must not be the form shot").toBe(
+      false,
+    );
+    expect(a2vForm.equals(a2vScreen), "form shot must not be the after shot").toBe(
+      false,
+    );
+  });
+
+  it("never mentions tests in the user-facing articles", () => {
+    const pages = [
+      "index.html",
+      "overview.html",
+      "settings.html",
+      "tools.html",
+      ...JOURNEYS,
+    ];
+    for (const page of pages) {
+      const html = readHelp(page);
+      expect(html, page).not.toMatch(/the (A2V |desktop )?test/i);
+      expect(html, page).not.toContain("writes this screenshot");
+      expect(html, page).not.toContain("This page does not repeat");
+    }
   });
 
   it("tells users Settings shows whether the app can see each tool", () => {
     const tools = readHelp("tools.html");
-    expect(tools).toContain('href="index.html">All topics</a>');
+    expect(tools).toContain('class="home-icon"');
+    expect(tools).toContain("All topics");
     expect(tools).toContain('src="help.js"');
     expect(tools).toContain("<h1>Local tools</h1>");
     expect(tools).toContain("See what the app can find");
@@ -125,5 +301,33 @@ describe("help pages", () => {
     expect(tools).toContain('class="for-windows"');
     expect(tools).toContain('data-os="mac"');
     expect(tools).toContain('data-os="windows"');
+  });
+
+  it("walks every control in the Settings dialog", () => {
+    const settings = readHelp("settings.html");
+    expect(settings).toContain('class="home-icon"');
+    expect(settings).toContain("All topics");
+    expect(settings).toContain('src="help.js"');
+    expect(settings).toContain("<h1>Settings</h1>");
+    expect(settings).toContain("desktop/screens/settings.png");
+    expect(settings).toContain("OpenAI API key");
+    expect(settings).toContain("Replicate API token");
+    expect(settings).toContain("Clear Replicate token");
+    expect(settings).toContain("Parascene Blue credentials");
+    expect(settings).toContain("Clear Blue credentials");
+    expect(settings).toContain("Show Labs");
+    expect(settings).toContain("Low");
+    expect(settings).toContain("Medium");
+    expect(settings).toContain("High");
+    expect(settings).toContain("Editor preview");
+    expect(settings).toContain("Local tools");
+    expect(settings).toContain("Re-check");
+    expect(settings).toContain("Install demucs");
+    expect(settings).toContain("Open LOCAL_TOOLS.md");
+    expect(settings).toContain("Save");
+    expect(settings).toContain("Cancel");
+    expect(settings).toContain("tools.html");
+    expect(settings).not.toMatch(/the (A2V |desktop )?test/i);
+    expect(existsSync(join(HELP_ROOT, "desktop/screens/settings.png"))).toBe(true);
   });
 });

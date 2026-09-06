@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthProvider, useAuthOptional } from "./auth/AuthProvider";
-import { LoginScreen } from "./auth/LoginScreen";
+import { LoginCard, LoginScreen, LoginShell } from "./auth/LoginScreen";
 import { ReauthOverlay } from "./auth/ReauthOverlay";
 import { AppChrome } from "./app/AppChrome";
 import { ShellProvider, useShell } from "./app/ShellProvider";
@@ -14,7 +14,6 @@ import { AgentBridge } from "./agent/AgentBridge";
 import { useHelpShortcut } from "./help/useHelpShortcut";
 import { useLabsEnabled } from "./settings/labsEnabled";
 import { AppErrorBoundary } from "./ui/AppErrorBoundary";
-import { Wordmark } from "./ui/Wordmark";
 import "./styles.css";
 
 function LayoutRouter() {
@@ -90,12 +89,11 @@ function Root() {
 
   if (status === "reconnecting") {
     return (
-      <div className="login-screen">
-        <div className="login-card">
-          <Wordmark />
+      <LoginShell>
+        <LoginCard>
           <p className="login-copy">Starting Parascene…</p>
-        </div>
-      </div>
+        </LoginCard>
+      </LoginShell>
     );
   }
 

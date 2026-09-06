@@ -176,13 +176,25 @@ fn actions() -> Vec<AgentAction> {
             id: "library.lookup".into(),
             scope: "library".into(),
             status: "wired".into(),
-            summary: "Return which of the given creation ids still exist locally".into(),
+            summary: "Return matching local catalog rows by id, title, or path".into(),
         },
         AgentAction {
             id: "generation.start".into(),
             scope: "generation".into(),
             status: "wired".into(),
             summary: "Generate a still via Parascene product text2image".into(),
+        },
+        AgentAction {
+            id: "generation.a2v".into(),
+            scope: "generation".into(),
+            status: "wired".into(),
+            summary: "Put audio on the timeline and run LTX audio-to-video (full mix)".into(),
+        },
+        AgentAction {
+            id: "library.import".into(),
+            scope: "library".into(),
+            status: "wired".into(),
+            summary: "Import local files into Library (and the open project when projectId is set)".into(),
         },
         AgentAction {
             id: "window.setSize".into(),
@@ -273,7 +285,7 @@ fn ui_timeout_for(action: &str) -> Duration {
     match action {
         "sync.thumbs" => Duration::from_secs(6 * 60),
         "sync.media" => Duration::from_secs(15 * 60),
-        "generation.start" => Duration::from_secs(12 * 60),
+        "generation.start" | "generation.a2v" => Duration::from_secs(12 * 60),
         _ => UI_TIMEOUT,
     }
 }
@@ -358,6 +370,8 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         | "folder.delete"
         | "cloud.delete"
         | "generation.start"
+        | "generation.a2v"
+        | "library.import"
         | "sync.start"
         | "sync.folders"
         | "sync.thumbs"
@@ -626,6 +640,8 @@ mod tests {
     fn actions_include_planned_cloud_delete() {
         assert!(actions().iter().any(|a| a.id == "cloud.delete" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "generation.start" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "generation.a2v" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "library.import" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "project.create" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.clearLocal" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "sync.folders" && a.status == "wired"));

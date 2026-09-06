@@ -1,7 +1,15 @@
-export function Wordmark() {
+import { ParasceneWordmark } from "./svgs";
+
+export function Wordmark({
+  className,
+  width = 180,
+}: {
+  className?: string;
+  width?: number;
+}) {
   return (
-    <div className="wordmark" aria-label="Parascene">
-      Parascene
+    <div className={className ?? "wordmark"} aria-label="Parascene">
+      <ParasceneWordmark width={width} />
     </div>
   );
 }
