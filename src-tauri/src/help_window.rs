@@ -85,7 +85,7 @@ const HELP_FILES: &[&str] = &[
     "help/help.js",
     "help/image-models.html",
     "help/index.html",
-    "help/overview.html",
+    "help/local-and-cloud.html",
     "help/projects.html",
     "help/settings.html",
     "help/sync.html",
@@ -98,18 +98,22 @@ pub const HELP_WINDOW_LABEL: &str = "help";
 const PAGES: &[(&str, &str)] = &[
     ("", "help/index.html"),
     ("index", "help/index.html"),
-    ("overview", "help/overview.html"),
-    ("screens", "help/overview.html"),
+    ("overview", "help/getting-started.html"),
+    ("screens", "help/getting-started.html"),
     ("getting-started", "help/getting-started.html"),
     ("start", "help/getting-started.html"),
     ("projects", "help/projects.html"),
     ("create-project", "help/projects.html"),
     ("open-project", "help/projects.html"),
     ("folders", "help/folders.html"),
-    ("library", "help/overview.html#library"),
+    ("local-and-cloud", "help/local-and-cloud.html"),
+    ("this-computer", "help/local-and-cloud.html"),
+    ("cloud", "help/local-and-cloud.html"),
+    ("remote", "help/local-and-cloud.html"),
+    ("library", "help/getting-started.html#library"),
     ("sync", "help/sync.html"),
-    ("director", "help/overview.html#director"),
-    ("editor", "help/overview.html#editor"),
+    ("director", "help/getting-started.html#director"),
+    ("editor", "help/getting-started.html#editor"),
     ("generate", "help/generate.html"),
     ("generate-image", "help/generate.html"),
     ("image-models", "help/image-models.html"),
@@ -272,11 +276,14 @@ mod tests {
     #[test]
     fn maps_known_topics_and_falls_back() {
         assert_eq!(help_page(None), "help/index.html");
-        assert_eq!(help_page(Some("overview")), "help/overview.html");
-        assert_eq!(help_page(Some("screens")), "help/overview.html");
+        assert_eq!(help_page(Some("overview")), "help/getting-started.html");
+        assert_eq!(help_page(Some("screens")), "help/getting-started.html");
         assert_eq!(help_page(Some("getting-started")), "help/getting-started.html");
         assert_eq!(help_page(Some("projects")), "help/projects.html");
         assert_eq!(help_page(Some("folders")), "help/folders.html");
+        assert_eq!(help_page(Some("local-and-cloud")), "help/local-and-cloud.html");
+        assert_eq!(help_page(Some("this-computer")), "help/local-and-cloud.html");
+        assert_eq!(help_page(Some("cloud")), "help/local-and-cloud.html");
         assert_eq!(help_page(Some("sync")), "help/sync.html");
         assert_eq!(help_page(Some("generate")), "help/generate.html");
         assert_eq!(help_page(Some("image-models")), "help/image-models.html");
@@ -290,8 +297,8 @@ mod tests {
         assert_eq!(help_page(Some("labs")), "help/settings.html");
         assert_eq!(help_page(Some("tools")), "help/tools.html");
         assert_eq!(help_page(Some("ffmpeg")), "help/tools.html");
-        assert_eq!(help_page(Some("library")), "help/overview.html#library");
-        assert_eq!(help_page(Some("director")), "help/overview.html#director");
+        assert_eq!(help_page(Some("library")), "help/getting-started.html#library");
+        assert_eq!(help_page(Some("director")), "help/getting-started.html#director");
         assert_eq!(help_page(Some("nope")), "help/index.html");
     }
 
@@ -302,8 +309,8 @@ mod tests {
         assert!(hash.is_none());
         assert!(!path.contains('\\'));
 
-        let (path, hash) = help_asset_parts("help\\overview.html#library");
-        assert_eq!(path, "help/overview.html");
+        let (path, hash) = help_asset_parts("help\\getting-started.html#library");
+        assert_eq!(path, "help/getting-started.html");
         assert_eq!(hash.as_deref(), Some("library"));
         assert!(!path.contains('\\'));
     }
@@ -342,8 +349,8 @@ mod tests {
         let windows = path_to_file_url(Path::new(r"C:\Program Files\Parascene\help\index.html"), None);
         assert_eq!(windows, "file:///C:/Program%20Files/Parascene/help/index.html");
 
-        let hashed = path_to_file_url(Path::new("/tmp/help/overview.html"), Some("library"));
-        assert_eq!(hashed, "file:///tmp/help/overview.html#library");
+        let hashed = path_to_file_url(Path::new("/tmp/help/getting-started.html"), Some("library"));
+        assert_eq!(hashed, "file:///tmp/help/getting-started.html#library");
 
         let verbatim = path_to_file_url(
             Path::new(r"\\?\C:\Program Files\Parascene\help\index.html"),

@@ -5,7 +5,8 @@
 
 use super::catalog::{
     apply_manifest, cloud_ids_since, default_paths, delete_creation_local, existing_creation_ids,
-    map_remote_creation_json, ready_connection, sync_status_for, CreationUpsert,
+    group_member_ids_from_remote_json, map_remote_creation_json, ready_connection, sync_status_for,
+    CreationUpsert,
 };
 use super::parascene_api::{get_creation, list_my_creations};
 use chrono::{Duration, Utc};
@@ -41,6 +42,19 @@ fn recent_prune_since_iso(oldest_fetched: &str) -> String {
     }
 }
 
+/// Grouped cabinet members 404 on GET; they still exist on the cover.
+fn grouped_member_ids(remote_rows: &[CreationUpsert]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for row in remote_rows {
+        for id in group_member_ids_from_remote_json(&row.remote_json) {
+            if id != row.id {
+                out.insert(id);
+            }
+        }
+    }
+    out
+}
+
 fn delete_local_best_effort(app: &AppHandle, id: &str) -> bool {
     let Ok(paths) = default_paths() else {
         return false;
@@ -67,6 +81,7 @@ async fn prune_recent_remote_deletions(
         return Ok(0);
     }
     let remote_ids: HashSet<&str> = remote_rows.iter().map(|r| r.id.as_str()).collect();
+    let grouped_members = grouped_member_ids(remote_rows);
     let mut oldest = remote_rows[0].created_at.clone();
     for row in remote_rows {
         if row.created_at < oldest {
@@ -82,7 +97,7 @@ async fn prune_recent_remote_deletions(
     let candidates: Vec<String> = locals
         .into_iter()
         .map(|r| r.id)
-        .filter(|id| !remote_ids.contains(id.as_str()))
+        .filter(|id| !remote_ids.contains(id.as_str()) && !grouped_members.contains(id))
         .collect();
     if candidates.is_empty() {
         on_tick(0, 0)?;
@@ -244,4 +259,57 @@ pub async fn run_sync_newest(
         "status": status,
         "message": done_msg,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn upsert(id: &str, remote_json: serde_json::Value) -> CreationUpsert {
+        serde_json::from_value(json!({
+            "id": id,
+            "title": id,
+            "mediaType": "image",
+            "remoteUrl": null,
+            "thumbnailUrl": null,
+            "videoUrl": null,
+            "published": false,
+            "publishedAt": null,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "downloadState": "remote",
+            "prompt": null,
+            "filename": null,
+            "description": null,
+            "color": null,
+            "status": "completed",
+            "width": null,
+            "height": null,
+            "aspectRatio": null,
+            "nsfw": false,
+            "isModeratedError": false,
+            "remoteJson": remote_json.to_string(),
+        }))
+        .expect("upsert")
+    }
+
+    #[test]
+    fn grouped_members_are_not_prune_candidates() {
+        let cover = upsert(
+            "28396",
+            json!({
+                "id": "28396",
+                "filename": "group/cover.json",
+                "meta": {
+                    "group": {
+                        "kind": "group_creations",
+                        "source_creation_ids": ["28395"]
+                    }
+                }
+            }),
+        );
+        let members = grouped_member_ids(&[cover]);
+        assert!(members.contains("28395"));
+        assert!(!members.contains("28396"));
+    }
 }

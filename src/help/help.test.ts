@@ -22,14 +22,16 @@ function readHelp(rel: string): string {
 }
 
 describe("help pages", () => {
-  it("lists Start here, Topics, Setup, and Screens from the contents page", () => {
+  it("lists Start here, Topics, and Setup from the contents page", () => {
     const html = readHelp("index.html");
     expect(html).toContain("class=\"lead\"");
     expect(html).toContain("Start here");
     expect(html).toContain("Topics");
     expect(html).toContain("Setup");
-    expect(html).toContain("Screens");
+    expect(html).not.toContain("Screens");
     expect(html).not.toContain("Journeys");
+    expect(html).not.toContain("Overview");
+    expect(html).not.toContain("overview.html");
     expect(html).toContain("Getting started");
     expect(html).toContain("getting-started.html");
     expect(html).toContain("sync.html");
@@ -42,11 +44,11 @@ describe("help pages", () => {
     expect(html).toContain("Settings");
     expect(html).toContain("tools.html");
     expect(html).toContain("Local tools");
-    expect(html).toContain("Overview");
-    expect(html).toContain("overview.html");
     expect(html).toContain('class="help-wordmark"');
     expect(html).toContain('class="topic-icon"');
     expect(html.match(/class="topic-icon"/g)?.length).toBe(11);
+    expect(html).toContain("local-and-cloud.html");
+    expect(html).toContain("This computer and the cloud");
     expect(html).toContain("image-models.html");
     expect(html).toContain("Image models");
     expect(html).toContain("video-models.html");
@@ -60,25 +62,30 @@ describe("help pages", () => {
     expect(css).toContain("fonts/inter-latin-ext-wght-normal.woff2");
     expect(css).toContain(".help-lightbox");
     expect(css).toContain(".model-names");
+    expect(css).toContain(".catalog-split");
+    expect(css).toContain(".model-brand");
     expect(css).toContain(".home-icon");
     const js = readHelp("help.js");
     expect(js).toContain("help-lightbox");
     expect(js).toContain("Escape");
   });
 
-  it("is one scrolling Overview with a back link", () => {
-    const overview = readHelp("overview.html");
-    expect(overview).toContain('class="home-icon"');
-    expect(overview).toContain("All topics");
-    expect(overview).toContain("<h1>Overview</h1>");
-    expect(overview).toContain("id=\"projects\"");
-    expect(overview).toContain("id=\"library\"");
-    expect(overview).toContain("id=\"sync\"");
-    expect(overview).toContain("id=\"director\"");
-    expect(overview).toContain("id=\"editor\"");
-    expect(overview).toContain("desktop/screens/library.png");
-    expect(overview).toContain("desktop/screens/editor-new-asset.png");
-    expect(overview).toContain('src="help.js"');
+  it("keeps first-run screen headings on Getting started, not a second Overview", () => {
+    const start = readHelp("getting-started.html");
+    expect(start).toContain('class="home-icon"');
+    expect(start).toContain("All topics");
+    expect(start).toContain("<h1>Getting started</h1>");
+    expect(start).toContain("id=\"library\"");
+    expect(start).toContain("id=\"projects\"");
+    expect(start).toContain("id=\"director\"");
+    expect(start).toContain("id=\"editor\"");
+    expect(start).not.toContain("id=\"sync\"");
+    expect(start).not.toContain("desktop/screens/sync.png");
+    expect(start).not.toContain("Sync newest");
+    expect(start).not.toContain("overview.html");
+    expect(start).toContain("desktop/screens/library.png");
+    expect(start).toContain("desktop/screens/editor-new-asset.png");
+    expect(start).toContain('src="help.js"');
   });
 
   it("gives each topic a back link and the tested button labels", () => {
@@ -94,7 +101,7 @@ describe("help pages", () => {
     expect(start).toContain("Log in");
     expect(start).toContain("desktop/screens/login.png");
     expect(start).toContain("desktop/screens/library.png");
-    expect(start).toContain("desktop/screens/sync.png");
+    expect(start).not.toContain("desktop/screens/sync.png");
     expect(start).toContain("desktop/screens/projects.png");
     expect(start).toContain("desktop/screens/director.png");
     expect(start).toContain("desktop/screens/editor.png");
@@ -115,6 +122,7 @@ describe("help pages", () => {
     expect(sync).toContain("Ready");
     expect(sync).toContain("Sync folders");
     expect(sync).toContain("Sync full catalog");
+    expect(sync).toContain("local-and-cloud.html");
 
     const projects = readHelp("projects.html");
     expect(projects).toContain("<h1>Projects</h1>");
@@ -122,6 +130,8 @@ describe("help pages", () => {
     expect(projects).toContain("Close project");
     expect(projects).toContain("Delete project");
     expect(projects).toContain("Untitled project");
+    expect(projects).toContain("this computer");
+    expect(projects).toContain("local-and-cloud.html");
 
     const folders = readHelp("folders.html");
     expect(folders).toContain("<h1>Folders</h1>");
@@ -129,6 +139,7 @@ describe("help pages", () => {
     expect(folders).toContain("New project…");
     expect(folders).toContain("regular");
     expect(folders).toContain("project folder");
+    expect(folders).toContain("local-and-cloud.html");
 
     const generate = readHelp("generate.html");
     expect(generate).toContain("<h1>Generate an image</h1>");
@@ -154,14 +165,17 @@ describe("help pages", () => {
     expect(startHere).toContain("audio.html");
     const topics = index.slice(index.indexOf("Topics"), index.indexOf("Setup"));
     expect(topics).not.toContain("audio.html");
+    expect(topics).toContain("local-and-cloud.html");
     expect(topics).toContain("image-models.html");
     expect(topics).toContain("video-models.html");
+    expect(startHere).not.toContain("local-and-cloud.html");
     expect(startHere).not.toContain("image-models.html");
     expect(startHere).not.toContain("video-models.html");
-    const setup = index.slice(index.indexOf("Setup"), index.indexOf("Screens"));
+    const setup = index.slice(index.indexOf("Setup"));
     expect(setup).toContain("settings.html");
     expect(setup).toContain("tools.html");
     expect(topics).not.toContain("settings.html");
+    expect(setup).not.toContain("overview.html");
 
     const audio = readHelp("audio.html");
     expect(audio).toContain("<h1>Generate a video with audio</h1>");
@@ -212,10 +226,21 @@ describe("help pages", () => {
 
     const videoModels = readHelp("video-models.html");
     expect(videoModels).toContain("<h1>Video models</h1>");
+    expect(videoModels).toContain("catalog-split");
+    expect(videoModels).toContain("<h2>Models</h2>");
+    expect(videoModels).toContain("<h2>Intents</h2>");
+    expect(videoModels).toContain("model-brand--wan");
+    expect(videoModels).toContain("model-brand--ltx");
+    expect(videoModels).toContain("model-brand--minimax");
     expect(videoModels).toContain("Text to Video");
     expect(videoModels).toContain("Image to Video");
     expect(videoModels).toContain("Audio to Video");
     expect(videoModels).toContain("Video to Video");
+    expect(videoModels).toContain("copy the motion");
+    expect(videoModels).toContain("Invent a clip");
+    expect(videoModels).toContain("Make a still move");
+    expect(videoModels).toContain("talking clip");
+    expect(videoModels).toContain("Hold onto who");
     expect(videoModels).toContain("Refs to Video");
     expect(videoModels).toContain("Wan");
     expect(videoModels).toContain("LTX");
@@ -266,7 +291,7 @@ describe("help pages", () => {
   it("never mentions tests in the user-facing articles", () => {
     const pages = [
       "index.html",
-      "overview.html",
+      "local-and-cloud.html",
       "settings.html",
       "tools.html",
       ...JOURNEYS,
@@ -277,6 +302,28 @@ describe("help pages", () => {
       expect(html, page).not.toContain("writes this screenshot");
       expect(html, page).not.toContain("This page does not repeat");
     }
+  });
+
+  it("explains this computer versus the cloud without a second screen tour", () => {
+    const html = readHelp("local-and-cloud.html");
+    expect(html).toContain('class="home-icon"');
+    expect(html).toContain("All topics");
+    expect(html).toContain('src="help.js"');
+    expect(html).toContain("<h1>This computer and the cloud</h1>");
+    expect(html).toContain("On this computer");
+    expect(html).toContain("On Parascene");
+    expect(html).toContain("How they meet");
+    expect(html).toContain("What delete does");
+    expect(html).toContain("Add from disk…");
+    expect(html).toContain("Direct to Blue");
+    expect(html).toContain("Replicate");
+    expect(html).toContain("This desktop");
+    expect(html).toContain("Delete project");
+    expect(html).toContain("sync.html");
+    expect(html).toContain("projects.html");
+    expect(html).not.toContain("desktop/screens/");
+    expect(html).not.toContain("overview.html");
+    expect(html).not.toMatch(/the (A2V |desktop )?test/i);
   });
 
   it("tells users Settings shows whether the app can see each tool", () => {
@@ -327,6 +374,7 @@ describe("help pages", () => {
     expect(settings).toContain("Save");
     expect(settings).toContain("Cancel");
     expect(settings).toContain("tools.html");
+    expect(settings).toContain("local-and-cloud.html");
     expect(settings).not.toMatch(/the (A2V |desktop )?test/i);
     expect(existsSync(join(HELP_ROOT, "desktop/screens/settings.png"))).toBe(true);
   });

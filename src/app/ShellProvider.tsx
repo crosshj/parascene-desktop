@@ -212,6 +212,15 @@ type ShellState = {
     imagesGroupId?: string | null;
     videosGroupId?: string | null;
   }) => void;
+  /**
+   * One persist write after Assets Remove/Delete: cabinet pointers plus
+   * hide ids from creationIds. Awaited so remount cannot bounce a cover.
+   */
+  persistOpenProjectAfterAssets: (patch: {
+    imagesGroupId: string | null;
+    videosGroupId: string | null;
+    hideIds: string[];
+  }) => Promise<void>;
   /** Persist Lab still / animate prompts for the open project. */
   setOpenProjectLabPrompts: (prompts: {
     labStillPrompt?: string | null;
@@ -2182,6 +2191,33 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const persistOpenProjectAfterAssets = useCallback(
+    async (patch: {
+      imagesGroupId: string | null;
+      videosGroupId: string | null;
+      hideIds: string[];
+    }) => {
+      if (!openProjectId) return;
+      const id = openProjectId;
+      const hideIds = patch.hideIds;
+      await updateStoredProjects((prev) =>
+        prev.map((project) => {
+          if (project.id !== id) return project;
+          let next = setStoredProjectGroupIds(project, {
+            imagesGroupId: patch.imagesGroupId,
+            videosGroupId: patch.videosGroupId,
+          });
+          if (hideIds.length > 0) {
+            next = removeCreationIds(next, hideIds);
+          }
+          return next;
+        }),
+      );
+      await flushProjectStore();
+    },
+    [openProjectId, updateStoredProjects],
+  );
+
   const setOpenProjectLabPrompts = useCallback(
     (prompts: {
       labStillPrompt?: string | null;
@@ -2261,6 +2297,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
+      persistOpenProjectAfterAssets,
       setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,
@@ -2323,6 +2360,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectTimelineMonitorActive,
       setOpenProjectTimelinePlayheadSec,
       setOpenProjectGroupIds,
+      persistOpenProjectAfterAssets,
       setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
       setOpenProjectLyricAlignment,

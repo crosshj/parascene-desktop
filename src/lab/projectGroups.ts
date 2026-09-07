@@ -175,7 +175,10 @@ export type RemoveGroupMembersResult = {
 
 /**
  * Remove member creations from a desktop project group on Parascene:
- * ungroup → delete targets → regroup survivors (when any remain).
+ * ungroup → optionally delete targets → regroup survivors (when any remain).
+ *
+ * `deleteMembers: false` is Assets Remove: the website group updates, members
+ * stay in Library and on Parascene.
  */
 export async function removeMembersFromProjectGroup(opts: {
   projectId: string;
@@ -183,6 +186,8 @@ export async function removeMembersFromProjectGroup(opts: {
   kind: ProjectGroupKind;
   groupId: string;
   memberIds: string[];
+  /** Default true (Assets Delete). False = ungroup only (Assets Remove). */
+  deleteMembers?: boolean;
   onProgress?: (note: string) => void;
 }): Promise<RemoveGroupMembersResult> {
   const groupId = String(opts.groupId).trim();
@@ -231,20 +236,27 @@ export async function removeMembersFromProjectGroup(opts: {
   }
 
   const deletedMemberIds: string[] = [];
-  for (const id of toRemove) {
-    opts.onProgress?.(`Deleting ${id} on Parascene…`);
-    try {
-      await deleteCreationViaService(id);
-      deletedMemberIds.push(id);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Parascene delete ${id} failed: ${msg}`);
+  const deleteMembers = opts.deleteMembers !== false;
+  if (deleteMembers) {
+    for (const id of toRemove) {
+      opts.onProgress?.(`Deleting ${id} on Parascene…`);
+      try {
+        await deleteCreationViaService(id);
+        deletedMemberIds.push(id);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Parascene delete ${id} failed: ${msg}`);
+      }
+      try {
+        await deleteLocal(id);
+      } catch {
+        /* local row may already be gone */
+      }
     }
-    try {
-      await deleteLocal(id);
-    } catch {
-      /* local row may already be gone */
-    }
+  } else {
+    opts.onProgress?.(
+      `Leaving ${toRemove.length} member${toRemove.length === 1 ? "" : "s"} in Library…`,
+    );
   }
 
   let finalGroupId: string | null = null;
@@ -286,6 +298,16 @@ export async function removeMembersFromProjectGroup(opts: {
     projectCreationIdsToRemove,
     projectCreationIdsToAdd,
   };
+}
+
+/** Assets Remove: leave members in Library and on Parascene; update the group. */
+export async function ungroupMembersFromProjectGroup(
+  opts: Omit<
+    Parameters<typeof removeMembersFromProjectGroup>[0],
+    "deleteMembers"
+  >,
+): Promise<RemoveGroupMembersResult> {
+  return removeMembersFromProjectGroup({ ...opts, deleteMembers: false });
 }
 
 /** Member creation ids from a live Parascene group row. */

@@ -38,6 +38,7 @@ describe("agent image models", () => {
     await sweepTestCreations(agent, {
       ids: createdIds,
       titleContains: ["agent-test-models-"],
+      promptContains: [AGENT_TEST_IMAGE_MODELS_PROMPT],
       projectId,
       folderId,
     });

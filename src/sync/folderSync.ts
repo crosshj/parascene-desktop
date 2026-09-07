@@ -1,4 +1,5 @@
 import { ensureAccessToken } from "../auth/session";
+import { existingCreationIds } from "../library/catalogClient";
 import {
   mutateLibraryFoldersSnapshot,
   pullLibraryFoldersSnapshot,
@@ -276,21 +277,43 @@ export function dropUnownedMarkerClears(
   return { kept, dropped };
 }
 
+export type DropRedundantFolderOpsOpts = {
+  /** Folder ids that still exist in the local catalog. */
+  localFolderIds?: Iterable<string>;
+  /** Creation ids that still exist in the local catalog. */
+  localCreationIds?: Iterable<string | number>;
+};
+
 /**
  * Drop pending creates/deletes that the cloud already reflects so Sync does not
  * loop on `folder id already exists` / `folder not found`.
  *
  * - Drop `create` when the folder id is already on cloud, unless a pending
- *   `delete` for that id remains (project release: delete then recreate).
+ *   `delete` for that id remains and the folder still exists locally
+ *   (project release: delete then recreate).
+ * - Drop `create` when cloud already has the id and the local folder is gone
+ *   (empty-delete leftover: keep the delete, do not resurrect the folder).
  * - Drop `delete` when the folder id is already absent from cloud.
+ * - Drop unfile `move`s (`folder_id` null) whose creation ids are all gone.
  */
 export function dropRedundantFolderOps(
   pending: PendingFolderOp[],
   cloud: RemoteLibraryFolder[],
+  opts?: DropRedundantFolderOpsOpts,
 ): { kept: PendingFolderOp[]; dropped: PendingFolderOp[] } {
   const cloudIds = new Set(
     cloud.map((folder) => folder.id).filter((id) => Boolean(id?.trim())),
   );
+  const localFolderIds = opts?.localFolderIds
+    ? new Set(
+        [...opts.localFolderIds]
+          .map((id) => id.trim())
+          .filter((id) => Boolean(id)),
+      )
+    : null;
+  const localCreationIds = opts?.localCreationIds
+    ? new Set([...opts.localCreationIds].map(String))
+    : null;
   const pendingDeleteIds = new Set<string>();
   for (const row of pending) {
     const op = normalizePendingOperation(row.op);
@@ -305,7 +328,11 @@ export function dropRedundantFolderOps(
     const op = normalizePendingOperation(row.op);
     if (op.op === "create") {
       const id = op.id.trim();
-      if (id && cloudIds.has(id) && !pendingDeleteIds.has(id)) {
+      const releaseRecreate =
+        Boolean(id) &&
+        pendingDeleteIds.has(id) &&
+        (localFolderIds == null || localFolderIds.has(id));
+      if (id && cloudIds.has(id) && !releaseRecreate) {
         dropped.push(row);
         continue;
       }
@@ -315,10 +342,69 @@ export function dropRedundantFolderOps(
         dropped.push(row);
         continue;
       }
+    } else if (op.op === "move" && localCreationIds) {
+      const ids = (op.creation_ids ?? []).map(String);
+      const unfile = op.folder_id == null || String(op.folder_id).trim() === "";
+      if (
+        unfile &&
+        ids.length > 0 &&
+        ids.every((id) => !localCreationIds.has(id))
+      ) {
+        dropped.push(row);
+        continue;
+      }
     }
     kept.push(row);
   }
   return { kept, dropped };
+}
+
+/** Drop create/update ops whose title contains `titleContains`. Keeps deletes. */
+export function dropPendingCreatesByTitle(
+  pending: PendingFolderOp[],
+  titleContains: string,
+): { kept: PendingFolderOp[]; dropped: PendingFolderOp[] } {
+  const needle = titleContains.trim().toLowerCase();
+  const kept: PendingFolderOp[] = [];
+  const dropped: PendingFolderOp[] = [];
+  if (!needle) return { kept: [...pending], dropped };
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    const title =
+      op.op === "create" || op.op === "update"
+        ? typeof op.title === "string"
+          ? op.title
+          : ""
+        : "";
+    if (
+      (op.op === "create" || op.op === "update") &&
+      title.toLowerCase().includes(needle)
+    ) {
+      dropped.push(row);
+      continue;
+    }
+    kept.push(row);
+  }
+  return { kept, dropped };
+}
+
+/** Put release deletes before creates for the same id so upload can succeed. */
+export function orderReleasePairs(
+  pending: PendingFolderOp[],
+): PendingFolderOp[] {
+  const createIds = new Set<string>();
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (op.op === "create" && op.id.trim()) createIds.add(op.id.trim());
+  }
+  const leading: PendingFolderOp[] = [];
+  const rest: PendingFolderOp[] = [];
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (op.op === "delete" && createIds.has(op.id.trim())) leading.push(row);
+    else rest.push(row);
+  }
+  return [...leading, ...rest];
 }
 
 /** Normalize owned marker-clear updates (preserve project_id on empty meta). */
@@ -687,6 +773,27 @@ async function pushOps(
   return mutateLibraryFoldersSnapshot({ baseRevision, operations: ops });
 }
 
+async function dropRedundantOpts(
+  pending: PendingFolderOp[],
+  folders: Array<{ id: string }>,
+): Promise<DropRedundantFolderOpsOpts> {
+  const moveIds: string[] = [];
+  for (const row of pending) {
+    const op = normalizePendingOperation(row.op);
+    if (op.op === "move") {
+      for (const id of op.creation_ids ?? []) moveIds.push(String(id));
+    }
+  }
+  return {
+    localFolderIds: folders.map((folder) => folder.id),
+    localCreationIds: await existingCreationIds([...new Set(moveIds)]),
+  };
+}
+
+function pendingSeqs(rows: PendingFolderOp[]): number[] {
+  return rows.map((row) => row.seq);
+}
+
 function resultFromState(
   state: FolderSyncState,
   partial: Partial<FolderSyncResult>,
@@ -878,12 +985,13 @@ export async function syncLibraryFolders(opts?: {
   while (state.pendingOps.length > 0 && guard < 20) {
     guard += 1;
 
-    // Drop creates for ids already on cloud (unless paired with delete for release)
-    // and deletes for ids already gone — prevents stuck `folder id already exists`.
+    // Drop creates for ids already on cloud (unless a live local release pair),
+    // deletes for ids already gone, and unfile-moves of catalog-missing ids.
     {
       const { kept, dropped } = dropRedundantFolderOps(
         state.pendingOps,
         cloud.folders,
+        await dropRedundantOpts(state.pendingOps, state.folders),
       );
       if (dropped.length > 0) {
         logFolderSyncFailure(
@@ -898,6 +1006,13 @@ export async function syncLibraryFolders(opts?: {
       }
     }
     if (state.pendingOps.length === 0) break;
+
+    const ordered = orderReleasePairs(state.pendingOps);
+    if (
+      pendingSeqs(ordered).join(",") !== pendingSeqs(state.pendingOps).join(",")
+    ) {
+      state = await setFolderPendingOps(ordered.map((row) => row.op));
+    }
 
     const { ops, seqs } = prepareOpsForUpload(state.pendingOps);
     const batches = chunkOps(ops);
@@ -977,6 +1092,7 @@ export async function syncLibraryFolders(opts?: {
         const { kept, dropped } = dropRedundantFolderOps(
           state.pendingOps,
           cloud.folders,
+          await dropRedundantOpts(state.pendingOps, state.folders),
         );
         if (dropped.length > 0) {
           logFolderSyncFailure(

@@ -6,15 +6,19 @@ alwaysApply: false
 
 # Help walkthrough voice
 
-Help is for someone who just opened the app. They do not know we have tests.
+Strategy: [docs/GUIDE-help-and-tests.md](docs/GUIDE-help-and-tests.md). Help is for someone who just opened the app. They do not know we have tests.
 
 - Write as if you are sitting with them on one project.
 - Start here is a chain: Getting started → Generate an image → Generate a video with audio. Each page finishes its own step.
+- Getting started is that first-run path only: sign in, Library, New project, Director, Editor. It does not teach Sync newest, folder types, or delete project.
+- Sync, Projects, and Folders are the reference pages for those jobs. Do not repeat those procedures on Getting started.
+- This computer and the cloud is the Topics page for remote vs local. No app screenshots. Sync / Projects / Folders link to it; they do not reteach the model.
+- There is no Overview / screen-map article. Do not add a third tour of the same shots. Screen jumps (`library`, `director`, `editor`) land on Getting started headings.
 - Do not hand-wave mid-page to another article for a piece of this step. Put the prompt, the filled-in UI, and the result right here.
 - Point forward only at the end, under **Where to go from here**. That is the next page in the chain.
 - The same project and the same still continue downstream. Generate's goblin is Audio to Video's start frame. Do not show a second character.
 - Image models is a Topics page: one prompt, then the still from every Text to Image model. No app screenshots. Grok sits with the other frontier stills; its tile is the Generate still.
-- Video models is a Topics page: intents (Text / Image / Audio / Video / Refs to Video), then Wan, LTX, MiniMax H3, and Replicate. No app screenshots. No integration test yet.
+- Video models is a Topics page: Models vs Intents at the top, then a brand bar per family (Wan, LTX, MiniMax H3), then the five intents. No app screenshots. No integration test yet.
 - Never mention tests, fixtures, agent actions, or that a screenshot “was written by” a test.
 - Do not show repo paths (`desktop/media/…`, `agent-test-…`) in prose. File names in `src=` are fine.
 

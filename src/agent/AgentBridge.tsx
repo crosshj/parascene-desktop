@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAuthOptional } from "../auth/AuthProvider";
 import { useShellOptional } from "../app/ShellProvider";
 import {
@@ -18,19 +18,44 @@ import {
   groupSourceCreationIds,
   isGroupCreation,
 } from "../library/creationFlags";
-import { createFolder, deleteFolder, removeFromFolder } from "../library/folderClient";
+import {
+  createFolder,
+  deleteFolder,
+  getFolderSyncState,
+  listFolders,
+  removeFromFolder,
+  setFolderPendingOps,
+} from "../library/folderClient";
+import { dropPendingCreatesByTitle } from "../sync/folderSync";
 import type { SyncStatus } from "../library/types";
 import { requestOpenNewAsset } from "../layouts/editor/addAssetEvents";
 import { parasceneResolveStillModel } from "../layouts/editor/parasceneProductCaps";
 import type { LayoutMode } from "../app/shellSession";
 import { getProjectFolder } from "../project/projectFolderClient";
+import { flushProjectStore, loadStoredProjects } from "../project/projectStore";
 import { runLabParasceneGenerate } from "../services/labParasceneGenerate";
+import {
+  inspectLocalRow,
+  inspectRemoteRow,
+  isCloudMissingStatus,
+  statusFromCloudError,
+  type InspectCabinetInput,
+  type InspectFolderInput,
+  type InspectedLocalRow,
+} from "./inspectCreation";
+import {
+  applyProjectAssetDelete,
+  applyProjectAssetRemove,
+  collectTimelineUsedAssetIds,
+} from "./projectAssetOps";
 import { runAgentA2v, waitForLocalPath } from "./runAgentA2v";
 import {
   deleteCreationViaService,
+  getRemoteCreation,
   ungroupCreationsViaService,
 } from "../services/parasceneCatalog";
 import { runSyncNewest } from "../services/syncCatalog";
+import { isSeedLibraryCreationId } from "../library/seedLibraryCreations";
 
 type AgentRequest = {
   id: string;
@@ -132,10 +157,13 @@ function watchHoldMs(action: string): number {
     case "cloud.delete":
     case "project.create":
     case "project.delete":
+    case "project.assets.remove":
+    case "project.assets.delete":
     case "folder.create":
     case "sync.start":
     case "sync.folders":
       return 2200;
+    case "cloud.lookup":
     case "library.lookup":
       return 0;
     case "shell.show":
@@ -151,6 +179,47 @@ async function catalogRow(id: string) {
   } catch {
     return null;
   }
+}
+
+async function inspectContext(
+  shell: ReturnType<typeof useShellOptional>,
+): Promise<{
+  folders: InspectFolderInput[];
+  cabinets: InspectCabinetInput;
+}> {
+  const folders = (await listFolders().catch(() => [])).map((folder) => ({
+    id: folder.id,
+    title: folder.title,
+    kind: folder.kind,
+    projectId: folder.projectId,
+    memberIds: folder.memberIds,
+  }));
+  const imagesGroupId = shell?.project?.imagesGroupId ?? null;
+  const videosGroupId = shell?.project?.videosGroupId ?? null;
+  const imagesCover = imagesGroupId ? await catalogRow(imagesGroupId) : null;
+  const videosCover = videosGroupId ? await catalogRow(videosGroupId) : null;
+  return {
+    folders,
+    cabinets: {
+      imagesGroupId,
+      videosGroupId,
+      imagesMemberIds: imagesCover ? groupSourceCreationIds(imagesCover) : [],
+      videosMemberIds: videosCover ? groupSourceCreationIds(videosCover) : [],
+    },
+  };
+}
+
+async function inspectIds(
+  ids: string[],
+  shell: ReturnType<typeof useShellOptional>,
+): Promise<InspectedLocalRow[]> {
+  const ctx = await inspectContext(shell);
+  const found: InspectedLocalRow[] = [];
+  for (const id of ids) {
+    const row = await catalogRow(id);
+    if (row) found.push(inspectLocalRow(row, ctx.folders, ctx.cabinets));
+  }
+  return found;
 }
 
 async function expandDeleteIds(ids: string[]): Promise<string[]> {
@@ -322,6 +391,12 @@ async function waitForCache(
 export function AgentBridge() {
   const auth = useAuthOptional();
   const shell = useShellOptional();
+  const authRef = useRef(auth);
+  const shellRef = useRef(shell);
+  useEffect(() => {
+    authRef.current = auth;
+    shellRef.current = shell;
+  }, [auth, shell]);
 
   useEffect(() => {
     const state = {
@@ -362,7 +437,10 @@ export function AgentBridge() {
       if (cancelled) return;
       const { id, action, args } = event.payload ?? { id: "", action: "" };
       try {
-        const result = await runAction(action, args, { auth, shell });
+        const result = await runAction(action, args, {
+          auth: authRef.current,
+          shell: shellRef.current,
+        });
         await sleep(watchHoldMs(action));
         await invoke("agent_complete", { id, ok: true, result, error: null });
       } catch (err) {
@@ -374,7 +452,7 @@ export function AgentBridge() {
       cancelled = true;
       void unlisten.then((fn) => fn());
     };
-  }, [auth, shell]);
+  }, []);
 
   return null;
 }
@@ -589,6 +667,15 @@ async function runAction(
       const localPath = result.creationId
         ? await waitForLocalPath(result.creationId, 60_000)
         : null;
+      if (result.imagesGroupId || result.videosGroupId) {
+        await ctx.shell.persistOpenProjectAfterAssets({
+          imagesGroupId:
+            result.imagesGroupId ?? ctx.shell.project?.imagesGroupId ?? null,
+          videosGroupId:
+            result.videosGroupId ?? ctx.shell.project?.videosGroupId ?? null,
+          hideIds: [],
+        });
+      }
       return {
         creationId: result.creationId,
         projectId,
@@ -667,45 +754,123 @@ async function runAction(
     case "cloud.delete": {
       const ids = collectDeleteIds(args);
       if (ids.length === 0) throw new Error("cloud.delete requires id");
+      const skipped = ids.filter((id) => isSeedLibraryCreationId(id));
+      const toDelete = ids.filter((id) => !isSeedLibraryCreationId(id));
+      if (toDelete.length === 0) {
+        return {
+          deleted: [],
+          skipped,
+          refused: skipped,
+        };
+      }
       showLibrary(ctx.shell, "creations");
-      const result = await purgeCreations(ids, ctx.shell);
+      const result = await purgeCreations(toDelete, ctx.shell);
       window.dispatchEvent(new CustomEvent("parascene-library-reload"));
-      return result;
+      return { ...result, skipped };
+    }
+    case "cloud.lookup": {
+      const id = argString(args, "id") || collectDeleteIds(args)[0] || "";
+      if (!id) throw new Error("cloud.lookup requires id");
+      if (id.startsWith("local-") || id.startsWith("fixture-")) {
+        return { id, found: false, status: 404, error: "local-only" };
+      }
+      try {
+        const row = await getRemoteCreation(id);
+        return {
+          found: true,
+          status: 200,
+          ...inspectRemoteRow(row),
+        };
+      } catch (err) {
+        const status = statusFromCloudError(err);
+        if (isCloudMissingStatus(status)) {
+          return {
+            id,
+            found: false,
+            status,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+        throw err;
+      }
+    }
+    case "project.assets.remove":
+    case "project.assets.delete": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const projectId =
+        argString(args, "projectId") || ctx.shell.openProjectId || "";
+      if (!projectId) {
+        throw new Error(`${action} needs an open project`);
+      }
+      if (ctx.shell.openProjectId !== projectId) {
+        showProject(ctx.shell, "editor");
+        const opened = await ctx.shell.openProject(projectId, true);
+        if (!opened) throw new Error("Could not open project for Assets");
+        await sleep(400);
+      }
+      showProject(ctx.shell, "editor");
+      const ids = collectDeleteIds(args);
+      if (ids.length === 0) throw new Error(`${action} requires id`);
+      await flushProjectStore();
+      const stored = loadStoredProjects().find((row) => row.id === projectId);
+      const opCtx = {
+        projectId,
+        projectTitle: stored?.title ?? ctx.shell.project?.title ?? "",
+        imagesGroupId:
+          stored?.imagesGroupId ?? ctx.shell.project?.imagesGroupId ?? null,
+        videosGroupId:
+          stored?.videosGroupId ?? ctx.shell.project?.videosGroupId ?? null,
+        timelineUsedIds: collectTimelineUsedAssetIds(
+          stored?.timeline ?? ctx.shell.project?.timeline ?? [],
+        ),
+        removeCreationsFromOpenProject: ctx.shell.removeCreationsFromOpenProject,
+        addCreationsToOpenProject: ctx.shell.addCreationsToOpenProject,
+        deleteLibraryCreation: ctx.shell.deleteLibraryCreation,
+        setOpenProjectGroupIds: ctx.shell.setOpenProjectGroupIds,
+        persistOpenProjectAfterAssets: ctx.shell.persistOpenProjectAfterAssets,
+      };
+      const result =
+        action === "project.assets.remove"
+          ? await applyProjectAssetRemove(opCtx, ids)
+          : await applyProjectAssetDelete(opCtx, ids);
+      window.dispatchEvent(new CustomEvent("parascene-library-reload"));
+      const found = await inspectIds(ids, ctx.shell);
+      return { ...result, found };
     }
     case "library.lookup": {
       const ids = collectDeleteIds(args);
       const titleContains = argString(args, "titleContains");
       const pathContains = argString(args, "pathContains");
-      const found: Array<{
-        id: string;
-        title: string;
-        mediaType: string;
-        localPath: string | null;
-      }> = [];
+      const promptContains = argString(args, "promptContains");
+      const inspect = await inspectContext(ctx.shell);
+      const found: InspectedLocalRow[] = [];
       const push = (row: NonNullable<Awaited<ReturnType<typeof catalogRow>>>) => {
-        found.push({
-          id: row.id,
-          title: row.title,
-          mediaType: String(row.mediaType ?? ""),
-          localPath: row.localPath,
-        });
+        if (found.some((item) => item.id === row.id)) return;
+        found.push(inspectLocalRow(row, inspect.folders, inspect.cabinets));
       };
       for (const id of ids) {
         const row = await catalogRow(id);
         if (row) push(row);
       }
-      if (titleContains || pathContains) {
+      if (titleContains || pathContains || promptContains) {
         const rows = await listCreations();
         for (const row of rows) {
           const title = row.title ?? "";
           const path = `${row.localPath ?? ""} ${row.filename ?? ""}`;
+          const prompt = row.prompt ?? "";
           if (titleContains && !title.includes(titleContains)) continue;
           if (pathContains && !path.includes(pathContains)) continue;
-          if (found.some((item) => item.id === row.id)) continue;
+          if (promptContains && !prompt.includes(promptContains)) continue;
           push(row);
         }
       }
-      return { ids, titleContains: titleContains || null, pathContains: pathContains || null, found };
+      return {
+        ids,
+        titleContains: titleContains || null,
+        pathContains: pathContains || null,
+        promptContains: promptContains || null,
+        found,
+      };
     }
     case "sync.start": {
       showLibrary(ctx.shell, "sync");
@@ -722,6 +887,17 @@ async function runAction(
     case "sync.folders": {
       if (!ctx.shell) throw new Error("Shell is not mounted");
       showLibrary(ctx.shell, "sync");
+      const dropTitle = argString(args, "dropTitleContains");
+      if (dropTitle) {
+        const folderState = await getFolderSyncState();
+        const { kept } = dropPendingCreatesByTitle(
+          folderState.pendingOps,
+          dropTitle,
+        );
+        if (kept.length !== folderState.pendingOps.length) {
+          await setFolderPendingOps(kept.map((row) => row.op));
+        }
+      }
       const folderResult = await ctx.shell.syncProjectFolders();
       await ctx.shell.reconcileProjectsAfterLibrarySync({
         refreshCoversFromList: true,

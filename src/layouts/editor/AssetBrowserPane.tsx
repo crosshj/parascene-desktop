@@ -11,9 +11,7 @@ import { creationAspectCss } from "../../library/aspectRatio";
 import { CreationCard } from "../../library/CreationCard";
 import {
   creationCardTitle,
-  groupSourceCreationIds,
 } from "../../library/creationFlags";
-import { isLocalOnlyCreation } from "../../library/creationFilters";
 import { FolderCard } from "../../library/FolderCard";
 import CompositionCard from "../../library/CompositionCard";
 import type { LibraryFolder } from "../../library/folderClient";
@@ -77,11 +75,6 @@ type AssetBrowserPaneProps = {
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
   onDiscardLibraryAssetPlaceholders?: (ids: string[]) => void;
-  onDeleteFromGroup?: (opts: {
-    groupId: string;
-    kind: "images" | "videos";
-    memberIds: string[];
-  }) => void;
   /** Asset ids referenced on the project timeline (blocks group delete). */
   timelineUsedAssetIds?: ReadonlySet<string>;
   /** Still compositions (sandbox / record / group). */
@@ -295,7 +288,6 @@ export function AssetBrowserPane({
   onDeleteAssets,
   onRemoveAssets,
   onDiscardLibraryAssetPlaceholders,
-  onDeleteFromGroup,
   timelineUsedAssetIds,
   compositions = [],
   openCompositionId = null,
@@ -585,77 +577,6 @@ export function AssetBrowserPane({
 
   const showRootFolders = visibleFolders.length > 0;
 
-  const isLocalOnlyAsset = (assetId: string): boolean => {
-    const creation = creationsById[assetId];
-    if (!creation) return false;
-    // Desktop Generate stamps local rows with remoteJson provenance — still
-    // deletable as long as there is no cloud remote_url.
-    if (creation.remoteUrl?.trim()) return false;
-    return (
-      isLocalOnlyCreation(creation) ||
-      String(creation.downloadState ?? "").toLowerCase() === "local" ||
-      creation.id.startsWith("local-")
-    );
-  };
-
-  const groupMembershipByMemberId = useMemo(() => {
-    const map = new Map<
-      string,
-      { groupId: string; kind: "images" | "videos" }
-    >();
-    const cabinets: Array<{
-      id: string | null | undefined;
-      kind: "images" | "videos";
-    }> = [
-      { id: imagesGroupId, kind: "images" },
-      { id: videosGroupId, kind: "videos" },
-    ];
-    for (const { id, kind } of cabinets) {
-      const groupId = id ? String(id).trim() : "";
-      if (!groupId) continue;
-      const cover = creationsById[groupId];
-      if (!cover) continue;
-      for (const memberId of groupSourceCreationIds(cover)) {
-        if (memberId === groupId) continue;
-        map.set(memberId, { groupId, kind });
-      }
-    }
-    return map;
-  }, [creationsById, imagesGroupId, videosGroupId]);
-
-  const groupDeleteTarget = useMemo(() => {
-    if (!contextMenu || contextMenu.kind !== "assets" || !onDeleteFromGroup) {
-      return null;
-    }
-    const groupIds = new Set(
-      contextMenu.assetIds
-        .map((id) => groupMembershipByMemberId.get(id)?.groupId)
-        .filter((id): id is string => Boolean(id)),
-    );
-    if (groupIds.size !== 1) return null;
-    const groupId = [...groupIds][0];
-    const kind = groupMembershipByMemberId.get(contextMenu.assetIds[0])?.kind;
-    if (!kind) return null;
-    if (
-      !contextMenu.assetIds.every(
-        (id) => groupMembershipByMemberId.get(id)?.groupId === groupId,
-      )
-    ) {
-      return null;
-    }
-    return { groupId, kind, memberIds: contextMenu.assetIds };
-  }, [contextMenu, groupMembershipByMemberId, onDeleteFromGroup]);
-
-  const groupDeleteBlocked =
-    groupDeleteTarget != null &&
-    groupDeleteTarget.memberIds.some((id) =>
-      timelineUsedAssetIds?.has(id),
-    );
-
-  const contextMenuHasGroupMembers =
-    contextMenu?.kind === "assets" &&
-    contextMenu.assetIds.some((id) => groupMembershipByMemberId.has(id));
-
   const contextMenuDiscardablePlaceholderIds = useMemo(() => {
     if (contextMenu?.kind !== "assets") return [];
     return contextMenu.assetIds.filter((id) =>
@@ -670,16 +591,17 @@ export function AssetBrowserPane({
     );
   }, [contextMenu, libraryAssetPlaceholders]);
 
+  const contextMenuTimelineBlocked =
+    contextMenuRemovableAssetIds.some((id) => timelineUsedAssetIds?.has(id));
+
   const openContextMenu = (
     assetId: string,
     event: ReactMouseEvent,
   ) => {
-    const isGroupMember = groupMembershipByMemberId.has(assetId);
     if (
       !onDeleteAssets &&
       !onRemoveAssets &&
-      !onDiscardLibraryAssetPlaceholders &&
-      !(onDeleteFromGroup && isGroupMember)
+      !onDiscardLibraryAssetPlaceholders
     ) {
       return;
     }
@@ -1018,34 +940,6 @@ export function AssetBrowserPane({
                 </button>
               ) : null}
               {contextMenu.kind === "assets" &&
-              onDeleteFromGroup &&
-              groupDeleteTarget ? (
-                <button
-                  type="button"
-                  className="editor-asset-context-item is-danger"
-                  role="menuitem"
-                  disabled={groupDeleteBlocked}
-                  title={
-                    groupDeleteBlocked
-                      ? "Remove timeline clips that use these assets first."
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (groupDeleteBlocked) return;
-                    const target = groupDeleteTarget;
-                    setContextMenu(null);
-                    onDeleteFromGroup(target);
-                  }}
-                >
-                  Delete from{" "}
-                  {groupDeleteTarget.kind === "images" ? "Images" : "Videos"}{" "}
-                  group
-                  {groupDeleteTarget.memberIds.length > 1
-                    ? ` (${groupDeleteTarget.memberIds.length})`
-                    : ""}
-                </button>
-              ) : null}
-              {contextMenu.kind === "assets" &&
               onDiscardLibraryAssetPlaceholders &&
               contextMenuDiscardablePlaceholderIds.length > 0 ? (
                 <button
@@ -1066,13 +960,19 @@ export function AssetBrowserPane({
               ) : null}
               {contextMenu.kind === "assets" &&
               onRemoveAssets &&
-              !contextMenuHasGroupMembers &&
               contextMenuRemovableAssetIds.length > 0 ? (
                 <button
                   type="button"
                   className="editor-asset-context-item"
                   role="menuitem"
+                  disabled={contextMenuTimelineBlocked}
+                  title={
+                    contextMenuTimelineBlocked
+                      ? "Remove timeline clips that use these assets first."
+                      : undefined
+                  }
                   onClick={() => {
+                    if (contextMenuTimelineBlocked) return;
                     const ids = contextMenuRemovableAssetIds;
                     setContextMenu(null);
                     onRemoveAssets(ids);
@@ -1086,18 +986,28 @@ export function AssetBrowserPane({
               ) : null}
               {contextMenu.kind === "assets" &&
               onDeleteAssets &&
-              contextMenu.assetIds.every(isLocalOnlyAsset) ? (
+              contextMenuRemovableAssetIds.length > 0 ? (
                 <button
                   type="button"
                   className="editor-asset-context-item is-danger"
                   role="menuitem"
+                  disabled={contextMenuTimelineBlocked}
+                  title={
+                    contextMenuTimelineBlocked
+                      ? "Remove timeline clips that use these assets first."
+                      : undefined
+                  }
                   onClick={() => {
-                    const ids = contextMenu.assetIds;
+                    if (contextMenuTimelineBlocked) return;
+                    const ids = contextMenuRemovableAssetIds;
                     setContextMenu(null);
                     onDeleteAssets(ids);
                   }}
                 >
-                  Delete{contextMenu.assetIds.length > 1 ? ` (${contextMenu.assetIds.length})` : ""}
+                  Delete
+                  {contextMenuRemovableAssetIds.length > 1
+                    ? ` (${contextMenuRemovableAssetIds.length})`
+                    : ""}
                 </button>
               ) : null}
             </div>,

@@ -20,10 +20,10 @@ import {
 } from "../../project/projectStore";
 import { usePreviewQuality } from "../../settings/previewQuality";
 import { outsideOwnedReferenceIds } from "../../project/projectUsage";
+import { recoverMissingCabinetIdsFromCreations } from "../../project/desktopProjectGroups";
 import {
   collectCabinetMemberIdsFromCovers,
 } from "../../project/projectOwnership";
-import { recoverMissingCabinetIdsFromCreations } from "../../project/desktopProjectGroups";
 import {
   aliveAssetIdsForSelection,
   collectCabinetDisplayMemberIds,
@@ -153,9 +153,10 @@ import {
 } from "../../project/types";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import {
-  removeMembersFromProjectGroup,
-  type ProjectGroupKind,
-} from "../../lab/projectGroups";
+  applyProjectAssetDelete,
+  applyProjectAssetRemove,
+  collectTimelineUsedAssetIds,
+} from "../../agent/projectAssetOps";
 import {
   isActiveLibraryAssetPlaceholder,
   libraryAssetPlaceholderIdsInList,
@@ -238,6 +239,7 @@ export function EditorLayout() {
     deleteLibraryCreation,
     clearLibraryAssetPlaceholder,
     setOpenProjectGroupIds,
+    persistOpenProjectAfterAssets,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
@@ -476,7 +478,9 @@ export function EditorLayout() {
     [],
   );
 
-  // Restore Images/Videos cabinet pointers only when they are missing.
+  // Restore Images/Videos pointers only when a live stamped cover is still
+  // among project assets. Last-member Remove persists a null pointer and
+  // unfiles the cover first, so remount has nothing to recover.
   const assetIdsKey = project.assets.map((asset) => asset.id).join("\0");
   useEffect(() => {
     if (project.imagesGroupId && project.videosGroupId) return;
@@ -516,6 +520,7 @@ export function EditorLayout() {
     project.videosGroupId,
     setOpenProjectGroupIds,
   ]);
+
   const outsideReferenceIds = useMemo(
     () => outsideOwnedReferenceIds(project, cabinetOwnedMemberIds),
     [project, cabinetOwnedMemberIds],
@@ -1995,57 +2000,32 @@ export function EditorLayout() {
     }
   };
 
+  const timelineUsedAssetIds = useMemo(
+    () => collectTimelineUsedAssetIds(project.timeline),
+    [project.timeline],
+  );
+
   const assetsUsedOnTimeline = (assetIds: readonly string[]) => {
     const selected = new Set(assetIds);
     const used = new Set<string>();
-    for (const clip of project.timeline) {
-      if (clip.assetId && selected.has(clip.assetId)) {
-        used.add(clip.assetId);
-      }
-      const generatedId = clip.addAssetGeneration?.creationId?.trim();
-      if (generatedId && selected.has(generatedId)) {
-        used.add(generatedId);
-      }
-      for (const id of clip.slideshow?.imageAssetIds ?? []) {
-        if (selected.has(id)) used.add(id);
-      }
-      const audioId = clip.slideshow?.audioAssetId;
-      if (audioId && selected.has(audioId)) used.add(audioId);
-      const startFrame =
-        clip.addAssetGeneration?.startFrameAssetId?.trim() ||
-        clip.addAssetDraft?.startFrameAssetId?.trim() ||
-        (clip.addAssetGeneration?.firstFrameSource?.kind === "asset"
-          ? clip.addAssetGeneration.firstFrameSource.assetId
-          : "") ||
-        (clip.addAssetDraft?.firstFrameSource?.kind === "asset"
-          ? clip.addAssetDraft.firstFrameSource.assetId
-          : "");
-      if (startFrame && selected.has(startFrame)) used.add(startFrame);
-      const lastFrame =
-        (clip.addAssetGeneration?.lastFrameSource?.kind === "asset"
-          ? clip.addAssetGeneration.lastFrameSource.assetId
-          : "") ||
-        (clip.addAssetDraft?.lastFrameSource?.kind === "asset"
-          ? clip.addAssetDraft.lastFrameSource.assetId
-          : "");
-      if (lastFrame && selected.has(lastFrame)) used.add(lastFrame);
+    for (const id of timelineUsedAssetIds) {
+      if (selected.has(id)) used.add(id);
     }
     return used;
   };
 
-  const timelineUsedAssetIds = useMemo(() => {
-    const used = new Set<string>();
-    for (const clip of project.timeline) {
-      if (clip.assetId) used.add(clip.assetId);
-      for (const id of clip.slideshow?.imageAssetIds ?? []) {
-        used.add(id);
-      }
-      if (clip.slideshow?.audioAssetId) {
-        used.add(clip.slideshow.audioAssetId);
-      }
-    }
-    return used;
-  }, [project.timeline]);
+  const projectAssetOpContext = () => ({
+    projectId: project.id,
+    projectTitle: project.title,
+    imagesGroupId: project.imagesGroupId ?? null,
+    videosGroupId: project.videosGroupId ?? null,
+    timelineUsedIds: timelineUsedAssetIds,
+    removeCreationsFromOpenProject,
+    addCreationsToOpenProject,
+    deleteLibraryCreation,
+    setOpenProjectGroupIds,
+    persistOpenProjectAfterAssets,
+  });
 
   const removeAssetsFromProject = async (assetIds: string[]) => {
     const usedIds = assetsUsedOnTimeline(assetIds);
@@ -2083,8 +2063,8 @@ export function EditorLayout() {
           ? "Removes this placeholder from Assets. Nothing was saved to the library."
           : `Removes these ${count} placeholders from Assets. Nothing was saved to the library.`
         : count === 1
-          ? "Do you want to remove this asset from the project?"
-          : `Do you want to remove these ${count} assets from the project?`,
+          ? "Leaves the project. Library keeps the file. If it is in Images or Videos, the website group updates. The Creation stays."
+          : `Leaves the project. Library keeps the files. If they are in Images or Videos, the website group updates. Creations stay.`,
       confirmLabel: onlyPlaceholders ? "Discard" : "Remove",
       cancelLabel: "Cancel",
       danger: onlyPlaceholders,
@@ -2095,7 +2075,7 @@ export function EditorLayout() {
         clearLibraryAssetPlaceholder(id);
       }
       if (creationIds.length > 0) {
-        await removeCreationsFromOpenProject(creationIds);
+        await applyProjectAssetRemove(projectAssetOpContext(), creationIds);
       }
       if (selectedAssetId && assetIds.includes(selectedAssetId)) {
         setSelectedAssetId(null);
@@ -2210,120 +2190,32 @@ export function EditorLayout() {
       title: count === 1 ? "Delete asset?" : `Delete ${count} assets?`,
       message:
         count === 1
-          ? "Do you want to remove this from the project and also delete it from the library?"
-          : `Do you want to remove these ${count} assets from the project and also delete them from the library?`,
+          ? "Removes this from the project and Library. If it is a Parascene Creation, it is deleted on the website too."
+          : `Removes these ${count} from the project and Library. Parascene Creations are deleted on the website too.`,
       confirmLabel: "Delete",
       cancelLabel: "Cancel",
       danger: true,
     });
     if (!ok) return;
-    const results = await Promise.allSettled(
-      assetIds.map((assetId) => deleteLibraryCreation(assetId)),
-    );
-    const deletedIds = assetIds.filter(
-      (_, index) => results[index]?.status === "fulfilled",
-    );
-    const failed = results.filter((result) => result.status === "rejected");
-    if (deletedIds.includes(selectedAssetId ?? "")) {
-      setSelectedAssetId(null);
-      setSelectedAssetIds([]);
-      setOpenProjectSelectedAssetId(null);
-    }
-    if (failed.length > 0) {
-      const first = failed[0];
-      const detail =
-        first?.status === "rejected"
-          ? first.reason instanceof Error
-            ? first.reason.message
-            : String(first.reason)
-          : "";
+    try {
+      await applyProjectAssetDelete(projectAssetOpContext(), assetIds);
+      if (selectedAssetId && assetIds.includes(selectedAssetId)) {
+        setSelectedAssetId(null);
+        setSelectedAssetIds([]);
+        setOpenProjectSelectedAssetId(null);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       await confirm({
         title:
-          failed.length === 1
-            ? "One asset could not be deleted"
-            : `${failed.length} assets could not be deleted`,
-        message: detail,
+          assetIds.length === 1
+            ? "Could not delete asset"
+            : "Could not delete assets",
+        message,
         confirmLabel: "OK",
         hideCancel: true,
       });
     }
-  };
-
-  const deleteMembersFromProjectGroup = async (opts: {
-    groupId: string;
-    kind: ProjectGroupKind;
-    memberIds: string[];
-  }) => {
-    const usedIds = opts.memberIds.filter((id) =>
-      timelineUsedAssetIds.has(id),
-    );
-    if (usedIds.length > 0) {
-      await confirm({
-        title: usedIds.length === 1 ? "Asset in use" : "Assets in use",
-        message:
-          usedIds.length === 1
-            ? "This asset is used on the timeline. Remove its clips first, then try again."
-            : `${usedIds.length} selected assets are used on the timeline. Remove their clips first, then try again.`,
-        confirmLabel: "OK",
-        hideCancel: true,
-      });
-      return;
-    }
-
-    const count = opts.memberIds.length;
-    const groupLabel = opts.kind === "images" ? "Images" : "Videos";
-    await confirm({
-      title:
-        count === 1
-          ? `Delete from ${groupLabel} group?`
-          : `Delete ${count} from ${groupLabel} group?`,
-      message:
-        count === 1
-          ? `This will permanently delete the asset on Parascene and update the ${groupLabel} group in the cloud. This cannot be undone.`
-          : `This will permanently delete these ${count} assets on Parascene and update the ${groupLabel} group in the cloud. This cannot be undone.`,
-      confirmLabel: "Delete from group",
-      cancelLabel: "Cancel",
-      danger: true,
-      errorTitle: "Could not delete from group",
-      onConfirm: async ({ setMessage }) => {
-        setMessage("Starting…");
-        const result = await removeMembersFromProjectGroup({
-          projectId: project.id,
-          projectTitle: project.title,
-          kind: opts.kind,
-          groupId: opts.groupId,
-          memberIds: opts.memberIds,
-          onProgress: setMessage,
-        });
-        if (result.projectCreationIdsToRemove.length > 0) {
-          removeCreationsFromOpenProject(result.projectCreationIdsToRemove);
-        }
-        if (result.projectCreationIdsToAdd.length > 0) {
-          addCreationsToOpenProject(result.projectCreationIdsToAdd);
-        }
-        if (result.groupId === null) {
-          setOpenProjectGroupIds(
-            opts.kind === "images"
-              ? { imagesGroupId: null }
-              : { videosGroupId: null },
-          );
-        } else {
-          setOpenProjectGroupIds(
-            opts.kind === "images"
-              ? { imagesGroupId: result.groupId }
-              : { videosGroupId: result.groupId },
-          );
-        }
-        if (
-          selectedAssetId &&
-          result.projectCreationIdsToRemove.includes(selectedAssetId)
-        ) {
-          setSelectedAssetId(null);
-          setSelectedAssetIds([]);
-          setOpenProjectSelectedAssetId(null);
-        }
-      },
-    });
   };
 
 
@@ -2687,9 +2579,6 @@ export function EditorLayout() {
           }}
           onDiscardLibraryAssetPlaceholders={(ids) => {
             void discardLibraryAssetPlaceholders(ids);
-          }}
-          onDeleteFromGroup={(target) => {
-            void deleteMembersFromProjectGroup(target);
           }}
           timelineUsedAssetIds={timelineUsedAssetIds}
           compositions={project.stillWorkstreams}

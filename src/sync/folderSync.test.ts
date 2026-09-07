@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyConflictResolutions,
   detectFolderConflicts,
+  dropPendingCreatesByTitle,
   dropRedundantFolderOps,
+  orderReleasePairs,
   prepareOpsForUpload,
   syncLibraryFolders,
   LIBRARY_FOLDER_OPS_MAX,
@@ -43,6 +45,12 @@ vi.mock("../services/folderSyncApi", () => ({
 
 vi.mock("../auth/session", () => ({
   ensureAccessToken: vi.fn(async () => "tok"),
+}));
+
+const existingCreationIds = vi.fn(async (ids: string[]) => ids);
+
+vi.mock("../library/catalogClient", () => ({
+  existingCreationIds: (ids: string[]) => existingCreationIds(ids),
 }));
 
 function remoteFolder(
@@ -340,6 +348,71 @@ describe("dropRedundantFolderOps", () => {
     expect(kept.map((row) => row.op.op)).toEqual(["delete", "create"]);
   });
 
+  it("drops create when cloud has the id and the local folder is gone", () => {
+    const folderId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const pendingOps = [
+      pending(1, {
+        op: "create",
+        id: folderId,
+        title: "Released",
+        meta: {},
+      }),
+      pending(2, { op: "delete", id: folderId }),
+    ];
+    const { kept, dropped } = dropRedundantFolderOps(
+      pendingOps,
+      [remoteFolder({ id: folderId, title: "Released" })],
+      { localFolderIds: [] },
+    );
+    expect(dropped.map((row) => row.op.op)).toEqual(["create"]);
+    expect(kept.map((row) => row.op.op)).toEqual(["delete"]);
+  });
+
+  it("drops unfile moves whose creation ids are gone from the catalog", () => {
+    const pendingOps = [
+      pending(1, { op: "move", folder_id: null, creation_ids: [28425, 28006] }),
+      pending(2, { op: "move", folder_id: "keep", creation_ids: [1] }),
+    ];
+    const { kept, dropped } = dropRedundantFolderOps(pendingOps, [], {
+      localCreationIds: ["1"],
+    });
+    expect(dropped.map((row) => row.seq)).toEqual([1]);
+    expect(kept.map((row) => row.seq)).toEqual([2]);
+  });
+
+  it("drops create/update by title and keeps deletes", () => {
+    const pendingOps = [
+      pending(1, {
+        op: "create",
+        id: "f1",
+        title: "agent-test-assets-1",
+        meta: {},
+      }),
+      pending(2, { op: "delete", id: "f1" }),
+      pending(3, { op: "create", id: "f2", title: "Real folder" }),
+    ];
+    const { kept, dropped } = dropPendingCreatesByTitle(
+      pendingOps,
+      "agent-test-",
+    );
+    expect(dropped.map((row) => row.seq)).toEqual([1]);
+    expect(kept.map((row) => row.seq)).toEqual([2, 3]);
+  });
+
+  it("orders release deletes before creates for the same id", () => {
+    const folderId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const pendingOps = [
+      pending(1, { op: "move", folder_id: null, creation_ids: [1] }),
+      pending(2, { op: "create", id: folderId, title: "Released", meta: {} }),
+      pending(3, { op: "delete", id: folderId }),
+    ];
+    expect(orderReleasePairs(pendingOps).map((row) => row.op.op)).toEqual([
+      "delete",
+      "move",
+      "create",
+    ]);
+  });
+
   it("drops delete when the folder is already absent from cloud", () => {
     const folderId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     const pendingOps = [
@@ -364,6 +437,8 @@ describe("syncLibraryFolders", () => {
     setFolderPendingOps.mockReset();
     pullLibraryFoldersSnapshot.mockReset();
     mutateLibraryFoldersSnapshot.mockReset();
+    existingCreationIds.mockReset();
+    existingCreationIds.mockImplementation(async (ids: string[]) => ids);
   });
 
   it("installs cloud snapshot when there are no pending ops", async () => {
@@ -845,7 +920,24 @@ describe("syncLibraryFolders", () => {
     ];
     getFolderSyncState
       .mockResolvedValueOnce(
-        state({ revision: 9, pendingOps, baselineFolders: [] }),
+        state({
+          revision: 9,
+          pendingOps,
+          baselineFolders: [],
+          folders: [
+            {
+              id: folderId,
+              title: "Sana Sinabi Ko Na",
+              description: "",
+              createdAt: "t",
+              updatedAt: "t",
+              memberIds: [],
+              memberCount: 0,
+              kind: "regular",
+              projectId: null,
+            },
+          ],
+        }),
       )
       .mockResolvedValueOnce(state({ revision: 10, pendingOps: [] }));
     pullLibraryFoldersSnapshot.mockResolvedValue({

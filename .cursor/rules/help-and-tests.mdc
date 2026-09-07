@@ -1,0 +1,13 @@
+---
+description: North star for Help, live integration tests, agent API, and @awesome teardown. Read the guide before those jobs.
+alwaysApply: true
+---
+
+# Help, tests, and the agent
+
+Before Help, `integration/`, the agent API, leftover-docs work, or teardown, read [docs/GUIDE-help-and-tests.md](docs/GUIDE-help-and-tests.md). That file is the strategy and the scoreboard. Other PLAN- files are details.
+
+- The running app is truth. Tests verify it. Help describes it. Do not teleport. Same path as the UI.
+- `@awesome` beginning Library is one tile: seed still `28006` (green aardvark / account avatar). Never delete it. After tests it must still be there. Leftover means this-run / `agent-test-*` only.
+- Two tracks. Leftover after 1.1.58 is Help + journeys (map, first-run shot regen, video-models, Settings/tools). 08–11 are same-object identity, not that leftover. Do not open another identity suite when the job is leftover docs.
+- Help never mentions tests. 05 writes the goblin and leaves the project; 06 uses that same still; re-run both if you re-run 05.
