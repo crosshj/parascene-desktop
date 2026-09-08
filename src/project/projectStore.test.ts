@@ -27,6 +27,7 @@ import {
   setStoredProjectTimelineMonitorActive,
   setStoredProjectTimelinePlayheadSec,
   storedProjectToUi,
+  setStoredProjectEditorAudio2,
   setStoredProjectLabPrompts,
   setStoredProjectLyricAlignment,
   normalizeLyricAlignment,
@@ -364,6 +365,63 @@ describe("projectStore", () => {
       creationId: "gen-99",
       mode: "start_frame",
     });
+  });
+
+  it("round-trips non-unity clip volume and omits 100", () => {
+    const quiet = normalizeTimelineClip({
+      id: "voice-1",
+      label: "5.0s",
+      startSec: 0,
+      endSec: 5,
+      kind: "audio",
+      lane: "audio",
+      volume: 40,
+    });
+    expect(quiet?.volume).toBe(40);
+    const unity = normalizeTimelineClip({
+      id: "bed-1",
+      label: "30.0s",
+      startSec: 0,
+      endSec: 30,
+      kind: "audio",
+      lane: "audio",
+      volume: 100,
+    });
+    expect(unity?.volume).toBeUndefined();
+  });
+
+  it("round-trips A2 audioTrack and strips it from linked video audio", () => {
+    const a2 = normalizeTimelineClip({
+      id: "voice-1",
+      label: "5.0s",
+      startSec: 0,
+      endSec: 5,
+      kind: "audio",
+      lane: "audio",
+      audioTrack: 2,
+    });
+    expect(a2?.audioTrack).toBe(2);
+    const linked = normalizeTimelineClip({
+      id: "linked-1",
+      label: "4.0s",
+      startSec: 0,
+      endSec: 4,
+      kind: "audio",
+      lane: "audio",
+      audioTrack: 2,
+      linkedVideoClipId: "vid-1",
+    });
+    expect(linked?.audioTrack).toBeUndefined();
+  });
+
+  it("persists editorAudio2", () => {
+    const a = createStoredProject("Demo", ["c1"]);
+    expect(a.editorAudio2).toBe(false);
+    const on = setStoredProjectEditorAudio2(a, true);
+    expect(on.editorAudio2).toBe(true);
+    saveStoredProjects([on]);
+    expect(loadStoredProjects()[0].editorAudio2).toBe(true);
+    expect(storedProjectToUi(loadStoredProjects()[0]).editorAudio2).toBe(true);
   });
 
   it("strips timelineLocked from audio clips so music stays movable", () => {
@@ -969,6 +1027,51 @@ describe("projectStore", () => {
       "c1",
     ]);
     expect(ui.selectedAssetId).toBe("placeholder-1");
+  });
+
+  it("persists library audio extras so retry matches the first run", () => {
+    const project = upsertStoredLibraryAssetPlaceholder(
+      createStoredProject("Demo", ["c1"]),
+      {
+        id: "placeholder-audio",
+        kind: "audio",
+        aspectRatio: "16:9",
+        status: "generating",
+        addAssetDraft: {
+          prompt: "hello there",
+          intentId: "text_to_speech",
+          server: "replicate",
+          provider: "replicate",
+          methodId: "text_to_speech",
+          audioExtras: {
+            voiceId: "English_expressive_narrator",
+            cloneSourceAssetId: "audio-1",
+          },
+          generationJob: {
+            status: "waiting",
+            provider: "replicate",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            serviceJobId: "job-audio",
+            model: "minimax/speech-2.8-hd",
+          },
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    );
+    saveStoredProjects([project]);
+    const loaded = loadStoredProjects()[0];
+    expect(
+      loaded.libraryAssetPlaceholders?.["placeholder-audio"]?.addAssetDraft
+        .audioExtras,
+    ).toEqual({
+      voiceId: "English_expressive_narrator",
+      cloneSourceAssetId: "audio-1",
+    });
+    expect(
+      loaded.libraryAssetPlaceholders?.["placeholder-audio"]?.addAssetDraft
+        .generationJob?.serviceJobId,
+    ).toBe("job-audio");
   });
 
   it("pins active placeholders before creations and hides pending remote rows", () => {

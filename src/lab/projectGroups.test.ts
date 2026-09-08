@@ -7,9 +7,11 @@ import {
   findCabinetCandidatesInCatalog,
   findUnstampedCabinetDuplicates,
   idsForGroupApiCall,
+  isDeletedCreationsGroupError,
   memberIdsFromRemoteGroup,
   newIdsToAppendToGroup,
   pickCabinetKeeper,
+  restoredIdsToRehideInKeeper,
   remainingMembersAfterRemoval,
   siblingProjectCabinetCoverIds,
   stillCandidateIdsFromGroup,
@@ -48,6 +50,35 @@ function fakeCreation(
     ...partial,
   };
 }
+
+describe("restoredIdsToRehideInKeeper", () => {
+  it("re-appends restored members even when already listed on the keeper", () => {
+    expect(
+      restoredIdsToRehideInKeeper(
+        ["28543", "28542", "28540", "28547"],
+        "28547",
+        "28548",
+      ),
+    ).toEqual(["28543", "28542", "28540"]);
+  });
+
+  it("drops the keeper id and blanks", () => {
+    expect(
+      restoredIdsToRehideInKeeper(["28548", "", "28537", "28537"], "28541", "28548"),
+    ).toEqual(["28537"]);
+  });
+});
+
+describe("isDeletedCreationsGroupError", () => {
+  it("matches the Parascene group-append failure", () => {
+    expect(
+      isDeletedCreationsGroupError(new Error("Cannot group deleted creations")),
+    ).toBe(true);
+    expect(isDeletedCreationsGroupError(new Error("ungroup failed"))).toBe(
+      false,
+    );
+  });
+});
 
 describe("idsForGroupApiCall", () => {
   it("starts a new group from members only", () => {

@@ -100,6 +100,53 @@ export function idsForGroupApiCall(
   return out;
 }
 
+/** Parascene rejects append when the cover (or a member) was already ungrouped. */
+export function isDeletedCreationsGroupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /cannot group deleted creations/i.test(message);
+}
+
+function remoteRowIsLiveGroupCover(row: {
+  filename?: string | null;
+  meta?: Record<string, unknown> | null;
+}): boolean {
+  if (row.filename?.trim().toLowerCase().startsWith("group/")) return true;
+  const meta = row.meta;
+  const group =
+    meta && typeof meta === "object" && !Array.isArray(meta)
+      ? (meta as { group?: { kind?: unknown } }).group
+      : null;
+  return (
+    Boolean(group) &&
+    typeof group === "object" &&
+    (group as { kind?: unknown }).kind === "group_creations"
+  );
+}
+
+/**
+ * After ungrouping a duplicate cover, Parascene restores members as standalone
+ * tiles even when they are already listed on the keeper. Re-append those ids
+ * so they hide again. Skip the orphan cover and the keeper itself.
+ */
+export function restoredIdsToRehideInKeeper(
+  restored: readonly string[],
+  orphanId: string,
+  keeperId: string,
+): string[] {
+  const skip = new Set(
+    [orphanId, keeperId].map((id) => String(id).trim()).filter(Boolean),
+  );
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of restored) {
+    const id = String(raw).trim();
+    if (!id || skip.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Candidates that are not the cover and not already filed as members. */
 export function newIdsToAppendToGroup(
   existingGroupId: string | null,
@@ -941,6 +988,8 @@ export async function resolveProjectCabinetId(opts: {
       if (!id || foreignOwned.has(id)) continue;
       const creation = byId[id];
       if (
+        !creation ||
+        !isGroupCreation(creation) ||
         !isSameProjectCabinetRole(creation, {
           role,
           projectId: opts.projectId,
@@ -982,8 +1031,13 @@ export async function resolveProjectCabinetId(opts: {
     } else {
       try {
         const row = await getRemoteCreation(stored);
-        opts.onProgress?.(`${label}: verified ${stored} still on Parascene.`);
-        return String(row.id);
+        if (remoteRowIsLiveGroupCover(row)) {
+          opts.onProgress?.(`${label}: verified ${stored} still on Parascene.`);
+          return String(row.id);
+        }
+        opts.onProgress?.(
+          `${label}: stored group ${stored} is no longer a live cabinet — recovering…`,
+        );
       } catch {
         opts.onProgress?.(
           `${label}: stored group ${stored} missing — recovering from catalog…`,
@@ -1535,29 +1589,28 @@ async function ungroupAndMergeOrphan(opts: {
     /* already gone */
   }
 
-  const members = restored.filter(
-    (id) =>
-      id &&
-      id !== opts.orphanId &&
-      id !== opts.keeperId &&
-      !opts.keeperMemberIds.has(id),
+  const members = restoredIdsToRehideInKeeper(
+    restored,
+    opts.orphanId,
+    opts.keeperId,
   );
   if (members.length === 0) {
-    opts.messages.push(
-      `Removed duplicate cover ${opts.orphanId}; members already in ${opts.keeperId}.`,
-    );
+    opts.messages.push(`Removed duplicate cover ${opts.orphanId}.`);
     return true;
   }
   opts.onProgress(
-    `Appending ${members.length} member(s) from ${opts.orphanId} into ${opts.keeperId}…`,
+    `Re-hiding ${members.length} member(s) from ${opts.orphanId} in ${opts.keeperId}…`,
   );
   try {
-    await groupMembers({
+    // Always POST restored ids. Skipping "already on keeper" leaves them on
+    // the Parascene feed after ungroup.
+    await groupMembersOnce({
       kind: opts.kind,
       existingGroupId: opts.keeperId,
       memberIds: members,
       projectId: opts.projectId || "unknown",
       projectTitle: opts.projectTitle,
+      rehideVisibleIds: true,
     });
     opts.messages.push(
       `Merged ${members.length} member(s) from ${opts.orphanId} into ${opts.keeperId}.`,
@@ -1948,16 +2001,43 @@ async function groupMembers(opts: {
   projectId: string;
   projectTitle: string;
 }): Promise<string> {
+  try {
+    return await groupMembersOnce(opts);
+  } catch (error) {
+    if (opts.existingGroupId && isDeletedCreationsGroupError(error)) {
+      return groupMembersOnce({ ...opts, existingGroupId: null });
+    }
+    throw error;
+  }
+}
+
+async function groupMembersOnce(opts: {
+  kind: ProjectGroupKind;
+  existingGroupId: string | null;
+  memberIds: string[];
+  projectId: string;
+  projectTitle: string;
+  /** Send these ids even if the cover already lists them (re-hide after ungroup). */
+  rehideVisibleIds?: boolean;
+}): Promise<string> {
   // Already-filed members are hidden as standalone rows — resending them
   // returns "Cannot group deleted creations".
   const existingMemberIds = opts.existingGroupId
     ? await loadExistingMemberIds(opts.existingGroupId)
     : [];
-  const toAppend = newIdsToAppendToGroup(
-    opts.existingGroupId,
-    existingMemberIds,
-    opts.memberIds,
-  );
+  const toAppend = opts.rehideVisibleIds
+    ? [
+        ...new Set(
+          opts.memberIds
+            .map((id) => String(id).trim())
+            .filter((id) => id && id !== opts.existingGroupId),
+        ),
+      ]
+    : newIdsToAppendToGroup(
+        opts.existingGroupId,
+        existingMemberIds,
+        opts.memberIds,
+      );
   if (toAppend.length === 0 && opts.existingGroupId) {
     return opts.existingGroupId;
   }

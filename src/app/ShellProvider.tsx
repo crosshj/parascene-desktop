@@ -44,6 +44,7 @@ import {
   setStoredProjectTimelinePlayheadSec,
   setStoredProjectGroupIds,
   setStoredProjectLabPrompts,
+  setStoredProjectEditorAudio2,
   setStoredProjectMainAudioCreationId,
   setStoredProjectLyricAlignment,
   setStoredProjectStoryboardProposal,
@@ -84,6 +85,7 @@ import {
   repairCorruptProjectTimeline,
   withStrictProjectAudit,
 } from "../project/projectMutationCoordinator";
+import { cabinetPersistPatch } from "../project/cabinetPersist";
 import { collapseCabinetMembersFromProjectFolder } from "../project/cabinetFolderCollapse";
 import {
   createFolder,
@@ -112,7 +114,11 @@ import {
 import { findResumableAddAssetPlaceholders } from "../layouts/editor/addAssetGenerationResume";
 import { listenServiceUpdated } from "../services/serviceClient";
 import { isTerminalActivityState } from "../services/types";
-import { bindLibraryAssetGenerationApplier } from "../layouts/editor/libraryAssetGenerationStore";
+import {
+  bindLibraryAssetGenerationApplier,
+  reconcileLibraryAssetGenerations,
+} from "../layouts/editor/libraryAssetGenerationStore";
+import { findResumableLibraryAssetPlaceholders } from "../layouts/editor/libraryAssetGeneration";
 import { defaultStagedClipDraft } from "../layouts/editor/stagedClip";
 import { replaceAddAssetPlaceholderWithVideo } from "../layouts/editor/addAssetGenerate";
 import {
@@ -214,12 +220,13 @@ type ShellState = {
   }) => void;
   /**
    * One persist write after Assets Remove/Delete: cabinet pointers plus
-   * hide ids from creationIds. Awaited so remount cannot bounce a cover.
+   * hide/add creationIds. Awaited so remount cannot bounce a cover.
    */
   persistOpenProjectAfterAssets: (patch: {
     imagesGroupId: string | null;
     videosGroupId: string | null;
     hideIds: string[];
+    addIds?: string[];
   }) => Promise<void>;
   /** Persist Lab still / animate prompts for the open project. */
   setOpenProjectLabPrompts: (prompts: {
@@ -228,6 +235,8 @@ type ShellState = {
   }) => void;
   /** Persist preferred main song creation id for the open project. */
   setOpenProjectMainAudioCreationId: (creationId: string | null) => void;
+  /** Show or hide the user A2 audio lane. */
+  setOpenProjectEditorAudio2: (enabled: boolean) => void;
   /** Persist lyric alignment for the open project. */
   setOpenProjectLyricAlignment: (alignment: LyricAlignment | null) => void;
   /** Persist MV storyboard proposal for the open project. */
@@ -965,6 +974,40 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fingerprint drives resume
   }, [openProjectId, addAssetResumeKey]);
 
+  const libraryAssetResumeKey = useMemo(() => {
+    if (!openProjectId) return "";
+    const found = storedProjects.find((p) => p.id === openProjectId);
+    if (!found) return "";
+    return findResumableLibraryAssetPlaceholders(found.libraryAssetPlaceholders)
+      .map((placeholder) => {
+        const job = placeholder.addAssetDraft.generationJob;
+        return [
+          placeholder.id,
+          job?.status ?? "",
+          job?.serviceJobId ?? "",
+          job?.pendingCreationId ?? "",
+          job?.replicatePredictionId ?? "",
+          job?.blueJobId ?? "",
+        ].join(":");
+      })
+      .join("|");
+  }, [openProjectId, storedProjects]);
+
+  useEffect(() => {
+    if (!openProjectId || !libraryAssetResumeKey) return;
+    const found = storedProjects.find((p) => p.id === openProjectId);
+    if (!found) return;
+    reconcileLibraryAssetGenerations({
+      projectId: found.id,
+      projectTitle: found.title,
+      imagesGroupId: found.imagesGroupId ?? null,
+      videosGroupId: found.videosGroupId ?? null,
+      placeholders: found.libraryAssetPlaceholders ?? {},
+    });
+    // storedProjects read inside; key covers resumable identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fingerprint drives resume
+  }, [openProjectId, libraryAssetResumeKey]);
+
   // Airtight completion: the backend jobs table is the source of truth. If a
   // placeholder still believes it is in progress but its watcher died (webview
   // reload, HMR module swap, crashed promise), the fingerprint above never
@@ -978,14 +1021,28 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       const found = storedProjects.find((p) => p.id === openProjectId);
       if (!found) return;
       const ui = storedProjectToUi(found);
-      if (findResumableAddAssetPlaceholders(ui.timeline).length === 0) return;
-      reconcileAddAssetGenerations({
-        projectId: found.id,
-        projectTitle: found.title,
-        timeline: ui.timeline,
-        imagesGroupId: found.imagesGroupId ?? null,
-        videosGroupId: found.videosGroupId ?? null,
-      });
+      const libraryPlaceholders = found.libraryAssetPlaceholders ?? {};
+      const hasTimeline = findResumableAddAssetPlaceholders(ui.timeline).length > 0;
+      const hasLibrary =
+        findResumableLibraryAssetPlaceholders(libraryPlaceholders).length > 0;
+      if (hasTimeline) {
+        reconcileAddAssetGenerations({
+          projectId: found.id,
+          projectTitle: found.title,
+          timeline: ui.timeline,
+          imagesGroupId: found.imagesGroupId ?? null,
+          videosGroupId: found.videosGroupId ?? null,
+        });
+      }
+      if (hasLibrary) {
+        reconcileLibraryAssetGenerations({
+          projectId: found.id,
+          projectTitle: found.title,
+          imagesGroupId: found.imagesGroupId ?? null,
+          videosGroupId: found.videosGroupId ?? null,
+          placeholders: libraryPlaceholders,
+        });
+      }
     };
   }, [openProjectId, storedProjects]);
 
@@ -1745,27 +1802,6 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [addCreationsToProject, openProjectId],
   );
 
-  // Cabinet covers belong in the project folder, not Library root.
-  useEffect(() => {
-    if (!openProjectId) return;
-    const project = storedProjects.find((row) => row.id === openProjectId);
-    if (!project) return;
-    const covers = [project.imagesGroupId, project.videosGroupId]
-      .map((id) => (id ? String(id).trim() : ""))
-      .filter(Boolean);
-    if (covers.length === 0) return;
-    const inFolder = new Set(project.creationIds.map((id) => String(id).trim()));
-    const missing = covers.filter((id) => !inFolder.has(id));
-    if (missing.length === 0) return;
-    void addCreationsToProject(openProjectId, missing).catch((error) => {
-      console.error("Failed to file cabinet covers into project folder", error);
-    });
-  }, [
-    openProjectId,
-    storedProjects,
-    addCreationsToProject,
-  ]);
-
   useEffect(() => {
     bindLibraryAssetGenerationApplier({
       beginPlaceholder: (opts) => {
@@ -1773,7 +1809,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           const existing = project.libraryAssetPlaceholders?.[opts.id];
           const withPlaceholder = upsertStoredLibraryAssetPlaceholder(project, {
             id: opts.id,
-            kind: "image",
+            kind: opts.kind === "audio" ? "audio" : "image",
             aspectRatio: opts.aspectRatio,
             status: "generating",
             addAssetDraft: opts.draft,
@@ -2196,19 +2232,23 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       imagesGroupId: string | null;
       videosGroupId: string | null;
       hideIds: string[];
+      addIds?: string[];
     }) => {
       if (!openProjectId) return;
       const id = openProjectId;
-      const hideIds = patch.hideIds;
+      const nextPatch = cabinetPersistPatch(patch);
       await updateStoredProjects((prev) =>
         prev.map((project) => {
           if (project.id !== id) return project;
           let next = setStoredProjectGroupIds(project, {
-            imagesGroupId: patch.imagesGroupId,
-            videosGroupId: patch.videosGroupId,
+            imagesGroupId: nextPatch.imagesGroupId,
+            videosGroupId: nextPatch.videosGroupId,
           });
-          if (hideIds.length > 0) {
-            next = removeCreationIds(next, hideIds);
+          if (nextPatch.hideIds.length > 0) {
+            next = removeCreationIds(next, nextPatch.hideIds);
+          }
+          if (nextPatch.addIds.length > 0) {
+            next = mergeCreationIds(next, nextPatch.addIds);
           }
           return next;
         }),
@@ -2231,6 +2271,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const setOpenProjectMainAudioCreationId = useCallback(
     (creationId: string | null) => {
       patchOpenProject((p) => setStoredProjectMainAudioCreationId(p, creationId));
+    },
+    [patchOpenProject],
+  );
+
+  const setOpenProjectEditorAudio2 = useCallback(
+    (enabled: boolean) => {
+      patchOpenProject((p) => setStoredProjectEditorAudio2(p, enabled));
     },
     [patchOpenProject],
   );
@@ -2300,6 +2347,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       persistOpenProjectAfterAssets,
       setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
+      setOpenProjectEditorAudio2,
       setOpenProjectLyricAlignment,
       setOpenProjectStoryboardProposal,
       patchOpenProjectStoryboardGenerationPlan,
@@ -2363,6 +2411,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       persistOpenProjectAfterAssets,
       setOpenProjectLabPrompts,
       setOpenProjectMainAudioCreationId,
+      setOpenProjectEditorAudio2,
       setOpenProjectLyricAlignment,
       setOpenProjectStoryboardProposal,
       patchOpenProjectStoryboardGenerationPlan,

@@ -49,6 +49,18 @@ describe("timelineAppend", () => {
     ).toBe(10);
   });
 
+  it("pastes A2 after A2 only, not A1", () => {
+    expect(
+      pasteAppendStartSec(
+        [
+          { startSec: 0, endSec: 20, lane: "audio" },
+          { startSec: 0, endSec: 4, lane: "audio", audioTrack: 2 },
+        ],
+        [{ startSec: 0, endSec: 3, lane: "audio", audioTrack: 2 }],
+      ),
+    ).toBe(4);
+  });
+
   it("defaults missing lane to video", () => {
     expect(clipLane({})).toBe("video");
     expect(clipLane({ lane: "audio" })).toBe("audio");

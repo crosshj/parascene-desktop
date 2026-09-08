@@ -8,7 +8,12 @@ import type {
   TimelineClip,
 } from "../../project/types";
 import type { ProjectAspectRatio } from "../../project/aspectRatios";
-import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import {
+  isImageToImageGeneration,
+  isLibraryAudioGeneration,
+  isTextToImageGeneration,
+} from "../../project/desktopAddAssetGeneration";
+import { libraryAudioCloneSeed } from "./libraryAssetGeneration";
 import type { AddAssetGenerationSession } from "./addAssetGenerate";
 import {
   GENERATE_INTENTS,
@@ -19,6 +24,7 @@ import {
   intentOffersAssetsDestination,
   intentOffersTimelineDestination,
   intentServerCapability,
+  isLibraryAudioIntent,
   intentTimelinePlacementComingSoon,
   isIntentServerWired,
   makeAddAssetIntent,
@@ -46,6 +52,7 @@ import {
 } from "./addAssetTimelinePlacement";
 
 import { TextToImageFormLayout } from "./TextToImageForm";
+import { ReplicateAudioFormLayout } from "./ReplicateAudioForm";
 import {
   ParasceneImageToImageFormLayout,
 } from "./ParasceneImageToImageForm";
@@ -95,6 +102,16 @@ type AddAssetIntentPanelProps = {
     prompt: string;
     model?: string;
     startFrameAssetId?: string;
+    audioExtras?: {
+      voiceId?: string;
+      geminiVoice?: string;
+      stylePrompt?: string;
+      lyrics?: string;
+      instrumental?: boolean;
+      lyricsOptimizer?: boolean;
+      emotion?: string;
+      cloneSourceAssetId?: string;
+    };
   } | null;
   /** Reuse an existing Generate → Assets placeholder instead of reserving a new id. */
   libraryPlaceholderId?: string | null;
@@ -178,6 +195,16 @@ export function AddAssetIntentPanel({
     (canLibraryGenerate || reviewI2i) &&
     intentId === "image_to_image" &&
     server === "parascene_blue";
+  const reviewAudio =
+    locked &&
+    !placed &&
+    isLibraryAudioGeneration(reviewGeneration) &&
+    isLibraryAudioIntent(intentId) &&
+    server === "replicate";
+  const showLibraryAudio =
+    (canLibraryGenerate || reviewAudio) &&
+    isLibraryAudioIntent(intentId) &&
+    server === "replicate";
   const t2iPrompt = reviewGeneration?.prompt ?? libraryFormSeed?.prompt ?? "";
   const t2iModelId =
     reviewGeneration?.model?.trim() ||
@@ -253,7 +280,7 @@ export function AddAssetIntentPanel({
           <p className="muted add-asset-generate-note" style={{ margin: 0 }}>
             {server === "blue_direct"
               ? "Add Blue credentials in Settings to use Direct to Blue."
-              : "Add a Replicate token and enable at least one model in Settings to use Replicate."}{" "}
+              : "Add a Replicate token in Settings to use Replicate."}{" "}
             <button
               type="button"
               className="btn ghost"
@@ -461,6 +488,37 @@ export function AddAssetIntentPanel({
           </div>
         )}
       </TextToImageFormLayout>
+    );
+  }
+
+  if (showLibraryAudio && libraryFormReady && intentId) {
+    return (
+      <ReplicateAudioFormLayout
+        intentId={intentId === "text_to_music" ? "text_to_music" : "text_to_speech"}
+        idPrefix={`add-asset-replicate-${intentId}`}
+        locked={locked}
+        onGenerateNew={onGenerateNew}
+        placeholderId={libraryPlaceholderId ?? undefined}
+        initialPrompt={t2iPrompt}
+        initialModelId={t2iModelId}
+        initialExtras={
+          libraryFormSeed?.audioExtras ??
+          libraryAudioCloneSeed(reviewGeneration)?.extras
+        }
+      >
+        {({ fields, generateAction, cloneAction }) => (
+          <div
+            className="add-asset-generate-pane preview-intent-pane"
+            aria-label="Choose generation method"
+          >
+            <div className="add-asset-generate-body">
+              {choices}
+              {fields}
+            </div>
+            {intentFooter({ generate: generateAction, clone: cloneAction })}
+          </div>
+        )}
+      </ReplicateAudioFormLayout>
     );
   }
 

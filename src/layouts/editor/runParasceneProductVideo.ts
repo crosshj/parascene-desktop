@@ -147,6 +147,7 @@ export async function runParasceneProductVideoGeneration(opts: {
   imagesGroupId: string | null;
   videosGroupId: string | null;
   mainAudioCreationId: string | null;
+  timelineAudioBakePath?: string | null;
   lyricAlignment?: LyricAlignment | null;
   prompt: string;
   model: string;
@@ -254,6 +255,8 @@ export async function runParasceneProductVideoGeneration(opts: {
       timeline: opts.timeline,
       placeholder: opts.placeholder,
       lyricAlignment: opts.lyricAlignment ?? null,
+      projectId: opts.projectId,
+      timelineAudioBakePath: opts.timelineAudioBakePath,
       onProgress: opts.onProgress,
     });
   }

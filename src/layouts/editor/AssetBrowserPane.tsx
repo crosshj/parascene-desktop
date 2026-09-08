@@ -7,7 +7,12 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  audioModelChipClass,
+  audioModelChipLabel,
+} from "../../library/audioModelChip";
 import { creationAspectCss } from "../../library/aspectRatio";
+import { AudioWaveform } from "../../library/AudioWaveform";
 import { CreationCard } from "../../library/CreationCard";
 import {
   creationCardTitle,
@@ -166,7 +171,7 @@ function AddAssetSlotCard({
   );
 }
 
-/** Generating library asset — project aspect outline while media is pending. */
+/** Generating library asset — same slot size as the finished CreationCard. */
 function PlaceholderAssetTile({
   placeholder,
   previewCreation = null,
@@ -187,6 +192,9 @@ function PlaceholderAssetTile({
     : null;
   const generating =
     placeholder.status === "generating" && !previewUrl;
+  const audioModel = audioModelChipLabel(
+    placeholder.addAssetDraft.replicateModel,
+  );
   return (
     <div className="editor-add-asset-card">
       <button
@@ -203,11 +211,23 @@ function PlaceholderAssetTile({
       >
         <span
           className={
-            generating
-              ? "editor-add-asset-card-clip is-generating"
-              : "editor-add-asset-card-clip"
+            [
+              "editor-add-asset-card-clip",
+              generating ? "is-generating" : "",
+              placeholder.kind === "audio" ? "is-audio" : "",
+              audioModel ? `is-audio-model-${audioModelChipClass(audioModel)}` : "",
+            ]
+              .filter(Boolean)
+              .join(" ")
           }
-          style={{ aspectRatio: projectAspectCss(placeholder.aspectRatio) }}
+          style={{
+            aspectRatio:
+              placeholder.kind === "audio"
+                ? previewCreation
+                  ? creationAspectCss(previewCreation)
+                  : "1 / 1"
+                : projectAspectCss(placeholder.aspectRatio),
+          }}
           aria-hidden
         >
           {previewUrl ? (
@@ -216,11 +236,20 @@ function PlaceholderAssetTile({
               src={previewUrl}
               alt=""
             />
-          ) : (
+          ) : placeholder.kind === "audio" ? (
+            <AudioWaveform />
+          ) : null}
+          {!previewUrl ? (
             <span className="editor-add-asset-card-generating-label">
               {placeholder.status === "error" ? "Error" : "Generating…"}
             </span>
-          )}
+          ) : null}
+          {generating ? (
+            <span
+              className="editor-timeline-clip-bake is-generating"
+              aria-hidden
+            />
+          ) : null}
         </span>
       </button>
     </div>

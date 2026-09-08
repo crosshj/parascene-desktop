@@ -9,6 +9,12 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
+import {
+  audioModelChipClass,
+  audioModelChipFromClip,
+  audioModelChipFromCreation,
+  type AudioModelChipLabel,
+} from "../../library/audioModelChip";
 import { getCreations } from "../../library/catalogClient";
 import {
   clipThumbnailKey,
@@ -92,6 +98,13 @@ import type { ExtendSegmentRange } from "./clipExtendBake";
 import { resolveExtendPingPong } from "./stagedClip";
 import { timelineLyricBlocks } from "./timelineLyricBlocks";
 import { resolveMainAudioClip } from "./addAssetStartFrame";
+import {
+  clipAudioTrack,
+  clipsOnAudioTrack,
+  persistAudioTrack,
+  type AudioTrackIndex,
+} from "../../project/audioTrack";
+import { clipVolumePercent } from "../../project/clipVolume";
 import { EditorClipAudioWaveform } from "./EditorClipAudioWaveform";
 import { useLabMainAudioPaths } from "../../lab/useLabMainAudioPaths";
 
@@ -122,6 +135,9 @@ type TimelinePaneProps = {
   /** Timeline zoom multiplier (0.5–3); controlled from project prefs. */
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
+  /** User-toggled A2 lane (stays visible when empty). */
+  editorAudio2?: boolean;
+  onEditorAudio2Change?: (enabled: boolean) => void;
   /** True when the center preview is owned by the timeline. */
   monitorActive?: boolean;
   /** Click/seek on tracks (not clip drag) hands the preview to the timeline. */
@@ -336,6 +352,7 @@ function draftToClip(
   startSec: number,
   lane: "video" | "audio",
   allClips: readonly TimelineClip[],
+  audioTrack: AudioTrackIndex = 1,
 ): TimelineClip {
   const rawDuration = stagedClipDuration(draft);
   const duration = draft.isAddAssetPlaceholder
@@ -392,6 +409,10 @@ function draftToClip(
         : draft.timelineLocked === true
           ? true
           : undefined,
+    audioTrack:
+      lane === "audio"
+        ? persistAudioTrack({ audioTrack })
+        : undefined,
   };
 }
 
@@ -486,6 +507,8 @@ function MiniClip({
   resizing = false,
   moveEnabled = true,
   outsideFolder = false,
+  volume = 100,
+  audioModel = null,
   onPointerDown,
   onResizePointerDown,
 }: {
@@ -525,6 +548,10 @@ function MiniClip({
   /** False when synced to timeline — clip can be selected but not dragged. */
   moveEnabled?: boolean;
   outsideFolder?: boolean;
+  /** Per-instance gain 0–100. Independent of monitor master. */
+  volume?: number;
+  /** Lyria / Flash / MiniMax Speech — tints the clip body only. */
+  audioModel?: AudioModelChipLabel | null;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
@@ -556,12 +583,17 @@ function MiniClip({
     (frac) => frac * widthPx - sourceFrac * widthPx >= minLoopLinePx,
   );
 
+  const clipVol = clipVolumePercent({ volume });
+  const volumeTitle = audio ? `Volume ${clipVol}%` : undefined;
+  const combinedTitle = [title, volumeTitle].filter(Boolean).join(" · ");
+
   const classNames = [
     className,
     moving ? "is-moving" : "",
     resizing ? "is-resizing" : "",
     selected ? "is-selected" : "",
     audio ? "is-audio" : "",
+    audio && audioModel ? `is-audio-model-${audioModelChipClass(audioModel)}` : "",
     reversed ? "is-reversed" : "",
     !audio ? "is-video-clip" : "",
   ]
@@ -579,6 +611,9 @@ function MiniClip({
   } else if (selected) {
     background = undefined;
     border = undefined;
+  } else if (audio && audioModel) {
+    background = undefined;
+    border = undefined;
   } else if (audio) {
     background = "rgba(55, 40, 100, 0.94)";
     border = "1.5px solid #a78bfa";
@@ -588,7 +623,7 @@ function MiniClip({
     <>
     <div
       className={classNames}
-      title={title}
+      title={combinedTitle || title}
       onPointerDown={onPointerDown}
       style={{
         position: "absolute",
@@ -606,7 +641,8 @@ function MiniClip({
         userSelect: "none",
         opacity: moving ? 0.95 : 1,
         minWidth: 0,
-      }}
+        ["--clip-vol" as string]: String(clipVol / 100),
+      } as CSSProperties}
     >
       {durationText ? (
         <span className="editor-timeline-clip-dur">{durationText}</span>
@@ -772,6 +808,8 @@ export function TimelinePane({
   onSelectClip,
   zoom: zoomProp = 1,
   onZoomChange,
+  editorAudio2 = false,
+  onEditorAudio2Change,
   monitorActive = false,
   onActivateMonitor,
   playheadSec = 0,
@@ -813,6 +851,8 @@ export function TimelinePane({
     [fragmentStatus, previewStatus, previewBuffering],
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const a1LaneRef = useRef<HTMLDivElement>(null);
+  const a2LaneRef = useRef<HTMLDivElement>(null);
   const [clips, setClips] = useState<TimelineClip[]>(seedClips);
   const [ghost, setGhost] = useState<TimelineGhostClip | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -1180,6 +1220,9 @@ export function TimelinePane({
 
   const videoClips = clips.filter((c) => (c.lane ?? "video") === "video");
   const audioClips = clips.filter((c) => c.lane === "audio");
+  const a1Clips = clipsOnAudioTrack(clips, 1);
+  const a2Clips = clipsOnAudioTrack(clips, 2);
+  const showAudio2 = editorAudio2 || a2Clips.length > 0;
   const mainAudioClip = useMemo(
     () => resolveMainAudioClip(clips, mainAudioCreationId ?? null),
     [clips, mainAudioCreationId],
@@ -1198,22 +1241,30 @@ export function TimelinePane({
   const [audioLocalPathByAssetId, setAudioLocalPathByAssetId] = useState<
     Record<string, string>
   >({});
+  const [audioModelByAssetId, setAudioModelByAssetId] = useState<
+    Record<string, AudioModelChipLabel>
+  >({});
   useEffect(() => {
     let cancelled = false;
     const ids = audioAssetIdsKey ? audioAssetIdsKey.split("\0") : [];
     if (ids.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAudioLocalPathByAssetId({});
+      setAudioModelByAssetId({});
       return;
     }
     void getCreations(ids).then((rows) => {
       if (cancelled) return;
-      const next: Record<string, string> = {};
+      const nextPaths: Record<string, string> = {};
+      const nextModels: Record<string, AudioModelChipLabel> = {};
       for (const row of rows) {
         const path = row.localPath?.trim();
-        if (path) next[row.id] = path;
+        if (path) nextPaths[row.id] = path;
+        const model = audioModelChipFromCreation(row);
+        if (model) nextModels[row.id] = model;
       }
-      setAudioLocalPathByAssetId(next);
+      setAudioLocalPathByAssetId(nextPaths);
+      setAudioModelByAssetId(nextModels);
     });
     return () => {
       cancelled = true;
@@ -1223,6 +1274,12 @@ export function TimelinePane({
     () => timelineLyricBlocks(clips, lyricAlignment, mainAudioCreationId),
     [clips, lyricAlignment, mainAudioCreationId],
   );
+  const timelineGridMods = [
+    lyricBlocks.length > 0 ? "has-lyrics" : "",
+    showAudio2 ? "has-audio2" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const pointToStartSec = useCallback(
     (clientX: number) => {
@@ -1271,9 +1328,10 @@ export function TimelinePane({
       const primaryClip = clipsRef.current.find((c) => c.id === move.primaryId);
       const lane: "video" | "audio" =
         primaryClip?.lane === "audio" ? "audio" : "video";
+      const moveTrack = clipAudioTrack(primaryClip ?? {});
       const laneClips = clipsRef.current.filter((c) =>
         lane === "audio"
-          ? c.lane === "audio"
+          ? c.lane === "audio" && clipAudioTrack(c) === moveTrack
           : (c.lane ?? "video") === "video",
       );
       const exclude = new Set(move.movingIds);
@@ -1358,9 +1416,11 @@ export function TimelinePane({
       if (finalize) {
         const pointerEndSec = endSec;
         const exclude = new Set([clip.id]);
+        const resizeTrack = clipAudioTrack(clip);
         const laneClips = clipsRef.current.filter((c) =>
           clipLane === "audio"
-            ? c.lane === "audio" || c.kind === "audio"
+            ? (c.lane === "audio" || c.kind === "audio") &&
+              clipAudioTrack(c) === resizeTrack
             : (c.lane ?? "video") === "video" &&
               c.lane !== "audio" &&
               c.kind !== "audio",
@@ -1645,6 +1705,16 @@ export function TimelinePane({
     );
   }, []);
 
+  const audioTrackFromClientY = useCallback(
+    (clientY: number): AudioTrackIndex => {
+      if (!showAudio2) return 1;
+      const a2 = a2LaneRef.current?.getBoundingClientRect();
+      if (a2 && clientY >= a2.top && clientY <= a2.bottom) return 2;
+      return 1;
+    },
+    [showAudio2],
+  );
+
   const placeDraftAt = useCallback(
     (draft: StagedClipDraft, clientX: number, clientY: number) => {
       const over = isOverTracks(clientX, clientY);
@@ -1657,17 +1727,18 @@ export function TimelinePane({
         return;
       }
       const lane = targetLaneForDraft(draft);
-      const laneClips = clips.filter((c) =>
+      const audioTrack =
+        lane === "audio" ? audioTrackFromClientY(clientY) : 1;
+      const laneClips =
         lane === "audio"
-          ? c.lane === "audio"
-          : (c.lane ?? "video") === "video",
-      );
+          ? clipsOnAudioTrack(clips, audioTrack)
+          : clips.filter((c) => (c.lane ?? "video") === "video");
       const startSec = snapStartSec(
         pointToStartSec(clientX),
         laneClips,
         magnetic,
       );
-      const placed = draftToClip(draft, startSec, lane, clips);
+      const placed = draftToClip(draft, startSec, lane, clips, audioTrack);
       commitClips([...clips, placed]);
       onSelectClipRef.current?.(placed);
       setGhost(null);
@@ -1679,6 +1750,7 @@ export function TimelinePane({
       });
     },
     [
+      audioTrackFromClientY,
       clips,
       commitClips,
       isOverTracks,
@@ -1690,13 +1762,12 @@ export function TimelinePane({
   const placeDraftAtEnd = useCallback(
     (draft: StagedClipDraft) => {
       const lane = targetLaneForDraft(draft);
-      const laneClips = clips.filter((c) =>
+      const laneClips =
         lane === "audio"
-          ? c.lane === "audio"
-          : (c.lane ?? "video") === "video",
-      );
+          ? clipsOnAudioTrack(clips, 1)
+          : clips.filter((c) => (c.lane ?? "video") === "video");
       const startSec = laneAppendStartSec(laneClips);
-      const placed = draftToClip(draft, startSec, lane, clips);
+      const placed = draftToClip(draft, startSec, lane, clips, 1);
       commitClips([...clips, placed]);
       onSelectClipRef.current?.(placed);
       setGhost(null);
@@ -1718,11 +1789,12 @@ export function TimelinePane({
         return;
       }
       const lane = targetLaneForDraft(draft);
-      const laneClips = clips.filter((c) =>
+      const audioTrack =
+        lane === "audio" ? audioTrackFromClientY(clientY) : 1;
+      const laneClips =
         lane === "audio"
-          ? c.lane === "audio"
-          : (c.lane ?? "video") === "video",
-      );
+          ? clipsOnAudioTrack(clips, audioTrack)
+          : clips.filter((c) => (c.lane ?? "video") === "video");
       const startSec = snapStartSec(
         pointToStartSec(clientX),
         laneClips,
@@ -1732,6 +1804,7 @@ export function TimelinePane({
         startSec,
         durationSec: stagedClipDuration(draft),
         lane,
+        audioTrack: lane === "audio" ? audioTrack : undefined,
         label: draft.label,
         thumbUrl: draft.thumbUrl,
         framing: normalizeFraming(draft.framing),
@@ -1740,7 +1813,7 @@ export function TimelinePane({
         centerY: draft.centerY,
       });
     },
-    [clips, isOverTracks, magnetic, pointToStartSec],
+    [audioTrackFromClientY, clips, isOverTracks, magnetic, pointToStartSec],
   );
 
   useEffect(() => {
@@ -1831,6 +1904,122 @@ export function TimelinePane({
   ]
     .filter(Boolean)
     .join(" ");
+
+  const audioGhostOnTrack = (track: AudioTrackIndex) =>
+    ghost?.lane === "audio" && clipAudioTrack(ghost) === track;
+
+  const renderAudioLaneClips = (trackClips: TimelineClip[]) =>
+    [...trackClips]
+      .sort((a, b) => {
+        const aLinked = isLinkedVideoAudioClip(a) ? 1 : 0;
+        const bLinked = isLinkedVideoAudioClip(b) ? 1 : 0;
+        return aLinked - bLinked;
+      })
+      .map((clip) => {
+        const isMainAudio = mainAudioClip?.id === clip.id;
+        const linked = isLinkedVideoAudioClip(clip);
+        const generating =
+          addAssetGenerationByClipId?.get(clip.id)?.status === "generating";
+        const parentMovable =
+          !linked ||
+          !clip.linkedVideoClipId ||
+          canClipMove(clip.linkedVideoClipId);
+        return (
+          <MiniClip
+            key={clip.id}
+            className={`editor-timeline-clip${linked ? " is-linked-video-audio" : ""}`}
+            startSec={clip.startSec}
+            durationSec={clip.endSec - clip.startSec}
+            thumbUrl={clipDisplayThumbUrl(
+              clip,
+              clipThumbByKey,
+              thumbByAssetId,
+              aspectRatio,
+            )}
+            label={clip.label}
+            title={
+              linked
+                ? `Video audio · ${clip.assetId ?? clip.label}`
+                : (clip.assetId ?? clip.label)
+            }
+            pxPerSec={pxPerSec}
+            moving={movingClipIds.includes(clip.id)}
+            resizing={resizingClipIds.includes(clip.id)}
+            selected={selectedClipIds.includes(clip.id)}
+            audio
+            reversed={Boolean(clip.reverse)}
+            waveSeed={clip.id}
+            audioMixPath={
+              isMainAudio
+                ? mainAudioPaths.mixPath
+                : clip.assetId
+                  ? (audioLocalPathByAssetId[clip.assetId] ?? null)
+                  : null
+            }
+            audioVocalsPath={isMainAudio ? mainAudioPaths.vocalsPath : null}
+            clipInSec={clipInSec(clip)}
+            clipOutSec={clipOutSec(clip)}
+            audioSpeed={
+              Number.isFinite(clip.speed) && Number(clip.speed) > 0
+                ? Number(clip.speed)
+                : 1
+            }
+            audioExtendPingPong={clip.extendPingPong === true}
+            audioSourceSpanSec={clipExtendSourceSpanSec(clip) ?? undefined}
+            audioMapExtendedPlayback={linked}
+            extendDivitFrac={
+              linked && clipIsTimelineExtended(clip)
+                ? clipExtendDivitFraction(clip)
+                : null
+            }
+            extendLoopLineFracs={
+              linked && clipIsTimelineExtended(clip)
+                ? clipExtendLoopLineFractions(clip)
+                : []
+            }
+            extendPongSegments={
+              linked &&
+              clipIsTimelineExtended(clip) &&
+              clip.extendPingPong === true
+                ? clipExtendPongSegmentFractions(clip)
+                : []
+            }
+            bakeStatus={bakeInfoByClipId?.get(clip.id)?.status}
+            bakeError={bakeInfoByClipId?.get(clip.id)?.error}
+            resizeEnabled={!generating && !linked}
+            moveEnabled={
+              !generating &&
+              parentMovable &&
+              (linked || clipTimelineMoveEnabled(clip))
+            }
+            volume={clipVolumePercent(clip)}
+            audioModel={
+              linked
+                ? null
+                : audioModelChipFromClip(clip) ??
+                  (clip.assetId
+                    ? (audioModelByAssetId[clip.assetId] ?? null)
+                    : null)
+            }
+            onPointerDown={(event) => beginClipPress(clip, event)}
+            onResizePointerDown={(event) => armClipResize(clip, event)}
+            outsideFolder={clipUsesOutsideReference(clip, outsideIdSet)}
+          />
+        );
+      });
+
+  const renderAudioGhost = () =>
+    ghost?.lane === "audio" ? (
+      <MiniClip
+        className="editor-timeline-clip editor-timeline-ghost-clip"
+        startSec={ghost.startSec}
+        durationSec={ghost.durationSec}
+        thumbUrl={ghost.thumbUrl}
+        pxPerSec={pxPerSec}
+        audio
+        waveSeed={`ghost-${ghost.label}`}
+      />
+    ) : null;
 
   return (
     <section
@@ -2114,6 +2303,49 @@ export function TimelinePane({
               </svg>
             </button>
           ) : null}
+          {showAudio2 ? (
+            <button
+              type="button"
+              className="editor-timeline-tool"
+              title={
+                a2Clips.length > 0
+                  ? "Remove A2 after deleting its clips"
+                  : "Remove A2 audio track"
+              }
+              aria-label="Remove A2 audio track"
+              disabled={a2Clips.length > 0 || !onEditorAudio2Change}
+              onClick={() => onEditorAudio2Change?.(false)}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  d="M3 4.5h10M3 8h10M3 11.5h6"
+                />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="editor-timeline-tool"
+              title="Add A2 audio track"
+              aria-label="Add A2 audio track"
+              disabled={!onEditorAudio2Change}
+              onClick={() => onEditorAudio2Change?.(true)}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  d="M3 4.5h10M3 8h10M3 11.5h6M12 10v3M10.5 11.5h3"
+                />
+              </svg>
+            </button>
+          )}
           <button
             type="button"
             className={[
@@ -2244,17 +2476,17 @@ export function TimelinePane({
         </div>
       </div>
 
-      <div className="editor-timeline-body">
-        <div
-          className={`editor-timeline-labels${lyricBlocks.length > 0 ? " has-lyrics" : ""}`}
-          aria-hidden
-        >
+      <div
+        className={`editor-timeline-body${timelineGridMods ? ` ${timelineGridMods}` : ""}`}
+      >
+        <div className="editor-timeline-labels" aria-hidden>
           <div className="editor-timeline-label-spacer" />
           <div className="editor-timeline-label">V1</div>
           {lyricBlocks.length > 0 ? (
             <div className="editor-timeline-label">LYR</div>
           ) : null}
           <div className="editor-timeline-label">A1</div>
+          {showAudio2 ? <div className="editor-timeline-label">A2</div> : null}
         </div>
 
           <div
@@ -2265,7 +2497,7 @@ export function TimelinePane({
             onDrop={onDrop}
           >
             <div
-              className={`editor-timeline-tracks${lyricBlocks.length > 0 ? " has-lyrics" : ""}`}
+              className="editor-timeline-tracks"
               style={{ width: trackWidth }}
               onPointerDown={(event) => {
                 if (event.button !== 0) return;
@@ -2463,122 +2695,33 @@ export function TimelinePane({
             ) : null}
 
             <div
+              ref={a1LaneRef}
               className="editor-timeline-lane is-audio"
               aria-label="Master audio lane"
             >
-              {audioClips.length === 0 && !ghost ? (
+              {a1Clips.length === 0 && !audioGhostOnTrack(1) ? (
                 <div className="editor-timeline-lane-empty muted">
                   Master Audio
                 </div>
               ) : (
-                // Bed audio first; linked video-audio companions paint above.
-                [...audioClips]
-                  .sort((a, b) => {
-                    const aLinked = isLinkedVideoAudioClip(a) ? 1 : 0;
-                    const bLinked = isLinkedVideoAudioClip(b) ? 1 : 0;
-                    return aLinked - bLinked;
-                  })
-                  .map((clip) => {
-                  const isMainAudio = mainAudioClip?.id === clip.id;
-                  const linked = isLinkedVideoAudioClip(clip);
-                  const generating =
-                    addAssetGenerationByClipId?.get(clip.id)?.status ===
-                    "generating";
-                  const parentMovable =
-                    !linked ||
-                    !clip.linkedVideoClipId ||
-                    canClipMove(clip.linkedVideoClipId);
-                  return (
-                  <MiniClip
-                    key={clip.id}
-                    className={`editor-timeline-clip${linked ? " is-linked-video-audio" : ""}`}
-                    startSec={clip.startSec}
-                    durationSec={clip.endSec - clip.startSec}
-                    thumbUrl={clipDisplayThumbUrl(
-                      clip,
-                      clipThumbByKey,
-                      thumbByAssetId,
-                      aspectRatio,
-                    )}
-                    label={clip.label}
-                    title={
-                      linked
-                        ? `Video audio · ${clip.assetId ?? clip.label}`
-                        : (clip.assetId ?? clip.label)
-                    }
-                    pxPerSec={pxPerSec}
-                    moving={movingClipIds.includes(clip.id)}
-                    resizing={resizingClipIds.includes(clip.id)}
-                    selected={selectedClipIds.includes(clip.id)}
-                    audio
-                    reversed={Boolean(clip.reverse)}
-                    waveSeed={clip.id}
-                    audioMixPath={
-                      isMainAudio
-                        ? mainAudioPaths.mixPath
-                        : clip.assetId
-                          ? (audioLocalPathByAssetId[clip.assetId] ?? null)
-                          : null
-                    }
-                    audioVocalsPath={
-                      isMainAudio ? mainAudioPaths.vocalsPath : null
-                    }
-                    clipInSec={clipInSec(clip)}
-                    clipOutSec={clipOutSec(clip)}
-                    audioSpeed={
-                      Number.isFinite(clip.speed) && Number(clip.speed) > 0
-                        ? Number(clip.speed)
-                        : 1
-                    }
-                    audioExtendPingPong={clip.extendPingPong === true}
-                    audioSourceSpanSec={
-                      clipExtendSourceSpanSec(clip) ?? undefined
-                    }
-                    audioMapExtendedPlayback={linked}
-                    extendDivitFrac={
-                      linked && clipIsTimelineExtended(clip)
-                        ? clipExtendDivitFraction(clip)
-                        : null
-                    }
-                    extendLoopLineFracs={
-                      linked && clipIsTimelineExtended(clip)
-                        ? clipExtendLoopLineFractions(clip)
-                        : []
-                    }
-                    extendPongSegments={
-                      linked &&
-                      clipIsTimelineExtended(clip) &&
-                      clip.extendPingPong === true
-                        ? clipExtendPongSegmentFractions(clip)
-                        : []
-                    }
-                    bakeStatus={bakeInfoByClipId?.get(clip.id)?.status}
-                    bakeError={bakeInfoByClipId?.get(clip.id)?.error}
-                    resizeEnabled={!generating && !linked}
-                    moveEnabled={
-                      !generating &&
-                      parentMovable &&
-                      (linked || clipTimelineMoveEnabled(clip))
-                    }
-                    onPointerDown={(event) => beginClipPress(clip, event)}
-                    onResizePointerDown={(event) => armClipResize(clip, event)}
-                    outsideFolder={clipUsesOutsideReference(clip, outsideIdSet)}
-                  />
-                  );
-                })
+                renderAudioLaneClips(a1Clips)
               )}
-              {ghost?.lane === "audio" ? (
-                <MiniClip
-                  className="editor-timeline-clip editor-timeline-ghost-clip"
-                  startSec={ghost.startSec}
-                  durationSec={ghost.durationSec}
-                  thumbUrl={ghost.thumbUrl}
-                  pxPerSec={pxPerSec}
-                  audio
-                  waveSeed={`ghost-${ghost.label}`}
-                />
-              ) : null}
+              {audioGhostOnTrack(1) ? renderAudioGhost() : null}
             </div>
+            {showAudio2 ? (
+              <div
+                ref={a2LaneRef}
+                className="editor-timeline-lane is-audio is-audio-2"
+                aria-label="A2 audio lane"
+              >
+                {a2Clips.length === 0 && !audioGhostOnTrack(2) ? (
+                  <div className="editor-timeline-lane-empty muted">A2</div>
+                ) : (
+                  renderAudioLaneClips(a2Clips)
+                )}
+                {audioGhostOnTrack(2) ? renderAudioGhost() : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

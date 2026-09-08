@@ -223,6 +223,16 @@ export function pendingCreationIdFromRun(run: ServiceRun): string | undefined {
   return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
 }
 
+/** Replicate prediction id from a live or finished service job. */
+export function predictionIdFromServiceRun(run: ServiceRun): string | undefined {
+  for (const raw of [run.resultJson, run.checkpointJson, run.payloadJson]) {
+    const parsed = parseJsonBlob<Record<string, unknown>>(raw);
+    const id = parsed?.predictionId ?? parsed?.prediction_id;
+    if (typeof id === "string" && id.trim()) return id.trim();
+  }
+  return undefined;
+}
+
 export async function watchParasceneGenerate(
   handle: ServiceHandle,
   opts?: WatchServiceOptions,

@@ -5,7 +5,6 @@ import {
   REPLICATE_TOKEN_CHANGED_EVENT,
 } from "../../settings/events";
 import {
-  replicateModelsListEnabled,
   replicateTokenStatus,
 } from "../../replicate/replicateClient";
 import {
@@ -70,7 +69,7 @@ export function serverChoiceDescription(
       return "Needs Blue credentials in Settings";
     }
     if (cap.server === "replicate") {
-      return "Needs Replicate token and enabled models in Settings";
+      return "Needs a Replicate token in Settings";
     }
     return "Needs Settings credentials";
   }
@@ -104,9 +103,7 @@ export function firstVisibleGenerateServer(
 
 export async function refreshReplicateReady(): Promise<boolean> {
   const token = await replicateTokenStatus();
-  if (!token.configured) return false;
-  const enabled = await replicateModelsListEnabled();
-  return enabled.length > 0;
+  return token.configured;
 }
 
 /** Module cache — survives Form remounts while flipping assets. */
@@ -162,7 +159,7 @@ export function resetGenerateServerCredentialCaches(): void {
 export const resetGenerateServerCredentialCachesForTests =
   resetGenerateServerCredentialCaches;
 
-/** Settings-backed readiness for BYO servers (Blue credentials, Replicate token + models). */
+/** Settings-backed readiness for BYO servers (Blue credentials, Replicate token). */
 export function useGenerateServerCredentials(): GenerateServerCredentialState {
   const [creds, setCreds] = useState<GenerateServerCredentialState>(
     () =>

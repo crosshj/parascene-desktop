@@ -28,7 +28,21 @@ describe("libraryAssetPlaceholder", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     expect(row?.id).toBe("asset-1");
+    expect(row?.kind).toBe("image");
     expect(libraryAssetPlaceholderPhase(row)).toBe("running");
+  });
+
+  it("normalizes audio placeholders", () => {
+    const row = normalizeLibraryAssetPlaceholder({
+      id: "asset-audio",
+      kind: "audio",
+      aspectRatio: "16:9",
+      status: "generating",
+      addAssetDraft: { prompt: "say hello" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(row?.kind).toBe("audio");
   });
 
   it("marks draft errors as error phase", () => {

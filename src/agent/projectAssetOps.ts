@@ -6,6 +6,7 @@ import {
   removeMembersFromProjectGroup,
   ungroupMembersFromProjectGroup,
 } from "../lab/projectGroups";
+import { cabinetPersistPatch } from "../project/cabinetPersist";
 import {
   deleteCreationViaService,
   getRemoteCreation,
@@ -154,13 +155,14 @@ export type ProjectAssetOpContext = {
     videosGroupId?: string | null;
   }) => void;
   /**
-   * One persist write: cabinet pointers + hide ids from creationIds.
+   * One persist write: cabinet pointers + hide/add creationIds.
    * Must land before native unfile so Editor remount cannot bounce a cover.
    */
   persistOpenProjectAfterAssets?: (patch: {
     imagesGroupId: string | null;
     videosGroupId: string | null;
     hideIds: string[];
+    addIds?: string[];
   }) => Promise<void>;
   onProgress?: (note: string) => void;
 };
@@ -195,24 +197,32 @@ async function persistThenUnfile(
   toUnfile: string[],
   toAdd: string[],
 ): Promise<void> {
+  const persist = cabinetPersistPatch({
+    imagesGroupId,
+    videosGroupId,
+    hideIds: toUnfile,
+    addIds: toAdd,
+  });
   if (ctx.persistOpenProjectAfterAssets) {
-    await ctx.persistOpenProjectAfterAssets({
-      imagesGroupId,
-      videosGroupId,
-      hideIds: toUnfile,
-    });
+    await ctx.persistOpenProjectAfterAssets(persist);
   } else {
-    ctx.setOpenProjectGroupIds({ imagesGroupId, videosGroupId });
+    ctx.setOpenProjectGroupIds({
+      imagesGroupId: persist.imagesGroupId,
+      videosGroupId: persist.videosGroupId,
+    });
   }
   if (toUnfile.length > 0) {
     await ctx.removeCreationsFromOpenProject(toUnfile);
   }
-  const add = toAdd.filter((id) => !toUnfile.includes(id));
+  const add = persist.addIds.filter((id) => !toUnfile.includes(id));
   if (add.length > 0) {
     await ctx.addCreationsToOpenProject(add);
   }
   if (!ctx.persistOpenProjectAfterAssets) {
-    ctx.setOpenProjectGroupIds({ imagesGroupId, videosGroupId });
+    ctx.setOpenProjectGroupIds({
+      imagesGroupId: persist.imagesGroupId,
+      videosGroupId: persist.videosGroupId,
+    });
   }
 }
 
@@ -328,17 +338,36 @@ export async function applyProjectAssetRemove(
 
   const toUnfile = [...unfile];
   const toAdd = [...add].filter((id) => !unfile.has(id));
-  await persistThenUnfile(ctx, imagesGroupId, videosGroupId, toUnfile, toAdd);
+  const persist = cabinetPersistPatch({
+    imagesGroupId,
+    videosGroupId,
+    hideIds: toUnfile,
+    addIds: toAdd,
+  });
+  await persistThenUnfile(
+    ctx,
+    persist.imagesGroupId,
+    persist.videosGroupId,
+    toUnfile,
+    persist.addIds,
+  );
   await dropEmptiedCovers(
     ctx,
     {
       imagesGroupId: ctx.imagesGroupId,
       videosGroupId: ctx.videosGroupId,
     },
-    { imagesGroupId, videosGroupId },
+    {
+      imagesGroupId: persist.imagesGroupId,
+      videosGroupId: persist.videosGroupId,
+    },
     new Set(ids),
   );
-  return { ids, imagesGroupId, videosGroupId };
+  return {
+    ids,
+    imagesGroupId: persist.imagesGroupId,
+    videosGroupId: persist.videosGroupId,
+  };
 }
 
 export async function applyProjectAssetDelete(
@@ -410,14 +439,29 @@ export async function applyProjectAssetDelete(
 
   const toUnfile = [...unfile];
   const toAdd = [...add].filter((id) => !unfile.has(id) && !deleted.has(id));
-  await persistThenUnfile(ctx, imagesGroupId, videosGroupId, toUnfile, toAdd);
+  const persist = cabinetPersistPatch({
+    imagesGroupId,
+    videosGroupId,
+    hideIds: toUnfile,
+    addIds: toAdd,
+  });
+  await persistThenUnfile(
+    ctx,
+    persist.imagesGroupId,
+    persist.videosGroupId,
+    toUnfile,
+    persist.addIds,
+  );
   await dropEmptiedCovers(
     ctx,
     {
       imagesGroupId: ctx.imagesGroupId,
       videosGroupId: ctx.videosGroupId,
     },
-    { imagesGroupId, videosGroupId },
+    {
+      imagesGroupId: persist.imagesGroupId,
+      videosGroupId: persist.videosGroupId,
+    },
     new Set(),
   );
   // Cabinet deleteLocal often fails while the cover still has usage.
@@ -429,5 +473,9 @@ export async function applyProjectAssetDelete(
       /* already gone, or a leftover usage we could not drop */
     }
   }
-  return { ids, imagesGroupId, videosGroupId };
+  return {
+    ids,
+    imagesGroupId: persist.imagesGroupId,
+    videosGroupId: persist.videosGroupId,
+  };
 }

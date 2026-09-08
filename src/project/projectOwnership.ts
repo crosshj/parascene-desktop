@@ -8,8 +8,8 @@ export type ProjectOwnershipFields = Pick<
 
 /**
  * True when `creationId` is owned by the project for save / Assets purposes:
- * either a folder member (`creationIds`), or a member of an Images/Videos
- * cabinet whose cover is itself a folder member.
+ * a folder member (`creationIds`), the Images/Videos cabinet pointer itself,
+ * or a member of a cabinet whose cover is filed in the folder.
  */
 export function isProjectOwnedCreation(
   project: ProjectOwnershipFields,
@@ -19,6 +19,8 @@ export function isProjectOwnedCreation(
   const id = creationId.trim();
   if (!id) return false;
   if (project.creationIds.includes(id)) return true;
+  if (project.imagesGroupId?.trim() === id) return true;
+  if (project.videosGroupId?.trim() === id) return true;
   if (cabinetMemberIds?.has(id)) return true;
   return false;
 }

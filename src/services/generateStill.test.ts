@@ -6,7 +6,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
-import { invokeParasceneGenerate } from "./generateStill";
+import {
+  invokeParasceneGenerate,
+  predictionIdFromServiceRun,
+} from "./generateStill";
 
 describe("invokeParasceneGenerate", () => {
   beforeEach(() => {
@@ -33,5 +36,21 @@ describe("invokeParasceneGenerate", () => {
         }),
       }),
     });
+  });
+});
+
+describe("predictionIdFromServiceRun", () => {
+  it("reads the Replicate prediction id from the job result", () => {
+    expect(
+      predictionIdFromServiceRun({
+        id: "job-1",
+        kind: "replicate.generate",
+        status: "running",
+        payloadJson: "{}",
+        resultJson: JSON.stringify({ predictionId: "pred-lyria" }),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toBe("pred-lyria");
   });
 });

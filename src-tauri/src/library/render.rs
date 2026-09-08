@@ -57,6 +57,12 @@ pub struct RenderTimelineClipInput {
     /// Set on Master Audio companions linked to a video Include Audio clip.
     #[serde(default)]
     pub linked_video_clip_id: Option<String>,
+    /// 2 = A2 user audio; omit / 1 = Master Audio.
+    #[serde(default)]
+    pub audio_track: Option<u8>,
+    /// Per-instance gain 0–100. Omitted / 100 = unity.
+    #[serde(default)]
+    pub volume: Option<f64>,
     #[serde(default)]
     pub reverse: bool,
     /// Match editor staging: fit (contain), fill (cover), stretch.
@@ -229,6 +235,23 @@ struct AudioSegment {
     reverse_trim: bool,
     /// Playback rate applied after atrim (1 = realtime).
     speed: f64,
+    /// Linear gain (1 = unity). Applied before adelay.
+    volume: f64,
+}
+
+fn clip_volume_gain(clip: &RenderTimelineClipInput) -> f64 {
+    match clip.volume {
+        Some(v) if v.is_finite() => (v / 100.0).clamp(0.0, 1.0),
+        _ => 1.0,
+    }
+}
+
+fn audio_volume_filter_suffix(volume: f64) -> String {
+    if (volume - 1.0).abs() <= 1e-4 {
+        String::new()
+    } else {
+        format!(",volume={:.6}", volume.max(0.0))
+    }
 }
 
 pub(crate) fn safe_id(id: &str) -> String {
@@ -1164,6 +1187,46 @@ fn clip_is_linked_video_audio(clip: &RenderTimelineClipInput) -> bool {
         && clip_lane(clip.lane.as_deref()) == "audio"
 }
 
+fn clip_audio_track(clip: &RenderTimelineClipInput) -> u8 {
+    if clip_is_linked_video_audio(clip) {
+        return 1;
+    }
+    if clip.audio_track == Some(2) {
+        2
+    } else {
+        1
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioMixRole {
+    Priority,
+    BedA1,
+    A2,
+}
+
+fn clip_audio_mix_role(clip: &RenderTimelineClipInput) -> AudioMixRole {
+    if clip_is_linked_video_audio(clip) {
+        AudioMixRole::Priority
+    } else if clip_audio_track(clip) == 2 {
+        AudioMixRole::A2
+    } else {
+        AudioMixRole::BedA1
+    }
+}
+
+fn mix_audio_groups(
+    priority: Vec<AudioSegment>,
+    bed: Vec<AudioSegment>,
+    a2: Vec<AudioSegment>,
+) -> Vec<AudioSegment> {
+    let bed = punch_bed_around_priority(bed, &priority);
+    let mut out = priority;
+    out.extend(bed);
+    out.extend(a2);
+    out
+}
+
 fn clip_uses_extended_audio(clip: &RenderTimelineClipInput) -> bool {
     let extended = clip_timeline_duration(clip) > clip_playthrough_unit(clip) + 1e-3;
     if !extended {
@@ -1303,6 +1366,7 @@ fn punch_bed_around_priority(
                     delay_ms: (cursor * 1000.0).round() as u64,
                     reverse_trim: seg.reverse_trim,
                     speed: seg.speed,
+                    volume: seg.volume,
                 });
             }
             cursor = p1.clamp(cursor, end);
@@ -1317,6 +1381,7 @@ fn punch_bed_around_priority(
                 delay_ms: (cursor * 1000.0).round() as u64,
                 reverse_trim: seg.reverse_trim,
                 speed: seg.speed,
+                volume: seg.volume,
             });
         }
     }
@@ -1344,6 +1409,7 @@ fn expand_clip_audio_segments(
             delay_ms: ((delay_base + tile.local_start) * 1000.0).round() as u64,
             reverse_trim: tile.reverse_trim,
             speed: tile.speed,
+            volume: clip_volume_gain(clip),
         })
         .collect())
 }
@@ -1354,26 +1420,24 @@ fn collect_audio_segments(
 ) -> Result<Vec<AudioSegment>, String> {
     // Video Include Audio is materialized as linked Master Audio companions
     // (see syncLinkedVideoAudio / timelineClipsToRenderInput). Collect only the
-    // audio lane; linked companions take precedence over bed audio.
+    // audio lane; punch A1 beds around linked companions. A2 always mixes.
     let mut priority: Vec<AudioSegment> = Vec::new();
     let mut bed: Vec<AudioSegment> = Vec::new();
+    let mut a2: Vec<AudioSegment> = Vec::new();
 
     for clip in clips {
         if clip_lane(clip.lane.as_deref()) != "audio" {
             continue;
         }
         let segments = expand_clip_audio_segments(clip, paths)?;
-        if clip_is_linked_video_audio(clip) {
-            priority.extend(segments);
-        } else {
-            bed.extend(segments);
+        match clip_audio_mix_role(clip) {
+            AudioMixRole::Priority => priority.extend(segments),
+            AudioMixRole::BedA1 => bed.extend(segments),
+            AudioMixRole::A2 => a2.extend(segments),
         }
     }
 
-    let bed = punch_bed_around_priority(bed, &priority);
-    let mut out = priority;
-    out.extend(bed);
-    Ok(out)
+    Ok(mix_audio_groups(priority, bed, a2))
 }
 
 fn audio_segment_filter(idx: usize, segment: &AudioSegment) -> String {
@@ -1387,8 +1451,14 @@ fn audio_segment_filter(idx: usize, segment: &AudioSegment) -> String {
     if segment.reverse_trim {
         chain.push_str(",areverse");
     }
+    chain.push_str(&audio_volume_filter_suffix(segment.volume));
     chain.push_str(&format!(",adelay={delay}|{delay}[a{idx}]"));
     chain
+}
+
+/// Mix without FFmpeg's default 1/n normalize so bake matches monitor levels.
+fn amix_inputs(count: usize) -> String {
+    format!("amix=inputs={count}:duration=longest:dropout_transition=0:normalize=0")
 }
 
 fn audio_mix_pad_filter(segment_count: usize, duration_sec: f64) -> String {
@@ -1400,7 +1470,7 @@ fn audio_mix_pad_filter(segment_count: usize, duration_sec: f64) -> String {
         format!("[a0]{pad}")
     } else {
         let labels: String = (0..segment_count).map(|i| format!("[a{i}]")).collect();
-        format!("{labels}amix=inputs={segment_count}:duration=longest:dropout_transition=0,{pad}")
+        format!("{labels}{},{pad}", amix_inputs(segment_count))
     }
 }
 
@@ -1418,6 +1488,15 @@ fn timeline_audio_dir(paths: &ParascenePaths, project_id: &str) -> PathBuf {
     paths
         .cache
         .join("timeline-audio")
+        .join(safe_id(project_id))
+}
+
+/// Generate slices must not share `timeline-audio/` — monitor bake prunes that
+/// folder down to one file and would delete the mix the transport is playing.
+fn generate_timeline_audio_dir(paths: &ParascenePaths, project_id: &str) -> PathBuf {
+    paths
+        .cache
+        .join("generate-audio")
         .join(safe_id(project_id))
 }
 
@@ -1498,6 +1577,30 @@ fn prune_timeline_audio_dir(dir: &Path, keep: &Path) {
     }
 }
 
+fn prune_stale_generate_audio_dir(dir: &Path, keep: &Path) {
+    use std::time::{Duration, SystemTime};
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(2 * 3600))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let Ok(meta) = path.metadata() else {
+            continue;
+        };
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        if modified > cutoff {
+            continue;
+        }
+        let _ = fs::remove_file(path);
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineAudioBakeResult {
@@ -1509,16 +1612,28 @@ pub struct TimelineAudioBakeResult {
 pub async fn library_bake_timeline_audio(
     project_id: String,
     clips: Vec<RenderTimelineClipInput>,
+    purpose: Option<String>,
 ) -> Result<TimelineAudioBakeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = default_paths()?;
-        let dir = timeline_audio_dir(&paths, &project_id);
+        let generate = purpose.as_deref() == Some("generate");
+        let dir = if generate {
+            generate_timeline_audio_dir(&paths, &project_id)
+        } else {
+            timeline_audio_dir(&paths, &project_id)
+        };
         fs::create_dir_all(&dir)
             .map_err(|e| format!("Could not create timeline audio cache: {e}"))?;
         let stamp = Utc::now().timestamp_millis();
         let dest = dir.join(format!("mix-{stamp}.wav"));
         let duration_sec = write_timeline_audio_mix(&paths, &clips, &dest)?;
-        prune_timeline_audio_dir(&dir, &dest);
+        if generate {
+            // Do not prune `timeline-audio/` (monitor bake). Only drop stale
+            // generate mixes so a parallel generate is not unlinked mid-slice.
+            prune_stale_generate_audio_dir(&dir, &dest);
+        } else {
+            prune_timeline_audio_dir(&dir, &dest);
+        }
         Ok(TimelineAudioBakeResult {
             path: dest.display().to_string(),
             duration_sec,
@@ -1944,10 +2059,11 @@ fn render_timeline_file(
         let tempo = atempo_filter_chain(segment.speed)
             .map(|c| format!(",{c}"))
             .unwrap_or_default();
+        let vol = audio_volume_filter_suffix(segment.volume);
         let chain = if segment.reverse_trim {
-            format!("{trim}{tempo},areverse,adelay={delay}|{delay}[a{idx}]")
+            format!("{trim}{tempo},areverse{vol},adelay={delay}|{delay}[a{idx}]")
         } else {
-            format!("{trim}{tempo},adelay={delay}|{delay}[a{idx}]")
+            format!("{trim}{tempo}{vol},adelay={delay}|{delay}[a{idx}]")
         };
         filter_parts.push(chain);
         audio_labels.push(format!("[a{idx}]"));
@@ -1980,8 +2096,8 @@ fn render_timeline_file(
     if !audio_labels.is_empty() {
         let mix_inputs = audio_labels.join("");
         filter_parts.push(format!(
-            "{mix_inputs}amix=inputs={}:duration=longest:dropout_transition=0[aout]",
-            audio_labels.len()
+            "{mix_inputs}{}[aout]",
+            amix_inputs(audio_labels.len())
         ));
         args.push("-filter_complex".into());
         args.push(filter_parts.join(";"));
@@ -3260,6 +3376,7 @@ mod tests {
                 delay_ms: 0,
                 reverse_trim: false,
                 speed: 1.0,
+                volume: 1.0,
             },
             AudioSegment {
                 path: PathBuf::from("/tmp/b.wav"),
@@ -3268,12 +3385,14 @@ mod tests {
                 delay_ms: 4000,
                 reverse_trim: true,
                 speed: 0.5,
+                volume: 1.0,
             },
         ];
         let graph = audio_only_filter_complex(&segments, 10.0);
         assert!(graph.contains("[0:a]asetpts=PTS-STARTPTS,adelay=0|0[a0]"));
         assert!(graph.contains("[1:a]asetpts=PTS-STARTPTS,atempo=0.500000,areverse,adelay=4000|4000[a1]"));
         assert!(graph.contains("[a0][a1]amix=inputs=2"));
+        assert!(graph.contains("normalize=0"));
         assert!(graph.contains("aresample=22050"));
         assert!(graph.contains("apad=whole_dur=10.000"));
         assert!(graph.contains("[aout]"));
@@ -3288,11 +3407,51 @@ mod tests {
             delay_ms: 1000,
             reverse_trim: false,
             speed: 1.0,
+            volume: 1.0,
         }];
         let graph = audio_only_filter_complex(&segments, 4.0);
         assert!(graph.contains("[a0]aresample=22050"));
         assert!(graph.contains("apad=whole_dur=4.000"));
         assert!(!graph.contains("amix="));
+    }
+
+    #[test]
+    fn audio_segment_filter_applies_non_unity_volume() {
+        let segment = AudioSegment {
+            path: PathBuf::from("/tmp/a.wav"),
+            in_sec: 0.0,
+            out_sec: 2.0,
+            delay_ms: 0,
+            reverse_trim: false,
+            speed: 1.0,
+            volume: 0.4,
+        };
+        let graph = audio_segment_filter(0, &segment);
+        assert!(graph.contains("volume=0.400000"));
+        assert!(graph.contains("adelay=0|0[a0]"));
+    }
+
+    #[test]
+    fn clip_volume_gain_defaults_to_unity() {
+        let omitted = serde_json::from_value::<RenderTimelineClipInput>(serde_json::json!({
+            "assetId": "song",
+            "startSec": 0.0,
+            "endSec": 4.0,
+            "lane": "audio",
+            "kind": "audio",
+        }))
+        .expect("clip");
+        assert!((clip_volume_gain(&omitted) - 1.0).abs() < 1e-6);
+        let quiet = serde_json::from_value::<RenderTimelineClipInput>(serde_json::json!({
+            "assetId": "song",
+            "startSec": 0.0,
+            "endSec": 4.0,
+            "lane": "audio",
+            "kind": "audio",
+            "volume": 40.0,
+        }))
+        .expect("clip");
+        assert!((clip_volume_gain(&quiet) - 0.4).abs() < 1e-6);
     }
 
     #[test]
@@ -3304,6 +3463,7 @@ mod tests {
             delay_ms: 0,
             reverse_trim: false,
             speed: 1.0,
+            volume: 0.4,
         }];
         let priority = vec![AudioSegment {
             path: PathBuf::from("/tmp/pri.wav"),
@@ -3312,12 +3472,73 @@ mod tests {
             delay_ms: 3000, // covers timeline 3..5
             reverse_trim: false,
             speed: 1.0,
+            volume: 1.0,
         }];
         let punched = punch_bed_around_priority(bed, &priority);
         assert_eq!(punched.len(), 2);
         assert_eq!(punched[0].delay_ms, 0);
         assert!((punched[0].out_sec - punched[0].in_sec - 3.0).abs() < 1e-6);
+        assert!((punched[0].volume - 0.4).abs() < 1e-6);
         assert_eq!(punched[1].delay_ms, 5000);
         assert!((punched[1].out_sec - punched[1].in_sec - 5.0).abs() < 1e-6);
+        assert!((punched[1].volume - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn punch_does_not_mute_a2() {
+        let bed = vec![AudioSegment {
+            path: PathBuf::from("/tmp/bed.wav"),
+            in_sec: 0.0,
+            out_sec: 10.0,
+            delay_ms: 0,
+            reverse_trim: false,
+            speed: 1.0,
+            volume: 1.0,
+        }];
+        let priority = vec![AudioSegment {
+            path: PathBuf::from("/tmp/pri.wav"),
+            in_sec: 0.0,
+            out_sec: 2.0,
+            delay_ms: 3000,
+            reverse_trim: false,
+            speed: 1.0,
+            volume: 1.0,
+        }];
+        let a2 = vec![AudioSegment {
+            path: PathBuf::from("/tmp/line.wav"),
+            in_sec: 0.0,
+            out_sec: 4.0,
+            delay_ms: 2000,
+            reverse_trim: false,
+            speed: 1.0,
+            volume: 1.0,
+        }];
+        let mixed = mix_audio_groups(priority, bed, a2);
+        assert_eq!(mixed.len(), 4);
+        assert_eq!(mixed[0].path, PathBuf::from("/tmp/pri.wav"));
+        assert_eq!(mixed[1].path, PathBuf::from("/tmp/bed.wav"));
+        assert_eq!(mixed[2].path, PathBuf::from("/tmp/bed.wav"));
+        assert_eq!(mixed[3].path, PathBuf::from("/tmp/line.wav"));
+        assert_eq!(mixed[3].delay_ms, 2000);
+        assert!((mixed[3].out_sec - mixed[3].in_sec - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a2_mix_role_is_never_priority_or_a1_bed() {
+        let a2 = serde_json::from_value::<RenderTimelineClipInput>(serde_json::json!({
+            "assetId": "speech",
+            "startSec": 0.0,
+            "endSec": 4.0,
+            "lane": "audio",
+            "kind": "audio",
+            "audioTrack": 2,
+        }))
+        .expect("a2 clip");
+        assert_eq!(clip_audio_track(&a2), 2);
+        assert_eq!(clip_audio_mix_role(&a2), AudioMixRole::A2);
+
+        let linked = linked_audio(serde_json::json!({ "audioTrack": 2 }));
+        assert_eq!(clip_audio_track(&linked), 1);
+        assert_eq!(clip_audio_mix_role(&linked), AudioMixRole::Priority);
     }
 }

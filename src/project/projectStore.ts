@@ -32,6 +32,8 @@ import {
   normalizeAddAssetGeneration,
   pickGenerateMediaRefFields,
 } from "./desktopAddAssetGeneration";
+import { persistAudioTrack } from "./audioTrack";
+import { persistClipVolume } from "./clipVolume";
 import {
   resolveFirstFrameSource,
   resolveLastFrameSource,
@@ -50,6 +52,13 @@ import {
   type StillWorkstream,
 } from "./stillWorkstream";
 import { normalizeProjectTitle } from "./projectTitle";
+import {
+  isProjectLookId,
+  normalizeProjectLooks,
+  PROJECT_LOOK_IDS,
+  type ProjectLookId,
+  type ProjectLooks,
+} from "./looks";
 
 /** Parse draft.replicateTweaks without importing editor modules (avoids init cycles). */
 function parseReplicateVideoTweaks(
@@ -86,13 +95,33 @@ function parseReplicateVideoTweaks(
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
-import {
-  isProjectLookId,
-  normalizeProjectLooks,
-  PROJECT_LOOK_IDS,
-  type ProjectLookId,
-  type ProjectLooks,
-} from "./looks";
+
+function parseAudioGenerateExtras(
+  value: unknown,
+): NonNullable<AddAssetDraft["audioExtras"]> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const trimmed = (key: string): string | undefined => {
+    const raw = row[key];
+    return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  };
+  const out: NonNullable<AddAssetDraft["audioExtras"]> = {};
+  const voiceId = trimmed("voiceId");
+  if (voiceId) out.voiceId = voiceId;
+  const geminiVoice = trimmed("geminiVoice");
+  if (geminiVoice) out.geminiVoice = geminiVoice;
+  const stylePrompt = trimmed("stylePrompt");
+  if (stylePrompt) out.stylePrompt = stylePrompt;
+  const lyrics = trimmed("lyrics");
+  if (lyrics) out.lyrics = lyrics;
+  if (row.instrumental === true) out.instrumental = true;
+  if (row.lyricsOptimizer === true) out.lyricsOptimizer = true;
+  const emotion = trimmed("emotion");
+  if (emotion) out.emotion = emotion;
+  const cloneSourceAssetId = trimmed("cloneSourceAssetId");
+  if (cloneSourceAssetId) out.cloneSourceAssetId = cloneSourceAssetId;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 export type StoredProject = {
   schemaVersion?: 2;
@@ -141,6 +170,8 @@ export type StoredProject = {
   labAnimatePrompt?: string | null;
   /** Preferred main song creation id; omitted → null. */
   mainAudioCreationId?: string | null;
+  /** User-toggled A2 audio lane; omitted → false. */
+  editorAudio2?: boolean;
   /** Lab lyric align output; omitted → null. */
   lyricAlignment?: LyricAlignment | null;
   /** Lab MV storyboard; omitted → null. */
@@ -762,6 +793,12 @@ export function normalizeTimelineClip(value: unknown): TimelineClip | null {
       typeof c.linkedVideoClipId === "string" && c.linkedVideoClipId.trim()
         ? c.linkedVideoClipId.trim()
         : undefined,
+    audioTrack: persistAudioTrack({
+      audioTrack: Number(c.audioTrack) === 2 ? 2 : undefined,
+      linkedVideoClipId:
+        typeof c.linkedVideoClipId === "string" ? c.linkedVideoClipId : null,
+    }),
+    volume: persistClipVolume({ volume: Number(c.volume) }),
     reverse: typeof c.reverse === "boolean" ? c.reverse : undefined,
     transform:
       c.transform === "kenBurns"
@@ -885,6 +922,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
       : undefined;
   const generationJob = parseAddAssetGenerationJob(row.generationJob);
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
+  const audioExtras = parseAudioGenerateExtras(row.audioExtras);
   const startFrameAssetId =
     typeof row.startFrameAssetId === "string" && row.startFrameAssetId.trim()
       ? row.startFrameAssetId.trim()
@@ -923,6 +961,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     blueJobId === undefined &&
     generationJob === undefined &&
     replicateTweaks === undefined &&
+    audioExtras === undefined &&
     legacyStartFrameAssetId === undefined &&
     startFrameFraming === undefined &&
     firstFrameSource === undefined &&
@@ -947,6 +986,7 @@ function normalizeAddAssetDraft(value: unknown): AddAssetDraft | undefined {
     blueJobId,
     generationJob,
     replicateTweaks,
+    audioExtras,
     startFrameAssetId: legacyStartFrameAssetId,
     startFrameFraming,
     firstFrameSource,
@@ -1182,6 +1222,7 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
     labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
+    editorAudio2: project.editorAudio2 === true,
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
     labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
@@ -1422,6 +1463,7 @@ export function createStoredProject(
     labStillPrompt: null,
     labAnimatePrompt: null,
     mainAudioCreationId: null,
+    editorAudio2: false,
     lyricAlignment: null,
     storyboardProposal: null,
     labStoryboardDirection: null,
@@ -1962,6 +2004,19 @@ export function setStoredProjectLabPrompts(
   };
 }
 
+export function setStoredProjectEditorAudio2(
+  project: StoredProject,
+  enabled: boolean,
+): StoredProject {
+  const next = enabled === true;
+  if ((project.editorAudio2 === true) === next) return project;
+  return {
+    ...project,
+    editorAudio2: next,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function setStoredProjectMainAudioCreationId(
   project: StoredProject,
   creationId: string | null,
@@ -2231,7 +2286,7 @@ export function storedProjectToUi(project: StoredProject): Project {
     assets.push({
       id: placeholder.id,
       name: libraryAssetPlaceholderDisplayName(placeholder),
-      kind: "image",
+      kind: placeholder.kind === "audio" ? "audio" : "image",
     });
   }
   for (const id of creationIds) {
@@ -2284,6 +2339,7 @@ export function storedProjectToUi(project: StoredProject): Project {
     labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
     labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
+    editorAudio2: project.editorAudio2 === true,
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
     labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
@@ -2321,6 +2377,7 @@ export function emptyUiProject(): Project {
     labStillPrompt: null,
     labAnimatePrompt: null,
     mainAudioCreationId: null,
+    editorAudio2: false,
     lyricAlignment: null,
     storyboardProposal: null,
     labStoryboardDirection: null,

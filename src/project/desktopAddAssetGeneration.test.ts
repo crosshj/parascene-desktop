@@ -7,6 +7,7 @@ import {
   isImageToImageGeneration,
   isTextToImageGeneration,
   makeImageToImageGeneration,
+  makeLibraryAudioGeneration,
   mergeAddAssetGenerationIntoRemoteJson,
   mergeStampWithDerivedGeneration,
   normalizeAddAssetGeneration,
@@ -43,6 +44,73 @@ describe("normalizeAddAssetGeneration", () => {
       inputVideoAssetId: "vid-1",
       referenceImageAssetIds: ["img-1"],
       startOffsetSeconds: 1.25,
+    });
+  });
+
+  it("keeps a cloned MiniMax voice_id stamp", () => {
+    expect(
+      normalizeAddAssetGeneration({
+        prompt: "clone",
+        generatedAt: "2026-09-07T00:00:00.000Z",
+        creationId: "voice-1",
+        intentId: "text_to_speech",
+        voiceId: "R8_FDU1SV5S",
+      })?.voiceId,
+    ).toBe("R8_FDU1SV5S");
+  });
+
+  it("stamps Gemini extras so a later catalog read still has speaker and style", () => {
+    const stamped = makeLibraryAudioGeneration({
+      prompt: "line",
+      creationId: "tts-2",
+      model: "google/gemini-3.1-flash-tts",
+      intentId: "text_to_speech",
+      extras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+    });
+    expect(stamped).toMatchObject({
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+    });
+    const upsert = creationUpsertWithAddAssetGeneration(
+      baseCreation(),
+      stamped,
+    );
+    expect(
+      addAssetGenerationFromCreation(
+        baseCreation(upsert.remoteJson),
+      ),
+    ).toMatchObject({
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: {
+        voiceId: "Kore",
+        geminiVoice: "Kore",
+        stylePrompt: "warm studio",
+      },
+    });
+  });
+
+  it("keeps Gemini speaker extras so Clone can refill Voice and Style", () => {
+    expect(
+      normalizeAddAssetGeneration({
+        prompt: "line",
+        generatedAt: "2026-09-07T00:00:00.000Z",
+        creationId: "tts-1",
+        intentId: "text_to_speech",
+        model: "google/gemini-3.1-flash-tts",
+        voiceId: "Kore",
+        stylePrompt: "warm studio",
+        audioExtras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+      }),
+    ).toMatchObject({
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: {
+        voiceId: "Kore",
+        geminiVoice: "Kore",
+        stylePrompt: "warm studio",
+      },
     });
   });
 });

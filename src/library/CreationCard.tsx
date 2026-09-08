@@ -1,9 +1,19 @@
 import {
   memo,
+  useEffect,
   useLayoutEffect,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import {
+  audioModelChipClass,
+  audioModelChipFromCreation,
+} from "./audioModelChip";
+import {
+  durationSecFromCreation,
+  formatAudioDurationChip,
+  probeCreationAudioDuration,
+} from "./creationDuration";
 import {
   creationCardTitle,
   isGroupCreation,
@@ -51,9 +61,22 @@ function BrokenPreview() {
   );
 }
 
-function AudioPreview() {
+function AudioPreview({
+  modelClass,
+}: {
+  modelClass?: ReturnType<typeof audioModelChipClass> | null;
+}) {
   return (
-    <div className="creation-thumb creation-thumb-audio" aria-hidden>
+    <div
+      className={[
+        "creation-thumb",
+        "creation-thumb-audio",
+        modelClass ? `is-audio-model-${modelClass}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      aria-hidden
+    >
       <AudioWaveform />
     </div>
   );
@@ -276,6 +299,31 @@ export const CreationCard = memo(function CreationCard({
   const mediaType = String(creation.mediaType ?? "").trim().toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
+  const [audioDurationSec, setAudioDurationSec] = useState(() =>
+    isAudio ? durationSecFromCreation(creation) : null,
+  );
+  useEffect(() => {
+    if (!isAudio) {
+      setAudioDurationSec(null);
+      return;
+    }
+    const stamped = durationSecFromCreation(creation);
+    if (stamped) {
+      setAudioDurationSec(stamped);
+      return;
+    }
+    let cancelled = false;
+    void probeCreationAudioDuration(creation).then((sec) => {
+      if (!cancelled) setAudioDurationSec(sec);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAudio, creation.id, creation.remoteJson, creation.localPath, creation.updatedAt]);
+  const durationChip = isAudio
+    ? formatAudioDurationChip(audioDurationSec ?? 0)
+    : null;
+  const modelChip = isAudio ? audioModelChipFromCreation(creation) : null;
   const isNsfw = creation.nsfw === true;
   const published = isPublishedCreation(creation);
   const isGroup = isGroupCreation(creation);
@@ -324,6 +372,7 @@ export const CreationCard = memo(function CreationCard({
           showPending ? "is-pending" : "",
           unavailable ? "is-broken" : "",
           showAudio ? "is-audio" : "",
+          modelChip ? `is-audio-model-${audioModelChipClass(modelChip)}` : "",
           isNsfw ? "is-nsfw" : "",
           selected ? "is-selected" : "",
           dimmed ? "is-dimmed" : "",
@@ -369,7 +418,9 @@ export const CreationCard = memo(function CreationCard({
               draggable={false}
             />
           ) : showAudio ? (
-            <AudioPreview />
+            <AudioPreview
+              modelClass={modelChip ? audioModelChipClass(modelChip) : null}
+            />
           ) : showPending ? (
             <>
               <div
@@ -394,6 +445,18 @@ export const CreationCard = memo(function CreationCard({
               ) : null}
               {showPlay ? <VideoPlayBadge /> : null}
               {showAudioBadge ? <AudioBadge /> : null}
+            </span>
+          ) : null}
+          {durationChip ? (
+            <span className="creation-duration-chip" title={`Duration ${durationChip}`}>
+              {durationChip}
+            </span>
+          ) : null}
+          {modelChip ? (
+            <span
+              className={`creation-audio-model-label is-${audioModelChipClass(modelChip)}`}
+            >
+              {modelChip}
             </span>
           ) : null}
           <span className="creation-meta">

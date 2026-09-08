@@ -95,6 +95,8 @@ export function buildLinkedAudioCompanion(
     extendPingPong: video.extendPingPong,
     extendSourceSpanSec: video.extendSourceSpanSec,
     linkedVideoClipId: video.id,
+    audioTrack: undefined,
+    volume: existing?.volume,
   };
 }
 

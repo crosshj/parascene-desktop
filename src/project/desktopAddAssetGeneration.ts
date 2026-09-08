@@ -69,6 +69,33 @@ function trimAssetId(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function parseAudioGenerateExtras(
+  value: unknown,
+): NonNullable<AddAssetGeneration["audioExtras"]> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const trimmed = (key: string): string | undefined => {
+    const raw = row[key];
+    return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  };
+  const out: NonNullable<AddAssetGeneration["audioExtras"]> = {};
+  const voiceId = trimmed("voiceId");
+  if (voiceId) out.voiceId = voiceId;
+  const geminiVoice = trimmed("geminiVoice");
+  if (geminiVoice) out.geminiVoice = geminiVoice;
+  const stylePrompt = trimmed("stylePrompt");
+  if (stylePrompt) out.stylePrompt = stylePrompt;
+  const lyrics = trimmed("lyrics");
+  if (lyrics) out.lyrics = lyrics;
+  if (row.instrumental === true) out.instrumental = true;
+  if (row.lyricsOptimizer === true) out.lyricsOptimizer = true;
+  const emotion = trimmed("emotion");
+  if (emotion) out.emotion = emotion;
+  const cloneSourceAssetId = trimmed("cloneSourceAssetId");
+  if (cloneSourceAssetId) out.cloneSourceAssetId = cloneSourceAssetId;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function stringIdList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const ids = [
@@ -219,6 +246,15 @@ export function normalizeAddAssetGeneration(
   const useNearestDuration = row.useNearestDuration === true ? true : undefined;
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
   const mediaRefs = pickGenerateMediaRefFields(row);
+  const voiceId =
+    typeof row.voiceId === "string" && row.voiceId.trim()
+      ? row.voiceId.trim()
+      : undefined;
+  const stylePrompt =
+    typeof row.stylePrompt === "string" && row.stylePrompt.trim()
+      ? row.stylePrompt.trim()
+      : undefined;
+  const audioExtras = parseAudioGenerateExtras(row.audioExtras);
   return {
     prompt: row.prompt,
     audioMode,
@@ -246,6 +282,23 @@ export function normalizeAddAssetGeneration(
     startOffsetSeconds: mediaRefs.startOffsetSeconds,
     useNearestDuration,
     replicateTweaks,
+    voiceId:
+      voiceId ??
+      audioExtras?.voiceId ??
+      audioExtras?.geminiVoice,
+    stylePrompt: stylePrompt ?? audioExtras?.stylePrompt,
+    audioExtras:
+      parseAudioGenerateExtras({
+        ...audioExtras,
+        voiceId:
+          voiceId ?? audioExtras?.voiceId ?? audioExtras?.geminiVoice,
+        geminiVoice:
+          audioExtras?.geminiVoice ??
+          voiceId ??
+          audioExtras?.voiceId,
+        stylePrompt: stylePrompt ?? audioExtras?.stylePrompt,
+        lyrics: audioExtras?.lyrics ?? lyricsText,
+      }) ?? audioExtras,
   };
 }
 
@@ -813,6 +866,50 @@ export function makeTextToImageGeneration(opts: {
     provider: server,
     methodId: "text_to_image",
   };
+}
+
+/** Provenance stamp for library speech / music / voice-clone assets. */
+export function makeLibraryAudioGeneration(opts: {
+  prompt: string;
+  creationId: string;
+  model: string;
+  intentId: "text_to_speech" | "text_to_music";
+  voiceId?: string;
+  lyricsText?: string;
+  extras?: NonNullable<AddAssetGeneration["audioExtras"]>;
+}): AddAssetGeneration {
+  const extras = parseAudioGenerateExtras(opts.extras);
+  const voiceId =
+    opts.voiceId?.trim() ||
+    extras?.voiceId ||
+    extras?.geminiVoice ||
+    undefined;
+  const lyricsText = opts.lyricsText?.trim() || extras?.lyrics || undefined;
+  return {
+    prompt: opts.prompt.trim(),
+    generatedAt: new Date().toISOString(),
+    creationId: opts.creationId.trim(),
+    mode: "none",
+    model: opts.model.trim(),
+    intentId: opts.intentId,
+    server: "replicate",
+    provider: "replicate",
+    methodId: opts.intentId,
+    voiceId,
+    lyricsText,
+    stylePrompt: extras?.stylePrompt,
+    audioExtras: extras,
+  };
+}
+
+export function isLibraryAudioGeneration(
+  generation: AddAssetGeneration | null | undefined,
+): boolean {
+  if (!generation) return false;
+  return (
+    generation.intentId === "text_to_speech" ||
+    generation.intentId === "text_to_music"
+  );
 }
 
 /** Provenance stamp for library Image → Image generates. */

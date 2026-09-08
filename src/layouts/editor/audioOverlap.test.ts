@@ -45,6 +45,16 @@ describe("audioOverlap", () => {
     expect(hit?.id).toBe("b");
   });
 
+  it("ignores A2 clips for Master Audio overlap", () => {
+    const clips = [
+      clip({ id: "a2", startSec: 0, endSec: 20, audioTrack: 2, assetId: "voice" }),
+      clip({ id: "a1", startSec: 0, endSec: 10, assetId: "song" }),
+    ];
+    expect(
+      findOverlappingAudioClip(clips, { startSec: 0, endSec: 8 })?.id,
+    ).toBe("a1");
+  });
+
   it("returns null when no audio overlaps", () => {
     const clips = [
       clip({ id: "a", startSec: 20, endSec: 30, assetId: "audio-a" }),

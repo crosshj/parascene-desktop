@@ -58,6 +58,7 @@ describe("syncLinkedVideoAudio", () => {
       outSec: 7,
       reverse: true,
     });
+    expect(companion?.audioTrack).toBeUndefined();
     expect(next.filter((c) => c.lane === "audio")).toHaveLength(2);
   });
 
@@ -84,6 +85,30 @@ describe("syncLinkedVideoAudio", () => {
       endSec: 12,
       outSec: 4,
     });
+  });
+
+  it("keeps instance volume on an existing companion", () => {
+    const next = syncLinkedVideoAudio([
+      clip({
+        id: "v1",
+        startSec: 0,
+        endSec: 4,
+        kind: "video",
+        assetId: "a",
+        includeAudio: true,
+      }),
+      clip({
+        id: "link-1",
+        startSec: 0,
+        endSec: 4,
+        lane: "audio",
+        kind: "audio",
+        assetId: "a",
+        linkedVideoClipId: "v1",
+        volume: 35,
+      }),
+    ]);
+    expect(findLinkedAudioForVideo(next, "v1")?.volume).toBe(35);
   });
 
   it("removes the companion when Include Audio is turned off", () => {

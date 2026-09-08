@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { Creation } from "../../library/types";
+import type { TimelineClip } from "../../project/types";
 import {
   attachParasceneAudioClipId,
   isGenericPromptAudioUrl,
   isProviderFetchableAudioUrl,
+  monitorBakePathForGenerateSlice,
   parasceneProductTimelineAudioKind,
+  placeholderNeedsCombinedTimelineAudio,
+  placeholderTimelineAudioWindow,
+  timelineReferenceAudioClip,
+  timelineReferenceVolumeGain,
 } from "./timelineReferenceAudio";
 
 function audioCreation(
@@ -45,6 +51,18 @@ describe("parasceneProductTimelineAudioKind", () => {
     expect(
       parasceneProductTimelineAudioKind("full_mix", audioCreation()),
     ).toBe("cdn_window");
+  });
+
+  it("forces a local clip when A1+A2 must be mixed", () => {
+    expect(
+      parasceneProductTimelineAudioKind("full_mix", audioCreation(), 100, true),
+    ).toBe("audio_clip");
+  });
+
+  it("forces a local clip when the covering instance is not unity", () => {
+    expect(
+      parasceneProductTimelineAudioKind("full_mix", audioCreation(), 40),
+    ).toBe("audio_clip");
   });
 
   it("is none when timeline audio is off", () => {
@@ -96,5 +114,134 @@ describe("provider-fetchable audio URLs", () => {
         "https://www.parascene.com/api/share/v1/token/clip-audio",
       ),
     ).toBe(true);
+  });
+});
+
+describe("monitorBakePathForGenerateSlice", () => {
+  it("reuses the monitor bake and does not treat blank as a path", () => {
+    expect(monitorBakePathForGenerateSlice("/tmp/timeline-audio/mix.wav")).toBe(
+      "/tmp/timeline-audio/mix.wav",
+    );
+    expect(monitorBakePathForGenerateSlice("  ")).toBeNull();
+    expect(monitorBakePathForGenerateSlice(null)).toBeNull();
+  });
+});
+
+describe("placeholderNeedsCombinedTimelineAudio", () => {
+  function audioClip(
+    partial: Partial<TimelineClip> & Pick<TimelineClip, "id" | "startSec" | "endSec">,
+  ): TimelineClip {
+    return {
+      label: partial.label ?? partial.id,
+      lane: "audio",
+      kind: "audio",
+      assetId: partial.assetId ?? partial.id,
+      ...partial,
+    };
+  }
+
+  it("is true when A1 speech and A2 bed overlap the generate window", () => {
+    const timeline = [
+      audioClip({
+        id: "a1",
+        assetId: "speech",
+        startSec: 3.2,
+        endSec: 5.65,
+      }),
+      audioClip({
+        id: "a2",
+        assetId: "music",
+        startSec: 0,
+        endSec: 11.3,
+        audioTrack: 2,
+        volume: 8,
+      }),
+    ];
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "3.8s",
+      startSec: 3.1,
+      endSec: 6.9,
+      isAddAssetPlaceholder: true,
+    };
+    expect(placeholderNeedsCombinedTimelineAudio(timeline, placeholder)).toBe(
+      true,
+    );
+    expect(placeholderTimelineAudioWindow(placeholder)).toEqual({
+      startSec: 3.1,
+      endSec: 6.9,
+      durationSec: 3.8,
+    });
+  });
+
+  it("is false when only one A1 clip covers the window", () => {
+    const timeline = [
+      audioClip({ id: "a1", startSec: 0, endSec: 20 }),
+    ];
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "9.0s",
+      startSec: 2,
+      endSec: 11,
+      isAddAssetPlaceholder: true,
+    };
+    expect(placeholderNeedsCombinedTimelineAudio(timeline, placeholder)).toBe(
+      false,
+    );
+  });
+
+  it("is true for A2 alone in the window", () => {
+    const timeline = [
+      audioClip({
+        id: "a2",
+        startSec: 0,
+        endSec: 20,
+        audioTrack: 2,
+      }),
+    ];
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "9.0s",
+      startSec: 2,
+      endSec: 11,
+      isAddAssetPlaceholder: true,
+    };
+    expect(placeholderNeedsCombinedTimelineAudio(timeline, placeholder)).toBe(
+      true,
+    );
+  });
+});
+
+describe("timelineReferenceAudioClip", () => {
+  function audioClip(
+    partial: Partial<TimelineClip> & Pick<TimelineClip, "id" | "startSec" | "endSec">,
+  ): TimelineClip {
+    return {
+      label: partial.label ?? partial.id,
+      lane: "audio",
+      kind: "audio",
+      assetId: "song",
+      ...partial,
+    };
+  }
+
+  it("uses the instance covering the placeholder when the same asset is placed twice", () => {
+    const timeline = [
+      audioClip({ id: "quiet", startSec: 0, endSec: 10, volume: 40 }),
+      audioClip({ id: "loud", startSec: 12, endSec: 22, volume: 100 }),
+    ];
+    const placeholder: TimelineClip = {
+      id: "ph",
+      label: "9.0s",
+      startSec: 2,
+      endSec: 11,
+      isAddAssetPlaceholder: true,
+    };
+    expect(
+      timelineReferenceAudioClip(timeline, placeholder, "song")?.id,
+    ).toBe("quiet");
+    expect(
+      timelineReferenceVolumeGain(timeline, placeholder, "song"),
+    ).toBeCloseTo(0.4);
   });
 });

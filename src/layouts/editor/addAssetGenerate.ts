@@ -1,7 +1,5 @@
 import {
-  isolateVocalsRange,
   uploadLocalImageFile,
-  sliceAudioRange,
   uploadVocalsSliceClip,
 } from "../../lab/audioTools";
 import {
@@ -18,6 +16,11 @@ import {
   LTX_I2V_MODEL,
 } from "../../lab/ltxI2vGeneration";
 import { getCreations } from "../../library/catalogClient";
+import {
+  placeholderNeedsCombinedTimelineAudio,
+  slicePlaceholderTimelineAudio,
+  timelineReferenceVolumeGain,
+} from "./timelineReferenceAudio";
 import { uploadEphemeralStillViaService } from "../../services/parasceneCatalog";
 import {
   attachAudioCreationRangeArgs,
@@ -525,6 +528,8 @@ export type RunAddAssetGenerationOpts = {
   projectTitle: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  /** Monitor timeline mix; generate slices this and must not replace it. */
+  timelineAudioBakePath?: string | null;
   prompt: string;
   lyricsText: string;
   audioMode: AddAssetAudioMode;
@@ -646,6 +651,7 @@ export async function runAddAssetGeneration(
       projectTitle: opts.projectTitle,
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
+      timelineAudioBakePath: opts.timelineAudioBakePath,
       mainAudioCreationId: opts.mainAudioCreationId,
       lyricAlignment: opts.lyricAlignment ?? null,
       prompt: opts.prompt,
@@ -720,6 +726,7 @@ async function runParasceneProductVideoIntent(
     imagesGroupId: opts.imagesGroupId,
     videosGroupId: opts.videosGroupId,
     mainAudioCreationId: opts.mainAudioCreationId,
+    timelineAudioBakePath: opts.timelineAudioBakePath,
     lyricAlignment: opts.lyricAlignment,
     prompt: opts.prompt,
     model,
@@ -1038,16 +1045,31 @@ async function runStartFrameAddAssetGeneration(
 
   let audioRow: Awaited<ReturnType<typeof getCreations>>[number] | undefined;
   const audioId = opts.mainAudioCreationId?.trim() || null;
+  const combinedMix =
+    audioMode !== "none" &&
+    placeholderNeedsCombinedTimelineAudio(opts.timeline, opts.placeholder);
   if (audioMode !== "none") {
-    if (!audioId) {
+    if (!combinedMix && !audioId) {
       throw new Error(
         "Add main audio to the timeline (or set it in Lab) before generating.",
       );
     }
-    [audioRow] = await getCreations([audioId]);
+    if (audioId) [audioRow] = await getCreations([audioId]);
   }
+  const referenceGain =
+    audioMode === "none"
+      ? 1
+      : timelineReferenceVolumeGain(
+          opts.timeline,
+          opts.placeholder,
+          audioId,
+          opts.lyricAlignment,
+        );
   const useCdnWindow =
-    audioMode === "full_mix" && creationSupportsCdnAudioWindow(audioRow);
+    !combinedMix &&
+    audioMode === "full_mix" &&
+    creationSupportsCdnAudioWindow(audioRow) &&
+    Math.abs(referenceGain - 1) <= 1e-4;
 
   let steps = initialAddAssetGenerationSteps(audioMode, "start_frame", {
     cdnAudioWindow: useCdnWindow,
@@ -1074,22 +1096,15 @@ async function runStartFrameAddAssetGeneration(
           ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
           : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
       );
-      const mixPath = audioRow?.localPath?.trim();
-      if (!mixPath) {
-        throw new Error("Main audio is not available locally yet.");
-      }
-      const audioSlice =
-        audioMode === "full_mix"
-          ? await sliceAudioRange({
-              sourcePath: mixPath,
-              inSec,
-              outSec: sliceOutSec,
-            })
-          : await isolateVocalsRange({
-              sourcePath: mixPath,
-              inSec,
-              outSec: sliceOutSec,
-            });
+      const audioSlice = await slicePlaceholderTimelineAudio({
+        mode: audioMode,
+        mainAudioCreationId: audioId,
+        timeline: opts.timeline,
+        placeholder: opts.placeholder,
+        lyricAlignment: opts.lyricAlignment ?? null,
+        projectId: opts.projectId,
+        timelineAudioBakePath: opts.timelineAudioBakePath,
+      });
       pushSteps(completeStep(steps, "vocals"));
 
       pushSteps(advanceStep(steps, "upload-audio"));
@@ -1097,8 +1112,8 @@ async function runStartFrameAddAssetGeneration(
       const { clipId } = await uploadVocalsSliceClip(audioSlice.path, {
         title:
           audioMode === "full_mix"
-            ? `Editor mix ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`
-            : `Editor vocals ${inSec.toFixed(1)}–${sliceOutSec.toFixed(1)}s`,
+            ? `Editor mix ${audioSlice.inSec.toFixed(1)}–${(audioSlice.inSec + audioSlice.durationSec).toFixed(1)}s`
+            : `Editor vocals ${audioSlice.inSec.toFixed(1)}–${(audioSlice.inSec + audioSlice.durationSec).toFixed(1)}s`,
         durationSec: durationSeconds,
       });
       audioClipId = clipId;

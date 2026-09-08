@@ -17,6 +17,19 @@ describe("projectOwnership", () => {
     expect(isProjectOwnedCreation(project, "cover-images")).toBe(true);
   });
 
+  it("treats cabinet pointers as owned before the cover is filed", () => {
+    expect(
+      isProjectOwnedCreation(
+        {
+          creationIds: ["local-only"],
+          imagesGroupId: "new-cover",
+          videosGroupId: null,
+        },
+        "new-cover",
+      ),
+    ).toBe(true);
+  });
+
   it("treats cabinet members as owned when cover is in the folder", () => {
     const cabinetMembers = new Set(["vid-1", "img-1"]);
     expect(isProjectOwnedCreation(project, "vid-1", cabinetMembers)).toBe(true);

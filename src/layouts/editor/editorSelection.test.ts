@@ -25,6 +25,7 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     labStillPrompt: null,
     labAnimatePrompt: null,
     mainAudioCreationId: null,
+    editorAudio2: false,
     lyricAlignment: null,
     storyboardProposal: null,
     labStoryboardDirection: null,

@@ -58,6 +58,12 @@ import {
   type EditorLayoutPrefs,
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
+import {
+  previewVolumeLabel,
+  previewVolumeRole,
+  previewVolumeTitle,
+} from "./previewVolumeRole";
+import { clipVolumePercent, persistClipVolume } from "../../project/clipVolume";
 import { useProjectPickerCatalog } from "./projectImagePickerAssets";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import { pasteAppendStartSec } from "./timelineAppend";
@@ -77,7 +83,8 @@ import {
   type OpenNewAssetDetail,
 } from "./addAssetEvents";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
-import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import { isImageToImageGeneration, isLibraryAudioGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import { libraryAudioCloneSeed } from "./libraryAssetGeneration";
 import {
   cancelAddAssetGeneration,
   clearAddAssetGenerationError,
@@ -161,7 +168,10 @@ import {
   isActiveLibraryAssetPlaceholder,
   libraryAssetPlaceholderIdsInList,
 } from "../../project/libraryAssetPlaceholder";
-import { retryLibraryAssetPlaceholder } from "./libraryAssetGenerationStore";
+import {
+  cancelLibraryAssetGeneration,
+  retryLibraryAssetPlaceholder,
+} from "./libraryAssetGenerationStore";
 
 const NARROW_MQ = "(max-width: 1100px)";
 
@@ -246,6 +256,7 @@ export function EditorLayout() {
     selectCreationsOnOpenProject,
     setOpenProjectPendingStagedDraft,
     setOpenProjectTimelineZoom,
+    setOpenProjectEditorAudio2,
     setOpenProjectTimelineAudioBakePath,
     setOpenProjectTimelineMonitorActive,
     setOpenProjectTimelinePlayheadSec,
@@ -285,7 +296,8 @@ export function EditorLayout() {
   const [pendingStagedDraft, setPendingStagedDraft] = useState(
     initialSelection.pendingStagedDraft,
   );
-  const [previewVolume, setPreviewVolume] = useState(80);
+  const [monitorVolume, setMonitorVolume] = useState(80);
+  const [sourcePreviewVolume, setSourcePreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
   const [addAssetSlotActive, setAddAssetSlotActive] = useState(false);
   const [openCompositionId, setOpenCompositionId] = useState<string | null>(
@@ -298,6 +310,16 @@ export function EditorLayout() {
     prompt: string;
     model?: string;
     startFrameAssetId?: string;
+    audioExtras?: {
+      voiceId?: string;
+      geminiVoice?: string;
+      stylePrompt?: string;
+      lyrics?: string;
+      instrumental?: boolean;
+      lyricsOptimizer?: boolean;
+      emotion?: string;
+      cloneSourceAssetId?: string;
+    };
   } | null>(null);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
@@ -2228,6 +2250,12 @@ export function EditorLayout() {
     [displayTimeline, selectedClipId],
   );
 
+  const sourceVolumeRole = previewVolumeRole({
+    monitorMode,
+    editingClip: Boolean(clipStagingSeed),
+    clip: selectedTimelineClip,
+  });
+
   const selectedNeedsExtendBake = useMemo(() => {
     if (!selectedTimelineClip) return false;
     if (
@@ -2315,6 +2343,7 @@ export function EditorLayout() {
         projectTitle: project.title,
         imagesGroupId: project.imagesGroupId,
         videosGroupId: project.videosGroupId,
+        timelineAudioBakePath: project.timelineAudioBakePath,
       },
     });
     // A refused start used to be a silent no-op — the user retried into the
@@ -2469,6 +2498,29 @@ export function EditorLayout() {
       setAddAssetIntent(
         makeAddAssetIntent("image_to_image", "parascene_blue", "assets"),
       );
+      setAddAssetSlotActive(true);
+      return;
+    }
+    if (isLibraryAudioGeneration(generation)) {
+      const seed = libraryAudioCloneSeed(generation);
+      if (!seed) return;
+      pauseTimelinePlayback();
+      setOpenCompositionId(null);
+      setSelectedClipId(null);
+      setSelectedClipIds([]);
+      setClipStagingSeed(null);
+      setSelectedAssetIds([]);
+      setSelectedAssetId(null);
+      setOpenProjectSelectedAssetId(null);
+      setOpenProjectSelectedTimelineClipId(null);
+      setOpenProjectTimelineMonitorActive(false);
+      clearPendingStagedDraft();
+      setLibraryGenerateSeed({
+        prompt: seed.prompt,
+        model: seed.model,
+        audioExtras: seed.extras,
+      });
+      setAddAssetIntent(makeAddAssetIntent(seed.intentId, "replicate", "assets"));
       setAddAssetSlotActive(true);
       return;
     }
@@ -2639,6 +2691,13 @@ export function EditorLayout() {
             videosGroupId: project.videosGroupId,
           });
         }}
+        onCancelLibraryAssetPlaceholder={() => {
+          const id = selectedAssetId?.trim();
+          if (!id) return;
+          const placeholder = project.libraryAssetPlaceholders?.[id];
+          if (!placeholder) return;
+          cancelLibraryAssetGeneration(placeholder);
+        }}
         addAssetPlaceholderClip={generateTargetClip}
         addAssetGenerationSession={addAssetGenerationSession}
         lyricAlignment={project.lyricAlignment}
@@ -2780,8 +2839,27 @@ export function EditorLayout() {
         }}
         showAssetsExpand={!showAssetsPane}
         onExpandAssets={expandAssets}
-        volume={previewVolume}
-        onVolumeChange={setPreviewVolume}
+        volume={
+          sourceVolumeRole === "clip_instance"
+            ? clipVolumePercent(selectedTimelineClip)
+            : sourcePreviewVolume
+        }
+        onVolumeChange={(next) => {
+          if (sourceVolumeRole === "clip_instance" && selectedTimelineClip) {
+            const volume = persistClipVolume({ volume: next });
+            onTimelineClipsChange(
+              timelineRef.current.map((row) =>
+                row.id === selectedTimelineClip.id ? { ...row, volume } : row,
+              ),
+            );
+            if (project.timelineAudioBakePath) onRemoveTimelineAudioBake();
+            return;
+          }
+          setSourcePreviewVolume(next);
+        }}
+        monitorVolume={monitorVolume}
+        volumeLabel={previewVolumeLabel(sourceVolumeRole)}
+        volumeTitle={previewVolumeTitle(sourceVolumeRole)}
         onToggleTimelinePlay={toggleTimelinePlaying}
       />
 
@@ -2841,14 +2919,16 @@ export function EditorLayout() {
         onSelectClip={selectClip}
         zoom={project.timelineZoom}
         onZoomChange={setOpenProjectTimelineZoom}
+        editorAudio2={project.editorAudio2}
+        onEditorAudio2Change={setOpenProjectEditorAudio2}
         monitorActive={monitorMode === "timeline"}
         onActivateMonitor={activateTimeline}
         playheadSec={displayPlayheadSec}
         onPlayheadChange={seekTimelinePlayhead}
         playing={timelinePlaying && monitorMode === "timeline"}
         onTogglePlay={toggleTimelinePlaying}
-        volume={previewVolume}
-        onVolumeChange={setPreviewVolume}
+        volume={monitorVolume}
+        onVolumeChange={setMonitorVolume}
         canMergeSelected={Boolean(mergeSelection)}
         onMergeSelected={openMergeModal}
         mergeBusy={mergeModal?.phase === "running"}

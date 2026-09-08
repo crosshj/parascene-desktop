@@ -1,3 +1,4 @@
+import { clipAudioTrack } from "../../project/audioTrack";
 import type { TimelineClip } from "../../project/types";
 
 /** One visual (V1) or audio (A1) contribution at a timeline time. */
@@ -16,9 +17,20 @@ export type TimelineLayer = {
 export type TimelineFrame = {
   /** Active video-lane clip, or null in a gap. */
   visual: TimelineLayer | null;
-  /** Active audio-lane clips (0–1 today; array leaves room for stacked audio). */
+  /** Covering audio: A1 clips (linked first) then A2. */
   audio: TimelineLayer[];
 };
+
+/** A1 winner (linked beats bed) plus the A2 cover, if any. */
+export function pickMonitorAudioLayers(layers: readonly TimelineLayer[]): {
+  a1: TimelineLayer | null;
+  a2: TimelineLayer | null;
+} {
+  return {
+    a1: layers.find((layer) => clipAudioTrack(layer.clip) === 1) ?? null,
+    a2: layers.find((layer) => clipAudioTrack(layer.clip) === 2) ?? null,
+  };
+}
 
 export function timelineSequenceDuration(clips: readonly TimelineClip[]): number {
   if (clips.length === 0) return 0;
@@ -277,16 +289,22 @@ export function resolveTimelineFrame(
     );
   });
 
-  // Video Include Audio companions sit above bed audio and win the monitor mix.
-  const rankedAudio = [...audioHits].sort((a, b) => {
-    const aLinked = a.linkedVideoClipId?.trim() ? 1 : 0;
-    const bLinked = b.linkedVideoClipId?.trim() ? 1 : 0;
-    return bLinked - aLinked;
-  });
+  const rankLinkedFirst = (hits: TimelineClip[]) =>
+    [...hits].sort((a, b) => {
+      const aLinked = a.linkedVideoClipId?.trim() ? 1 : 0;
+      const bLinked = b.linkedVideoClipId?.trim() ? 1 : 0;
+      return bLinked - aLinked;
+    });
+  const a1Hits = rankLinkedFirst(
+    audioHits.filter((c) => clipAudioTrack(c) === 1),
+  );
+  const a2Hits = rankLinkedFirst(
+    audioHits.filter((c) => clipAudioTrack(c) === 2),
+  );
 
   return {
     visual: visualClip ? toLayer(visualClip, time) : null,
-    audio: rankedAudio.map((c) => toLayer(c, time)),
+    audio: [...a1Hits, ...a2Hits].map((c) => toLayer(c, time)),
   };
 }
 
