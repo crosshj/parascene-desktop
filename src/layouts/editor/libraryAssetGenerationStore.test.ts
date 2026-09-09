@@ -27,15 +27,24 @@ vi.mock("./runParasceneImageToImage", () => ({
   })),
 }));
 
-const invokeReplicateGenerate = vi.fn(async () => ({
-  mode: "job" as const,
+const invokeReplicateGenerate = vi.fn<
+  (opts: unknown) => Promise<{ mode: "job"; id: string }>
+>(async () => ({
+  mode: "job",
   id: "job-audio",
 }));
-const watchLocalGenerateStill = vi.fn(async () => ({
+const watchLocalGenerateStill = vi.fn<
+  (handle: unknown, opts?: unknown) => Promise<{
+    creationId: string;
+    localPaths: string[];
+  }>
+>(async () => ({
   creationId: "audio-99",
   localPaths: ["/tmp/audio-99.mp3"],
 }));
-const cancelGenerateStillJob = vi.fn(async () => {});
+const cancelGenerateStillJob = vi.fn<(jobId: string) => Promise<void>>(
+  async () => {},
+);
 
 vi.mock("../../services/labGenerate", () => ({
   invokeReplicateGenerate: (opts: unknown) => invokeReplicateGenerate(opts),
