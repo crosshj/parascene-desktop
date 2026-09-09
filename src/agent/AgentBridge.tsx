@@ -48,6 +48,7 @@ import {
   applyProjectAssetRemove,
   collectTimelineUsedAssetIds,
 } from "./projectAssetOps";
+import { runAgentAudio, runAgentTimelinePlace } from "./runAgentAudio";
 import { runAgentA2v, waitForLocalPath } from "./runAgentA2v";
 import {
   deleteCreationViaService,
@@ -151,7 +152,10 @@ function watchHoldMs(action: string): number {
       return 2800;
     case "generation.start":
     case "generation.a2v":
+    case "generation.audio":
       return 3200;
+    case "timeline.place":
+      return 1800;
     case "library.import":
       return 1800;
     case "cloud.delete":
@@ -747,6 +751,67 @@ async function runAction(
         generate: argBoolean(args, "generate"),
         form: argBoolean(args, "form"),
         videoId: argString(args, "videoId") || undefined,
+      });
+      showProject(ctx.shell, "editor");
+      return { ...result, projectId };
+    }
+    case "generation.audio": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const projectId =
+        argString(args, "projectId") || ctx.shell.openProjectId || "";
+      if (!projectId) throw new Error("generation.audio needs an open project");
+      if (ctx.shell.openProjectId !== projectId) {
+        showProject(ctx.shell, "director");
+        const opened = await ctx.shell.openProject(projectId, true);
+        if (!opened) throw new Error("Could not open project for audio generate");
+        await sleep(800);
+      }
+      const intentRaw = argString(args, "intent");
+      const intent =
+        intentRaw === "text_to_music" ? "text_to_music" : "text_to_speech";
+      const prompt = argString(args, "prompt");
+      if (!prompt) throw new Error("generation.audio needs prompt");
+      const model =
+        argString(args, "model") ||
+        (intent === "text_to_music"
+          ? "google/lyria-3"
+          : "google/gemini-3.1-flash-tts");
+      showProject(ctx.shell, "editor");
+      await sleep(400);
+      const result = await runAgentAudio({
+        shell: ctx.shell,
+        projectId,
+        intent,
+        prompt,
+        model,
+        voice: argString(args, "voice") || undefined,
+        generate: argBoolean(args, "generate"),
+      });
+      showProject(ctx.shell, "editor");
+      return result;
+    }
+    case "timeline.place": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const projectId =
+        argString(args, "projectId") || ctx.shell.openProjectId || "";
+      if (!projectId) throw new Error("timeline.place needs an open project");
+      if (ctx.shell.openProjectId !== projectId) {
+        showProject(ctx.shell, "director");
+        const opened = await ctx.shell.openProject(projectId, true);
+        if (!opened) throw new Error("Could not open project for timeline place");
+        await sleep(800);
+      }
+      const assetId = argString(args, "assetId") || argString(args, "creationId");
+      if (!assetId) throw new Error("timeline.place needs assetId");
+      const trackRaw = argNumber(args, "audioTrack");
+      showProject(ctx.shell, "editor");
+      await sleep(400);
+      const result = await runAgentTimelinePlace({
+        shell: ctx.shell,
+        projectId,
+        assetId,
+        audioTrack: trackRaw === 2 ? 2 : 1,
+        startSec: argNumber(args, "startSec"),
       });
       showProject(ctx.shell, "editor");
       return { ...result, projectId };

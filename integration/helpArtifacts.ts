@@ -32,6 +32,13 @@ export async function publishHelpStill(
   return dest;
 }
 
+export async function publishHelpAudio(
+  src: string,
+  dest: string,
+): Promise<string> {
+  return publishHelpStill(src, dest);
+}
+
 /** Copy a generated still/video into the help media folder the articles embed. */
 export async function publishHelpMedia(opts: {
   stillPath?: string | null;

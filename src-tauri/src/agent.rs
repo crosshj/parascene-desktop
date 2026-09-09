@@ -209,6 +209,18 @@ fn actions() -> Vec<AgentAction> {
             summary: "Put audio on the timeline and run LTX audio-to-video (full mix)".into(),
         },
         AgentAction {
+            id: "generation.audio".into(),
+            scope: "generation".into(),
+            status: "wired".into(),
+            summary: "Generate speech or music on Parascene (Gemini TTS / Lyria)".into(),
+        },
+        AgentAction {
+            id: "timeline.place".into(),
+            scope: "project".into(),
+            status: "wired".into(),
+            summary: "Drop an audio asset on Editor A1 or A2".into(),
+        },
+        AgentAction {
             id: "library.import".into(),
             scope: "library".into(),
             status: "wired".into(),
@@ -303,7 +315,9 @@ fn ui_timeout_for(action: &str) -> Duration {
     match action {
         "sync.thumbs" => Duration::from_secs(6 * 60),
         "sync.media" => Duration::from_secs(15 * 60),
-        "generation.start" | "generation.a2v" => Duration::from_secs(12 * 60),
+        "generation.start" | "generation.a2v" | "generation.audio" => {
+            Duration::from_secs(12 * 60)
+        }
         "cloud.delete" | "project.delete" | "project.create"
         | "project.assets.remove" | "project.assets.delete" => Duration::from_secs(3 * 60),
         _ => UI_TIMEOUT,
@@ -392,6 +406,8 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         | "cloud.lookup"
         | "generation.start"
         | "generation.a2v"
+        | "generation.audio"
+        | "timeline.place"
         | "library.import"
         | "sync.start"
         | "sync.folders"
@@ -667,6 +683,8 @@ mod tests {
         assert!(actions().iter().any(|a| a.id == "project.assets.delete" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "generation.start" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "generation.a2v" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "generation.audio" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "timeline.place" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.import" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "project.create" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.clearLocal" && a.status == "wired"));

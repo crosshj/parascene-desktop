@@ -245,11 +245,11 @@ export const INTENT_SERVER_CAPABILITIES: readonly IntentServerCapability[] = [
     status: "coming_soon",
   },
 
-  { intentId: "text_to_music", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "text_to_music", server: "parascene_blue", status: "wired" },
   { intentId: "text_to_music", server: "blue_direct", status: "coming_soon" },
   { intentId: "text_to_music", server: "replicate", status: "wired" },
 
-  { intentId: "text_to_speech", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "text_to_speech", server: "parascene_blue", status: "wired" },
   { intentId: "text_to_speech", server: "blue_direct", status: "coming_soon" },
   { intentId: "text_to_speech", server: "replicate", status: "wired" },
 ] as const;

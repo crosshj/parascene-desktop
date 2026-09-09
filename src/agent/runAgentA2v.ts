@@ -84,7 +84,7 @@ async function hideLeftoverProjectVideos(
 }
 
 /** Persist timeline/selection. Remount only when Editor must rebuild (form / clip). */
-async function settleEditorForHelpShot(
+export async function settleEditorForHelpShot(
   shell: Shell,
   remount = false,
 ): Promise<void> {

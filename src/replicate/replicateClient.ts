@@ -83,6 +83,7 @@ export type ReplicateInputField = {
   enumGroups?: Array<{ label: string; values: string[] }> | null;
   minimum?: number | null;
   maximum?: number | null;
+  maxLength?: number | null;
   fileLike: boolean;
   /** Array whose items are URI/file inputs. */
   arrayItemFileLike: boolean;

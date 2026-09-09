@@ -79,6 +79,7 @@ const HELP_FILES: &[&str] = &[
     "help/fonts/OFL.txt",
     "help/fonts/inter-latin-ext-wght-normal.woff2",
     "help/fonts/inter-latin-wght-normal.woff2",
+    "help/generate-audio.html",
     "help/generate.html",
     "help/getting-started.html",
     "help/help.css",
@@ -116,6 +117,10 @@ const PAGES: &[(&str, &str)] = &[
     ("editor", "help/getting-started.html#editor"),
     ("generate", "help/generate.html"),
     ("generate-image", "help/generate.html"),
+    ("generate-audio", "help/generate-audio.html"),
+    ("tts", "help/generate-audio.html"),
+    ("text-to-speech", "help/generate-audio.html"),
+    ("generate-music", "help/generate-audio.html"),
     ("image-models", "help/image-models.html"),
     ("models", "help/image-models.html"),
     ("image-model", "help/image-models.html"),
@@ -286,6 +291,8 @@ mod tests {
         assert_eq!(help_page(Some("cloud")), "help/local-and-cloud.html");
         assert_eq!(help_page(Some("sync")), "help/sync.html");
         assert_eq!(help_page(Some("generate")), "help/generate.html");
+        assert_eq!(help_page(Some("generate-audio")), "help/generate-audio.html");
+        assert_eq!(help_page(Some("tts")), "help/generate-audio.html");
         assert_eq!(help_page(Some("image-models")), "help/image-models.html");
         assert_eq!(help_page(Some("models")), "help/image-models.html");
         assert_eq!(help_page(Some("video-models")), "help/video-models.html");

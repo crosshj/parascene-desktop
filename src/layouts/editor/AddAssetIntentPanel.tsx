@@ -200,11 +200,11 @@ export function AddAssetIntentPanel({
     !placed &&
     isLibraryAudioGeneration(reviewGeneration) &&
     isLibraryAudioIntent(intentId) &&
-    server === "replicate";
+    (server === "replicate" || server === "parascene_blue");
   const showLibraryAudio =
     (canLibraryGenerate || reviewAudio) &&
     isLibraryAudioIntent(intentId) &&
-    server === "replicate";
+    (server === "replicate" || server === "parascene_blue");
   const t2iPrompt = reviewGeneration?.prompt ?? libraryFormSeed?.prompt ?? "";
   const t2iModelId =
     reviewGeneration?.model?.trim() ||
@@ -495,12 +495,14 @@ export function AddAssetIntentPanel({
     return (
       <ReplicateAudioFormLayout
         intentId={intentId === "text_to_music" ? "text_to_music" : "text_to_speech"}
-        idPrefix={`add-asset-replicate-${intentId}`}
+        server={server === "parascene_blue" ? "parascene_blue" : "replicate"}
+        idPrefix={`add-asset-${server}-${intentId}`}
         locked={locked}
         onGenerateNew={onGenerateNew}
         placeholderId={libraryPlaceholderId ?? undefined}
         initialPrompt={t2iPrompt}
         initialModelId={t2iModelId}
+        audioAssets={audioAssets}
         initialExtras={
           libraryFormSeed?.audioExtras ??
           libraryAudioCloneSeed(reviewGeneration)?.extras

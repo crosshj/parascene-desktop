@@ -84,7 +84,7 @@ describe("findResumableLibraryAssetPlaceholders", () => {
             provider: "replicate",
             startedAt: "2026-01-01T00:00:00.000Z",
             serviceJobId: "job-9",
-            model: "minimax/speech-2.8-hd",
+            model: "minimax/speech-2.8-turbo",
           },
         },
       }),
@@ -123,7 +123,7 @@ describe("makeLibraryAssetPlaceholderDraft", () => {
       intentId: "text_to_speech",
       server: "replicate",
       provider: "replicate",
-      model: "minimax/speech-2.8-hd",
+      model: "minimax/speech-2.8-turbo",
       audioExtras: { voiceId: "English_expressive_narrator" },
       serviceJobId: "job-1",
     });
@@ -142,7 +142,7 @@ describe("libraryAudioCloneSeed", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         creationId: "audio-1",
         mode: "none",
-        model: "minimax/speech-2.8-hd",
+        model: "minimax/speech-2.8-turbo",
         intentId: "text_to_speech",
         server: "replicate",
         provider: "replicate",
@@ -152,7 +152,7 @@ describe("libraryAudioCloneSeed", () => {
     ).toEqual({
       intentId: "text_to_speech",
       prompt: "I had hoped you wouldn't find out like this.",
-      model: "minimax/speech-2.8-hd",
+      model: "minimax/speech-2.8-turbo",
       extras: {
         voiceId: "English_expressive_narrator",
         geminiVoice: "English_expressive_narrator",

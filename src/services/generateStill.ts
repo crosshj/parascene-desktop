@@ -52,8 +52,8 @@ export type InvokeParasceneGenerateOpts = {
   args: Record<string, unknown>;
   /** Defaults to text_to_image. */
   intent?: string;
-  /** Defaults from intent (video intents → video). */
-  mediaType?: "image" | "video";
+  /** Defaults from intent (video intents → video, speech/music → audio). */
+  mediaType?: "image" | "video" | "audio";
   target?: CreationTarget;
   label?: string;
   clientRequestId?: string;
@@ -75,11 +75,23 @@ export type InvokeLocalGenerateStillOpts = {
 
 function resolveMediaType(
   opts: Pick<InvokeParasceneGenerateOpts, "intent" | "mediaType">,
-): "image" | "video" {
-  if (opts.mediaType === "image" || opts.mediaType === "video") {
+): "image" | "video" | "audio" {
+  if (
+    opts.mediaType === "image" ||
+    opts.mediaType === "video" ||
+    opts.mediaType === "audio"
+  ) {
     return opts.mediaType;
   }
   const intent = (opts.intent ?? "").toLowerCase();
+  if (
+    intent.includes("audio") ||
+    intent.includes("speech") ||
+    intent.includes("music") ||
+    intent.includes("voice")
+  ) {
+    return "audio";
+  }
   if (intent.includes("video")) return "video";
   return "image";
 }
@@ -278,7 +290,7 @@ export async function invokeParasceneWaitCreation(opts: {
   creationId: string;
   projectId?: string;
   timeoutMs?: number;
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "audio";
   label?: string;
 }): Promise<ServiceHandle> {
   return serviceInvoke({
@@ -336,7 +348,7 @@ export async function runParasceneWaitCreation(opts: {
   creationId: string;
   projectId?: string;
   timeoutMs?: number;
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "audio";
   onProgress?: (note: string) => void;
 }): Promise<WaitCreationResult> {
   const handle = await invokeParasceneWaitCreation(opts);

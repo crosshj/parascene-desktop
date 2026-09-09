@@ -16,7 +16,7 @@ export const REPLICATE_VOICE_CLONE_SLUG = "minimax/voice-cloning";
 export const REPLICATE_VOICE_CLONE_MODEL = "speech-02-hd";
 
 export type CuratedAudioModelId =
-  | "minimax/speech-2.8-hd"
+  | "minimax/speech-2.8-turbo"
   | "google/gemini-3.1-flash-tts"
   | "google/lyria-3"
   | "minimax/music-2.6";
@@ -32,9 +32,9 @@ export type CuratedAudioModelDef = {
 
 export const CURATED_REPLICATE_AUDIO_MODELS: readonly CuratedAudioModelDef[] = [
   {
-    id: "minimax/speech-2.8-hd",
+    id: "minimax/speech-2.8-turbo",
     intentId: "text_to_speech",
-    label: "MiniMax Speech 2.8 HD",
+    label: "MiniMax Speech 2.8 Turbo",
     hint: "Narration",
     textField: "text",
   },

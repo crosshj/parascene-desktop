@@ -1247,11 +1247,22 @@ export function EditorLayout() {
       setOpenProjectPendingStagedDraft(null);
       const prompt = detail?.prompt?.trim() ?? "";
       const model = detail?.model?.trim();
+      const intentId =
+        detail?.intent === "text_to_speech" || detail?.intent === "text_to_music"
+          ? detail.intent
+          : "text_to_image";
+      const voice = detail?.voice?.trim();
       setLibraryGenerateSeed(
-        prompt || model ? { prompt, model: model || undefined } : null,
+        prompt || model || voice
+          ? {
+              prompt,
+              model: model || undefined,
+              audioExtras: voice ? { geminiVoice: voice, voiceId: voice } : undefined,
+            }
+          : null,
       );
       setAddAssetIntent(
-        makeAddAssetIntent("text_to_image", "parascene_blue", "assets"),
+        makeAddAssetIntent(intentId, "parascene_blue", "assets"),
       );
       setAddAssetSlotActive(true);
     },

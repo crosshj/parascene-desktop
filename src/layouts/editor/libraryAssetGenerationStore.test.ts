@@ -71,13 +71,13 @@ vi.mock("./replicateAudioModels", async (importOriginal) => {
     ...actual,
     loadCuratedReplicateAudioModels: vi.fn(async () => [
       {
-        id: "minimax/speech-2.8-hd",
+        id: "minimax/speech-2.8-turbo",
         intentId: "text_to_speech",
-        label: "MiniMax Speech 2.8 HD",
+        label: "MiniMax Speech 2.8 Turbo",
         hint: "Narration",
         textField: "text",
         owner: "minimax",
-        name: "speech-2.8-hd",
+        name: "speech-2.8-turbo",
         inputs: [],
       },
     ]),
@@ -225,7 +225,7 @@ describe("retryLibraryAssetPlaceholder", () => {
           server: "replicate",
           provider: "replicate",
           methodId: "text_to_speech",
-          replicateModel: "minimax/speech-2.8-hd",
+          replicateModel: "minimax/speech-2.8-turbo",
           audioExtras: { voiceId: "English_expressive_narrator" },
           lastError: "network",
         },
@@ -287,7 +287,7 @@ describe("library audio generation lifecycle", () => {
       aspectRatio: "16:9",
       prompt: "hello there",
       intentId: "text_to_speech",
-      modelId: "minimax/speech-2.8-hd",
+      modelId: "minimax/speech-2.8-turbo",
       extras: { voiceId: "English_expressive_narrator" },
     });
 
@@ -340,7 +340,7 @@ describe("library audio generation lifecycle", () => {
           provider: "replicate",
           startedAt: "2026-01-01T00:00:00.000Z",
           serviceJobId: "job-audio",
-          model: "minimax/speech-2.8-hd",
+          model: "minimax/speech-2.8-turbo",
         },
       },
     });

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Generate speech and music — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
+    </header>
+    <main>
+      <h1>Generate speech and music</h1>
+      <p>
+        We'll stay in the open project and make two spoken lines plus a short
+        background score. Text to Speech and Text to Music, Parascene. Then
+        we'll put speech on A1 and the score on A2.
+      </p>
+
+      <h2>Two speakers</h2>
+      <ol class="steps">
+        <li>Click <strong>Editor</strong> in the top bar.</li>
+        <li>
+          In Assets (left), click the + tile labeled <strong>Add asset</strong>.
+        </li>
+        <li>Choose <strong>Text to Speech</strong>.</li>
+        <li>
+          Under System, choose <strong>Parascene</strong> (Credits · Creations).
+        </li>
+        <li>
+          Under Model, pick <code>Gemini 3.1 Flash TTS</code>. First voice
+          <strong>Kore</strong>, then a second line with <strong>Puck</strong>.
+        </li>
+      </ol>
+      <p>We typed these two lines.</p>
+      <pre><code>The night market is still open.</code></pre>
+      <pre><code>Then we should walk down together.</code></pre>
+      <figure>
+        <img
+          src="desktop/screens/editor-generate-audio-prompt.png"
+          alt="New asset panel with Text to Speech, Gemini Flash TTS, Kore, and the first line filled in"
+        />
+        <figcaption>
+          Same form, first speaker ready. Click <strong>Generate</strong>, then
+          repeat with Puck and the second line.
+        </figcaption>
+      </figure>
+      <p>Each line lands in this project’s Assets.</p>
+      <figure>
+        <audio
+          controls
+          preload="metadata"
+          src="desktop/media/generate-audio-kore.mp3"
+        ></audio>
+        <figcaption>Kore — “The night market is still open.”</figcaption>
+      </figure>
+      <figure>
+        <audio
+          controls
+          preload="metadata"
+          src="desktop/media/generate-audio-puck.mp3"
+        ></audio>
+        <figcaption>Puck — “Then we should walk down together.”</figcaption>
+      </figure>
+
+      <h2>Background music</h2>
+      <ol class="steps">
+        <li>Open Add asset again and choose <strong>Text to Music</strong>.</li>
+        <li>Keep <strong>Parascene</strong>. Pick <code>Lyria 3</code>.</li>
+      </ol>
+      <p>We typed this into Prompt.</p>
+      <pre><code>Warm night market, soft strings under lantern light, no vocals</code></pre>
+      <figure>
+        <audio
+          controls
+          preload="metadata"
+          src="desktop/media/generate-audio-lyria.mp3"
+        ></audio>
+        <figcaption>The score — about thirty seconds, no vocals.</figcaption>
+      </figure>
+      <figure>
+        <img
+          src="desktop/screens/editor-generate-audio-result.png"
+          alt="Editor Assets after two spoken lines and one background score"
+        />
+        <figcaption>Assets after the three clips come back.</figcaption>
+      </figure>
+
+      <h2>Dual audio tracks</h2>
+      <ol class="steps">
+        <li>Drag both spoken clips onto <strong>A1</strong>, one after the other.</li>
+        <li>
+          Turn on the second audio lane, then drop the score on
+          <strong>A2</strong> so it sits under both lines.
+        </li>
+      </ol>
+      <figure>
+        <img
+          src="desktop/screens/editor-generate-audio-timeline.png"
+          alt="Editor timeline with speech on A1 and background music on A2"
+        />
+        <figcaption>A1 is the conversation. A2 is the bed.</figcaption>
+      </figure>
+
+      <h2>Where to go from here</h2>
+      <p class="more">
+        <a href="generate.html">Generate an image</a> — a still in this same
+        Editor, or
+        <a href="audio.html">Generate a video with audio</a> — lip-sync a still
+        to a spoken file.
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

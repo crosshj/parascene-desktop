@@ -81,7 +81,7 @@ export function enumGroupsFromColonLabels(
 /** Shared prompt field for Generate still workflows. */
 export function promptSchemaField(
   name = "prompt",
-  opts?: { title?: string; description?: string },
+  opts?: { title?: string; description?: string; maxLength?: number },
 ): ReplicateInputField {
   return {
     name,
@@ -89,6 +89,7 @@ export function promptSchemaField(
     typeName: "string",
     required: true,
     description: opts?.description ?? "Describe the image…",
+    maxLength: opts?.maxLength,
     fileLike: false,
     arrayItemFileLike: false,
   };

@@ -330,21 +330,21 @@ struct WaitOpts {
 
 fn wait_silence_ms(kind: WaitKind) -> u64 {
     match kind {
-        WaitKind::Image => WAIT_IMAGE_SILENCE_MS,
+        WaitKind::Image | WaitKind::Audio => WAIT_IMAGE_SILENCE_MS,
         WaitKind::Video => WAIT_VIDEO_SILENCE_MS,
     }
 }
 
 fn wait_poll_ms(kind: WaitKind) -> u64 {
     match kind {
-        WaitKind::Image => WAIT_IMAGE_POLL_MS,
+        WaitKind::Image | WaitKind::Audio => WAIT_IMAGE_POLL_MS,
         WaitKind::Video => WAIT_VIDEO_POLL_MS,
     }
 }
 
 fn wait_timeout_ms(kind: WaitKind) -> u64 {
     match kind {
-        WaitKind::Image => WAIT_IMAGE_TIMEOUT_MS,
+        WaitKind::Image | WaitKind::Audio => WAIT_IMAGE_TIMEOUT_MS,
         WaitKind::Video => WAIT_VIDEO_TIMEOUT_MS,
     }
 }
@@ -371,6 +371,8 @@ fn catalog_wait_kind(creation_id: &str) -> Option<WaitKind> {
     let mt = row.media_type.to_ascii_lowercase();
     if mt == "video" {
         Some(WaitKind::Video)
+    } else if mt == "audio" {
+        Some(WaitKind::Audio)
     } else if mt == "image" {
         Some(WaitKind::Image)
     } else {
@@ -2475,18 +2477,27 @@ fn parascene_generate_cabinet_kind(payload: &Value) -> &'static str {
         if lower == "video" {
             return "videos";
         }
+        if lower == "audio" {
+            return "audio";
+        }
         if lower == "image" {
             return "images";
         }
     }
     if let Some(intent) = payload_str(payload, "intent") {
         let lower = intent.to_ascii_lowercase();
+        if lower.contains("speech") || lower.contains("music") || lower.contains("voice") {
+            return "audio";
+        }
         if lower.contains("video") {
             return "videos";
         }
     }
     if let Some(method) = payload_str(payload, "method") {
         let lower = method.to_ascii_lowercase();
+        if lower.contains("speech") || lower.contains("music") || lower.contains("voice") {
+            return "audio";
+        }
         if lower.contains("video") {
             return "videos";
         }
@@ -2533,16 +2544,22 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     let cabinet = parascene_generate_cabinet_kind(&payload);
     let existing_group_id = if cabinet == "videos" {
         videos_group_id.as_deref()
+    } else if cabinet == "audio" {
+        None
     } else {
         images_group_id.as_deref()
     };
     let noun = if cabinet == "videos" {
         "video"
+    } else if cabinet == "audio" {
+        "audio"
     } else {
         "image"
     };
     let cabinet_label = if cabinet == "videos" {
         "Videos"
+    } else if cabinet == "audio" {
+        "Audio"
     } else {
         "Images"
     };
@@ -2555,6 +2572,8 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
     let token = payload_str(&payload, "creationToken").unwrap_or_else(new_creation_token);
     let kind = if cabinet == "videos" {
         WaitKind::Video
+    } else if cabinet == "audio" {
+        WaitKind::Audio
     } else {
         WaitKind::Image
     };
@@ -2667,10 +2686,51 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
         );
         let fail_label = if cabinet == "videos" {
             "Video generation"
+        } else if cabinet == "audio" {
+            "Audio generation"
         } else {
             "Image generation"
         };
         return Err(creation_failure_message(&done, fail_label));
+    }
+
+    if cabinet == "audio" {
+        let _ = patch_job(
+            app,
+            &job.id,
+            Some("running"),
+            Some("Filing audio into the project…"),
+            Some(&json!({
+                "name": "ingest",
+                "pendingCreationId": id,
+                "creationId": id,
+            })),
+            None,
+            None,
+        );
+        if let Some(pid) = project_id {
+            if let Err(err) =
+                library_add_project_assets(app.clone(), pid.to_string(), vec![id.clone()], false)
+            {
+                eprintln!("[jobs] file audio {id} into project folder failed: {err}");
+            }
+        }
+        let mut out = json!({
+            "creationId": id,
+            "projectCreationIds": generate_result_project_ids(&id, None),
+            "status": creation_status(&done),
+            "target": target,
+            "mediaType": "audio",
+        });
+        if let Some(obj) = out.as_object_mut() {
+            if let Some(images) = images_group_id {
+                obj.insert("imagesGroupId".into(), json!(images));
+            }
+            if let Some(videos) = videos_group_id {
+                obj.insert("videosGroupId".into(), json!(videos));
+            }
+        }
+        return Ok(out);
     }
 
     let _ = patch_job(

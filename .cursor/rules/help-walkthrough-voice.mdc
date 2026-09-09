@@ -10,6 +10,7 @@ Strategy: [docs/GUIDE-help-and-tests.md](docs/GUIDE-help-and-tests.md). Help is 
 
 - Write as if you are sitting with them on one project.
 - Start here is a chain: Getting started → Generate an image → Generate a video with audio. Each page finishes its own step.
+- Generate speech and music is a sibling sitting (own project, two speakers + background on A1/A2). Do not splice it into the goblin → Audio to Video chain.
 - Getting started is that first-run path only: sign in, Library, New project, Director, Editor. It does not teach Sync newest, folder types, or delete project.
 - Sync, Projects, and Folders are the reference pages for those jobs. Do not repeat those procedures on Getting started.
 - This computer and the cloud is the Topics page for remote vs local. No app screenshots. Sync / Projects / Folders link to it; they do not reteach the model.

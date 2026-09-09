@@ -26,6 +26,7 @@ A change to a row names the test and the article. Empty test or “static shots�
 
 - Getting started — `getting-started.html` — no live test (already signed in) — static first-run shots
 - Generate an image — `generate.html` — 05 — live shots from 05
+- Generate speech and music — `generate-audio.html` — 12 — live shots from 12 (own project; two speakers + background on A1/A2)
 - Generate a video with audio — `audio.html` — 06 — live shots from 06 (same project, same goblin)
 - Image models — `image-models.html` — 07 — stills from 07. Edit / Kontext named, no thumbs
 - Video models — `video-models.html` — none — names only
@@ -53,7 +54,7 @@ Still open on product from the identity track: last Videos member Remove (needs 
 
 Live Parascene. Already signed in. Be gentle. Cheap generate for 08–11 (`sd15` lofi). Help goblin is 05–07 only.
 
-`npm test` is unit. `npm run test:integration` is 01–11 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11.
+`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` / `replicateMusic` on server 1 (provider deploy + server refresh).
 
 Teardown: this-run ids, `agent-test-*` title/path, this-run prompts. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
 

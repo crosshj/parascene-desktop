@@ -1052,7 +1052,7 @@ describe("projectStore", () => {
             provider: "replicate",
             startedAt: "2026-01-01T00:00:00.000Z",
             serviceJobId: "job-audio",
-            model: "minimax/speech-2.8-hd",
+            model: "minimax/speech-2.8-turbo",
           },
         },
         createdAt: "2026-01-01T00:00:00.000Z",

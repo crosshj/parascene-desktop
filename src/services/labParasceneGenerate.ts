@@ -17,14 +17,14 @@ export type LabParasceneGenerateOpts = {
   serverId: number;
   method: string;
   args: Record<string, unknown>;
-  mediaType: "image" | "video";
+  mediaType: "image" | "video" | "audio";
   intent?: string;
   mutateOfId?: number;
   label?: string;
   onProgress?: (note: string) => void;
   onPendingCreation?: (
     id: string | null,
-    mediaType: "image" | "video" | null,
+    mediaType: "image" | "video" | "audio" | null,
   ) => void;
 };
 
@@ -33,11 +33,17 @@ export async function runLabParasceneGenerate(
 ): Promise<ParasceneGenerateResult & { groupId: string | null }> {
   const intent =
     opts.intent ??
-    (opts.mediaType === "video" ? "image_to_video" : "text_to_image");
+    (opts.mediaType === "video"
+      ? "image_to_video"
+      : opts.mediaType === "audio"
+        ? "text_to_speech"
+        : "text_to_image");
   opts.onProgress?.(
     opts.mediaType === "video"
       ? "Starting video generation…"
-      : "Starting image generation…",
+      : opts.mediaType === "audio"
+        ? "Starting audio generation…"
+        : "Starting image generation…",
   );
   const handle = await invokeParasceneGenerate({
     projectId: opts.projectId,
@@ -69,7 +75,9 @@ export async function runLabParasceneGenerate(
   const groupId =
     opts.mediaType === "video"
       ? result.videosGroupId
-      : result.imagesGroupId;
+      : opts.mediaType === "audio"
+        ? null
+        : result.imagesGroupId;
 
   return { ...result, groupId };
 }

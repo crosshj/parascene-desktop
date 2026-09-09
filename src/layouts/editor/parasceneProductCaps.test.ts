@@ -11,8 +11,13 @@ import {
   parasceneStillModelEnumGroups,
   parasceneStillModelFamilies,
   parasceneStillModelsForIntent,
+  parasceneAudioModelsForIntent,
+  parasceneFieldIsVisible,
+  parasceneSpeechPromptMaxChars,
+  parasceneResolveAudioModel,
   parasceneVideoModels,
   parasceneVideoModelsForIntent,
+  parasceneVoiceTrainMethod,
   productCapsServerIds,
 } from "./parasceneProductCaps";
 
@@ -26,7 +31,8 @@ describe("parasceneProductCaps", () => {
   it("maps video intents to server 6 Blue methods", () => {
     expect(parasceneServerIdForIntent("text_to_video")).toBe(6);
     expect(parasceneServerIdForIntent("video_to_video")).toBe(6);
-    expect(parasceneServerIdForIntent("text_to_music")).toBeNull();
+    expect(parasceneServerIdForIntent("text_to_music")).toBe(1);
+    expect(parasceneServerIdForIntent("text_to_speech")).toBe(1);
   });
 
   it("uses Blue method names for video", () => {
@@ -36,6 +42,8 @@ describe("parasceneProductCaps", () => {
     expect(parasceneMethodForIntent("reference_to_video")).toBe(
       "reference2video",
     );
+    expect(parasceneMethodForIntent("text_to_speech")).toBe("replicateSpeech");
+    expect(parasceneMethodForIntent("text_to_music")).toBe("replicateMusic");
   });
 
   it("wires product-path intents from snapshot", () => {
@@ -46,8 +54,8 @@ describe("parasceneProductCaps", () => {
     expect(parasceneIntentIsWired("image_audio_to_video")).toBe(true);
     expect(parasceneIntentIsWired("video_to_video")).toBe(true);
     expect(parasceneIntentIsWired("reference_to_video")).toBe(true);
-    expect(parasceneIntentIsWired("text_to_music")).toBe(false);
-    expect(parasceneIntentIsWired("text_to_speech")).toBe(false);
+    expect(parasceneIntentIsWired("text_to_music")).toBe(true);
+    expect(parasceneIntentIsWired("text_to_speech")).toBe(true);
   });
 
   it("formats credit labels from method caps", () => {
@@ -130,5 +138,47 @@ describe("parasceneProductCaps", () => {
     const r2v = parasceneVideoModelsForIntent("reference_to_video");
     expect(r2v.some((m) => m.id === "minimax_r2v")).toBe(true);
     expect(parasceneVideoModels().length).toBeGreaterThan(3);
+  });
+
+  it("lists speech and music models from server 1 caps", () => {
+    const speech = parasceneAudioModelsForIntent("text_to_speech");
+    expect(speech.map((m) => m.id)).toEqual([
+      "minimax/speech-2.8-turbo",
+      "google/gemini-3.1-flash-tts",
+    ]);
+    const gemini = parasceneResolveAudioModel(
+      "text_to_speech",
+      "google/gemini-3.1-flash-tts",
+    );
+    expect(gemini?.fields.voice?.options?.length).toBe(30);
+    const minimax = parasceneResolveAudioModel(
+      "text_to_speech",
+      "minimax/speech-2.8-turbo",
+    );
+    const voiceId = minimax?.fields.voice_id;
+    expect(voiceId?.hidden).toBe(true);
+    expect(voiceId?.show_when).toEqual({ field: "voice", equals: "custom" });
+    expect(
+      parasceneFieldIsVisible(voiceId!, { voice: "English_expressive_narrator" }),
+    ).toBe(false);
+    expect(parasceneFieldIsVisible(voiceId!, { voice: "custom" })).toBe(true);
+    expect(parasceneSpeechPromptMaxChars()).toBe(400);
+    expect(minimax?.fields.emotion?.type).toBe("select");
+    expect(minimax?.fields.emotion?.options?.map((o) => o.value)).toEqual([
+      "auto",
+      "happy",
+      "sad",
+      "angry",
+      "fearful",
+      "disgusted",
+      "surprised",
+      "calm",
+      "fluent",
+      "neutral",
+    ]);
+    expect(parasceneAudioModelsForIntent("text_to_music")[0]?.id).toBe(
+      "google/lyria-3",
+    );
+    expect(parasceneVoiceTrainMethod()?.fields?.voice_file).toBeTruthy();
   });
 });

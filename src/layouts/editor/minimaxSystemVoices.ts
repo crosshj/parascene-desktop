@@ -34,3 +34,36 @@ export function isMiniMaxSystemVoiceId(voiceId: string): boolean {
   const id = voiceId.trim();
   return MINIMAX_SYSTEM_VOICES.some((voice) => voice.voiceId === id);
 }
+
+/** Official MiniMax speech-2.8 emotion enum. */
+export const MINIMAX_SPEECH_EMOTION_VALUES = [
+  "auto",
+  "happy",
+  "sad",
+  "angry",
+  "fearful",
+  "disgusted",
+  "surprised",
+  "calm",
+  "fluent",
+  "neutral",
+] as const;
+
+export type MiniMaxSpeechEmotion = (typeof MINIMAX_SPEECH_EMOTION_VALUES)[number];
+
+export const MINIMAX_SPEECH_EMOTIONS: ReadonlyArray<{
+  value: MiniMaxSpeechEmotion;
+  label: string;
+}> = MINIMAX_SPEECH_EMOTION_VALUES.map((value) => ({
+  value,
+  label: `${value.charAt(0).toUpperCase()}${value.slice(1)}`,
+}));
+
+export function normalizeMinimaxEmotion(
+  raw: string | null | undefined,
+): MiniMaxSpeechEmotion | "" {
+  const key = String(raw ?? "").trim().toLowerCase();
+  return (MINIMAX_SPEECH_EMOTION_VALUES as readonly string[]).includes(key)
+    ? (key as MiniMaxSpeechEmotion)
+    : "";
+}

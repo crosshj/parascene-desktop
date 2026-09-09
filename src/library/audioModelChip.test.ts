@@ -48,7 +48,7 @@ describe("audioModelChipLabel", () => {
     expect(audioModelChipLabel("google/lyria-3")).toBe("LYRIA");
     expect(audioModelChipLabel("google/gemini-3.1-flash-tts")).toBe("FLASH");
     expect(audioModelChipLabel("Gemini 3.1 Flash TTS")).toBe("FLASH");
-    expect(audioModelChipLabel("minimax/speech-2.8-hd")).toBe("MM SPEECH");
+    expect(audioModelChipLabel("minimax/speech-2.8-turbo")).toBe("MM SPEECH");
     expect(audioModelChipClass("LYRIA")).toBe("lyria");
     expect(audioModelChipClass("FLASH")).toBe("flash");
     expect(audioModelChipClass("MM SPEECH")).toBe("mm-speech");
@@ -86,7 +86,7 @@ describe("audioModelChipFromClip", () => {
       audioModelChipFromClip({
         kind: "audio",
         lane: "audio",
-        addAssetGeneration: { model: "minimax/speech-2.8-hd" },
+        addAssetGeneration: { model: "minimax/speech-2.8-turbo" },
       }),
     ).toBe("MM SPEECH");
   });

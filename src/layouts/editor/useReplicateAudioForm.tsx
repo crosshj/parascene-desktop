@@ -9,16 +9,28 @@ import { DEFAULT_PROJECT_ASPECT_RATIO } from "../../project/aspectRatios";
 import type { ReplicateInputField } from "../../replicate/replicateClient";
 import { CloneButton, GenerateTargetButton } from "./AddAssetIntentFooter";
 import type { ReplicateAudioGenerateExtras } from "./audioGenerateInputs";
-import { startLibraryReplicateAudio } from "./libraryAssetGenerationStore";
+import type { ProjectAsset } from "../../project/types";
+import {
+  startLibraryParasceneAudio,
+  startLibraryParasceneVoiceTrain,
+  startLibraryReplicateAudio,
+} from "./libraryAssetGenerationStore";
 import {
   GEMINI_SYSTEM_VOICES,
   geminiSystemVoiceLabel,
 } from "./geminiSystemVoices";
 import {
   isMiniMaxSystemVoiceId,
+  MINIMAX_SPEECH_EMOTIONS,
   MINIMAX_SYSTEM_VOICES,
 } from "./minimaxSystemVoices";
-import type { GenerateIntentId } from "./previewIntent";
+import type { GenerateIntentId, GenerateServerId } from "./previewIntent";
+import {
+  parasceneAudioModelsForIntent,
+  parasceneFieldIsVisible,
+  parasceneSpeechPromptMaxChars,
+  type ParasceneFieldDef,
+} from "./parasceneProductCaps";
 import {
   loadCuratedReplicateAudioModels,
   pickCuratedAudioModelId,
@@ -33,6 +45,7 @@ export type ReplicateAudioFormParts = {
 
 export type UseReplicateAudioFormOpts = {
   intentId: Extract<GenerateIntentId, "text_to_speech" | "text_to_music">;
+  server?: Extract<GenerateServerId, "parascene_blue" | "replicate">;
   idPrefix?: string;
   locked?: boolean;
   onGenerateNew?: () => void;
@@ -40,6 +53,7 @@ export type UseReplicateAudioFormOpts = {
   initialModelId?: string;
   initialExtras?: ReplicateAudioGenerateExtras;
   placeholderId?: string;
+  audioAssets?: ProjectAsset[];
 };
 
 function extrasToFormValues(
@@ -48,8 +62,14 @@ function extrasToFormValues(
   if (!extras) return {};
   const values: Record<string, string> = {};
   const minimaxVoice = extras.voiceId?.trim();
-  if (minimaxVoice && isMiniMaxSystemVoiceId(minimaxVoice)) {
-    values.voice_id = minimaxVoice;
+  if (minimaxVoice) {
+    if (isMiniMaxSystemVoiceId(minimaxVoice)) {
+      values.voice = minimaxVoice;
+      values.voice_id = minimaxVoice;
+    } else {
+      values.voice = "custom";
+      values.voice_id = minimaxVoice;
+    }
   }
   const geminiVoice = extras.geminiVoice?.trim();
   if (geminiVoice) values.voice = geminiVoice;
@@ -58,11 +78,12 @@ function extrasToFormValues(
   if (extras.instrumental) values.is_instrumental = "true";
   if (extras.lyricsOptimizer) values.lyrics_optimizer = "true";
   if (extras.emotion) values.emotion = extras.emotion;
+  if (extras.cloneSourceAssetId) values.clone_source = extras.cloneSourceAssetId;
   return values;
 }
 
 function modelSelectField(
-  options: ReplicateAudioModelOption[],
+  options: Array<{ id: string; label: string; hint?: string }>,
 ): ReplicateInputField {
   return {
     name: "model",
@@ -76,6 +97,26 @@ function modelSelectField(
     enumGroups: null,
     fileLike: false,
     arrayItemFileLike: false,
+  };
+}
+
+function capsFieldToInput(
+  name: string,
+  field: ParasceneFieldDef,
+): ReplicateInputField {
+  const options = (field.options ?? [])
+    .map((o) => ({
+      id: String(o.value ?? "").trim(),
+      label: String(o.label ?? o.value ?? "").trim(),
+    }))
+    .filter((o) => o.id);
+  if (options.length > 0) {
+    return stringSelectField(name, field.label || name, options);
+  }
+  return {
+    ...promptSchemaField(name, { description: "" }),
+    title: field.label || name,
+    description: "",
   };
 }
 
@@ -102,6 +143,7 @@ export function useReplicateAudioForm(
 ): ReplicateAudioFormParts {
   const {
     intentId,
+    server = "replicate",
     idPrefix = `audio-${intentId}`,
     locked = false,
     onGenerateNew,
@@ -109,13 +151,21 @@ export function useReplicateAudioForm(
     initialModelId,
     initialExtras,
     placeholderId,
+    audioAssets = [],
   } = opts;
 
   const { project } = useShell();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
   const isSpeech = intentId === "text_to_speech";
+  const isParascene = server === "parascene_blue";
+  const parasceneModels = useMemo(
+    () => (isParascene ? parasceneAudioModelsForIntent(intentId) : []),
+    [isParascene, intentId],
+  );
 
-  const [models, setModels] = useState<ReplicateAudioModelOption[] | null>(null);
+  const [models, setModels] = useState<ReplicateAudioModelOption[] | null>(
+    isParascene ? [] : null,
+  );
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [modelId, setModelId] = useState<string | null>(
     initialModelId?.trim() || null,
@@ -131,6 +181,22 @@ export function useReplicateAudioForm(
   const [doneLocked, setDoneLocked] = useState(false);
 
   useEffect(() => {
+    if (isParascene) {
+      setModelsError(null);
+      setModels([]);
+      setModelId((prev) => {
+        const preferred = initialModelId?.trim() || prev;
+        if (preferred && parasceneModels.some((m) => m.id === preferred)) {
+          return preferred;
+        }
+        const gemini = parasceneModels.find((m) => /gemini/i.test(m.id));
+        const lyria = parasceneModels.find((m) => /lyria/i.test(m.id));
+        return (intentId === "text_to_speech" ? gemini : lyria)?.id
+          ?? parasceneModels[0]?.id
+          ?? null;
+      });
+      return;
+    }
     let cancelled = false;
     setModels(null);
     setModelsError(null);
@@ -148,9 +214,13 @@ export function useReplicateAudioForm(
     return () => {
       cancelled = true;
     };
-  }, [intentId, initialModelId]);
+  }, [intentId, initialModelId, isParascene, parasceneModels]);
 
-  const selected = models?.find((m) => m.id === modelId) ?? null;
+  const selectedParascene =
+    parasceneModels.find((m) => m.id === modelId) ?? null;
+  const selected = isParascene
+    ? selectedParascene
+    : models?.find((m) => m.id === modelId) ?? null;
   const modelHint = selected?.id ?? modelId ?? initialModelId ?? "";
   const isGemini = /gemini/i.test(modelHint);
   const isMiniMaxSpeech =
@@ -160,11 +230,13 @@ export function useReplicateAudioForm(
   const prompt = values.prompt?.trim() ?? "";
 
   const voiceOptions = useMemo(
-    () =>
-      MINIMAX_SYSTEM_VOICES.map((voice) => ({
+    () => [
+      ...MINIMAX_SYSTEM_VOICES.map((voice) => ({
         id: voice.voiceId,
         label: voice.label,
       })),
+      { id: "custom", label: "Custom" },
+    ],
     [],
   );
 
@@ -204,45 +276,91 @@ export function useReplicateAudioForm(
     }
   }, [placeholderStatus, startedPlaceholderId, trackedPlaceholderId]);
 
+  const formModels = isParascene ? parasceneModels : models;
+  const speechMaxChars = isSpeech ? parasceneSpeechPromptMaxChars() : undefined;
   const canGenerate =
     !fieldsLocked &&
     Boolean(prompt) &&
     Boolean(selected) &&
-    Boolean(project.id);
+    Boolean(project.id) &&
+    (speechMaxChars == null || prompt.length <= speechMaxChars);
 
   const handleGenerateNew = () => {
     setDoneLocked(false);
     onGenerateNew?.();
   };
 
+  const extrasFromValues = (): ReplicateAudioGenerateExtras => {
+    const voice = values.voice?.trim();
+    const voiceId = values.voice_id?.trim();
+    return {
+      voiceId: isMiniMaxSpeech
+        ? voice === "custom"
+          ? voiceId
+          : voice || voiceId
+        : undefined,
+      geminiVoice: isGemini ? voice : undefined,
+      stylePrompt: isGemini ? values.style?.trim() : undefined,
+      lyrics: isMusic26 ? values.lyrics?.trim() : undefined,
+      instrumental: isMusic26 ? values.is_instrumental === "true" : undefined,
+      lyricsOptimizer: isMusic26
+        ? values.lyrics_optimizer === "true"
+        : undefined,
+      emotion: isMiniMaxSpeech ? values.emotion?.trim() : undefined,
+      cloneSourceAssetId: values.clone_source?.trim(),
+    };
+  };
+
   const handleGenerate = () => {
     if (!canGenerate || !project.id || !selected) return;
     setRunning(true);
-    const minimaxVoice = values.voice_id?.trim();
-    const id = startLibraryReplicateAudio({
-      projectId: project.id,
-      aspectRatio,
-      prompt,
-      intentId,
-      modelId: selected.id,
-      extras: {
-        voiceId:
-          isMiniMaxSpeech && minimaxVoice && isMiniMaxSystemVoiceId(minimaxVoice)
-            ? minimaxVoice
-            : undefined,
-        geminiVoice: isGemini ? values.voice?.trim() : undefined,
-        stylePrompt: isGemini ? values.style?.trim() : undefined,
-        lyrics: isMusic26 ? values.lyrics?.trim() : undefined,
-        instrumental: isMusic26 ? values.is_instrumental === "true" : undefined,
-        lyricsOptimizer: isMusic26
-          ? values.lyrics_optimizer === "true"
-          : undefined,
-        emotion: isMiniMaxSpeech ? values.emotion?.trim() : undefined,
-      },
-      placeholderId,
-      destination: "assets",
-    });
+    const extras = extrasFromValues();
+    const id = isParascene
+      ? startLibraryParasceneAudio({
+          projectId: project.id,
+          projectTitle: project.title,
+          aspectRatio,
+          prompt,
+          intentId,
+          modelId: selected.id,
+          extras,
+          placeholderId,
+          destination: "assets",
+        })
+      : startLibraryReplicateAudio({
+          projectId: project.id,
+          aspectRatio,
+          prompt,
+          intentId,
+          modelId: selected.id,
+          extras,
+          placeholderId,
+          destination: "assets",
+        });
     setStartedPlaceholderId(id);
+  };
+
+  const handleTrain = () => {
+    if (!isParascene || !project.id || fieldsLocked) return;
+    const sourceAssetId = values.clone_source?.trim();
+    if (!sourceAssetId) return;
+    setRunning(true);
+    startLibraryParasceneVoiceTrain({
+      projectId: project.id,
+      projectTitle: project.title,
+      aspectRatio,
+      sourceAssetId,
+      sourceLabel:
+        audioAssets.find((a) => a.id === sourceAssetId)?.name || "Voice train",
+      onVoiceReady: ({ voiceId }) => {
+        setValues((prev) => ({
+          ...prev,
+          voice: "custom",
+          voice_id: voiceId,
+        }));
+        setRunning(false);
+      },
+    });
   };
 
   const onFieldChange = (name: string, value: string) => {
@@ -252,9 +370,14 @@ export function useReplicateAudioForm(
 
   const textLabel = isSpeech ? "Line" : "Prompt";
   const textField = {
-    ...promptSchemaField("prompt", { description: "" }),
+    ...promptSchemaField("prompt", {
+      description: speechMaxChars
+        ? `Max ${speechMaxChars} characters`
+        : "",
+      maxLength: speechMaxChars,
+    }),
     title: textLabel,
-    description: "",
+    description: speechMaxChars ? `Max ${speechMaxChars} characters` : "",
   };
 
   const fields = (
@@ -270,20 +393,20 @@ export function useReplicateAudioForm(
         <section className="add-asset-generate-section">
           <p className="add-asset-generate-error">{modelsError}</p>
         </section>
-      ) : models == null ? (
+      ) : !isParascene && models == null ? (
         <section className="add-asset-generate-section">
           <p className="muted">Loading models…</p>
         </section>
-      ) : models.length === 0 ? (
+      ) : formModels && formModels.length === 0 ? (
         <section className="add-asset-generate-section">
           <p className="muted">No models available for this intent.</p>
         </section>
       ) : null}
-      {models && models.length > 0 ? (
+      {formModels && formModels.length > 0 ? (
         <section className="add-asset-generate-section">
           <h3>Model</h3>
           <SchemaScalarField
-            field={modelSelectField(models)}
+            field={modelSelectField(formModels)}
             values={{ ...values, model: modelId ?? "" }}
             onChange={onFieldChange}
             disabled={fieldsLocked}
@@ -300,12 +423,80 @@ export function useReplicateAudioForm(
           disabled={fieldsLocked}
           showFieldChrome={false}
         />
+        {speechMaxChars ? (
+          <p className="muted">
+            {Math.min(prompt.length, speechMaxChars)}/{speechMaxChars}
+          </p>
+        ) : null}
       </section>
-      {isMiniMaxSpeech ? (
+      {isParascene && selectedParascene
+        ? Object.entries(selectedParascene.fields).map(([name, field]) => {
+            if (!parasceneFieldIsVisible(field, values)) return null;
+            if (field.type === "boolean") {
+              return (
+                <section className="add-asset-generate-section" key={name}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={values[name] === "true"}
+                      disabled={fieldsLocked}
+                      onChange={(event) =>
+                        onFieldChange(
+                          name,
+                          event.target.checked ? "true" : "",
+                        )
+                      }
+                    />{" "}
+                    {field.label || name}
+                  </label>
+                </section>
+              );
+            }
+            return (
+              <section className="add-asset-generate-section" key={name}>
+                <h3>{field.label || name}</h3>
+                <SchemaScalarField
+                  field={capsFieldToInput(name, field)}
+                  values={values}
+                  onChange={onFieldChange}
+                  disabled={fieldsLocked}
+                  showFieldChrome={false}
+                />
+              </section>
+            );
+          })
+        : null}
+      {isParascene && isMiniMaxSpeech && values.voice === "custom" ? (
+        <section className="add-asset-generate-section">
+          <h3>Train</h3>
+          <SchemaScalarField
+            field={stringSelectField(
+              "clone_source",
+              "Source audio",
+              audioAssets
+                .filter((asset) => asset.kind === "audio")
+                .map((asset) => ({ id: asset.id, label: asset.name })),
+            )}
+            values={values}
+            onChange={onFieldChange}
+            disabled={fieldsLocked}
+            showFieldChrome={false}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={fieldsLocked || !values.clone_source?.trim() || !project.id}
+            onClick={handleTrain}
+          >
+            Train voice
+          </button>
+        </section>
+      ) : null}
+      {!isParascene && isMiniMaxSpeech ? (
         <section className="add-asset-generate-section">
           <h3>Voice</h3>
           <SchemaScalarField
-            field={stringSelectField("voice_id", "Voice", voiceOptions)}
+            field={stringSelectField("voice", "Voice", voiceOptions)}
             values={values}
             onChange={onFieldChange}
             disabled={fieldsLocked}
@@ -313,7 +504,38 @@ export function useReplicateAudioForm(
           />
         </section>
       ) : null}
-      {isGemini ? (
+      {!isParascene && isMiniMaxSpeech ? (
+        <section className="add-asset-generate-section">
+          <h3>Emotion</h3>
+          <SchemaScalarField
+            field={stringSelectField(
+              "emotion",
+              "Emotion",
+              MINIMAX_SPEECH_EMOTIONS.map((emotion) => ({
+                id: emotion.value,
+                label: emotion.label,
+              })),
+            )}
+            values={values}
+            onChange={onFieldChange}
+            disabled={fieldsLocked}
+            showFieldChrome={false}
+          />
+        </section>
+      ) : null}
+      {!isParascene && isMiniMaxSpeech && values.voice === "custom" ? (
+        <section className="add-asset-generate-section">
+          <h3>Voice ID</h3>
+          <SchemaScalarField
+            field={promptSchemaField("voice_id", { description: "" })}
+            values={values}
+            onChange={onFieldChange}
+            disabled={fieldsLocked}
+            showFieldChrome={false}
+          />
+        </section>
+      ) : null}
+      {!isParascene && isGemini ? (
         <section className="add-asset-generate-section">
           <h3>Voice</h3>
           <SchemaScalarField
@@ -333,7 +555,7 @@ export function useReplicateAudioForm(
           />
         </section>
       ) : null}
-      {isGemini ? (
+      {!isParascene && isGemini ? (
         <section className="add-asset-generate-section">
           <h3>Style</h3>
           <SchemaScalarField
@@ -345,7 +567,7 @@ export function useReplicateAudioForm(
           />
         </section>
       ) : null}
-      {isMusic26 ? (
+      {!isParascene && isMusic26 ? (
         <>
           <section className="add-asset-generate-section">
             <h3>Lyrics</h3>

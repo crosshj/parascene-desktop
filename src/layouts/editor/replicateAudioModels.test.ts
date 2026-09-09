@@ -11,14 +11,14 @@ import {
 describe("replicateAudioModels", () => {
   it("curates four generate models plus MiniMax clone", () => {
     expect(CURATED_REPLICATE_AUDIO_MODELS.map((m) => m.id)).toEqual([
-      "minimax/speech-2.8-hd",
+      "minimax/speech-2.8-turbo",
       "google/gemini-3.1-flash-tts",
       "google/lyria-3",
       "minimax/music-2.6",
     ]);
     expect(curatedAudioModelsForIntent("text_to_speech")).toHaveLength(2);
     expect(curatedAudioModelsForIntent("text_to_music")).toHaveLength(2);
-    expect(findCuratedAudioModel("minimax/speech-2.8-hd")?.textField).toBe(
+    expect(findCuratedAudioModel("minimax/speech-2.8-turbo")?.textField).toBe(
       "text",
     );
     expect(REPLICATE_VOICE_CLONE_SLUG).toBe("minimax/voice-cloning");
@@ -33,12 +33,12 @@ describe("replicateAudioModels", () => {
     expect(
       pickCuratedAudioModelId(
         speech,
-        "minimax/speech-2.8-hd",
+        "minimax/speech-2.8-turbo",
         "google/gemini-3.1-flash-tts",
       ),
     ).toBe("google/gemini-3.1-flash-tts");
     expect(
-      pickCuratedAudioModelId(speech, "minimax/speech-2.8-hd", null),
-    ).toBe("minimax/speech-2.8-hd");
+      pickCuratedAudioModelId(speech, "minimax/speech-2.8-turbo", null),
+    ).toBe("minimax/speech-2.8-turbo");
   });
 });

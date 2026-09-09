@@ -1,4 +1,9 @@
 import {
+  isMiniMaxSystemVoiceId,
+  normalizeMinimaxEmotion,
+} from "./minimaxSystemVoices";
+import { SPEECH_PROMPT_MAX_CHARS } from "./parasceneProductCaps";
+import {
   findCuratedAudioModel,
   REPLICATE_VOICE_CLONE_MODEL,
   type CuratedAudioModelId,
@@ -31,7 +36,7 @@ export function persistAudioGenerateExtras(
   if (lyrics) next.lyrics = lyrics;
   if (extras.instrumental === true) next.instrumental = true;
   if (extras.lyricsOptimizer === true) next.lyricsOptimizer = true;
-  const emotion = extras.emotion?.trim();
+  const emotion = normalizeMinimaxEmotion(extras.emotion);
   if (emotion) next.emotion = emotion;
   const cloneSourceAssetId = extras.cloneSourceAssetId?.trim();
   if (cloneSourceAssetId) next.cloneSourceAssetId = cloneSourceAssetId;
@@ -57,6 +62,14 @@ export function pickLocalAudioPath(
   return null;
 }
 
+function assertSpeechLine(text: string) {
+  if (text.length > SPEECH_PROMPT_MAX_CHARS) {
+    throw new Error(
+      `Speech line must be at most ${SPEECH_PROMPT_MAX_CHARS} characters`,
+    );
+  }
+}
+
 export function buildReplicateAudioInput(opts: {
   modelId: string;
   text: string;
@@ -67,16 +80,18 @@ export function buildReplicateAudioInput(opts: {
   const def = findCuratedAudioModel(opts.modelId);
   const modelId = (def?.id ?? opts.modelId.trim()) as CuratedAudioModelId | string;
 
-  if (modelId === "minimax/speech-2.8-hd") {
+  if (/^minimax\/speech-2\.8/.test(modelId)) {
+    assertSpeechLine(text);
     const input: Record<string, unknown> = { text };
     const voiceId = extras.voiceId?.trim();
     if (voiceId) input.voice_id = voiceId;
-    const emotion = extras.emotion?.trim();
+    const emotion = normalizeMinimaxEmotion(extras.emotion);
     if (emotion) input.emotion = emotion;
     return input;
   }
 
   if (modelId === "google/gemini-3.1-flash-tts") {
+    assertSpeechLine(text);
     const input: Record<string, unknown> = { text };
     const voice = extras.geminiVoice?.trim() || extras.voiceId?.trim();
     if (voice) input.voice = voice;
@@ -99,6 +114,83 @@ export function buildReplicateAudioInput(opts: {
   }
 
   return def?.textField === "text" ? { text } : { prompt: text };
+}
+
+/** Provider args for Parascene `replicateSpeech` / `replicateMusic`. */
+export function buildParasceneAudioArgs(opts: {
+  modelId: string;
+  text: string;
+  extras?: ReplicateAudioGenerateExtras;
+}): Record<string, unknown> {
+  const prompt = opts.text.trim();
+  const extras = opts.extras ?? {};
+  const args: Record<string, unknown> = {
+    prompt,
+    model: opts.modelId.trim(),
+  };
+  const modelId = opts.modelId.trim();
+
+  if (/^minimax\/speech-2\.8/.test(modelId)) {
+    assertSpeechLine(prompt);
+    const voiceId = extras.voiceId?.trim();
+    if (voiceId) {
+      if (isMiniMaxSystemVoiceId(voiceId)) {
+        args.voice = voiceId;
+      } else {
+        args.voice = "custom";
+        args.voice_id = voiceId;
+      }
+    }
+    const emotion = normalizeMinimaxEmotion(extras.emotion);
+    if (emotion) args.emotion = emotion;
+    return args;
+  }
+
+  if (modelId === "google/gemini-3.1-flash-tts") {
+    assertSpeechLine(prompt);
+    const voice = extras.geminiVoice?.trim() || extras.voiceId?.trim();
+    if (voice) args.voice = voice;
+    const style = extras.stylePrompt?.trim();
+    if (style) args.style = style;
+    return args;
+  }
+
+  if (modelId === "minimax/music-2.6") {
+    const lyrics = extras.lyrics?.trim();
+    if (lyrics) args.lyrics = lyrics;
+    if (extras.instrumental === true) args.is_instrumental = true;
+    if (extras.lyricsOptimizer === true) args.lyrics_optimizer = true;
+  }
+
+  return args;
+}
+
+function readVoiceIdFromMeta(meta: unknown): string | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const record = meta as Record<string, unknown>;
+  const audio = record.audio;
+  if (audio && typeof audio === "object" && !Array.isArray(audio)) {
+    const id = (audio as Record<string, unknown>).voice_id;
+    if (typeof id === "string" && id.trim()) return id.trim();
+  }
+  const top = record.voice_id;
+  return typeof top === "string" && top.trim() ? top.trim() : null;
+}
+
+export function voiceIdFromCreationMeta(creation: {
+  meta?: unknown;
+  remoteJson?: string | null;
+} | null): string | null {
+  const fromMeta = readVoiceIdFromMeta(creation?.meta);
+  if (fromMeta) return fromMeta;
+  const raw = creation?.remoteJson?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { meta?: unknown };
+    return readVoiceIdFromMeta(parsed.meta);
+  } catch {
+    return null;
+  }
 }
 
 export function buildVoiceCloneInput(): Record<string, unknown> {

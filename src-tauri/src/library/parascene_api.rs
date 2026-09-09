@@ -387,6 +387,7 @@ pub fn media_url(value: &Value) -> Option<String> {
 pub enum WaitKind {
     Image,
     Video,
+    Audio,
 }
 
 pub fn wait_kind_from_hints(
@@ -401,7 +402,13 @@ pub fn wait_kind_from_hints(
         intent.unwrap_or("")
     )
     .to_ascii_lowercase();
-    if blob.contains("video") {
+    if blob.contains("audio")
+        || blob.contains("speech")
+        || blob.contains("music")
+        || blob.contains("voice")
+    {
+        WaitKind::Audio
+    } else if blob.contains("video") {
         WaitKind::Video
     } else {
         WaitKind::Image
@@ -417,6 +424,19 @@ pub fn url_looks_like_video(url: &str) -> bool {
         || path.ends_with(".webm")
         || path.ends_with(".mov")
         || path.ends_with(".m4v")
+}
+
+pub fn url_looks_like_audio(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    path.contains("/audio")
+        || path.ends_with(".mp3")
+        || path.ends_with(".wav")
+        || path.ends_with(".m4a")
+        || path.ends_with(".aac")
+        || path.ends_with(".ogg")
+        || path.ends_with(".flac")
+        || path.ends_with(".webm")
 }
 
 pub fn url_looks_like_image(url: &str) -> bool {
@@ -472,6 +492,19 @@ pub fn output_media_url(value: &Value, kind: WaitKind) -> Option<String> {
             }
             None
         }
+        WaitKind::Audio => {
+            if let Some(url) = json_url_field(row, "audio_url") {
+                return Some(url);
+            }
+            for key in ["url", "file_path"] {
+                if let Some(url) = json_url_field(row, key) {
+                    if url_looks_like_audio(&url) {
+                        return Some(url);
+                    }
+                }
+            }
+            None
+        }
     }
 }
 
@@ -489,6 +522,10 @@ pub fn local_path_is_output(kind: WaitKind, local_path: Option<&str>, media_type
                 || (media_type.eq_ignore_ascii_case("video") && !url_looks_like_image(path))
         }
         WaitKind::Image => !url_looks_like_video(path),
+        WaitKind::Audio => {
+            url_looks_like_audio(path)
+                || media_type.eq_ignore_ascii_case("audio")
+        }
     }
 }
 
