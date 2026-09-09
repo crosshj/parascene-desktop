@@ -54,7 +54,7 @@ Still open on product from the identity track: last Videos member Remove (needs 
 
 Live Parascene. Already signed in. Be gentle. Cheap generate for 08–11 (`sd15` lofi). Help goblin is 05–07 only.
 
-`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` / `replicateMusic` on server 1 (provider deploy + server refresh).
+`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` / `replicateMusic` on server 1. Finish list: [PLAN-generate-audio.md](./PLAN-generate-audio.md).
 
 Teardown: this-run ids, `agent-test-*` title/path, this-run prompts. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
 
@@ -67,4 +67,5 @@ Phase 5 later: change a user-visible workflow → run the matching suite → ver
 - Same-object track: [PLAN-remote-local-consistency.md](./PLAN-remote-local-consistency.md)
 - Last cabinet member: [PLAN-last-cabinet-member-remove.md](./PLAN-last-cabinet-member-remove.md)
 - Help voice: `.cursor/rules/help-walkthrough-voice.mdc`
+- Generate speech/music finish: [PLAN-generate-audio.md](./PLAN-generate-audio.md)
 - Seed ids: `src/library/seedLibraryCreations.ts`
