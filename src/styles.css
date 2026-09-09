@@ -1846,6 +1846,15 @@ input[type="checkbox"].control,
     color-mix(in srgb, #b07ae8 18%, #16101c);
 }
 
+.creation-thumb-audio.is-audio-model-mm-music,
+.editor-add-asset-card-clip.is-audio.is-audio-model-mm-music,
+.editor-add-asset-card-clip.is-audio.is-generating.is-audio-model-mm-music {
+  color: #818cf8;
+  background:
+    radial-gradient(ellipse at 50% 50%, color-mix(in srgb, #818cf8 24%, transparent), transparent 55%),
+    color-mix(in srgb, #818cf8 18%, #10121c);
+}
+
 .creation-thumb-audio .creation-audio-wave {
   display: block;
   width: 58%;
@@ -1886,6 +1895,11 @@ input[type="checkbox"].control,
 .creation-audio-model-label.is-mm-speech {
   color: #b07ae8;
   background: color-mix(in srgb, #b07ae8 18%, #16101c);
+}
+
+.creation-audio-model-label.is-mm-music {
+  color: #818cf8;
+  background: color-mix(in srgb, #818cf8 18%, #10121c);
 }
 
 .creation-audio-wave {
@@ -8763,6 +8777,11 @@ body.is-timeline-clip-moving * {
   border: 1.5px solid #b07ae8;
 }
 
+.editor-timeline-clip.is-audio.is-audio-model-mm-music:not(.is-selected):not(.is-linked-video-audio) {
+  background: color-mix(in srgb, #818cf8 32%, #10121c);
+  border: 1.5px solid #818cf8;
+}
+
 .editor-timeline-clip.is-audio.is-audio-model-lyria:not(.is-selected) .editor-timeline-clip-wave-svg rect {
   fill: color-mix(in srgb, #c4a36a 75%, #fff);
 }
@@ -8773,6 +8792,10 @@ body.is-timeline-clip-moving * {
 
 .editor-timeline-clip.is-audio.is-audio-model-mm-speech:not(.is-selected) .editor-timeline-clip-wave-svg rect {
   fill: color-mix(in srgb, #b07ae8 75%, #fff);
+}
+
+.editor-timeline-clip.is-audio.is-audio-model-mm-music:not(.is-selected) .editor-timeline-clip-wave-svg rect {
+  fill: color-mix(in srgb, #818cf8 75%, #fff);
 }
 
 .editor-timeline-clip-reverse {

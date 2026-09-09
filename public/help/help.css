@@ -457,6 +457,18 @@ ul.steps {
   border: 1px solid #4f46e5;
 }
 
+.model-brand--gemini {
+  color: #e0f2fe;
+  background: #0c4a6e;
+  border: 1px solid #0284c7;
+}
+
+.model-brand--lyria {
+  color: #fef3c7;
+  background: #78350f;
+  border: 1px solid #d97706;
+}
+
 .model-names {
   margin: 0 0 1.5rem;
   padding-left: 1.15rem;

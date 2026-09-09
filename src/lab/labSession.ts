@@ -85,7 +85,7 @@ export type LabSessionSnapshot = {
     /** Creation currently waiting on Parascene (mirrored from job checkpoint). */
     pendingCreationId?: string | null;
     /** How to file the pending creation after resume wait */
-    pendingMediaType?: "image" | "video" | null;
+    pendingMediaType?: "image" | "video" | "audio" | null;
     /** Ensure groups checkpoint (survives leave / remount) */
     imagesGroupId?: string | null;
     videosGroupId?: string | null;

@@ -2,6 +2,7 @@ import { mapCatalogSyncError } from "../auth/errors";
 import { ensureAccessToken, getEnvConfig } from "../auth/session";
 import { runSyncFull, runSyncNewest } from "../services/syncCatalog";
 import { aspectRatioFromMeta } from "../library/aspectRatio";
+import { urlLooksLikeImage } from "../library/previewUrl";
 import {
   applyManifest,
   getSyncStatus,
@@ -252,6 +253,16 @@ export async function syncGroupMembersManifest(): Promise<GroupMembersSyncResult
  * Map a Parascene create-images row into a catalog upsert.
  * Keeps a full JSON copy of the (URL-absolutized) API object plus denormalized fields.
  */
+function looksLikePlayableAudio(url: string | null | undefined): boolean {
+  const trimmed = url?.trim();
+  if (!trimmed || urlLooksLikeImage(trimmed)) return false;
+  const path = trimmed.split(/[?#]/)[0]?.toLowerCase() ?? "";
+  return (
+    path.includes("/audio") ||
+    /\.(mp3|wav|m4a|aac|ogg|flac|webm)$/.test(path)
+  );
+}
+
 export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
   const id = String(img.id);
   const mediaType =
@@ -270,13 +281,20 @@ export function mapRemoteCreation(img: RemoteCreateImage): CreationUpsert {
     absolutizeAssetUrl(img.video_url || undefined, origin) ?? null;
   const audioUrl =
     absolutizeAssetUrl(img.audio_url || undefined, origin) ?? null;
+  const fileUrl =
+    absolutizeAssetUrl(optionalString(img.file_path) || undefined, origin) ??
+    null;
   // Prefer playable media URL. Cover art stays on `url` / thumbs.
   // Audio without audio_url (cover-only Suno) keeps image remoteUrl → skip download.
+  const playableAudio =
+    (audioUrl && !urlLooksLikeImage(audioUrl) ? audioUrl : null) ||
+    (looksLikePlayableAudio(fileUrl) ? fileUrl : null) ||
+    (looksLikePlayableAudio(url) ? url : null);
   const remoteUrl =
     (mediaType === "video"
       ? videoUrl || url
       : mediaType === "audio"
-        ? audioUrl || url
+        ? playableAudio || url
         : url || videoUrl) ?? null;
   const filename = optionalString(img.filename);
   const title =

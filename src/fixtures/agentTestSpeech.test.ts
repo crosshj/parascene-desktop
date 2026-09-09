@@ -110,8 +110,9 @@ describe("agent test speech fixture", () => {
       join(process.cwd(), "integration/teardown.ts"),
       "utf8",
     );
-    expect(teardownSrc.indexOf('invokeOk(agent, "project.delete"')).toBeLessThan(
-      teardownSrc.indexOf('invokeOk(agent, "cloud.delete"'),
+    expect(teardownSrc).toContain("leftoverProjectsFromState");
+    expect(teardownSrc.indexOf('invokeSweep(agent, "project.delete"')).toBeLessThan(
+      teardownSrc.indexOf('invokeSweep(agent, "cloud.delete"'),
     );
     expect(AGENT_TEST_STILL_MODEL).toBe("xai/grok-imagine-image");
     expect(AGENT_TEST_A2V_MODEL).toBe("ltx_a2v");

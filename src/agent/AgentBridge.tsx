@@ -50,6 +50,7 @@ import {
 } from "./projectAssetOps";
 import { runAgentAudio, runAgentTimelinePlace } from "./runAgentAudio";
 import { runAgentA2v, waitForLocalPath } from "./runAgentA2v";
+import { runAgentPublisherRender } from "./runAgentRender";
 import {
   deleteCreationViaService,
   getRemoteCreation,
@@ -156,6 +157,8 @@ function watchHoldMs(action: string): number {
       return 3200;
     case "timeline.place":
       return 1800;
+    case "publisher.render":
+      return 2200;
     case "library.import":
       return 1800;
     case "cloud.delete":
@@ -814,6 +817,20 @@ async function runAction(
         startSec: argNumber(args, "startSec"),
       });
       showProject(ctx.shell, "editor");
+      return { ...result, projectId };
+    }
+    case "publisher.render": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const projectId =
+        argString(args, "projectId") || ctx.shell.openProjectId || "";
+      if (!projectId) throw new Error("publisher.render needs an open project");
+      showProject(ctx.shell, "hook");
+      await sleep(400);
+      const result = await runAgentPublisherRender({
+        shell: ctx.shell,
+        projectId,
+      });
+      showProject(ctx.shell, "hook");
       return { ...result, projectId };
     }
     case "cloud.delete": {

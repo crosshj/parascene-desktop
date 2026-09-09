@@ -31,7 +31,7 @@ describe("previewIntent catalog", () => {
     expect(SELECTION_INTENT_MODES.some((m) => m.id === "slideshow")).toBe(true);
   });
 
-  it("wires Replicate speech and music; other servers stay coming soon", () => {
+  it("wires Parascene and Replicate speech and music; Direct to Blue stays coming soon", () => {
     expect(
       serversForIntent("text_to_music").find((c) => c.server === "replicate")
         ?.status,
@@ -41,15 +41,21 @@ describe("previewIntent catalog", () => {
         ?.status,
     ).toBe("wired");
     expect(
-      serversForIntent("text_to_music")
-        .filter((c) => c.server !== "replicate")
-        .every((c) => c.status === "coming_soon"),
-    ).toBe(true);
+      serversForIntent("text_to_music").find((c) => c.server === "parascene_blue")
+        ?.status,
+    ).toBe("wired");
     expect(
-      serversForIntent("text_to_speech")
-        .filter((c) => c.server !== "replicate")
-        .every((c) => c.status === "coming_soon"),
-    ).toBe(true);
+      serversForIntent("text_to_speech").find((c) => c.server === "parascene_blue")
+        ?.status,
+    ).toBe("wired");
+    expect(
+      serversForIntent("text_to_music").find((c) => c.server === "blue_direct")
+        ?.status,
+    ).toBe("coming_soon");
+    expect(
+      serversForIntent("text_to_speech").find((c) => c.server === "blue_direct")
+        ?.status,
+    ).toBe("coming_soon");
   });
 
   it("uses destination policy for placement vs assets", () => {
@@ -196,7 +202,9 @@ describe("previewIntent catalog", () => {
       addAssetIntentAllowsLibraryGeneration(
         makeAddAssetIntent("text_to_speech", "parascene_blue"),
       ),
-    ).toBe(false);
+    ).toBe(true);
+    expect(isIntentServerWired("text_to_speech", "parascene_blue")).toBe(true);
+    expect(isIntentServerWired("text_to_music", "parascene_blue")).toBe(true);
     expect(isIntentServerWired("text_to_speech", "replicate")).toBe(true);
     expect(isIntentServerWired("text_to_music", "replicate")).toBe(true);
   });

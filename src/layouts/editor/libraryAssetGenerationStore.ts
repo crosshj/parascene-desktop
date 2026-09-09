@@ -1115,6 +1115,7 @@ async function stampLocalAudioProvenance(opts: {
   prompt: string;
   model: string;
   intentId: "text_to_speech" | "text_to_music";
+  server?: "replicate" | "parascene_blue";
   extras?: ReplicateAudioGenerateExtras;
 }): Promise<void> {
   try {
@@ -1127,6 +1128,7 @@ async function stampLocalAudioProvenance(opts: {
           creationId: opts.creationId,
           model: opts.model,
           intentId: opts.intentId,
+          server: opts.server,
           extras: opts.extras,
         }),
       ),
@@ -1368,6 +1370,7 @@ async function runLibraryParasceneAudio(
       prompt: opts.prompt,
       model: opts.modelId,
       intentId: opts.intentId,
+      server: "parascene_blue",
       extras,
     });
     await finishLibraryTextToImagePlaceholder({
@@ -1511,6 +1514,7 @@ async function runLibraryParasceneVoiceTrain(
       prompt: opts.prompt,
       model: "minimax/voice-cloning",
       intentId: "text_to_speech",
+      server: "parascene_blue",
       extras: { voiceId, cloneSourceAssetId: sourceAssetId },
     });
     await finishLibraryTextToImagePlaceholder({
@@ -1925,6 +1929,8 @@ export function reconcileLibraryAssetGenerations(opts: {
                 prompt: placeholder.addAssetDraft.prompt?.trim() || "",
                 model,
                 intentId,
+                server:
+                  provider === "parascene_blue" ? "parascene_blue" : "replicate",
                 extras,
               });
             }
@@ -2011,6 +2017,7 @@ export function libraryAssetGenerationFromPlaceholder(
       creationId,
       model: placeholder.addAssetDraft.replicateModel ?? "",
       intentId,
+      server: serverRaw === "parascene_blue" ? "parascene_blue" : "replicate",
       extras: persistAudioGenerateExtras(placeholder.addAssetDraft.audioExtras),
     });
   }

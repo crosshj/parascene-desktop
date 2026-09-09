@@ -49,13 +49,15 @@ describe("audioModelChipLabel", () => {
     expect(audioModelChipLabel("google/gemini-3.1-flash-tts")).toBe("FLASH");
     expect(audioModelChipLabel("Gemini 3.1 Flash TTS")).toBe("FLASH");
     expect(audioModelChipLabel("minimax/speech-2.8-turbo")).toBe("MM SPEECH");
+    expect(audioModelChipLabel("minimax/music-2.6")).toBe("MM MUSIC");
+    expect(audioModelChipLabel("MiniMax Music 2.6")).toBe("MM MUSIC");
     expect(audioModelChipClass("LYRIA")).toBe("lyria");
     expect(audioModelChipClass("FLASH")).toBe("flash");
     expect(audioModelChipClass("MM SPEECH")).toBe("mm-speech");
+    expect(audioModelChipClass("MM MUSIC")).toBe("mm-music");
   });
 
-  it("skips music, clone, and unknown models", () => {
-    expect(audioModelChipLabel("minimax/music-2.6")).toBeNull();
+  it("skips clone and unknown models", () => {
     expect(audioModelChipLabel("minimax/voice-cloning")).toBeNull();
     expect(audioModelChipLabel("suno")).toBeNull();
     expect(audioModelChipLabel("")).toBeNull();
@@ -63,6 +65,39 @@ describe("audioModelChipLabel", () => {
 });
 
 describe("audioModelChipFromCreation", () => {
+  it("reads Flash from Parascene replicateSpeech meta without a desktop stamp", () => {
+    const creation = audioCreation(
+      JSON.stringify({
+        meta: {
+          method: "replicateSpeech",
+          server_id: 1,
+          args: {
+            model: "google/gemini-3.1-flash-tts",
+            prompt: "The night market is still open.",
+            voice: "Kore",
+          },
+        },
+      }),
+    );
+    expect(audioModelChipFromCreation(creation)).toBe("FLASH");
+  });
+
+  it("reads MiniMax Music from Parascene replicateMusic meta", () => {
+    const creation = audioCreation(
+      JSON.stringify({
+        meta: {
+          method: "replicateMusic",
+          server_id: 1,
+          args: {
+            model: "minimax/music-2.6",
+            prompt: "night market score",
+          },
+        },
+      }),
+    );
+    expect(audioModelChipFromCreation(creation)).toBe("MM MUSIC");
+  });
+
   it("reads the stamped generate model", () => {
     const upsert = creationUpsertWithAddAssetGeneration(
       audioCreation("{}"),

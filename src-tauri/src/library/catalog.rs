@@ -1,3 +1,4 @@
+use super::parascene_api::{url_has_image_extension, url_looks_like_audio};
 use super::paths::{account_root, ensure_directories, resolve_paths, ParascenePaths};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1561,6 +1562,7 @@ pub(crate) fn heal_audio_cover_local_paths(conn: &Connection) -> Result<u32, Str
                 OR lower(local_path) LIKE '%.webp'
                 OR lower(local_path) LIKE '%.gif'
                 OR lower(local_path) LIKE '%.bmp'
+                OR lower(local_path) LIKE '%.svg'
               )
             "#,
             params![now],
@@ -2012,13 +2014,19 @@ pub(crate) fn map_remote_creation_json(raw: &serde_json::Value) -> Result<Creati
         .or_else(|| derive_fit_thumbnail_url(thumbnail_url.as_deref(), url.as_deref()));
     video_url = absolutize_asset_url(video_url.as_deref(), origin);
     audio_url = absolutize_asset_url(audio_url.as_deref(), origin);
+    let file_url = absolutize_asset_url(file_path.as_deref(), origin);
 
     // Prefer playable media. Cover art stays on `url` / thumbs.
     // Audio without audio_url (cover-only Suno) keeps image remote_url → skip download.
     let remote_url = if media_type.eq_ignore_ascii_case("video") {
         video_url.clone().or_else(|| url.clone())
     } else if media_type.eq_ignore_ascii_case("audio") {
-        audio_url.clone().or_else(|| url.clone())
+        audio_url
+            .clone()
+            .filter(|u| !url_has_image_extension(u))
+            .or_else(|| file_url.clone().filter(|u| url_looks_like_audio(u)))
+            .or_else(|| url.clone().filter(|u| url_looks_like_audio(u)))
+            .or_else(|| url.clone())
     } else {
         url.clone().or_else(|| video_url.clone())
     };
@@ -3209,6 +3217,23 @@ mod tests {
         );
         let snap: serde_json::Value = serde_json::from_str(&mapped.remote_json).expect("snap");
         assert!(snap.get("audio_url").unwrap_or(&serde_json::Value::Null).is_null());
+    }
+
+    #[test]
+    fn map_remote_creation_skips_svg_audio_url_when_playable_exists() {
+        let raw = serde_json::json!({
+            "id": 28888,
+            "url": "https://www.parascene.com/static/audio-cover.svg",
+            "audio_url": "https://www.parascene.com/static/audio-cover.svg",
+            "file_path": "/api/create/images/28888/audio",
+            "media_type": "audio",
+            "created_at": "2026-09-09T00:00:00Z"
+        });
+        let mapped = map_remote_creation_json(&raw).expect("map");
+        assert_eq!(
+            mapped.remote_url.as_deref(),
+            Some("https://www.parascene.com/api/create/images/28888/audio")
+        );
     }
 
     #[test]

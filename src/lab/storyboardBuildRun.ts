@@ -42,7 +42,7 @@ export type BuildRunContext = {
   onProgress: (note: string) => void;
   onPendingCreation: (
     id: string | null,
-    mediaType?: "image" | "video" | null,
+    mediaType?: "image" | "video" | "audio" | null,
   ) => void;
 };
 

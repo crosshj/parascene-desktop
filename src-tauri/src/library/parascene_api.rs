@@ -426,7 +426,23 @@ pub fn url_looks_like_video(url: &str) -> bool {
         || path.ends_with(".m4v")
 }
 
+pub fn url_has_image_extension(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".webp")
+        || path.ends_with(".gif")
+        || path.ends_with(".avif")
+        || path.ends_with(".bmp")
+        || path.ends_with(".svg")
+}
+
 pub fn url_looks_like_audio(url: &str) -> bool {
+    if url_has_image_extension(url) {
+        return false;
+    }
     let lower = url.to_ascii_lowercase();
     let path = lower.split(['?', '#']).next().unwrap_or(&lower);
     path.contains("/audio")
@@ -442,13 +458,7 @@ pub fn url_looks_like_audio(url: &str) -> bool {
 pub fn url_looks_like_image(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     let path = lower.split(['?', '#']).next().unwrap_or(&lower);
-    path.contains("/images/")
-        || path.ends_with(".png")
-        || path.ends_with(".jpg")
-        || path.ends_with(".jpeg")
-        || path.ends_with(".webp")
-        || path.ends_with(".gif")
-        || path.ends_with(".avif")
+    path.contains("/images/") || url_has_image_extension(url)
 }
 
 fn json_url_field(value: &Value, key: &str) -> Option<String> {
@@ -494,7 +504,9 @@ pub fn output_media_url(value: &Value, kind: WaitKind) -> Option<String> {
         }
         WaitKind::Audio => {
             if let Some(url) = json_url_field(row, "audio_url") {
-                return Some(url);
+                if !url_has_image_extension(&url) {
+                    return Some(url);
+                }
             }
             for key in ["url", "file_path"] {
                 if let Some(url) = json_url_field(row, key) {
@@ -523,8 +535,9 @@ pub fn local_path_is_output(kind: WaitKind, local_path: Option<&str>, media_type
         }
         WaitKind::Image => !url_looks_like_video(path),
         WaitKind::Audio => {
-            url_looks_like_audio(path)
-                || media_type.eq_ignore_ascii_case("audio")
+            !url_has_image_extension(path)
+                && (url_looks_like_audio(path)
+                    || media_type.eq_ignore_ascii_case("audio"))
         }
     }
 }
@@ -1021,6 +1034,48 @@ mod tests {
         assert!(!wait_is_done(
             &json!({ "id": 2, "status": "" }),
             WaitKind::Video,
+        ));
+    }
+
+    #[test]
+    fn wait_audio_ignores_waveform_svg_cover() {
+        assert!(!wait_is_done(
+            &json!({
+                "id": 28888,
+                "status": "creating",
+                "media_type": "audio",
+                "url": "https://www.parascene.com/static/audio-cover.svg",
+                "audio_url": "https://www.parascene.com/static/audio-cover.svg",
+            }),
+            WaitKind::Audio,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 28888,
+                "status": "creating",
+                "media_type": "audio",
+                "url": "https://www.parascene.com/static/audio-cover.svg",
+                "audio_url": "/api/create/images/28888/audio",
+            }),
+            WaitKind::Audio,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 28888,
+                "status": "complete",
+                "file_path": "https://replicate.delivery/x/out.wav",
+            }),
+            WaitKind::Audio,
+        ));
+        assert!(!local_path_is_output(
+            WaitKind::Audio,
+            Some("/tmp/28888.svg"),
+            "audio",
+        ));
+        assert!(local_path_is_output(
+            WaitKind::Audio,
+            Some("/tmp/28888.mp3"),
+            "audio",
         ));
     }
 

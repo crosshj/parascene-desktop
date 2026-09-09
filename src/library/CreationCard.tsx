@@ -22,7 +22,6 @@ import {
 import { AudioWaveform } from "./AudioWaveform";
 import { parseCloudImport } from "./cloudImport";
 import {
-  canFetchLocal,
   creationPreviewUrl,
   isCoverOnlyCloudAv,
   isParasceneUnavailable,
@@ -299,27 +298,26 @@ export const CreationCard = memo(function CreationCard({
   const mediaType = String(creation.mediaType ?? "").trim().toLowerCase();
   const isVideo = mediaType === "video";
   const isAudio = mediaType === "audio";
-  const [audioDurationSec, setAudioDurationSec] = useState(() =>
-    isAudio ? durationSecFromCreation(creation) : null,
-  );
+  const stampedAudioDurationSec = isAudio
+    ? durationSecFromCreation(creation)
+    : null;
+  const [probedAudioDurationSec, setProbedAudioDurationSec] = useState<
+    number | null
+  >(null);
+  if (!isAudio && probedAudioDurationSec != null) {
+    setProbedAudioDurationSec(null);
+  }
   useEffect(() => {
-    if (!isAudio) {
-      setAudioDurationSec(null);
-      return;
-    }
-    const stamped = durationSecFromCreation(creation);
-    if (stamped) {
-      setAudioDurationSec(stamped);
-      return;
-    }
+    if (!isAudio || stampedAudioDurationSec) return;
     let cancelled = false;
     void probeCreationAudioDuration(creation).then((sec) => {
-      if (!cancelled) setAudioDurationSec(sec);
+      if (!cancelled) setProbedAudioDurationSec(sec);
     });
     return () => {
       cancelled = true;
     };
-  }, [isAudio, creation.id, creation.remoteJson, creation.localPath, creation.updatedAt]);
+  }, [isAudio, stampedAudioDurationSec, creation]);
+  const audioDurationSec = stampedAudioDurationSec ?? probedAudioDurationSec;
   const durationChip = isAudio
     ? formatAudioDurationChip(audioDurationSec ?? 0)
     : null;
@@ -354,12 +352,8 @@ export const CreationCard = memo(function CreationCard({
   }, [preview]);
 
   const showImage = Boolean(paintSrc && paintSrc === preview);
-  // Audio rarely has a bitmap thumb — waveform once local (or disk-only import).
-  const showAudio =
-    isAudio &&
-    !showImage &&
-    !unavailable &&
-    (Boolean(creation.localPath) || !canFetchLocal(creation));
+  // Waveform when there is no bitmap cover (disk import, or Parascene SVG skipped).
+  const showAudio = isAudio && !showImage && !unavailable;
   const showPending =
     !showAudio && (waitingOnDisk || (Boolean(preview) && !showImage));
 

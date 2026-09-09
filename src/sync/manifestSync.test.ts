@@ -196,6 +196,20 @@ describe("manifestSync", () => {
     );
   });
 
+  it("prefers playable file_path when audio_url is a waveform SVG cover", () => {
+    const mapped = mapRemoteCreation({
+      id: 28888,
+      url: "https://www.parascene.com/static/audio-cover.svg",
+      audio_url: "https://www.parascene.com/static/audio-cover.svg",
+      file_path: "/api/create/images/28888/audio",
+      media_type: "audio",
+      created_at: "2026-09-09T00:00:00Z",
+    });
+    expect(mapped.remoteUrl).toBe(
+      "https://www.parascene.com/api/create/images/28888/audio",
+    );
+  });
+
   it("keeps cover-only audio remoteUrl as image when audio_url is missing", () => {
     const mapped = mapRemoteCreation({
       id: 99,

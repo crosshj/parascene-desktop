@@ -49,12 +49,14 @@ Legend: ✅ live · ⏳ coming soon · — not applicable
 - [ ] Replicate (`minimax/h3` not in Lab catalog)
 
 ### Text to Music
-- [ ] All servers
-- [ ] Generate to Assets (— assets only, nothing wired)
+- [x] Generate to Assets — Parascene (`replicateMusic`)
+- [ ] Blue Direct (`coming_soon`)
+- [x] Replicate (BYO / Lab)
 
 ### Text to Speech
-- [ ] All servers
-- [ ] Generate to Assets (— assets only, nothing wired)
+- [x] Generate to Assets — Parascene (`replicateSpeech`)
+- [ ] Blue Direct (`coming_soon`)
+- [x] Replicate (BYO / Lab)
 
 ## Cross-cutting gaps
 
@@ -64,6 +66,6 @@ Legend: ✅ live · ⏳ coming soon · — not applicable
 - [ ] Replicate Audio to Video
 - [ ] I2I on Blue Direct and Replicate
 - [ ] V2V / Refs to Video on Replicate (`minimax/h3` missing from Lab catalog)
-- [ ] Music / Speech (not in product server caps)
+- [x] Music / Speech on Parascene server 1 (`replicateSpeech` / `replicateMusic`)
 - [x] Wire server 1 `replicate` / `replicatePro` / `pixelLabImage` on Parascene stills
 - [x] Wire server 6 native `text2image` / `image2image` (Parascene Blue stills via credits)

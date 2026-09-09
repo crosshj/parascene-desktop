@@ -56,6 +56,16 @@ export type UseReplicateAudioFormOpts = {
   audioAssets?: ProjectAsset[];
 };
 
+/** Replicate models have `inputs`. Parascene models have `fields` only. */
+export function replicateSchemaVoiceField(
+  selected:
+    | { inputs?: Array<{ name: string; enumValues?: string[] | null }> }
+    | null
+    | undefined,
+): { name: string; enumValues?: string[] | null } | undefined {
+  return selected?.inputs?.find((field) => field.name === "voice");
+}
+
 function extrasToFormValues(
   extras?: ReplicateAudioGenerateExtras,
 ): Record<string, string> {
@@ -179,27 +189,34 @@ export function useReplicateAudioForm(
     null,
   );
   const [doneLocked, setDoneLocked] = useState(false);
-
-  useEffect(() => {
-    if (isParascene) {
+  const replicateLoadKey = isParascene ? "parascene" : `replicate:${intentId}`;
+  const [appliedReplicateLoadKey, setAppliedReplicateLoadKey] =
+    useState(replicateLoadKey);
+  if (replicateLoadKey !== appliedReplicateLoadKey) {
+    setAppliedReplicateLoadKey(replicateLoadKey);
+    if (!isParascene) {
+      setModels(null);
       setModelsError(null);
-      setModels([]);
-      setModelId((prev) => {
-        const preferred = initialModelId?.trim() || prev;
-        if (preferred && parasceneModels.some((m) => m.id === preferred)) {
-          return preferred;
-        }
-        const gemini = parasceneModels.find((m) => /gemini/i.test(m.id));
-        const lyria = parasceneModels.find((m) => /lyria/i.test(m.id));
-        return (intentId === "text_to_speech" ? gemini : lyria)?.id
+    }
+  }
+
+  if (isParascene) {
+    const preferred = initialModelId?.trim() || modelId;
+    const next =
+      preferred && parasceneModels.some((m) => m.id === preferred)
+        ? preferred
+        : (intentId === "text_to_speech"
+            ? parasceneModels.find((m) => /gemini/i.test(m.id))
+            : parasceneModels.find((m) => /lyria/i.test(m.id)))?.id
           ?? parasceneModels[0]?.id
           ?? null;
-      });
-      return;
-    }
+    if (next !== modelId) setModelId(next);
+    if (modelsError) setModelsError(null);
+  }
+
+  useEffect(() => {
+    if (isParascene) return;
     let cancelled = false;
-    setModels(null);
-    setModelsError(null);
     void loadCuratedReplicateAudioModels(intentId)
       .then((rows) => {
         if (cancelled) return;
@@ -214,7 +231,7 @@ export function useReplicateAudioForm(
     return () => {
       cancelled = true;
     };
-  }, [intentId, initialModelId, isParascene, parasceneModels]);
+  }, [intentId, initialModelId, isParascene]);
 
   const selectedParascene =
     parasceneModels.find((m) => m.id === modelId) ?? null;
@@ -240,15 +257,18 @@ export function useReplicateAudioForm(
     [],
   );
 
-  const geminiVoiceField = selected?.inputs.find((f) => f.name === "voice");
-  const geminiVoices = useMemo(() => {
-    const ids = geminiVoiceField?.enumValues?.filter(Boolean) ?? [];
-    const source = ids.length > 0 ? ids : GEMINI_SYSTEM_VOICES.map((v) => v.voiceId);
-    return source.map((id) => ({
-      id,
-      label: geminiSystemVoiceLabel(id),
-    }));
-  }, [geminiVoiceField?.enumValues]);
+  const geminiVoiceField = replicateSchemaVoiceField(
+    selected && "inputs" in selected ? selected : null,
+  );
+  const geminiVoiceIds = (geminiVoiceField?.enumValues ?? []).filter(Boolean);
+  const geminiVoices = (
+    geminiVoiceIds.length > 0
+      ? geminiVoiceIds
+      : GEMINI_SYSTEM_VOICES.map((voice) => voice.voiceId)
+  ).map((id) => ({
+    id,
+    label: geminiSystemVoiceLabel(id),
+  }));
 
   const formSeedKey = `${initialPrompt}\0${initialModelId ?? ""}\0${JSON.stringify(initialExtras ?? {})}`;
   const [appliedFormSeedKey, setAppliedFormSeedKey] = useState(formSeedKey);
@@ -264,17 +284,8 @@ export function useReplicateAudioForm(
     ? project.libraryAssetPlaceholders?.[trackedPlaceholderId]?.status
     : undefined;
   const generateRunning =
-    running || placeholderStatus === "generating";
-
-  useEffect(() => {
-    if (!trackedPlaceholderId) return;
-    if (placeholderStatus && placeholderStatus !== "generating") {
-      setRunning(false);
-    }
-    if (!placeholderStatus && startedPlaceholderId) {
-      setRunning(false);
-    }
-  }, [placeholderStatus, startedPlaceholderId, trackedPlaceholderId]);
+    placeholderStatus === "generating" ||
+    (running && placeholderStatus == null && !startedPlaceholderId);
 
   const formModels = isParascene ? parasceneModels : models;
   const speechMaxChars = isSpeech ? parasceneSpeechPromptMaxChars() : undefined;

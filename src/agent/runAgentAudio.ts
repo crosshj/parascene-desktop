@@ -1,4 +1,4 @@
-import { getCreation } from "../library/catalogClient";
+import { cacheMissingMedia, getCreation } from "../library/catalogClient";
 import { audioWaveformPeaks } from "../lab/audioTools";
 import { requestOpenNewAsset } from "../layouts/editor/addAssetEvents";
 import { formatStagedDuration } from "../layouts/editor/stagedClip";
@@ -70,9 +70,14 @@ export async function runAgentAudio(opts: {
     };
   }
 
+  const model = opts.model.trim();
+  if (/voice-cloning|voice_train|voicetrain|replicatevoicetrain/i.test(model)) {
+    throw new Error("generation.audio refuses voice train / voice cloning");
+  }
+
   const args: Record<string, unknown> = {
     prompt: opts.prompt,
-    model: opts.model,
+    model,
   };
   const voice = opts.voice?.trim();
   if (voice) args.voice = voice;
@@ -87,7 +92,7 @@ export async function runAgentAudio(opts: {
     args,
     mediaType: "audio",
     intent: opts.intent,
-    label: opts.model,
+    label: model,
   });
 
   if (result.creationId) {
@@ -101,9 +106,30 @@ export async function runAgentAudio(opts: {
   window.dispatchEvent(new CustomEvent("parascene-library-reload"));
   await settleEditorForHelpShot(shell);
 
-  const localPath = result.creationId
-    ? await waitForLocalPath(result.creationId, 60_000)
+  let localPath = result.creationId
+    ? await waitForLocalPath(result.creationId, 60_000, "audio")
     : null;
+
+  if (result.creationId && !localPath) {
+    // Generate files the catalog row; Sync media is how a person pulls the file.
+    shell.setPrimaryTab("library");
+    shell.setLibrarySurface("sync");
+    await sleep(400);
+    await cacheMissingMedia();
+    localPath = await waitForLocalPath(result.creationId, 180_000, "audio");
+    shell.setPrimaryTab("project");
+    shell.setMode("editor");
+    await settleEditorForHelpShot(shell);
+  }
+
+  if (result.creationId && !localPath) {
+    const row = await getCreation(result.creationId).catch(() => null);
+    throw new Error(
+      `generation.audio finished ${result.creationId} without a local file` +
+        ` (downloadState=${row?.downloadState ?? "missing"},` +
+        ` remoteUrl=${row?.remoteUrl ?? "none"})`,
+    );
+  }
 
   return {
     creationId: result.creationId,

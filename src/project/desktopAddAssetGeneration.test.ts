@@ -359,6 +359,55 @@ describe("deriveAddAssetGenerationFromParasceneMeta", () => {
     });
   });
 
+  it("derives replicateSpeech with voice extras", () => {
+    const creation = baseCreation(
+      parasceneRemoteJson({
+        method: "replicateSpeech",
+        server_id: 1,
+        server_name: "Parascene",
+        completed_at: "2026-09-09T18:00:00.000Z",
+        args: {
+          model: "google/gemini-3.1-flash-tts",
+          prompt: "The night market is still open.",
+          voice: "Kore",
+          style: "warm studio",
+        },
+      }),
+    );
+    creation.mediaType = "audio";
+    const derived = deriveAddAssetGenerationFromParasceneMeta(creation);
+    expect(derived).toMatchObject({
+      prompt: "The night market is still open.",
+      intentId: "text_to_speech",
+      methodId: "text_to_speech",
+      model: "google/gemini-3.1-flash-tts",
+      server: "parascene_blue",
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+    });
+  });
+
+  it("derives replicateMusic from Parascene meta.args", () => {
+    const creation = baseCreation(
+      parasceneRemoteJson({
+        method: "replicateMusic",
+        server_id: 1,
+        args: {
+          model: "google/lyria-3",
+          prompt: "dramatic night market score",
+        },
+      }),
+    );
+    creation.mediaType = "audio";
+    expect(deriveAddAssetGenerationFromParasceneMeta(creation)).toMatchObject({
+      intentId: "text_to_music",
+      methodId: "text_to_music",
+      model: "google/lyria-3",
+      prompt: "dramatic night market score",
+    });
+  });
+
   it("skips uploadImage even when a prompt column exists", () => {
     const creation = baseCreation(
       parasceneRemoteJson({

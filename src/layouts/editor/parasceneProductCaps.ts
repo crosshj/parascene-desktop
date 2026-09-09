@@ -99,7 +99,7 @@ type ProductCapsFile = {
   >;
 };
 
-const CAPS = productCaps as ProductCapsFile;
+const CAPS = productCaps as unknown as ProductCapsFile;
 
 /** Product lane servers (1 + 6) in caps snapshot order. */
 export function productCapsServerIds(): ParasceneProductServerId[] {
@@ -481,21 +481,23 @@ export function parasceneAudioModelsForIntent(
     intentId === "text_to_speech" ? "replicateSpeech" : "replicateMusic";
   const def = serverCaps(1)?.methods?.[method];
   const opts = def?.fields?.model?.options ?? [];
-  return opts
-    .map((opt) => {
-      const value = String(opt.value ?? "").trim();
-      if (!value) return null;
-      return {
-        id: value,
-        value,
-        label: String(opt.label ?? value).trim(),
-        hint: typeof opt.hint === "string" && opt.hint.trim() ? opt.hint.trim() : undefined,
-        method,
-        serverId: 1 as const,
-        fields: opt.fields ?? {},
-      } satisfies ParasceneAudioModelOption;
-    })
-    .filter((m): m is ParasceneAudioModelOption => m !== null);
+  const models: ParasceneAudioModelOption[] = [];
+  for (const opt of opts) {
+    const value = String(opt.value ?? "").trim();
+    if (!value) continue;
+    const hint =
+      typeof opt.hint === "string" && opt.hint.trim() ? opt.hint.trim() : undefined;
+    models.push({
+      id: value,
+      value,
+      label: String(opt.label ?? value).trim(),
+      hint,
+      method,
+      serverId: 1,
+      fields: opt.fields ?? {},
+    });
+  }
+  return models;
 }
 
 export function parasceneResolveAudioModel(

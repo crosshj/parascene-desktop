@@ -734,14 +734,20 @@ fn path_extension(path: &Path) -> Option<String> {
 fn is_image_media_path(path: &Path) -> bool {
     matches!(
         path_extension(path).as_deref(),
-        Some("png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "heic" | "avif")
+        Some(
+            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "heic" | "avif"
+                | "svg"
+        )
     )
 }
 
 fn is_audio_media_path(path: &Path) -> bool {
     matches!(
         path_extension(path).as_deref(),
-        Some("mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "oga" | "opus" | "aiff" | "aif")
+        Some(
+            "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "oga" | "opus" | "aiff" | "aif"
+                | "mp4" | "webm" | "m4v" | "mov"
+        )
     )
 }
 

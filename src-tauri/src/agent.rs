@@ -221,6 +221,12 @@ fn actions() -> Vec<AgentAction> {
             summary: "Drop an audio asset on Editor A1 or A2".into(),
         },
         AgentAction {
+            id: "publisher.render".into(),
+            scope: "publisher".into(),
+            status: "wired".into(),
+            summary: "Render the open project timeline on Publisher".into(),
+        },
+        AgentAction {
             id: "library.import".into(),
             scope: "library".into(),
             status: "wired".into(),
@@ -315,7 +321,7 @@ fn ui_timeout_for(action: &str) -> Duration {
     match action {
         "sync.thumbs" => Duration::from_secs(6 * 60),
         "sync.media" => Duration::from_secs(15 * 60),
-        "generation.start" | "generation.a2v" | "generation.audio" => {
+        "generation.start" | "generation.a2v" | "generation.audio" | "publisher.render" => {
             Duration::from_secs(12 * 60)
         }
         "cloud.delete" | "project.delete" | "project.create"
@@ -408,6 +414,7 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         | "generation.a2v"
         | "generation.audio"
         | "timeline.place"
+        | "publisher.render"
         | "library.import"
         | "sync.start"
         | "sync.folders"
@@ -685,6 +692,7 @@ mod tests {
         assert!(actions().iter().any(|a| a.id == "generation.a2v" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "generation.audio" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "timeline.place" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "publisher.render" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.import" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "project.create" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.clearLocal" && a.status == "wired"));

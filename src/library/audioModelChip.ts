@@ -1,13 +1,14 @@
-import { addAssetGenerationFromCreation } from "../project/desktopAddAssetGeneration";
+import { resolveAddAssetGenerationFromCreation } from "../project/desktopAddAssetGeneration";
 import type { Creation } from "./types";
 
-export type AudioModelChipLabel = "LYRIA" | "FLASH" | "MM SPEECH";
+export type AudioModelChipLabel = "LYRIA" | "FLASH" | "MM SPEECH" | "MM MUSIC";
 
 export function audioModelChipClass(
   label: AudioModelChipLabel,
-): "lyria" | "flash" | "mm-speech" {
+): "lyria" | "flash" | "mm-speech" | "mm-music" {
   if (label === "LYRIA") return "lyria";
   if (label === "FLASH") return "flash";
+  if (label === "MM MUSIC") return "mm-music";
   return "mm-speech";
 }
 
@@ -17,23 +18,29 @@ export function audioModelChipLabel(
 ): AudioModelChipLabel | null {
   const needle = model?.trim().toLowerCase() ?? "";
   if (!needle) return null;
+  if (/clon/.test(needle)) return null;
   if (/lyria/.test(needle)) return "LYRIA";
   if (/flash/.test(needle)) return "FLASH";
-  if (/clon/.test(needle) || /music/.test(needle)) return null;
+  if (/music-2\.6/.test(needle) || (/minimax/.test(needle) && /music/.test(needle))) {
+    return "MM MUSIC";
+  }
   if (/speech-2\.8/.test(needle)) return "MM SPEECH";
   if (/minimax/.test(needle) && /speech/.test(needle)) return "MM SPEECH";
   return null;
 }
 
 export function audioModelChipFromCreation(
-  creation: Pick<Creation, "remoteJson" | "mediaType"> | null | undefined,
+  creation:
+    | Pick<Creation, "id" | "remoteJson" | "prompt" | "createdAt" | "mediaType">
+    | null
+    | undefined,
 ): AudioModelChipLabel | null {
   const kind = String(creation?.mediaType ?? "")
     .trim()
     .toLowerCase();
   if (kind && kind !== "audio") return null;
   return audioModelChipLabel(
-    addAssetGenerationFromCreation(creation)?.model,
+    resolveAddAssetGenerationFromCreation(creation)?.model,
   );
 }
 

@@ -61,6 +61,7 @@ describe("help lightbox", () => {
       "generate.html",
       "audio.html",
       "image-models.html",
+      "audio-models.html",
       "video-models.html",
       "getting-started.html",
       "settings.html",

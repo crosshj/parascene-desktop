@@ -1,24 +1,28 @@
 import { existsSync, statSync } from "node:fs";
-import { afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { invokeOk, loadAgentManifest, requireSignedIn } from "./agentClient";
-import { captureHelpScreen, publishHelpAudio } from "./helpArtifacts";
+import { captureHelpScreen, publishHelpAudio, syncHelpFileList } from "./helpArtifacts";
+import { assertRenderProofWindows } from "./probeRenderAudio";
 import { sweepTestCreations } from "./teardown";
+import {
+  dualTrackProofLayout,
+  proofWindows,
+} from "../src/agent/renderAudioProof";
 import {
   AGENT_TEST_AUDIO_PROJECT_PREFIX,
   AGENT_TEST_EDITOR_AUDIO_GENERATE_PROMPT_SCREEN,
   AGENT_TEST_EDITOR_AUDIO_GENERATE_RESULT_SCREEN,
   AGENT_TEST_EDITOR_AUDIO_GENERATE_TIMELINE_SCREEN,
-  AGENT_TEST_MUSIC_MODEL,
-  AGENT_TEST_MUSIC_PATH,
-  AGENT_TEST_MUSIC_PROMPT,
-  AGENT_TEST_SPEAKER_ONE_LINE,
-  AGENT_TEST_SPEAKER_ONE_PATH,
-  AGENT_TEST_SPEAKER_ONE_VOICE,
-  AGENT_TEST_SPEAKER_TWO_LINE,
-  AGENT_TEST_SPEAKER_TWO_PATH,
-  AGENT_TEST_SPEAKER_TWO_VOICE,
+  AGENT_TEST_FLASH_TTS_PATH,
+  AGENT_TEST_RENDER_GAP_SEC,
+  AGENT_TEST_SPEAKER_LINE,
+  AGENT_TEST_SPEAKER_VOICE,
   AGENT_TEST_SPEECH_MODEL,
 } from "../src/fixtures/agentTestAudioGenerate";
+import {
+  AGENT_TEST_SPEECH_DURATION_SEC,
+  AGENT_TEST_SPEECH_PATH,
+} from "../src/fixtures/agentTestSpeech";
 
 type ProjectCreateResult = {
   projectId?: string;
@@ -32,32 +36,56 @@ type AudioGenerateResult = {
   staged?: boolean;
 };
 
+type ImportResult = {
+  creations?: Array<{ id?: string; localPath?: string | null }>;
+};
+
+type TimelinePlaceResult = {
+  clipId?: string;
+  assetId?: string;
+  audioTrack?: number;
+  startSec?: number;
+  endSec?: number;
+};
+
+type PublisherRenderResult = {
+  renderId?: string;
+  path?: string | null;
+  durationSec?: number;
+  status?: string;
+};
+
 const stamp = Date.now();
 const title = `${AGENT_TEST_AUDIO_PROJECT_PREFIX}${stamp}`;
 let projectId = "";
 let folderId = "";
-let speakerOneId = "";
-let speakerTwoId = "";
-let musicId = "";
+let flashId = "";
+let speechId = "";
+
+function sweepThisSuite() {
+  return {
+    ids: [flashId, speechId],
+    titleContains: [AGENT_TEST_AUDIO_PROJECT_PREFIX],
+    pathContains: ["agent-test-speech"],
+    promptContains: [AGENT_TEST_SPEAKER_LINE],
+    projectId,
+    folderId,
+  };
+}
 
 describe("agent audio generate", () => {
+  beforeAll(async () => {
+    const agent = await loadAgentManifest();
+    await sweepTestCreations(agent, sweepThisSuite());
+  }, 120_000);
+
   afterAll(async () => {
     const agent = await loadAgentManifest();
-    await sweepTestCreations(agent, {
-      ids: [speakerOneId, speakerTwoId, musicId],
-      titleContains: [AGENT_TEST_AUDIO_PROJECT_PREFIX],
-      promptContains: [
-        AGENT_TEST_SPEAKER_ONE_LINE,
-        AGENT_TEST_SPEAKER_TWO_LINE,
-        AGENT_TEST_MUSIC_PROMPT,
-      ],
-      projectId,
-      folderId,
-    });
+    await sweepTestCreations(agent, sweepThisSuite());
   }, 120_000);
 
   it(
-    "creates a project with two speakers and background music on A1/A2",
+    "generates Flash TTS, places imported speech on A2 after a gap, and proves both tracks in the Publisher mix",
     async () => {
       const agent = await loadAgentManifest();
       await requireSignedIn(agent);
@@ -75,87 +103,115 @@ describe("agent audio generate", () => {
       const form = await invokeOk<AudioGenerateResult>(agent, "generation.audio", {
         projectId,
         intent: "text_to_speech",
-        prompt: AGENT_TEST_SPEAKER_ONE_LINE,
+        prompt: AGENT_TEST_SPEAKER_LINE,
         model: AGENT_TEST_SPEECH_MODEL,
-        voice: AGENT_TEST_SPEAKER_ONE_VOICE,
+        voice: AGENT_TEST_SPEAKER_VOICE,
         generate: false,
       });
       expect(form.staged).toBe(true);
       await invokeOk(agent, "window.setSize", { width: 1280, height: 900 });
-      await captureHelpScreen(AGENT_TEST_EDITOR_AUDIO_GENERATE_PROMPT_SCREEN);
-
-      const speakerOne = await invokeOk<AudioGenerateResult>(
-        agent,
-        "generation.audio",
-        {
-          projectId,
-          intent: "text_to_speech",
-          prompt: AGENT_TEST_SPEAKER_ONE_LINE,
-          model: AGENT_TEST_SPEECH_MODEL,
-          voice: AGENT_TEST_SPEAKER_ONE_VOICE,
-        },
-      );
-      speakerOneId = speakerOne.creationId ?? "";
-      expect(speakerOneId).toBeTruthy();
-      expect(speakerOne.localPath).toBeTruthy();
-
-      const speakerTwo = await invokeOk<AudioGenerateResult>(
-        agent,
-        "generation.audio",
-        {
-          projectId,
-          intent: "text_to_speech",
-          prompt: AGENT_TEST_SPEAKER_TWO_LINE,
-          model: AGENT_TEST_SPEECH_MODEL,
-          voice: AGENT_TEST_SPEAKER_TWO_VOICE,
-        },
-      );
-      speakerTwoId = speakerTwo.creationId ?? "";
-      expect(speakerTwoId).toBeTruthy();
-      expect(speakerTwo.localPath).toBeTruthy();
-      expect(speakerTwoId).not.toBe(speakerOneId);
-
-      const music = await invokeOk<AudioGenerateResult>(agent, "generation.audio", {
-        projectId,
-        intent: "text_to_music",
-        prompt: AGENT_TEST_MUSIC_PROMPT,
-        model: AGENT_TEST_MUSIC_MODEL,
+      await captureHelpScreen(AGENT_TEST_EDITOR_AUDIO_GENERATE_PROMPT_SCREEN, {
+        keepUi: true,
       });
-      musicId = music.creationId ?? "";
-      expect(musicId).toBeTruthy();
-      expect(music.localPath).toBeTruthy();
+
+      const flash = await invokeOk<AudioGenerateResult>(
+        agent,
+        "generation.audio",
+        {
+          projectId,
+          intent: "text_to_speech",
+          prompt: AGENT_TEST_SPEAKER_LINE,
+          model: AGENT_TEST_SPEECH_MODEL,
+          voice: AGENT_TEST_SPEAKER_VOICE,
+        },
+      );
+      flashId = flash.creationId ?? "";
+      expect(flashId).toBeTruthy();
+      expect(flash.localPath).toBeTruthy();
+
+      const imported = await invokeOk<ImportResult>(agent, "library.import", {
+        projectId,
+        paths: [AGENT_TEST_SPEECH_PATH],
+      });
+      speechId = imported.creations?.[0]?.id ?? "";
+      expect(speechId).toBeTruthy();
+      expect(speechId).not.toBe(flashId);
 
       await invokeOk(agent, "shell.show", { mode: "editor" });
       await invokeOk(agent, "window.setSize", { width: 1280, height: 900 });
       await captureHelpScreen(AGENT_TEST_EDITOR_AUDIO_GENERATE_RESULT_SCREEN);
 
-      await invokeOk(agent, "timeline.place", {
-        projectId,
-        assetId: speakerOneId,
-        audioTrack: 1,
+      const flashClip = await invokeOk<TimelinePlaceResult>(
+        agent,
+        "timeline.place",
+        {
+          projectId,
+          assetId: flashId,
+          audioTrack: 1,
+          startSec: 0,
+        },
+      );
+      expect(flashClip.audioTrack).toBe(1);
+      expect(flashClip.startSec).toBe(0);
+      const flashDurationSec = (flashClip.endSec ?? 0) - (flashClip.startSec ?? 0);
+      expect(flashDurationSec).toBeGreaterThan(1.2);
+
+      const layout = dualTrackProofLayout({
+        flashDurationSec,
+        speechDurationSec: AGENT_TEST_SPEECH_DURATION_SEC,
+        gapSec: AGENT_TEST_RENDER_GAP_SEC,
       });
-      await invokeOk(agent, "timeline.place", {
-        projectId,
-        assetId: speakerTwoId,
-        audioTrack: 1,
-      });
-      await invokeOk(agent, "timeline.place", {
-        projectId,
-        assetId: musicId,
-        audioTrack: 2,
-      });
+
+      const speechClip = await invokeOk<TimelinePlaceResult>(
+        agent,
+        "timeline.place",
+        {
+          projectId,
+          assetId: speechId,
+          audioTrack: 2,
+          startSec: layout.speech.startSec,
+        },
+      );
+      expect(speechClip.audioTrack).toBe(2);
+      expect(speechClip.startSec).toBeCloseTo(layout.speech.startSec, 2);
+      expect((speechClip.endSec ?? 0) - (speechClip.startSec ?? 0)).toBeGreaterThan(
+        2,
+      );
+
       await invokeOk(agent, "window.setSize", { width: 1280, height: 900 });
       await captureHelpScreen(AGENT_TEST_EDITOR_AUDIO_GENERATE_TIMELINE_SCREEN);
 
-      const published = await Promise.all([
-        publishHelpAudio(speakerOne.localPath!, AGENT_TEST_SPEAKER_ONE_PATH),
-        publishHelpAudio(speakerTwo.localPath!, AGENT_TEST_SPEAKER_TWO_PATH),
-        publishHelpAudio(music.localPath!, AGENT_TEST_MUSIC_PATH),
+      const render = await invokeOk<PublisherRenderResult>(
+        agent,
+        "publisher.render",
+        { projectId },
+      );
+      expect(render.status).toBe("ready");
+      expect(render.renderId).toBeTruthy();
+      expect(render.path && existsSync(render.path)).toBe(true);
+      expect(render.durationSec ?? 0).toBeGreaterThan(layout.speech.startSec + 2);
+
+      const windows = proofWindows({
+        ...layout,
+        speech: {
+          startSec: speechClip.startSec ?? layout.speech.startSec,
+          endSec: speechClip.endSec ?? layout.speech.endSec,
+        },
+      });
+      expect(windows.map((window) => window.expect)).toEqual([
+        "audio",
+        "silence",
+        "audio",
       ]);
-      for (const path of published) {
-        expect(existsSync(path)).toBe(true);
-        expect(statSync(path).size).toBeGreaterThan(1000);
-      }
+      await assertRenderProofWindows(render.path!, windows);
+
+      const published = await publishHelpAudio(
+        flash.localPath!,
+        AGENT_TEST_FLASH_TTS_PATH,
+      );
+      expect(existsSync(published)).toBe(true);
+      expect(statSync(published).size).toBeGreaterThan(1000);
+      await syncHelpFileList();
     },
     20 * 60_000,
   );

@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canFetchLocal,
   creationDetailUrl,
+  creationPreviewUrl,
   hasLocalMedia,
   isParasceneUnavailable,
+  isPlaceholderAudioCover,
   isPlayableLocalPath,
   parascenePublicImageUrl,
+  urlLooksLikeImage,
   withPreviewCacheBust,
 } from "./previewUrl";
 import type { Creation } from "./types";
@@ -97,6 +100,19 @@ describe("creationDetailUrl", () => {
     expect(image).toMatch(/^asset:\/\//);
   });
 
+  it("treats audio-in-mp4 as playable and SVG covers as not", () => {
+    expect(isPlayableLocalPath("/Library/media/28888.mp4", "audio")).toBe(true);
+    expect(isPlayableLocalPath("/Library/media/28888.svg", "audio")).toBe(false);
+    expect(
+      urlLooksLikeImage("https://www.parascene.com/static/audio-cover.svg"),
+    ).toBe(true);
+    expect(
+      isPlaceholderAudioCover("https://www.parascene.com/static/audio-cover.svg"),
+    ).toBe(true);
+    expect(isPlaceholderAudioCover("/Library/thumbs/28888_abcd.svg")).toBe(true);
+    expect(isPlaceholderAudioCover("/Library/thumbs/20794.png")).toBe(false);
+  });
+
   it("rejects cover PNGs stored as audio local_path", () => {
     expect(
       isPlayableLocalPath(
@@ -124,6 +140,53 @@ describe("creationDetailUrl", () => {
         }),
       ),
     ).toMatch(/^media:\/\//);
+  });
+});
+
+describe("creationPreviewUrl", () => {
+  it("ignores Parascene waveform SVG thumbs on audio so tiles use the default icon", () => {
+    expect(
+      creationPreviewUrl(
+        base({
+          mediaType: "audio",
+          localPath: "/Library/media/28888.mp3",
+          localThumbPath: "/Library/thumbs/28888_cover.svg",
+          updatedAt: "t1",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps bitmap audio covers and image/video thumbs", () => {
+    expect(
+      creationPreviewUrl(
+        base({
+          mediaType: "audio",
+          localThumbPath: "/Library/thumbs/20794.png",
+          updatedAt: "t1",
+        }),
+      ),
+    ).toMatch(/^asset:\/\//);
+
+    expect(
+      creationPreviewUrl(
+        base({
+          mediaType: "image",
+          localThumbPath: "/Library/thumbs/1.svg",
+          updatedAt: "t1",
+        }),
+      ),
+    ).toMatch(/^asset:\/\//);
+
+    expect(
+      creationPreviewUrl(
+        base({
+          mediaType: "video",
+          localThumbPath: "/Library/thumbs/2.jpg",
+          updatedAt: "t1",
+        }),
+      ),
+    ).toMatch(/^asset:\/\//);
   });
 });
 

@@ -26,23 +26,23 @@ A change to a row names the test and the article. Empty test or “static shots�
 
 - Getting started — `getting-started.html` — no live test (already signed in) — static first-run shots
 - Generate an image — `generate.html` — 05 — live shots from 05
-- Generate speech and music — `generate-audio.html` — 12 — live shots from 12 (own project; two speakers + background on A1/A2)
+- Generate speech and music — `generate-audio.html` — 12 — live shots from 12 (own project; Flash TTS on A1, disk speech on A2 after a gap; Publisher mix proof). In-app audio icon; Flash tile is tinted FLASH. Disk import stays plain.
 - Generate a video with audio — `audio.html` — 06 — live shots from 06 (same project, same goblin)
 - Image models — `image-models.html` — 07 — stills from 07. Edit / Kontext named, no thumbs
+- Audio models — `audio-models.html` — none — names only
 - Video models — `video-models.html` — none — names only
-- This computer and the cloud — `local-and-cloud.html` — 08–11 prove the model; no Help shots
-- Sync — `sync.html` — 02 — static first-run
+- Sync — `sync.html` — 02 — static first-run. Also the remote-vs-local model (08–11 prove it; no extra Help shots)
 - Projects — `projects.html` — 03 — static first-run
 - Folders — `folders.html` — 04 — no dedicated shots
 - Settings — `settings.html` — none — one static shot
 - Local tools — `tools.html` — none — no shots
 - Assets Remove / Delete — no Help page — 10 (last Images proven; last Videos needs a clip)
 
-# Where we are (2026-09-07)
+# Where we are (2026-09-09)
 
 Phases 0–3 shipped in 1.1.58: account isolation, agent API, suites 01–07, in-app Help.
 
-Help IA since then (small leftover slice): Overview removed. Getting started is first-run only. New topic `local-and-cloud.html`. Voice rule updated. Not the Phase 4 map, not first-run shot regen, not Settings/tools tests.
+Help IA since then: contents groups are Overview, Setup, Journeys, Topics. No Overview article — Getting started stays first-run only. Overview is Getting started, Sync, Folders, Projects. Sync also covers this computer versus the cloud (old `local-and-cloud.html` is gone). Topics is the model lists (`audio-models.html` names only). Generate speech/music is a sibling sitting (`generate-audio.html`, suite 12). Parascene audio SVG covers are skipped. Generated tiles color by model (FLASH / LYRIA / MM SPEECH / MM MUSIC), same as BYO Replicate.
 
 Same-object track since then (the away work): `library.lookup` / `cloud.lookup` inspect. Shared Assets Remove/Delete. Suites 08–11 written and run. Sync newest no longer prunes grouped members. Last Images Remove no longer bounces. Folder sync drops stale creates and dead unfile-moves; teardown flushes `agent-test-*` pending ops. Seed `28006` was wrongly deleted once; it is protected now.
 
@@ -54,9 +54,9 @@ Still open on product from the identity track: last Videos member Remove (needs 
 
 Live Parascene. Already signed in. Be gentle. Cheap generate for 08–11 (`sd15` lofi). Help goblin is 05–07 only.
 
-`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` / `replicateMusic` on server 1. Finish list: [PLAN-generate-audio.md](./PLAN-generate-audio.md).
+`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` on server 1, then a Publisher mix. Finish list: [PLAN-generate-audio.md](./PLAN-generate-audio.md).
 
-Teardown: this-run ids, `agent-test-*` title/path, this-run prompts. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
+Teardown: this-run ids, `agent-test-*` title/path, this-run prompts, and leftover projects/folders whose titles match. Suite 12 also sweeps at start so an interrupted run is cleaned by the next run. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
 
 Phase 5 later: change a user-visible workflow → run the matching suite → verify that article → update copy or shots only if the UI the article names changed. Do not review the whole Help corpus. Do not touch tests or docs only because an implementation file changed.
 

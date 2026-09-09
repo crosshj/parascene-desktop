@@ -20,10 +20,7 @@ import {
 import { FolderCard } from "../../library/FolderCard";
 import CompositionCard from "../../library/CompositionCard";
 import type { LibraryFolder } from "../../library/folderClient";
-import {
-  creationDetailUrl,
-  creationPreviewUrl,
-} from "../../library/previewUrl";
+import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation, MediaType } from "../../library/types";
 import { type ProjectCabinetIds } from "../../project/desktopProjectGroups";
 import {
@@ -188,7 +185,7 @@ function PlaceholderAssetTile({
   const label =
     placeholder.addAssetDraft.prompt?.trim().slice(0, 48) || "Generating…";
   const previewUrl = previewCreation
-    ? (creationPreviewUrl(previewCreation) ?? creationDetailUrl(previewCreation))
+    ? creationPreviewUrl(previewCreation)
     : null;
   const generating =
     placeholder.status === "generating" && !previewUrl;
