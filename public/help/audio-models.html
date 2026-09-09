@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Audio models — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
+    </header>
+    <main>
+      <h1>Audio models</h1>
+      <p>
+        Two jobs. Speak a line, or write a score. The form asks for an intent
+        first, then a system, then a model.
+      </p>
+
+      <div class="catalog-split">
+        <div>
+          <p class="group">Models</p>
+          <p>
+            Four models. Speech is Gemini Flash TTS or MiniMax Speech. Music is
+            Lyria 3 or MiniMax Music. The codes in the lists are what the form
+            shows after you pick the intent.
+          </p>
+        </div>
+        <div>
+          <p class="group">Intents</p>
+          <p>
+            The job. <strong>Text to Speech</strong> or
+            <strong>Text to Music</strong>. Turning speech into a talking clip
+            is a video job — not this list.
+          </p>
+        </div>
+      </div>
+
+      <h2>In the form</h2>
+      <ol class="steps">
+        <li>In Editor, click <strong>Add asset</strong>.</li>
+        <li>
+          Choose the intent:
+          <strong>Text to Speech</strong> or
+          <strong>Text to Music</strong>.
+        </li>
+        <li>
+          Choose a system:
+          <strong>Parascene</strong> (credits) or
+          <strong>Replicate</strong> (your token).
+        </li>
+        <li>Choose the model that matches that intent.</li>
+        <li>
+          Fill the line or the score prompt, then <strong>Generate</strong>.
+          The clip lands in Assets.
+        </li>
+      </ol>
+      <p>
+        Parascene and Replicate share the same four models.
+        <strong>Direct to Blue</strong> is coming soon for speech and music.
+      </p>
+
+      <h2>Text to Speech</h2>
+      <p>
+        Speak a line. You type the words; the model picks a voice. Use this
+        when you want narration, a replacement line, or talk to drop on the
+        timeline. Gemini Flash TTS is the default.
+      </p>
+
+      <h3 class="model-brand model-brand--gemini" id="gemini-flash-tts">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 12h2M8 7v10M12 4v16M16 8v8M20 11h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        Gemini 3.1 Flash TTS
+      </h3>
+      <p>
+        Cheap narration. Many named voices — Kore, Puck, and the rest. Optional
+        <strong>Style</strong> steers how it speaks. This is the model for a
+        first spoken line.
+      </p>
+      <ul class="model-names">
+        <li>Gemini 3.1 Flash TTS — <code>google/gemini-3.1-flash-tts</code></li>
+      </ul>
+
+      <h3 class="model-brand model-brand--minimax" id="minimax-speech">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 18V7.5L12 14l7-6.5V18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        MiniMax Speech 2.8 Turbo
+      </h3>
+      <p>
+        System voices plus <strong>Custom</strong>. <strong>Emotion</strong>
+        sets the delivery. Custom uses a <code>voice_id</code> you already
+        have, or <strong>Train voice</strong> from a spoken file in Assets.
+        Training is optional and uses more credits than a line of speech.
+      </p>
+      <ul class="model-names">
+        <li>MiniMax Speech 2.8 Turbo — <code>minimax/speech-2.8-turbo</code></li>
+      </ul>
+
+      <h2>Text to Music</h2>
+      <p>
+        Write a score. You describe the music; the model writes audio. Use this
+        when you want a bed under a scene, or a song. Lyria 3 is the default.
+      </p>
+
+      <h3 class="model-brand model-brand--lyria" id="lyria-3">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="8" cy="18" r="2.4" stroke="currentColor" stroke-width="1.7" />
+          <circle cx="18" cy="16" r="2.4" stroke="currentColor" stroke-width="1.7" />
+          <path d="M10.4 18V7.2L20.4 5.2V16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Lyria 3
+      </h3>
+      <p>
+        Instrumental score from a prompt. About thirty seconds. Good for a
+        dramatic bed — no lyrics field.
+      </p>
+      <ul class="model-names">
+        <li>Lyria 3 — <code>google/lyria-3</code></li>
+      </ul>
+
+      <h3 class="model-brand model-brand--minimax" id="minimax-music">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 18V7.5L12 14l7-6.5V18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        MiniMax Music 2.6
+      </h3>
+      <p>
+        Song or MV track. Add <strong>Lyrics</strong>, or turn on
+        <strong>Instrumental</strong>. <strong>Lyrics optimizer</strong> can
+        tidy the words before it sings.
+      </p>
+      <ul class="model-names">
+        <li>MiniMax Music 2.6 — <code>minimax/music-2.6</code></li>
+      </ul>
+
+      <h2>Where to go from here</h2>
+      <p class="more">
+        <a href="generate-audio.html">Generate speech and music</a> — one spoken
+        line, then a second clip on A2.
+      </p>
+      <p class="more">
+        <a href="audio.html">Generate a video with audio</a> — turn speech you
+        already have into a talking clip. The models for that job are on
+        <a href="video-models.html">Video models</a>.
+      </p>
+      <p class="more">
+        <a href="image-models.html">Image models</a> — the stills those clips
+        start from.
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCreation, importProjectAssetPaths } from "../library/catalogClient";
 import { groupSourceCreationIds } from "../library/creationFlags";
-import { parascenePublicImageUrl } from "../library/previewUrl";
+import { isPlayableLocalPath, parascenePublicImageUrl } from "../library/previewUrl";
 import type { Creation } from "../library/types";
 import { audioWaveformPeaks } from "../lab/audioTools";
 import { runAddAssetGeneration } from "../layouts/editor/addAssetGenerate";
@@ -84,7 +84,7 @@ async function hideLeftoverProjectVideos(
 }
 
 /** Persist timeline/selection. Remount only when Editor must rebuild (form / clip). */
-async function settleEditorForHelpShot(
+export async function settleEditorForHelpShot(
   shell: Shell,
   remount = false,
 ): Promise<void> {
@@ -112,12 +112,21 @@ function newClipId(): string {
   return `clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function waitForLocalPath(id: string, timeoutMs: number): Promise<string | null> {
+export async function waitForLocalPath(
+  id: string,
+  timeoutMs: number,
+  mediaType?: string,
+): Promise<string | null> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const row = await getCreation(id);
     const path = row?.localPath?.trim();
-    if (path) return path;
+    if (
+      path &&
+      (!mediaType || isPlayableLocalPath(path, mediaType || row?.mediaType))
+    ) {
+      return path;
+    }
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
   }
   return null;

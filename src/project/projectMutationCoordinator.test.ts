@@ -137,6 +137,45 @@ describe("projectMutationCoordinator", () => {
     );
   });
 
+  it("allows a cabinet pointer that is not yet in creationIds", async () => {
+    const project = {
+      ...createStoredProject("GenerateAudio", ["still-1"]),
+      lifecycle: "ready" as const,
+      imagesGroupId: "28547",
+    };
+    saveStoredProjects([project]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        creationIds: ["still-1", "still-2"],
+      })),
+    );
+
+    expect(next[0].imagesGroupId).toBe("28547");
+    expect(next[0].creationIds).toEqual(["still-1", "still-2"]);
+  });
+
+  it("allows hiding a dead cover after the Images pointer is cleared", async () => {
+    const project = {
+      ...createStoredProject("GenerateAudio", ["28547", "still-1"]),
+      lifecycle: "ready" as const,
+      imagesGroupId: "28547",
+    };
+    saveStoredProjects([project]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        imagesGroupId: null,
+        creationIds: ["still-1"],
+      })),
+    );
+
+    expect(next[0].imagesGroupId).toBeNull();
+    expect(next[0].creationIds).toEqual(["still-1"]);
+  });
+
   it("allows a timeline ref to a cabinet member when the cover is in the folder", async () => {
     const project = {
       ...createStoredProject("Melting Trip", ["cover-videos"]),

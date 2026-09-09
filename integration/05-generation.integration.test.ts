@@ -49,6 +49,7 @@ describe("agent generation", () => {
     await sweepTestCreations(agent, {
       ids: [creationId, imagesGroupId],
       titleContains: [JOURNEY_PROJECT_TITLE_PREFIX],
+      promptContains: [AGENT_TEST_GENERATE_PROMPT],
       projectId,
       folderId,
     });
@@ -67,6 +68,7 @@ describe("agent generation", () => {
         await sweepTestCreations(agent, {
           ids: [previous.stillId, previous.imagesGroupId],
           titleContains: [JOURNEY_PROJECT_TITLE_PREFIX],
+          promptContains: [AGENT_TEST_GENERATE_PROMPT],
           projectId: previous.projectId,
           folderId: previous.folderId,
         });

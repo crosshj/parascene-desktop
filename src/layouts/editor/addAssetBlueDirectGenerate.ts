@@ -12,11 +12,6 @@ import {
   invokeBlueGenerateStill,
   watchLocalGenerateStill,
 } from "../../services/generateStill";
-import { getCreations } from "../../library/catalogClient";
-import {
-  isolateVocalsRange,
-  sliceAudioRange,
-} from "../../lab/audioTools";
 import { buildBlueT2vCreateArgs } from "../../lab/blueT2vGeneration";
 import { buildFlf2vCreateArgs } from "../../lab/flf2vGeneration";
 import { importLocalPathsForProject } from "../../project/projectAssetLanding";
@@ -47,7 +42,10 @@ import {
 } from "./generateMediaRefs";
 import { planAdvancedVideoSend } from "./generateAdvancedVideoSend";
 import { resolveLocalMediaPaths } from "./resolveLocalMedia";
-import { slicePlaceholderTimelineAudio } from "./timelineReferenceAudio";
+import {
+  placeholderNeedsCombinedTimelineAudio,
+  slicePlaceholderTimelineAudio,
+} from "./timelineReferenceAudio";
 import { resolveReferenceImageStillPaths } from "./timelineReferenceImages";
 
 /** Thrown when Blue succeeded remotely but local download/import failed. */
@@ -143,6 +141,7 @@ export type RunBlueDirectAddAssetGenerationOpts = {
   projectTitle: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  timelineAudioBakePath?: string | null;
   mainAudioCreationId: string | null;
   lyricAlignment: import("../../project/types").LyricAlignment | null;
   prompt: string;
@@ -255,13 +254,12 @@ export async function runBlueDirectAddAssetGeneration(
   };
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
-  const { durationSec: durationSeconds, songRange } =
-    resolveAddAssetGenerationTiming(
-      opts.timeline,
-      opts.placeholder,
-      opts.mainAudioCreationId,
-      opts.lyricAlignment,
-    );
+  const { durationSec: durationSeconds } = resolveAddAssetGenerationTiming(
+    opts.timeline,
+    opts.placeholder,
+    opts.mainAudioCreationId,
+    opts.lyricAlignment,
+  );
 
   let method: BlueVideoMethod;
   let model: string;
@@ -398,16 +396,14 @@ export async function runBlueDirectAddAssetGeneration(
     });
 
     if (method === "audio2video") {
-      const audioId = opts.mainAudioCreationId?.trim();
-      if (!audioId) {
+      const combined = placeholderNeedsCombinedTimelineAudio(
+        opts.timeline,
+        opts.placeholder,
+      );
+      if (!combined && !opts.mainAudioCreationId?.trim()) {
         throw new Error(
           "Add main audio to the timeline (or set it in Lab) before generating.",
         );
-      }
-      const inSec = songRange.startSec;
-      const sliceOutSec = inSec + durationSeconds;
-      if (!(sliceOutSec > inSec)) {
-        throw new Error("Invalid song time range for this clip.");
       }
       pushSteps(advanceStep(steps, "vocals"));
       opts.onProgress(
@@ -415,23 +411,15 @@ export async function runBlueDirectAddAssetGeneration(
           ? `Preparing ${durationSeconds.toFixed(1)}s audio slice…`
           : `Preparing ${durationSeconds.toFixed(1)}s vocals stem…`,
       );
-      const [audioRow] = await getCreations([audioId]);
-      const mixPath = audioRow?.localPath?.trim();
-      if (!mixPath) {
-        throw new Error("Main audio is not available locally yet.");
-      }
-      const audioSlice =
-        audioMode === "full_mix"
-          ? await sliceAudioRange({
-              sourcePath: mixPath,
-              inSec,
-              outSec: sliceOutSec,
-            })
-          : await isolateVocalsRange({
-              sourcePath: mixPath,
-              inSec,
-              outSec: sliceOutSec,
-            });
+      const audioSlice = await slicePlaceholderTimelineAudio({
+        mode: audioMode === "full_mix" ? "full_mix" : "vocals",
+        mainAudioCreationId: opts.mainAudioCreationId,
+        timeline: opts.timeline,
+        placeholder: opts.placeholder,
+        lyricAlignment: opts.lyricAlignment,
+        projectId: opts.projectId,
+        timelineAudioBakePath: opts.timelineAudioBakePath,
+      });
       pushSteps(completeStep(steps, "vocals"));
       pushSteps(advanceStep(steps, "upload-audio"));
       opts.onProgress("Staging audio for Blue…");
@@ -829,6 +817,8 @@ async function runBlueDirectAdvancedVideo(
       timeline: opts.timeline,
       placeholder: opts.placeholder,
       lyricAlignment: opts.lyricAlignment,
+      projectId: opts.projectId,
+      timelineAudioBakePath: opts.timelineAudioBakePath,
     });
     audioPaths.push(sliced.path);
     pushSteps(completeStep(steps, "vocals"));

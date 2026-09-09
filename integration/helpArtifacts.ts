@@ -32,6 +32,31 @@ export async function publishHelpStill(
   return dest;
 }
 
+export async function publishHelpAudio(
+  src: string,
+  dest: string,
+): Promise<string> {
+  await ensureParent(dest);
+  if (extname(dest).toLowerCase() !== ".mp3") {
+    await copyFile(src, dest);
+    return dest;
+  }
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    src,
+    "-c:a",
+    "libmp3lame",
+    "-q:a",
+    "4",
+    dest,
+  ]);
+  return dest;
+}
+
 /** Copy a generated still/video into the help media folder the articles embed. */
 export async function publishHelpMedia(opts: {
   stillPath?: string | null;
@@ -155,6 +180,20 @@ async function parasceneWindowId(pid: number): Promise<string> {
   return id;
 }
 
+async function frontmostForCapture(pid: number, args: string[]): Promise<void> {
+  let last = "";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await execFileAsync("osascript", args, { timeout: 15_000 });
+      return;
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+  }
+  throw new Error(`Could not bring Parascene to the front (pid ${pid}): ${last}`);
+}
+
 /** Capture the running Parascene window into a help screenshot (1280×900 logical). */
 export async function captureHelpScreen(
   dest: string,
@@ -181,7 +220,7 @@ export async function captureHelpScreen(
         "-e",
         "tell application \"System Events\" to key code 53",
       ];
-  await execFileAsync("osascript", dismiss);
+  await frontmostForCapture(pid, dismiss);
   await new Promise((resolve) => setTimeout(resolve, 400));
   const windowId = await parasceneWindowId(pid);
   const stamp = Date.now();
@@ -217,11 +256,14 @@ export async function syncHelpFileList(): Promise<string[]> {
   files.sort();
   const rustPath = join(process.cwd(), "src-tauri/src/help_window.rs");
   const rust = await readFile(rustPath, "utf8");
+  const block = /const HELP_FILES: &\[&str\] = &\[[\s\S]*?\];/;
+  if (!block.test(rust)) {
+    throw new Error("Could not find HELP_FILES in help_window.rs");
+  }
   const next = rust.replace(
-    /const HELP_FILES: &\[&str\] = &\[[\s\S]*?\];/,
+    block,
     `const HELP_FILES: &[&str] = &[\n${files.map((rel) => `    "${rel}",`).join("\n")}\n];`,
   );
-  if (next === rust) throw new Error("Could not update HELP_FILES in help_window.rs");
-  await writeFile(rustPath, next);
+  if (next !== rust) await writeFile(rustPath, next);
   return files;
 }

@@ -1,3 +1,4 @@
+import { clipAudioTrack } from "../../project/audioTrack";
 import type { TimelineClip } from "../../project/types";
 
 export type Interval = { startSec: number; endSec: number };
@@ -21,6 +22,7 @@ export function findOverlappingAudioClip(
   let bestOverlap = 0;
   for (const clip of clips) {
     if (clip.lane !== "audio") continue;
+    if (clipAudioTrack(clip) !== 1) continue;
     if (!(clip.startSec < visual.endSec && clip.endSec > visual.startSec)) {
       continue;
     }

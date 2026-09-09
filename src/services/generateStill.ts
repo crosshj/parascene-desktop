@@ -52,8 +52,8 @@ export type InvokeParasceneGenerateOpts = {
   args: Record<string, unknown>;
   /** Defaults to text_to_image. */
   intent?: string;
-  /** Defaults from intent (video intents → video). */
-  mediaType?: "image" | "video";
+  /** Defaults from intent (video intents → video, speech/music → audio). */
+  mediaType?: "image" | "video" | "audio";
   target?: CreationTarget;
   label?: string;
   clientRequestId?: string;
@@ -75,11 +75,23 @@ export type InvokeLocalGenerateStillOpts = {
 
 function resolveMediaType(
   opts: Pick<InvokeParasceneGenerateOpts, "intent" | "mediaType">,
-): "image" | "video" {
-  if (opts.mediaType === "image" || opts.mediaType === "video") {
+): "image" | "video" | "audio" {
+  if (
+    opts.mediaType === "image" ||
+    opts.mediaType === "video" ||
+    opts.mediaType === "audio"
+  ) {
     return opts.mediaType;
   }
   const intent = (opts.intent ?? "").toLowerCase();
+  if (
+    intent.includes("audio") ||
+    intent.includes("speech") ||
+    intent.includes("music") ||
+    intent.includes("voice")
+  ) {
+    return "audio";
+  }
   if (intent.includes("video")) return "video";
   return "image";
 }
@@ -223,6 +235,16 @@ export function pendingCreationIdFromRun(run: ServiceRun): string | undefined {
   return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
 }
 
+/** Replicate prediction id from a live or finished service job. */
+export function predictionIdFromServiceRun(run: ServiceRun): string | undefined {
+  for (const raw of [run.resultJson, run.checkpointJson, run.payloadJson]) {
+    const parsed = parseJsonBlob<Record<string, unknown>>(raw);
+    const id = parsed?.predictionId ?? parsed?.prediction_id;
+    if (typeof id === "string" && id.trim()) return id.trim();
+  }
+  return undefined;
+}
+
 export async function watchParasceneGenerate(
   handle: ServiceHandle,
   opts?: WatchServiceOptions,
@@ -268,7 +290,7 @@ export async function invokeParasceneWaitCreation(opts: {
   creationId: string;
   projectId?: string;
   timeoutMs?: number;
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "audio";
   label?: string;
 }): Promise<ServiceHandle> {
   return serviceInvoke({
@@ -326,7 +348,7 @@ export async function runParasceneWaitCreation(opts: {
   creationId: string;
   projectId?: string;
   timeoutMs?: number;
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "audio";
   onProgress?: (note: string) => void;
 }): Promise<WaitCreationResult> {
   const handle = await invokeParasceneWaitCreation(opts);

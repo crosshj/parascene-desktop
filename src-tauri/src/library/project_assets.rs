@@ -908,10 +908,11 @@ fn cabinet_member_ids_of_folder_covers(
             .query_row(
                 "SELECT remote_json FROM creations WHERE id = ?1",
                 params![cover_id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
             .optional()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .flatten();
         let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
             continue;
         };
@@ -1152,7 +1153,14 @@ pub fn library_remove_project_assets(
     let cabinet_members = cabinet_member_ids_of_folder_covers(&transaction, &folder.member_ids)?;
     let blockers = usage_blockers(&transaction, project_id, &ids_in_folder)?
         .into_iter()
-        .filter(|row| !cabinet_members.contains(&row.creation_id))
+        .filter(|row| {
+            if cabinet_members.contains(&row.creation_id) {
+                return false;
+            }
+            // Emptying Images/Videos unfiles the cover. The cabinet pointer is
+            // not a timeline-style blocker.
+            row.usage_kind != "project_cabinet" && row.usage_kind != "cabinet"
+        })
         .collect::<Vec<_>>();
     if !blockers.is_empty() {
         let labels = blockers

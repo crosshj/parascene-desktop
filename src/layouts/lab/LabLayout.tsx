@@ -183,7 +183,7 @@ type RunCtx = {
   /** Persist in-flight Parascene id so leaving Lab mid-poll can resume. */
   onPendingCreation: (
     id: string | null,
-    mediaType?: "image" | "video" | null,
+    mediaType?: "image" | "video" | "audio" | null,
   ) => void;
 };
 type Runner = (fn: (ctx: RunCtx) => Promise<LastResult>) => void;
@@ -220,7 +220,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
   const resumePendingRef = useRef<{
     moduleId: LabModuleId;
     pendingCreationId: string;
-    pendingMediaType: "image" | "video";
+    pendingMediaType: "image" | "video" | "audio";
   } | null>(null);
   const ensureAbortRef = useRef<AbortController | null>(null);
   const groupsJobIdRef = useRef<string | null>(null);
@@ -682,7 +682,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
     (
       forModule: LabModuleId,
       pendingCreationId: string | null,
-      pendingMediaType?: "image" | "video" | null,
+      pendingMediaType?: "image" | "video" | "audio" | null,
     ) => {
       setSession((s) => ({
         ...s,
@@ -844,7 +844,7 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       payload: {
         moduleId: LabModuleId;
         pendingCreationId: string;
-        pendingMediaType: "image" | "video";
+        pendingMediaType: "image" | "video" | "audio";
       },
     ): Promise<LastResult> => {
       const { runParasceneWaitCreation } = await import(
@@ -867,6 +867,16 @@ export function LabLayout({ active = true }: { active?: boolean }) {
       const creationId = await ingestRemoteCreation(
         waited.creation as Parameters<typeof ingestRemoteCreation>[0],
       );
+      if (payload.pendingMediaType === "audio") {
+        addCreationsToOpenProject([creationId]);
+        onProgress("Added to project.");
+        return {
+          summary: `Created ${creationId} (${waited.status})`,
+          detail: "Audio filed into the project",
+          creationId,
+          json: { done: waited.creation, resumed: true },
+        };
+      }
       onProgress(
         payload.pendingMediaType === "image"
           ? "Grouping image into Images…"

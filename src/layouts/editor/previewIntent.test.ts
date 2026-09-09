@@ -31,15 +31,31 @@ describe("previewIntent catalog", () => {
     expect(SELECTION_INTENT_MODES.some((m) => m.id === "slideshow")).toBe(true);
   });
 
-  it("marks music and speech as coming soon", () => {
+  it("wires Parascene and Replicate speech and music; Direct to Blue stays coming soon", () => {
     expect(
-      serversForIntent("text_to_music").every((c) => c.status === "coming_soon"),
-    ).toBe(true);
+      serversForIntent("text_to_music").find((c) => c.server === "replicate")
+        ?.status,
+    ).toBe("wired");
     expect(
-      serversForIntent("text_to_speech").every(
-        (c) => c.status === "coming_soon",
-      ),
-    ).toBe(true);
+      serversForIntent("text_to_speech").find((c) => c.server === "replicate")
+        ?.status,
+    ).toBe("wired");
+    expect(
+      serversForIntent("text_to_music").find((c) => c.server === "parascene_blue")
+        ?.status,
+    ).toBe("wired");
+    expect(
+      serversForIntent("text_to_speech").find((c) => c.server === "parascene_blue")
+        ?.status,
+    ).toBe("wired");
+    expect(
+      serversForIntent("text_to_music").find((c) => c.server === "blue_direct")
+        ?.status,
+    ).toBe("coming_soon");
+    expect(
+      serversForIntent("text_to_speech").find((c) => c.server === "blue_direct")
+        ?.status,
+    ).toBe("coming_soon");
   });
 
   it("uses destination policy for placement vs assets", () => {
@@ -144,16 +160,16 @@ describe("previewIntent catalog", () => {
     expect(t2i?.label).toBe("Text to Image");
   });
 
-  it("offers Generate Assets only for stills", () => {
+  it("offers Generate Assets for stills and Replicate speech/music", () => {
     expect(intentOffersAssetsDestination("text_to_image")).toBe(true);
     expect(intentOffersAssetsDestination("image_to_image")).toBe(true);
+    expect(intentOffersAssetsDestination("text_to_speech")).toBe(true);
+    expect(intentOffersAssetsDestination("text_to_music")).toBe(true);
     expect(intentOffersAssetsDestination("text_to_video")).toBe(false);
     expect(intentOffersAssetsDestination("image_to_video")).toBe(false);
     expect(intentOffersAssetsDestination("image_audio_to_video")).toBe(false);
     expect(intentOffersAssetsDestination("video_to_video")).toBe(false);
     expect(intentOffersAssetsDestination("reference_to_video")).toBe(false);
-    expect(intentOffersAssetsDestination("text_to_music")).toBe(false);
-    expect(intentOffersAssetsDestination("text_to_speech")).toBe(false);
   });
 
   it("wires Text to Image for library generation", () => {
@@ -172,6 +188,25 @@ describe("previewIntent catalog", () => {
         makeAddAssetIntent("image_to_video", "replicate"),
       ),
     ).toBe(false);
+    expect(
+      addAssetIntentAllowsLibraryGeneration(
+        makeAddAssetIntent("text_to_speech", "replicate"),
+      ),
+    ).toBe(true);
+    expect(
+      addAssetIntentAllowsLibraryGeneration(
+        makeAddAssetIntent("text_to_music", "replicate"),
+      ),
+    ).toBe(true);
+    expect(
+      addAssetIntentAllowsLibraryGeneration(
+        makeAddAssetIntent("text_to_speech", "parascene_blue"),
+      ),
+    ).toBe(true);
+    expect(isIntentServerWired("text_to_speech", "parascene_blue")).toBe(true);
+    expect(isIntentServerWired("text_to_music", "parascene_blue")).toBe(true);
+    expect(isIntentServerWired("text_to_speech", "replicate")).toBe(true);
+    expect(isIntentServerWired("text_to_music", "replicate")).toBe(true);
   });
 
   it("resolves legacy provider+method drafts", () => {

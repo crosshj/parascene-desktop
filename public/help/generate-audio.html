@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Generate speech and music — Parascene Help</title>
+    <link rel="stylesheet" href="help.css" />
+  </head>
+  <body>
+    <header class="help-top">
+      <a class="back" href="index.html">
+        <svg class="home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+          <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        All topics
+      </a>
+    </header>
+    <main>
+      <h1>Generate speech and music</h1>
+      <p>
+        We'll stay in a new project and make one spoken line with Text to
+        Speech, Parascene. Then we'll add a spoken file from disk and put the
+        generated line on A1 and the file on A2, with a little space between
+        them. Publisher keeps both tracks in the mix.
+      </p>
+
+      <h2>One spoken line</h2>
+      <ol class="steps">
+        <li>Click <strong>Editor</strong> in the top bar.</li>
+        <li>
+          In Assets (left), click the + tile labeled <strong>Add asset</strong>.
+        </li>
+        <li>Choose <strong>Text to Speech</strong>.</li>
+        <li>
+          Under System, choose <strong>Parascene</strong> (Credits · Creations).
+        </li>
+        <li>
+          Under Model, pick <code>Gemini 3.1 Flash TTS</code>. Voice
+          <strong>Kore</strong>.
+        </li>
+      </ol>
+      <p>We typed this line.</p>
+      <pre><code>The night market is still open.</code></pre>
+      <figure>
+        <img
+          src="desktop/screens/editor-generate-audio-prompt.png"
+          alt="New asset panel with Text to Speech, Gemini Flash TTS, Kore, and the line filled in"
+        />
+        <figcaption>
+          Same form, ready. Click <strong>Generate</strong>. The line lands in
+          this project’s Assets.
+        </figcaption>
+      </figure>
+      <figure>
+        <audio
+          controls
+          preload="metadata"
+          src="desktop/media/generate-audio-kore.mp3"
+        ></audio>
+        <figcaption>Kore — “The night market is still open.”</figcaption>
+      </figure>
+
+      <h2>A second spoken clip</h2>
+      <ol class="steps">
+        <li>
+          In Assets, click <strong>Add from disk…</strong> and pick a spoken
+          file you already have.
+        </li>
+      </ol>
+      <p>
+        Text to Music is the same Add asset path if you want a score instead.
+        We used a spoken file so both clips are talk, on two tracks.
+      </p>
+      <figure>
+        <audio
+          controls
+          preload="metadata"
+          src="desktop/media/agent-test-speech.mp3"
+        ></audio>
+        <figcaption>The file from disk — a second spoken clip.</figcaption>
+      </figure>
+      <figure>
+        <img
+          src="desktop/screens/editor-generate-audio-result.png"
+          alt="Editor Assets after one generated line and one spoken file from disk"
+        />
+        <figcaption>
+          Assets after both clips are in the project. The Flash line is labeled
+          <strong>FLASH</strong>. The file from disk is the plain audio tile.
+        </figcaption>
+      </figure>
+
+      <h2>Dual audio tracks</h2>
+      <ol class="steps">
+        <li>Drag the generated line onto <strong>A1</strong> at the start.</li>
+        <li>
+          Turn on the second audio lane, then drop the file from disk on
+          <strong>A2</strong> a little after the first line ends.
+        </li>
+        <li>
+          Open <strong>Publisher</strong> and render. Both tracks are in the
+          file — the space between them stays quiet.
+        </li>
+      </ol>
+      <figure>
+        <img
+          src="desktop/screens/editor-generate-audio-timeline.png"
+          alt="Editor timeline with generated speech on A1 and a spoken file on A2 after a gap"
+        />
+        <figcaption>A1 is the generated line. A2 is the file from disk.</figcaption>
+      </figure>
+
+      <h2>Where to go from here</h2>
+      <p class="more">
+        <a href="audio-models.html">Audio models</a> — every speech and music
+        model, grouped by the job.
+      </p>
+      <p class="more">
+        <a href="generate.html">Generate an image</a> — a still in this same
+        Editor, or
+        <a href="audio.html">Generate a video with audio</a> — lip-sync a still
+        to a spoken file.
+      </p>
+    </main>
+    <script src="help.js"></script>
+  </body>
+</html>

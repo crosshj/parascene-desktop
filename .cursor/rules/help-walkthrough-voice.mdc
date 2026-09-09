@@ -6,15 +6,21 @@ alwaysApply: false
 
 # Help walkthrough voice
 
-Help is for someone who just opened the app. They do not know we have tests.
+Strategy: [docs/GUIDE-help-and-tests.md](docs/GUIDE-help-and-tests.md). Help is for someone who just opened the app. They do not know we have tests.
 
 - Write as if you are sitting with them on one project.
-- Start here is a chain: Getting started → Generate an image → Generate a video with audio. Each page finishes its own step.
+- Contents groups, in order: Overview, Setup, Journeys, Topics. There is no Overview / screen-map article. Do not add a third tour of the same shots. Screen jumps (`library`, `director`, `editor`) land on Getting started headings.
+- Overview is Getting started, Sync, Folders, Projects. Getting started is first-run only: sign in, Library, New project, Director, Editor. It does not teach Sync newest, folder types, or delete project.
+- Sync, Projects, and Folders are the reference pages for those jobs. Do not repeat those procedures on Getting started.
+- Sync also explains this computer versus the cloud (Library / project stay here; Parascene Creations live on the account). There is no separate remote-vs-local article. Projects / Folders / Settings link to Sync; they do not reteach the model.
+- Journeys are the generate sittings: Generate an image → Generate a video with audio. Each page finishes its own step.
+- Generate speech and music is a sibling sitting (own project, one Flash line + a spoken file on A2). Do not splice it into the goblin → Audio to Video chain. Both use the in-app audio icon. The Flash tile is labeled FLASH; the disk file is the plain tile.
 - Do not hand-wave mid-page to another article for a piece of this step. Put the prompt, the filled-in UI, and the result right here.
 - Point forward only at the end, under **Where to go from here**. That is the next page in the chain.
 - The same project and the same still continue downstream. Generate's goblin is Audio to Video's start frame. Do not show a second character.
 - Image models is a Topics page: one prompt, then the still from every Text to Image model. No app screenshots. Grok sits with the other frontier stills; its tile is the Generate still.
-- Video models is a Topics page: intents (Text / Image / Audio / Video / Refs to Video), then Wan, LTX, MiniMax H3, and Replicate. No app screenshots. No integration test yet.
+- Video models is a Topics page: Models vs Intents at the top, then a brand bar per family (Wan, LTX, MiniMax H3), then the five intents. No app screenshots. No integration test yet.
+- Audio models is a Topics page: intents first (Text to Speech, Text to Music), then the four curated models. No app screenshots. No integration test.
 - Never mention tests, fixtures, agent actions, or that a screenshot “was written by” a test.
 - Do not show repo paths (`desktop/media/…`, `agent-test-…`) in prose. File names in `src=` are fine.
 

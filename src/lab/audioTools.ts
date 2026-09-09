@@ -52,11 +52,19 @@ export async function sliceAudioRange(opts: {
   sourcePath: string;
   inSec: number;
   outSec: number;
+  /** Linear gain 0–1. Omitted / 1 = unity (same cache as legacy slices). */
+  volume?: number;
 }): Promise<AudioSliceResult> {
+  const gain = Number(opts.volume);
+  const volume =
+    Number.isFinite(gain) && Math.abs(gain - 1) > 1e-4
+      ? Math.max(0, Math.min(1, gain))
+      : undefined;
   const path = await invoke<string>("library_slice_audio", {
     sourcePath: opts.sourcePath,
     inSec: opts.inSec,
     outSec: opts.outSec,
+    ...(volume != null ? { volume } : {}),
   });
   return {
     path,
@@ -74,12 +82,15 @@ export async function isolateVocalsRange(opts: {
   sourcePath: string;
   inSec: number;
   outSec: number;
+  /** Linear gain 0–1 applied to the sliced vocals stem. */
+  volume?: number;
 }): Promise<AudioSliceResult> {
   const full = await separateFullVocals({ sourcePath: opts.sourcePath });
   const slice = await sliceAudioRange({
     sourcePath: full.path,
     inSec: opts.inSec,
     outSec: opts.outSec,
+    volume: opts.volume,
   });
   return {
     ...slice,

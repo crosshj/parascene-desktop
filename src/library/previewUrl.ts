@@ -12,6 +12,7 @@ const IMAGE_EXTS = new Set([
   "tiff",
   "heic",
   "avif",
+  "svg",
 ]);
 const AUDIO_EXTS = new Set([
   "mp3",
@@ -24,6 +25,9 @@ const AUDIO_EXTS = new Set([
   "opus",
   "aiff",
   "aif",
+  "mp4",
+  "webm",
+  "m4v",
 ]);
 const VIDEO_EXTS = new Set([
   "mp4",
@@ -47,6 +51,20 @@ export function urlLooksLikeImage(url: string | null | undefined): boolean {
   if (!trimmed) return false;
   const path = trimmed.split(/[?#]/)[0] ?? "";
   return IMAGE_EXTS.has(pathExtension(path));
+}
+
+/**
+ * Parascene stamps generated speech/music with a shared waveform SVG
+ * (`static/audio-cover.svg`). That is not album art — treat it as no cover so
+ * tiles use the same in-app audio icon as a disk import.
+ */
+export function isPlaceholderAudioCover(
+  path: string | null | undefined,
+): boolean {
+  const trimmed = path?.trim();
+  if (!trimmed) return false;
+  const file = trimmed.split(/[?#]/)[0] ?? "";
+  return pathExtension(file) === "svg";
 }
 
 /**
@@ -178,9 +196,13 @@ export function isParasceneUnavailable(c: Creation): boolean {
 /**
  * Board preview — local thumb (or local image file). Never remote URLs.
  * Videos use their thumbnail on the board; full video is lightbox-only.
+ * Audio skips the Parascene waveform SVG so every surface uses AudioWaveform.
  */
 export function creationPreviewUrl(c: Creation): string | null {
-  if (c.localThumbPath) {
+  const kind = String(c.mediaType ?? "")
+    .trim()
+    .toLowerCase();
+  if (c.localThumbPath && !(kind === "audio" && isPlaceholderAudioCover(c.localThumbPath))) {
     const src = fileSrc(c.localThumbPath);
     if (src) return withPreviewCacheBust(src, c.updatedAt);
   }

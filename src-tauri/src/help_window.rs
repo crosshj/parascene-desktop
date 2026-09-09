@@ -6,11 +6,13 @@ use tauri_plugin_opener::OpenerExt;
 
 /// Files Vite copies from `public/help/` into `dist/help/` (then into the binary).
 const HELP_FILES: &[&str] = &[
+    "help/audio-models.html",
     "help/audio.html",
     "help/desktop/media/agent-test-speech.mp3",
     "help/desktop/media/agent-test-speech.mp4",
     "help/desktop/media/agent-test-speech.wav",
     "help/desktop/media/agent-test-still.png",
+    "help/desktop/media/generate-audio-kore.mp3",
     "help/desktop/media/models/blue-flux-flux1-dev-fp8.png",
     "help/desktop/media/models/blue-flux-flux1-dev.png",
     "help/desktop/media/models/blue-flux-flux1-krea-dev-fp8-scaled.png",
@@ -63,9 +65,12 @@ const HELP_FILES: &[&str] = &[
     "help/desktop/media/models/replicate-recraft-v4.png",
     "help/desktop/media/models/replicate-stability-ai-sdxl.png",
     "help/desktop/screens/director.png",
-    "help/desktop/screens/editor-a2v.png",
     "help/desktop/screens/editor-a2v-form.png",
+    "help/desktop/screens/editor-a2v.png",
     "help/desktop/screens/editor-audio-timeline.png",
+    "help/desktop/screens/editor-generate-audio-prompt.png",
+    "help/desktop/screens/editor-generate-audio-result.png",
+    "help/desktop/screens/editor-generate-audio-timeline.png",
     "help/desktop/screens/editor-generate-prompt.png",
     "help/desktop/screens/editor-generate-result.png",
     "help/desktop/screens/editor-new-asset.png",
@@ -79,13 +84,13 @@ const HELP_FILES: &[&str] = &[
     "help/fonts/OFL.txt",
     "help/fonts/inter-latin-ext-wght-normal.woff2",
     "help/fonts/inter-latin-wght-normal.woff2",
+    "help/generate-audio.html",
     "help/generate.html",
     "help/getting-started.html",
     "help/help.css",
     "help/help.js",
     "help/image-models.html",
     "help/index.html",
-    "help/overview.html",
     "help/projects.html",
     "help/settings.html",
     "help/sync.html",
@@ -98,25 +103,38 @@ pub const HELP_WINDOW_LABEL: &str = "help";
 const PAGES: &[(&str, &str)] = &[
     ("", "help/index.html"),
     ("index", "help/index.html"),
-    ("overview", "help/overview.html"),
-    ("screens", "help/overview.html"),
+    ("overview", "help/getting-started.html"),
+    ("screens", "help/getting-started.html"),
     ("getting-started", "help/getting-started.html"),
     ("start", "help/getting-started.html"),
     ("projects", "help/projects.html"),
     ("create-project", "help/projects.html"),
     ("open-project", "help/projects.html"),
     ("folders", "help/folders.html"),
-    ("library", "help/overview.html#library"),
+    ("local-and-cloud", "help/sync.html#this-computer"),
+    ("this-computer", "help/sync.html#this-computer"),
+    ("cloud", "help/sync.html"),
+    ("remote", "help/sync.html"),
+    ("library", "help/getting-started.html#library"),
     ("sync", "help/sync.html"),
-    ("director", "help/overview.html#director"),
-    ("editor", "help/overview.html#editor"),
+    ("director", "help/getting-started.html#director"),
+    ("editor", "help/getting-started.html#editor"),
     ("generate", "help/generate.html"),
     ("generate-image", "help/generate.html"),
+    ("generate-audio", "help/generate-audio.html"),
+    ("tts", "help/generate-audio.html"),
+    ("text-to-speech", "help/generate-audio.html"),
+    ("generate-music", "help/generate-audio.html"),
     ("image-models", "help/image-models.html"),
     ("models", "help/image-models.html"),
     ("image-model", "help/image-models.html"),
     ("video-models", "help/video-models.html"),
     ("video-model", "help/video-models.html"),
+    ("audio-models", "help/audio-models.html"),
+    ("audio-model", "help/audio-models.html"),
+    ("speech-models", "help/audio-models.html"),
+    ("music-models", "help/audio-models.html"),
+    ("tts-models", "help/audio-models.html"),
     ("audio", "help/audio.html"),
     ("speech", "help/audio.html"),
     ("a2v", "help/audio.html"),
@@ -272,17 +290,27 @@ mod tests {
     #[test]
     fn maps_known_topics_and_falls_back() {
         assert_eq!(help_page(None), "help/index.html");
-        assert_eq!(help_page(Some("overview")), "help/overview.html");
-        assert_eq!(help_page(Some("screens")), "help/overview.html");
+        assert_eq!(help_page(Some("overview")), "help/getting-started.html");
+        assert_eq!(help_page(Some("screens")), "help/getting-started.html");
         assert_eq!(help_page(Some("getting-started")), "help/getting-started.html");
         assert_eq!(help_page(Some("projects")), "help/projects.html");
         assert_eq!(help_page(Some("folders")), "help/folders.html");
+        assert_eq!(help_page(Some("local-and-cloud")), "help/sync.html#this-computer");
+        assert_eq!(help_page(Some("this-computer")), "help/sync.html#this-computer");
+        assert_eq!(help_page(Some("cloud")), "help/sync.html");
         assert_eq!(help_page(Some("sync")), "help/sync.html");
         assert_eq!(help_page(Some("generate")), "help/generate.html");
+        assert_eq!(help_page(Some("generate-audio")), "help/generate-audio.html");
+        assert_eq!(help_page(Some("tts")), "help/generate-audio.html");
         assert_eq!(help_page(Some("image-models")), "help/image-models.html");
         assert_eq!(help_page(Some("models")), "help/image-models.html");
         assert_eq!(help_page(Some("video-models")), "help/video-models.html");
         assert_eq!(help_page(Some("video-model")), "help/video-models.html");
+        assert_eq!(help_page(Some("audio-models")), "help/audio-models.html");
+        assert_eq!(help_page(Some("audio-model")), "help/audio-models.html");
+        assert_eq!(help_page(Some("speech-models")), "help/audio-models.html");
+        assert_eq!(help_page(Some("music-models")), "help/audio-models.html");
+        assert_eq!(help_page(Some("tts-models")), "help/audio-models.html");
         assert_eq!(help_page(Some("audio")), "help/audio.html");
         assert_eq!(help_page(Some("speech")), "help/audio.html");
         assert_eq!(help_page(Some("a2v")), "help/audio.html");
@@ -290,8 +318,8 @@ mod tests {
         assert_eq!(help_page(Some("labs")), "help/settings.html");
         assert_eq!(help_page(Some("tools")), "help/tools.html");
         assert_eq!(help_page(Some("ffmpeg")), "help/tools.html");
-        assert_eq!(help_page(Some("library")), "help/overview.html#library");
-        assert_eq!(help_page(Some("director")), "help/overview.html#director");
+        assert_eq!(help_page(Some("library")), "help/getting-started.html#library");
+        assert_eq!(help_page(Some("director")), "help/getting-started.html#director");
         assert_eq!(help_page(Some("nope")), "help/index.html");
     }
 
@@ -302,8 +330,8 @@ mod tests {
         assert!(hash.is_none());
         assert!(!path.contains('\\'));
 
-        let (path, hash) = help_asset_parts("help\\overview.html#library");
-        assert_eq!(path, "help/overview.html");
+        let (path, hash) = help_asset_parts("help\\getting-started.html#library");
+        assert_eq!(path, "help/getting-started.html");
         assert_eq!(hash.as_deref(), Some("library"));
         assert!(!path.contains('\\'));
     }
@@ -342,8 +370,8 @@ mod tests {
         let windows = path_to_file_url(Path::new(r"C:\Program Files\Parascene\help\index.html"), None);
         assert_eq!(windows, "file:///C:/Program%20Files/Parascene/help/index.html");
 
-        let hashed = path_to_file_url(Path::new("/tmp/help/overview.html"), Some("library"));
-        assert_eq!(hashed, "file:///tmp/help/overview.html#library");
+        let hashed = path_to_file_url(Path::new("/tmp/help/getting-started.html"), Some("library"));
+        assert_eq!(hashed, "file:///tmp/help/getting-started.html#library");
 
         let verbatim = path_to_file_url(
             Path::new(r"\\?\C:\Program Files\Parascene\help\index.html"),

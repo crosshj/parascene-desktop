@@ -15,6 +15,7 @@ const JOURNEYS = [
   "audio.html",
   "image-models.html",
   "video-models.html",
+  "audio-models.html",
 ] as const;
 
 function readHelp(rel: string): string {
@@ -22,14 +23,16 @@ function readHelp(rel: string): string {
 }
 
 describe("help pages", () => {
-  it("lists Start here, Topics, Setup, and Screens from the contents page", () => {
+  it("lists Overview, Setup, Journeys, and Topics from the contents page", () => {
     const html = readHelp("index.html");
     expect(html).toContain("class=\"lead\"");
-    expect(html).toContain("Start here");
-    expect(html).toContain("Topics");
+    expect(html).toContain("Overview");
     expect(html).toContain("Setup");
-    expect(html).toContain("Screens");
-    expect(html).not.toContain("Journeys");
+    expect(html).toContain("Journeys");
+    expect(html).toContain("Topics");
+    expect(html).not.toContain("Screens");
+    expect(html).not.toContain("Start here");
+    expect(html).not.toContain("overview.html");
     expect(html).toContain("Getting started");
     expect(html).toContain("getting-started.html");
     expect(html).toContain("sync.html");
@@ -42,13 +45,15 @@ describe("help pages", () => {
     expect(html).toContain("Settings");
     expect(html).toContain("tools.html");
     expect(html).toContain("Local tools");
-    expect(html).toContain("Overview");
-    expect(html).toContain("overview.html");
     expect(html).toContain('class="help-wordmark"');
     expect(html).toContain('class="topic-icon"');
-    expect(html.match(/class="topic-icon"/g)?.length).toBe(11);
+    expect(html.match(/class="topic-icon"/g)?.length).toBe(12);
+    expect(html).not.toContain("local-and-cloud.html");
+    expect(html).not.toContain("This computer and the cloud");
     expect(html).toContain("image-models.html");
     expect(html).toContain("Image models");
+    expect(html).toContain("audio-models.html");
+    expect(html).toContain("Audio models");
     expect(html).toContain("video-models.html");
     expect(html).toContain("Video models");
   });
@@ -60,25 +65,30 @@ describe("help pages", () => {
     expect(css).toContain("fonts/inter-latin-ext-wght-normal.woff2");
     expect(css).toContain(".help-lightbox");
     expect(css).toContain(".model-names");
+    expect(css).toContain(".catalog-split");
+    expect(css).toContain(".model-brand");
     expect(css).toContain(".home-icon");
     const js = readHelp("help.js");
     expect(js).toContain("help-lightbox");
     expect(js).toContain("Escape");
   });
 
-  it("is one scrolling Overview with a back link", () => {
-    const overview = readHelp("overview.html");
-    expect(overview).toContain('class="home-icon"');
-    expect(overview).toContain("All topics");
-    expect(overview).toContain("<h1>Overview</h1>");
-    expect(overview).toContain("id=\"projects\"");
-    expect(overview).toContain("id=\"library\"");
-    expect(overview).toContain("id=\"sync\"");
-    expect(overview).toContain("id=\"director\"");
-    expect(overview).toContain("id=\"editor\"");
-    expect(overview).toContain("desktop/screens/library.png");
-    expect(overview).toContain("desktop/screens/editor-new-asset.png");
-    expect(overview).toContain('src="help.js"');
+  it("keeps first-run screen headings on Getting started, not a second Overview", () => {
+    const start = readHelp("getting-started.html");
+    expect(start).toContain('class="home-icon"');
+    expect(start).toContain("All topics");
+    expect(start).toContain("<h1>Getting started</h1>");
+    expect(start).toContain("id=\"library\"");
+    expect(start).toContain("id=\"projects\"");
+    expect(start).toContain("id=\"director\"");
+    expect(start).toContain("id=\"editor\"");
+    expect(start).not.toContain("id=\"sync\"");
+    expect(start).not.toContain("desktop/screens/sync.png");
+    expect(start).not.toContain("Sync newest");
+    expect(start).not.toContain("overview.html");
+    expect(start).toContain("desktop/screens/library.png");
+    expect(start).toContain("desktop/screens/editor-new-asset.png");
+    expect(start).toContain('src="help.js"');
   });
 
   it("gives each topic a back link and the tested button labels", () => {
@@ -94,7 +104,7 @@ describe("help pages", () => {
     expect(start).toContain("Log in");
     expect(start).toContain("desktop/screens/login.png");
     expect(start).toContain("desktop/screens/library.png");
-    expect(start).toContain("desktop/screens/sync.png");
+    expect(start).not.toContain("desktop/screens/sync.png");
     expect(start).toContain("desktop/screens/projects.png");
     expect(start).toContain("desktop/screens/director.png");
     expect(start).toContain("desktop/screens/editor.png");
@@ -115,6 +125,18 @@ describe("help pages", () => {
     expect(sync).toContain("Ready");
     expect(sync).toContain("Sync folders");
     expect(sync).toContain("Sync full catalog");
+    expect(sync).toContain("id=\"this-computer\"");
+    expect(sync).toContain("On this computer");
+    expect(sync).toContain("On Parascene");
+    expect(sync).toContain("What generate writes");
+    expect(sync).toContain("What delete does");
+    expect(sync).toContain("Add from disk…");
+    expect(sync).toContain("Direct to Blue");
+    expect(sync).toContain("Replicate");
+    expect(sync).toContain("This desktop");
+    expect(sync).toContain("Delete project");
+    expect(sync).not.toContain("local-and-cloud.html");
+    expect(sync).not.toContain("How they meet");
 
     const projects = readHelp("projects.html");
     expect(projects).toContain("<h1>Projects</h1>");
@@ -122,6 +144,9 @@ describe("help pages", () => {
     expect(projects).toContain("Close project");
     expect(projects).toContain("Delete project");
     expect(projects).toContain("Untitled project");
+    expect(projects).toContain("this computer");
+    expect(projects).toContain("sync.html");
+    expect(projects).not.toContain("local-and-cloud.html");
 
     const folders = readHelp("folders.html");
     expect(folders).toContain("<h1>Folders</h1>");
@@ -129,6 +154,8 @@ describe("help pages", () => {
     expect(folders).toContain("New project…");
     expect(folders).toContain("regular");
     expect(folders).toContain("project folder");
+    expect(folders).toContain("sync.html");
+    expect(folders).not.toContain("local-and-cloud.html");
 
     const generate = readHelp("generate.html");
     expect(generate).toContain("<h1>Generate an image</h1>");
@@ -144,23 +171,67 @@ describe("help pages", () => {
     expect(generate).toContain("Where to go from here");
     expect(generate).toContain("audio.html");
 
+    const generateAudio = readHelp("generate-audio.html");
+    expect(generateAudio).toContain('class="home-icon"');
+    expect(generateAudio).toContain("All topics");
+    expect(generateAudio).toContain("<h1>Generate speech and music</h1>");
+    expect(generateAudio).toContain("Text to Speech");
+    expect(generateAudio).toContain("Parascene");
+    expect(generateAudio).toContain("Gemini 3.1 Flash TTS");
+    expect(generateAudio).toContain("Kore");
+    expect(generateAudio).toContain("The night market is still open.");
+    expect(generateAudio).toContain("Add from disk");
+    expect(generateAudio).toContain("FLASH");
+    expect(generateAudio).toContain("Publisher");
+    expect(generateAudio).toContain("desktop/screens/editor-generate-audio-prompt.png");
+    expect(generateAudio).toContain("desktop/screens/editor-generate-audio-result.png");
+    expect(generateAudio).toContain("desktop/screens/editor-generate-audio-timeline.png");
+    expect(generateAudio).toContain("desktop/media/generate-audio-kore.mp3");
+    expect(generateAudio).toContain("desktop/media/agent-test-speech.mp3");
+    expect(generateAudio).toContain("Where to go from here");
+    expect(generateAudio).toContain("audio-models.html");
+    expect(generateAudio).toContain("audio.html");
+    expect(generateAudio).not.toMatch(/the (A2V |desktop )?test/i);
+
     const index = readHelp("index.html");
-    const startHere = index.slice(
-      index.indexOf("Start here"),
-      index.indexOf("Topics"),
+    const overview = index.slice(
+      index.indexOf("Overview"),
+      index.indexOf("Setup"),
     );
-    expect(startHere).toContain("getting-started.html");
-    expect(startHere).toContain("generate.html");
-    expect(startHere).toContain("audio.html");
-    const topics = index.slice(index.indexOf("Topics"), index.indexOf("Setup"));
-    expect(topics).not.toContain("audio.html");
-    expect(topics).toContain("image-models.html");
-    expect(topics).toContain("video-models.html");
-    expect(startHere).not.toContain("image-models.html");
-    expect(startHere).not.toContain("video-models.html");
-    const setup = index.slice(index.indexOf("Setup"), index.indexOf("Screens"));
+    expect(overview).toContain("getting-started.html");
+    expect(overview).toContain("sync.html");
+    expect(overview).toContain("folders.html");
+    expect(overview).toContain("projects.html");
+    expect(overview).not.toContain("local-and-cloud.html");
+    expect(overview.indexOf("getting-started.html")).toBeLessThan(
+      overview.indexOf("sync.html"),
+    );
+    expect(overview.indexOf("sync.html")).toBeLessThan(overview.indexOf("folders.html"));
+    expect(overview.indexOf("folders.html")).toBeLessThan(
+      overview.indexOf("projects.html"),
+    );
+    expect(overview).not.toContain("generate.html");
+    expect(overview).not.toContain("settings.html");
+    expect(overview).not.toContain("image-models.html");
+    const setup = index.slice(index.indexOf("Setup"), index.indexOf("Journeys"));
     expect(setup).toContain("settings.html");
     expect(setup).toContain("tools.html");
+    expect(setup).not.toContain("generate.html");
+    expect(setup).not.toContain("overview.html");
+    const journeys = index.slice(
+      index.indexOf("Journeys"),
+      index.lastIndexOf("Topics"),
+    );
+    expect(journeys).toContain("generate.html");
+    expect(journeys).toContain("generate-audio.html");
+    expect(journeys).toContain("audio.html");
+    expect(journeys).not.toContain("image-models.html");
+    expect(journeys).not.toContain("settings.html");
+    const topics = index.slice(index.lastIndexOf("Topics"));
+    expect(topics).toContain("image-models.html");
+    expect(topics).toContain("audio-models.html");
+    expect(topics).toContain("video-models.html");
+    expect(topics).not.toContain("audio.html");
     expect(topics).not.toContain("settings.html");
 
     const audio = readHelp("audio.html");
@@ -212,10 +283,21 @@ describe("help pages", () => {
 
     const videoModels = readHelp("video-models.html");
     expect(videoModels).toContain("<h1>Video models</h1>");
+    expect(videoModels).toContain("catalog-split");
+    expect(videoModels).toContain("<h2>Models</h2>");
+    expect(videoModels).toContain("<h2>Intents</h2>");
+    expect(videoModels).toContain("model-brand--wan");
+    expect(videoModels).toContain("model-brand--ltx");
+    expect(videoModels).toContain("model-brand--minimax");
     expect(videoModels).toContain("Text to Video");
     expect(videoModels).toContain("Image to Video");
     expect(videoModels).toContain("Audio to Video");
     expect(videoModels).toContain("Video to Video");
+    expect(videoModels).toContain("copy the motion");
+    expect(videoModels).toContain("Invent a clip");
+    expect(videoModels).toContain("Make a still move");
+    expect(videoModels).toContain("talking clip");
+    expect(videoModels).toContain("Hold onto who");
     expect(videoModels).toContain("Refs to Video");
     expect(videoModels).toContain("Wan");
     expect(videoModels).toContain("LTX");
@@ -225,8 +307,37 @@ describe("help pages", () => {
     expect(videoModels).toContain("Replicate");
     expect(videoModels).toContain("Where to go from here");
     expect(videoModels).toContain("audio.html");
+    expect(videoModels).toContain("audio-models.html");
     expect(videoModels).toContain("image-models.html");
     expect(videoModels).not.toContain("desktop/screens/");
+
+    const audioModels = readHelp("audio-models.html");
+    expect(audioModels).toContain("<h1>Audio models</h1>");
+    expect(audioModels).toContain("catalog-split");
+    expect(audioModels).toContain("<h2>Text to Speech</h2>");
+    expect(audioModels).toContain("<h2>Text to Music</h2>");
+    expect(audioModels).toContain("model-brand--gemini");
+    expect(audioModels).toContain("model-brand--lyria");
+    expect(audioModels).toContain("model-brand--minimax");
+    expect(audioModels).toContain("Gemini 3.1 Flash TTS");
+    expect(audioModels).toContain("MiniMax Speech 2.8 Turbo");
+    expect(audioModels).toContain("Lyria 3");
+    expect(audioModels).toContain("MiniMax Music 2.6");
+    expect(audioModels).toContain("google/gemini-3.1-flash-tts");
+    expect(audioModels).toContain("minimax/speech-2.8-turbo");
+    expect(audioModels).toContain("google/lyria-3");
+    expect(audioModels).toContain("minimax/music-2.6");
+    expect(audioModels).toContain("Parascene");
+    expect(audioModels).toContain("Replicate");
+    expect(audioModels).toContain("Direct to Blue");
+    expect(audioModels).toContain("Train voice");
+    expect(audioModels).toContain("Where to go from here");
+    expect(audioModels).toContain("generate-audio.html");
+    expect(audioModels).toContain("audio.html");
+    expect(audioModels).toContain("video-models.html");
+    expect(audioModels).toContain("image-models.html");
+    expect(audioModels).not.toContain("desktop/screens/");
+    expect(audioModels).not.toMatch(/the (A2V |desktop )?test/i);
     expect(videoModels).not.toMatch(/general overview/i);
     expect(generate).not.toContain("writes this screenshot");
     expect(existsSync(join(HELP_ROOT, "desktop/media/agent-test-speech.wav"))).toBe(true);
@@ -266,9 +377,9 @@ describe("help pages", () => {
   it("never mentions tests in the user-facing articles", () => {
     const pages = [
       "index.html",
-      "overview.html",
       "settings.html",
       "tools.html",
+      "generate-audio.html",
       ...JOURNEYS,
     ];
     for (const page of pages) {
@@ -327,6 +438,8 @@ describe("help pages", () => {
     expect(settings).toContain("Save");
     expect(settings).toContain("Cancel");
     expect(settings).toContain("tools.html");
+    expect(settings).toContain("sync.html");
+    expect(settings).not.toContain("local-and-cloud.html");
     expect(settings).not.toMatch(/the (A2V |desktop )?test/i);
     expect(existsSync(join(HELP_ROOT, "desktop/screens/settings.png"))).toBe(true);
   });

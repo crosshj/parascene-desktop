@@ -245,13 +245,13 @@ export const INTENT_SERVER_CAPABILITIES: readonly IntentServerCapability[] = [
     status: "coming_soon",
   },
 
-  { intentId: "text_to_music", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "text_to_music", server: "parascene_blue", status: "wired" },
   { intentId: "text_to_music", server: "blue_direct", status: "coming_soon" },
-  { intentId: "text_to_music", server: "replicate", status: "coming_soon" },
+  { intentId: "text_to_music", server: "replicate", status: "wired" },
 
-  { intentId: "text_to_speech", server: "parascene_blue", status: "coming_soon" },
+  { intentId: "text_to_speech", server: "parascene_blue", status: "wired" },
   { intentId: "text_to_speech", server: "blue_direct", status: "coming_soon" },
-  { intentId: "text_to_speech", server: "replicate", status: "coming_soon" },
+  { intentId: "text_to_speech", server: "replicate", status: "wired" },
 ] as const;
 
 /** @deprecated Use GENERATE_SERVERS. */
@@ -368,11 +368,22 @@ export function resolveDestination(
   return defaultDestinationForIntent(intent.intentId);
 }
 
-/** Footer Generate Assets — stills only. Video uses Place/Drag. */
+/** Footer Generate Assets — stills and Replicate speech/music. Video uses Place/Drag. */
 export function intentOffersAssetsDestination(
   intentId: GenerateIntentId | null | undefined,
 ): boolean {
-  return intentId === "text_to_image" || intentId === "image_to_image";
+  return (
+    intentId === "text_to_image" ||
+    intentId === "image_to_image" ||
+    intentId === "text_to_speech" ||
+    intentId === "text_to_music"
+  );
+}
+
+export function isLibraryAudioIntent(
+  intentId: GenerateIntentId | null | undefined,
+): boolean {
+  return intentId === "text_to_speech" || intentId === "text_to_music";
 }
 
 /** Policy offers a Timeline landing (Place / Drag). */
@@ -565,7 +576,8 @@ export function addAssetIntentAllowsLibraryGeneration(
   if (!intentOffersAssetsDestination(resolved.intentId)) return false;
   if (
     resolved.intentId === "text_to_image" ||
-    resolved.intentId === "image_to_image"
+    resolved.intentId === "image_to_image" ||
+    isLibraryAudioIntent(resolved.intentId)
   ) {
     return true;
   }

@@ -7,20 +7,20 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  audioModelChipClass,
+  audioModelChipLabel,
+} from "../../library/audioModelChip";
 import { creationAspectCss } from "../../library/aspectRatio";
+import { AudioWaveform } from "../../library/AudioWaveform";
 import { CreationCard } from "../../library/CreationCard";
 import {
   creationCardTitle,
-  groupSourceCreationIds,
 } from "../../library/creationFlags";
-import { isLocalOnlyCreation } from "../../library/creationFilters";
 import { FolderCard } from "../../library/FolderCard";
 import CompositionCard from "../../library/CompositionCard";
 import type { LibraryFolder } from "../../library/folderClient";
-import {
-  creationDetailUrl,
-  creationPreviewUrl,
-} from "../../library/previewUrl";
+import { creationPreviewUrl } from "../../library/previewUrl";
 import type { Creation, MediaType } from "../../library/types";
 import { type ProjectCabinetIds } from "../../project/desktopProjectGroups";
 import {
@@ -77,11 +77,6 @@ type AssetBrowserPaneProps = {
   onDeleteAssets?: (ids: string[]) => void;
   onRemoveAssets?: (ids: string[]) => void;
   onDiscardLibraryAssetPlaceholders?: (ids: string[]) => void;
-  onDeleteFromGroup?: (opts: {
-    groupId: string;
-    kind: "images" | "videos";
-    memberIds: string[];
-  }) => void;
   /** Asset ids referenced on the project timeline (blocks group delete). */
   timelineUsedAssetIds?: ReadonlySet<string>;
   /** Still compositions (sandbox / record / group). */
@@ -173,7 +168,7 @@ function AddAssetSlotCard({
   );
 }
 
-/** Generating library asset — project aspect outline while media is pending. */
+/** Generating library asset — same slot size as the finished CreationCard. */
 function PlaceholderAssetTile({
   placeholder,
   previewCreation = null,
@@ -190,10 +185,13 @@ function PlaceholderAssetTile({
   const label =
     placeholder.addAssetDraft.prompt?.trim().slice(0, 48) || "Generating…";
   const previewUrl = previewCreation
-    ? (creationPreviewUrl(previewCreation) ?? creationDetailUrl(previewCreation))
+    ? creationPreviewUrl(previewCreation)
     : null;
   const generating =
     placeholder.status === "generating" && !previewUrl;
+  const audioModel = audioModelChipLabel(
+    placeholder.addAssetDraft.replicateModel,
+  );
   return (
     <div className="editor-add-asset-card">
       <button
@@ -210,11 +208,23 @@ function PlaceholderAssetTile({
       >
         <span
           className={
-            generating
-              ? "editor-add-asset-card-clip is-generating"
-              : "editor-add-asset-card-clip"
+            [
+              "editor-add-asset-card-clip",
+              generating ? "is-generating" : "",
+              placeholder.kind === "audio" ? "is-audio" : "",
+              audioModel ? `is-audio-model-${audioModelChipClass(audioModel)}` : "",
+            ]
+              .filter(Boolean)
+              .join(" ")
           }
-          style={{ aspectRatio: projectAspectCss(placeholder.aspectRatio) }}
+          style={{
+            aspectRatio:
+              placeholder.kind === "audio"
+                ? previewCreation
+                  ? creationAspectCss(previewCreation)
+                  : "1 / 1"
+                : projectAspectCss(placeholder.aspectRatio),
+          }}
           aria-hidden
         >
           {previewUrl ? (
@@ -223,11 +233,20 @@ function PlaceholderAssetTile({
               src={previewUrl}
               alt=""
             />
-          ) : (
+          ) : placeholder.kind === "audio" ? (
+            <AudioWaveform />
+          ) : null}
+          {!previewUrl ? (
             <span className="editor-add-asset-card-generating-label">
               {placeholder.status === "error" ? "Error" : "Generating…"}
             </span>
-          )}
+          ) : null}
+          {generating ? (
+            <span
+              className="editor-timeline-clip-bake is-generating"
+              aria-hidden
+            />
+          ) : null}
         </span>
       </button>
     </div>
@@ -295,7 +314,6 @@ export function AssetBrowserPane({
   onDeleteAssets,
   onRemoveAssets,
   onDiscardLibraryAssetPlaceholders,
-  onDeleteFromGroup,
   timelineUsedAssetIds,
   compositions = [],
   openCompositionId = null,
@@ -585,77 +603,6 @@ export function AssetBrowserPane({
 
   const showRootFolders = visibleFolders.length > 0;
 
-  const isLocalOnlyAsset = (assetId: string): boolean => {
-    const creation = creationsById[assetId];
-    if (!creation) return false;
-    // Desktop Generate stamps local rows with remoteJson provenance — still
-    // deletable as long as there is no cloud remote_url.
-    if (creation.remoteUrl?.trim()) return false;
-    return (
-      isLocalOnlyCreation(creation) ||
-      String(creation.downloadState ?? "").toLowerCase() === "local" ||
-      creation.id.startsWith("local-")
-    );
-  };
-
-  const groupMembershipByMemberId = useMemo(() => {
-    const map = new Map<
-      string,
-      { groupId: string; kind: "images" | "videos" }
-    >();
-    const cabinets: Array<{
-      id: string | null | undefined;
-      kind: "images" | "videos";
-    }> = [
-      { id: imagesGroupId, kind: "images" },
-      { id: videosGroupId, kind: "videos" },
-    ];
-    for (const { id, kind } of cabinets) {
-      const groupId = id ? String(id).trim() : "";
-      if (!groupId) continue;
-      const cover = creationsById[groupId];
-      if (!cover) continue;
-      for (const memberId of groupSourceCreationIds(cover)) {
-        if (memberId === groupId) continue;
-        map.set(memberId, { groupId, kind });
-      }
-    }
-    return map;
-  }, [creationsById, imagesGroupId, videosGroupId]);
-
-  const groupDeleteTarget = useMemo(() => {
-    if (!contextMenu || contextMenu.kind !== "assets" || !onDeleteFromGroup) {
-      return null;
-    }
-    const groupIds = new Set(
-      contextMenu.assetIds
-        .map((id) => groupMembershipByMemberId.get(id)?.groupId)
-        .filter((id): id is string => Boolean(id)),
-    );
-    if (groupIds.size !== 1) return null;
-    const groupId = [...groupIds][0];
-    const kind = groupMembershipByMemberId.get(contextMenu.assetIds[0])?.kind;
-    if (!kind) return null;
-    if (
-      !contextMenu.assetIds.every(
-        (id) => groupMembershipByMemberId.get(id)?.groupId === groupId,
-      )
-    ) {
-      return null;
-    }
-    return { groupId, kind, memberIds: contextMenu.assetIds };
-  }, [contextMenu, groupMembershipByMemberId, onDeleteFromGroup]);
-
-  const groupDeleteBlocked =
-    groupDeleteTarget != null &&
-    groupDeleteTarget.memberIds.some((id) =>
-      timelineUsedAssetIds?.has(id),
-    );
-
-  const contextMenuHasGroupMembers =
-    contextMenu?.kind === "assets" &&
-    contextMenu.assetIds.some((id) => groupMembershipByMemberId.has(id));
-
   const contextMenuDiscardablePlaceholderIds = useMemo(() => {
     if (contextMenu?.kind !== "assets") return [];
     return contextMenu.assetIds.filter((id) =>
@@ -670,16 +617,17 @@ export function AssetBrowserPane({
     );
   }, [contextMenu, libraryAssetPlaceholders]);
 
+  const contextMenuTimelineBlocked =
+    contextMenuRemovableAssetIds.some((id) => timelineUsedAssetIds?.has(id));
+
   const openContextMenu = (
     assetId: string,
     event: ReactMouseEvent,
   ) => {
-    const isGroupMember = groupMembershipByMemberId.has(assetId);
     if (
       !onDeleteAssets &&
       !onRemoveAssets &&
-      !onDiscardLibraryAssetPlaceholders &&
-      !(onDeleteFromGroup && isGroupMember)
+      !onDiscardLibraryAssetPlaceholders
     ) {
       return;
     }
@@ -1018,34 +966,6 @@ export function AssetBrowserPane({
                 </button>
               ) : null}
               {contextMenu.kind === "assets" &&
-              onDeleteFromGroup &&
-              groupDeleteTarget ? (
-                <button
-                  type="button"
-                  className="editor-asset-context-item is-danger"
-                  role="menuitem"
-                  disabled={groupDeleteBlocked}
-                  title={
-                    groupDeleteBlocked
-                      ? "Remove timeline clips that use these assets first."
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (groupDeleteBlocked) return;
-                    const target = groupDeleteTarget;
-                    setContextMenu(null);
-                    onDeleteFromGroup(target);
-                  }}
-                >
-                  Delete from{" "}
-                  {groupDeleteTarget.kind === "images" ? "Images" : "Videos"}{" "}
-                  group
-                  {groupDeleteTarget.memberIds.length > 1
-                    ? ` (${groupDeleteTarget.memberIds.length})`
-                    : ""}
-                </button>
-              ) : null}
-              {contextMenu.kind === "assets" &&
               onDiscardLibraryAssetPlaceholders &&
               contextMenuDiscardablePlaceholderIds.length > 0 ? (
                 <button
@@ -1066,13 +986,19 @@ export function AssetBrowserPane({
               ) : null}
               {contextMenu.kind === "assets" &&
               onRemoveAssets &&
-              !contextMenuHasGroupMembers &&
               contextMenuRemovableAssetIds.length > 0 ? (
                 <button
                   type="button"
                   className="editor-asset-context-item"
                   role="menuitem"
+                  disabled={contextMenuTimelineBlocked}
+                  title={
+                    contextMenuTimelineBlocked
+                      ? "Remove timeline clips that use these assets first."
+                      : undefined
+                  }
                   onClick={() => {
+                    if (contextMenuTimelineBlocked) return;
                     const ids = contextMenuRemovableAssetIds;
                     setContextMenu(null);
                     onRemoveAssets(ids);
@@ -1086,18 +1012,28 @@ export function AssetBrowserPane({
               ) : null}
               {contextMenu.kind === "assets" &&
               onDeleteAssets &&
-              contextMenu.assetIds.every(isLocalOnlyAsset) ? (
+              contextMenuRemovableAssetIds.length > 0 ? (
                 <button
                   type="button"
                   className="editor-asset-context-item is-danger"
                   role="menuitem"
+                  disabled={contextMenuTimelineBlocked}
+                  title={
+                    contextMenuTimelineBlocked
+                      ? "Remove timeline clips that use these assets first."
+                      : undefined
+                  }
                   onClick={() => {
-                    const ids = contextMenu.assetIds;
+                    if (contextMenuTimelineBlocked) return;
+                    const ids = contextMenuRemovableAssetIds;
                     setContextMenu(null);
                     onDeleteAssets(ids);
                   }}
                 >
-                  Delete{contextMenu.assetIds.length > 1 ? ` (${contextMenu.assetIds.length})` : ""}
+                  Delete
+                  {contextMenuRemovableAssetIds.length > 1
+                    ? ` (${contextMenuRemovableAssetIds.length})`
+                    : ""}
                 </button>
               ) : null}
             </div>,

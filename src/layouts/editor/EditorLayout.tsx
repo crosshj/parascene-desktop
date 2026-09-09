@@ -20,10 +20,10 @@ import {
 } from "../../project/projectStore";
 import { usePreviewQuality } from "../../settings/previewQuality";
 import { outsideOwnedReferenceIds } from "../../project/projectUsage";
+import { recoverMissingCabinetIdsFromCreations } from "../../project/desktopProjectGroups";
 import {
   collectCabinetMemberIdsFromCovers,
 } from "../../project/projectOwnership";
-import { recoverMissingCabinetIdsFromCreations } from "../../project/desktopProjectGroups";
 import {
   aliveAssetIdsForSelection,
   collectCabinetDisplayMemberIds,
@@ -58,6 +58,12 @@ import {
   type EditorLayoutPrefs,
 } from "./editorLayoutPrefs";
 import { PreviewPane } from "./PreviewPane";
+import {
+  previewVolumeLabel,
+  previewVolumeRole,
+  previewVolumeTitle,
+} from "./previewVolumeRole";
+import { clipVolumePercent, persistClipVolume } from "../../project/clipVolume";
 import { useProjectPickerCatalog } from "./projectImagePickerAssets";
 import { findOverlappingAudioClip } from "./audioOverlap";
 import { pasteAppendStartSec } from "./timelineAppend";
@@ -77,7 +83,8 @@ import {
   type OpenNewAssetDetail,
 } from "./addAssetEvents";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
-import { isImageToImageGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import { isImageToImageGeneration, isLibraryAudioGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
+import { libraryAudioCloneSeed } from "./libraryAssetGeneration";
 import {
   cancelAddAssetGeneration,
   clearAddAssetGenerationError,
@@ -153,14 +160,18 @@ import {
 } from "../../project/types";
 import { useConfirm } from "../../ui/ConfirmDialog";
 import {
-  removeMembersFromProjectGroup,
-  type ProjectGroupKind,
-} from "../../lab/projectGroups";
+  applyProjectAssetDelete,
+  applyProjectAssetRemove,
+  collectTimelineUsedAssetIds,
+} from "../../agent/projectAssetOps";
 import {
   isActiveLibraryAssetPlaceholder,
   libraryAssetPlaceholderIdsInList,
 } from "../../project/libraryAssetPlaceholder";
-import { retryLibraryAssetPlaceholder } from "./libraryAssetGenerationStore";
+import {
+  cancelLibraryAssetGeneration,
+  retryLibraryAssetPlaceholder,
+} from "./libraryAssetGenerationStore";
 
 const NARROW_MQ = "(max-width: 1100px)";
 
@@ -238,12 +249,14 @@ export function EditorLayout() {
     deleteLibraryCreation,
     clearLibraryAssetPlaceholder,
     setOpenProjectGroupIds,
+    persistOpenProjectAfterAssets,
     setOpenProjectTimeline,
     setOpenProjectSelectedTimelineClipId,
     setOpenProjectSelectedAssetId,
     selectCreationsOnOpenProject,
     setOpenProjectPendingStagedDraft,
     setOpenProjectTimelineZoom,
+    setOpenProjectEditorAudio2,
     setOpenProjectTimelineAudioBakePath,
     setOpenProjectTimelineMonitorActive,
     setOpenProjectTimelinePlayheadSec,
@@ -283,7 +296,8 @@ export function EditorLayout() {
   const [pendingStagedDraft, setPendingStagedDraft] = useState(
     initialSelection.pendingStagedDraft,
   );
-  const [previewVolume, setPreviewVolume] = useState(80);
+  const [monitorVolume, setMonitorVolume] = useState(80);
+  const [sourcePreviewVolume, setSourcePreviewVolume] = useState(80);
   const [assetFilter, setAssetFilter] = useState<AssetKindFilter>("all");
   const [addAssetSlotActive, setAddAssetSlotActive] = useState(false);
   const [openCompositionId, setOpenCompositionId] = useState<string | null>(
@@ -296,6 +310,16 @@ export function EditorLayout() {
     prompt: string;
     model?: string;
     startFrameAssetId?: string;
+    audioExtras?: {
+      voiceId?: string;
+      geminiVoice?: string;
+      stylePrompt?: string;
+      lyrics?: string;
+      instrumental?: boolean;
+      lyricsOptimizer?: boolean;
+      emotion?: string;
+      cloneSourceAssetId?: string;
+    };
   } | null>(null);
   const [mergeModal, setMergeModal] = useState<TimelineMergeModalState | null>(
     null,
@@ -476,7 +500,9 @@ export function EditorLayout() {
     [],
   );
 
-  // Restore Images/Videos cabinet pointers only when they are missing.
+  // Restore Images/Videos pointers only when a live stamped cover is still
+  // among project assets. Last-member Remove persists a null pointer and
+  // unfiles the cover first, so remount has nothing to recover.
   const assetIdsKey = project.assets.map((asset) => asset.id).join("\0");
   useEffect(() => {
     if (project.imagesGroupId && project.videosGroupId) return;
@@ -516,6 +542,7 @@ export function EditorLayout() {
     project.videosGroupId,
     setOpenProjectGroupIds,
   ]);
+
   const outsideReferenceIds = useMemo(
     () => outsideOwnedReferenceIds(project, cabinetOwnedMemberIds),
     [project, cabinetOwnedMemberIds],
@@ -1220,11 +1247,22 @@ export function EditorLayout() {
       setOpenProjectPendingStagedDraft(null);
       const prompt = detail?.prompt?.trim() ?? "";
       const model = detail?.model?.trim();
+      const intentId =
+        detail?.intent === "text_to_speech" || detail?.intent === "text_to_music"
+          ? detail.intent
+          : "text_to_image";
+      const voice = detail?.voice?.trim();
       setLibraryGenerateSeed(
-        prompt || model ? { prompt, model: model || undefined } : null,
+        prompt || model || voice
+          ? {
+              prompt,
+              model: model || undefined,
+              audioExtras: voice ? { geminiVoice: voice, voiceId: voice } : undefined,
+            }
+          : null,
       );
       setAddAssetIntent(
-        makeAddAssetIntent("text_to_image", "parascene_blue", "assets"),
+        makeAddAssetIntent(intentId, "parascene_blue", "assets"),
       );
       setAddAssetSlotActive(true);
     },
@@ -1995,57 +2033,32 @@ export function EditorLayout() {
     }
   };
 
+  const timelineUsedAssetIds = useMemo(
+    () => collectTimelineUsedAssetIds(project.timeline),
+    [project.timeline],
+  );
+
   const assetsUsedOnTimeline = (assetIds: readonly string[]) => {
     const selected = new Set(assetIds);
     const used = new Set<string>();
-    for (const clip of project.timeline) {
-      if (clip.assetId && selected.has(clip.assetId)) {
-        used.add(clip.assetId);
-      }
-      const generatedId = clip.addAssetGeneration?.creationId?.trim();
-      if (generatedId && selected.has(generatedId)) {
-        used.add(generatedId);
-      }
-      for (const id of clip.slideshow?.imageAssetIds ?? []) {
-        if (selected.has(id)) used.add(id);
-      }
-      const audioId = clip.slideshow?.audioAssetId;
-      if (audioId && selected.has(audioId)) used.add(audioId);
-      const startFrame =
-        clip.addAssetGeneration?.startFrameAssetId?.trim() ||
-        clip.addAssetDraft?.startFrameAssetId?.trim() ||
-        (clip.addAssetGeneration?.firstFrameSource?.kind === "asset"
-          ? clip.addAssetGeneration.firstFrameSource.assetId
-          : "") ||
-        (clip.addAssetDraft?.firstFrameSource?.kind === "asset"
-          ? clip.addAssetDraft.firstFrameSource.assetId
-          : "");
-      if (startFrame && selected.has(startFrame)) used.add(startFrame);
-      const lastFrame =
-        (clip.addAssetGeneration?.lastFrameSource?.kind === "asset"
-          ? clip.addAssetGeneration.lastFrameSource.assetId
-          : "") ||
-        (clip.addAssetDraft?.lastFrameSource?.kind === "asset"
-          ? clip.addAssetDraft.lastFrameSource.assetId
-          : "");
-      if (lastFrame && selected.has(lastFrame)) used.add(lastFrame);
+    for (const id of timelineUsedAssetIds) {
+      if (selected.has(id)) used.add(id);
     }
     return used;
   };
 
-  const timelineUsedAssetIds = useMemo(() => {
-    const used = new Set<string>();
-    for (const clip of project.timeline) {
-      if (clip.assetId) used.add(clip.assetId);
-      for (const id of clip.slideshow?.imageAssetIds ?? []) {
-        used.add(id);
-      }
-      if (clip.slideshow?.audioAssetId) {
-        used.add(clip.slideshow.audioAssetId);
-      }
-    }
-    return used;
-  }, [project.timeline]);
+  const projectAssetOpContext = () => ({
+    projectId: project.id,
+    projectTitle: project.title,
+    imagesGroupId: project.imagesGroupId ?? null,
+    videosGroupId: project.videosGroupId ?? null,
+    timelineUsedIds: timelineUsedAssetIds,
+    removeCreationsFromOpenProject,
+    addCreationsToOpenProject,
+    deleteLibraryCreation,
+    setOpenProjectGroupIds,
+    persistOpenProjectAfterAssets,
+  });
 
   const removeAssetsFromProject = async (assetIds: string[]) => {
     const usedIds = assetsUsedOnTimeline(assetIds);
@@ -2083,8 +2096,8 @@ export function EditorLayout() {
           ? "Removes this placeholder from Assets. Nothing was saved to the library."
           : `Removes these ${count} placeholders from Assets. Nothing was saved to the library.`
         : count === 1
-          ? "Do you want to remove this asset from the project?"
-          : `Do you want to remove these ${count} assets from the project?`,
+          ? "Leaves the project. Library keeps the file. If it is in Images or Videos, the website group updates. The Creation stays."
+          : `Leaves the project. Library keeps the files. If they are in Images or Videos, the website group updates. Creations stay.`,
       confirmLabel: onlyPlaceholders ? "Discard" : "Remove",
       cancelLabel: "Cancel",
       danger: onlyPlaceholders,
@@ -2095,7 +2108,7 @@ export function EditorLayout() {
         clearLibraryAssetPlaceholder(id);
       }
       if (creationIds.length > 0) {
-        await removeCreationsFromOpenProject(creationIds);
+        await applyProjectAssetRemove(projectAssetOpContext(), creationIds);
       }
       if (selectedAssetId && assetIds.includes(selectedAssetId)) {
         setSelectedAssetId(null);
@@ -2210,120 +2223,32 @@ export function EditorLayout() {
       title: count === 1 ? "Delete asset?" : `Delete ${count} assets?`,
       message:
         count === 1
-          ? "Do you want to remove this from the project and also delete it from the library?"
-          : `Do you want to remove these ${count} assets from the project and also delete them from the library?`,
+          ? "Removes this from the project and Library. If it is a Parascene Creation, it is deleted on the website too."
+          : `Removes these ${count} from the project and Library. Parascene Creations are deleted on the website too.`,
       confirmLabel: "Delete",
       cancelLabel: "Cancel",
       danger: true,
     });
     if (!ok) return;
-    const results = await Promise.allSettled(
-      assetIds.map((assetId) => deleteLibraryCreation(assetId)),
-    );
-    const deletedIds = assetIds.filter(
-      (_, index) => results[index]?.status === "fulfilled",
-    );
-    const failed = results.filter((result) => result.status === "rejected");
-    if (deletedIds.includes(selectedAssetId ?? "")) {
-      setSelectedAssetId(null);
-      setSelectedAssetIds([]);
-      setOpenProjectSelectedAssetId(null);
-    }
-    if (failed.length > 0) {
-      const first = failed[0];
-      const detail =
-        first?.status === "rejected"
-          ? first.reason instanceof Error
-            ? first.reason.message
-            : String(first.reason)
-          : "";
+    try {
+      await applyProjectAssetDelete(projectAssetOpContext(), assetIds);
+      if (selectedAssetId && assetIds.includes(selectedAssetId)) {
+        setSelectedAssetId(null);
+        setSelectedAssetIds([]);
+        setOpenProjectSelectedAssetId(null);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       await confirm({
         title:
-          failed.length === 1
-            ? "One asset could not be deleted"
-            : `${failed.length} assets could not be deleted`,
-        message: detail,
+          assetIds.length === 1
+            ? "Could not delete asset"
+            : "Could not delete assets",
+        message,
         confirmLabel: "OK",
         hideCancel: true,
       });
     }
-  };
-
-  const deleteMembersFromProjectGroup = async (opts: {
-    groupId: string;
-    kind: ProjectGroupKind;
-    memberIds: string[];
-  }) => {
-    const usedIds = opts.memberIds.filter((id) =>
-      timelineUsedAssetIds.has(id),
-    );
-    if (usedIds.length > 0) {
-      await confirm({
-        title: usedIds.length === 1 ? "Asset in use" : "Assets in use",
-        message:
-          usedIds.length === 1
-            ? "This asset is used on the timeline. Remove its clips first, then try again."
-            : `${usedIds.length} selected assets are used on the timeline. Remove their clips first, then try again.`,
-        confirmLabel: "OK",
-        hideCancel: true,
-      });
-      return;
-    }
-
-    const count = opts.memberIds.length;
-    const groupLabel = opts.kind === "images" ? "Images" : "Videos";
-    await confirm({
-      title:
-        count === 1
-          ? `Delete from ${groupLabel} group?`
-          : `Delete ${count} from ${groupLabel} group?`,
-      message:
-        count === 1
-          ? `This will permanently delete the asset on Parascene and update the ${groupLabel} group in the cloud. This cannot be undone.`
-          : `This will permanently delete these ${count} assets on Parascene and update the ${groupLabel} group in the cloud. This cannot be undone.`,
-      confirmLabel: "Delete from group",
-      cancelLabel: "Cancel",
-      danger: true,
-      errorTitle: "Could not delete from group",
-      onConfirm: async ({ setMessage }) => {
-        setMessage("Starting…");
-        const result = await removeMembersFromProjectGroup({
-          projectId: project.id,
-          projectTitle: project.title,
-          kind: opts.kind,
-          groupId: opts.groupId,
-          memberIds: opts.memberIds,
-          onProgress: setMessage,
-        });
-        if (result.projectCreationIdsToRemove.length > 0) {
-          removeCreationsFromOpenProject(result.projectCreationIdsToRemove);
-        }
-        if (result.projectCreationIdsToAdd.length > 0) {
-          addCreationsToOpenProject(result.projectCreationIdsToAdd);
-        }
-        if (result.groupId === null) {
-          setOpenProjectGroupIds(
-            opts.kind === "images"
-              ? { imagesGroupId: null }
-              : { videosGroupId: null },
-          );
-        } else {
-          setOpenProjectGroupIds(
-            opts.kind === "images"
-              ? { imagesGroupId: result.groupId }
-              : { videosGroupId: result.groupId },
-          );
-        }
-        if (
-          selectedAssetId &&
-          result.projectCreationIdsToRemove.includes(selectedAssetId)
-        ) {
-          setSelectedAssetId(null);
-          setSelectedAssetIds([]);
-          setOpenProjectSelectedAssetId(null);
-        }
-      },
-    });
   };
 
 
@@ -2335,6 +2260,12 @@ export function EditorLayout() {
     () => displayTimeline.find((clip) => clip.id === selectedClipId) ?? null,
     [displayTimeline, selectedClipId],
   );
+
+  const sourceVolumeRole = previewVolumeRole({
+    monitorMode,
+    editingClip: Boolean(clipStagingSeed),
+    clip: selectedTimelineClip,
+  });
 
   const selectedNeedsExtendBake = useMemo(() => {
     if (!selectedTimelineClip) return false;
@@ -2423,6 +2354,7 @@ export function EditorLayout() {
         projectTitle: project.title,
         imagesGroupId: project.imagesGroupId,
         videosGroupId: project.videosGroupId,
+        timelineAudioBakePath: project.timelineAudioBakePath,
       },
     });
     // A refused start used to be a silent no-op — the user retried into the
@@ -2580,6 +2512,29 @@ export function EditorLayout() {
       setAddAssetSlotActive(true);
       return;
     }
+    if (isLibraryAudioGeneration(generation)) {
+      const seed = libraryAudioCloneSeed(generation);
+      if (!seed) return;
+      pauseTimelinePlayback();
+      setOpenCompositionId(null);
+      setSelectedClipId(null);
+      setSelectedClipIds([]);
+      setClipStagingSeed(null);
+      setSelectedAssetIds([]);
+      setSelectedAssetId(null);
+      setOpenProjectSelectedAssetId(null);
+      setOpenProjectSelectedTimelineClipId(null);
+      setOpenProjectTimelineMonitorActive(false);
+      clearPendingStagedDraft();
+      setLibraryGenerateSeed({
+        prompt: seed.prompt,
+        model: seed.model,
+        audioExtras: seed.extras,
+      });
+      setAddAssetIntent(makeAddAssetIntent(seed.intentId, "replicate", "assets"));
+      setAddAssetSlotActive(true);
+      return;
+    }
     const creationId = generation.creationId?.trim() || "";
     const matchedClip =
       (selectedTimelineClip?.addAssetGeneration?.creationId === creationId
@@ -2688,9 +2643,6 @@ export function EditorLayout() {
           onDiscardLibraryAssetPlaceholders={(ids) => {
             void discardLibraryAssetPlaceholders(ids);
           }}
-          onDeleteFromGroup={(target) => {
-            void deleteMembersFromProjectGroup(target);
-          }}
           timelineUsedAssetIds={timelineUsedAssetIds}
           compositions={project.stillWorkstreams}
           openCompositionId={openCompositionId}
@@ -2749,6 +2701,13 @@ export function EditorLayout() {
             imagesGroupId: project.imagesGroupId,
             videosGroupId: project.videosGroupId,
           });
+        }}
+        onCancelLibraryAssetPlaceholder={() => {
+          const id = selectedAssetId?.trim();
+          if (!id) return;
+          const placeholder = project.libraryAssetPlaceholders?.[id];
+          if (!placeholder) return;
+          cancelLibraryAssetGeneration(placeholder);
         }}
         addAssetPlaceholderClip={generateTargetClip}
         addAssetGenerationSession={addAssetGenerationSession}
@@ -2891,8 +2850,27 @@ export function EditorLayout() {
         }}
         showAssetsExpand={!showAssetsPane}
         onExpandAssets={expandAssets}
-        volume={previewVolume}
-        onVolumeChange={setPreviewVolume}
+        volume={
+          sourceVolumeRole === "clip_instance"
+            ? clipVolumePercent(selectedTimelineClip)
+            : sourcePreviewVolume
+        }
+        onVolumeChange={(next) => {
+          if (sourceVolumeRole === "clip_instance" && selectedTimelineClip) {
+            const volume = persistClipVolume({ volume: next });
+            onTimelineClipsChange(
+              timelineRef.current.map((row) =>
+                row.id === selectedTimelineClip.id ? { ...row, volume } : row,
+              ),
+            );
+            if (project.timelineAudioBakePath) onRemoveTimelineAudioBake();
+            return;
+          }
+          setSourcePreviewVolume(next);
+        }}
+        monitorVolume={monitorVolume}
+        volumeLabel={previewVolumeLabel(sourceVolumeRole)}
+        volumeTitle={previewVolumeTitle(sourceVolumeRole)}
         onToggleTimelinePlay={toggleTimelinePlaying}
       />
 
@@ -2952,14 +2930,16 @@ export function EditorLayout() {
         onSelectClip={selectClip}
         zoom={project.timelineZoom}
         onZoomChange={setOpenProjectTimelineZoom}
+        editorAudio2={project.editorAudio2}
+        onEditorAudio2Change={setOpenProjectEditorAudio2}
         monitorActive={monitorMode === "timeline"}
         onActivateMonitor={activateTimeline}
         playheadSec={displayPlayheadSec}
         onPlayheadChange={seekTimelinePlayhead}
         playing={timelinePlaying && monitorMode === "timeline"}
         onTogglePlay={toggleTimelinePlaying}
-        volume={previewVolume}
-        onVolumeChange={setPreviewVolume}
+        volume={monitorVolume}
+        onVolumeChange={setMonitorVolume}
         canMergeSelected={Boolean(mergeSelection)}
         onMergeSelected={openMergeModal}
         mergeBusy={mergeModal?.phase === "running"}

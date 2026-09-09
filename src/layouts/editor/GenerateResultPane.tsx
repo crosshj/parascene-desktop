@@ -28,7 +28,7 @@ type GenerateResultPaneProps = {
   doneMessage?: string | null;
   /** Finished still/video preview for Result (library generates). */
   resultPreviewUrl?: string | null;
-  resultMediaKind?: "image" | "video" | null;
+  resultMediaKind?: "image" | "video" | "audio" | null;
   /** Stop the backend job and return to the form. Shown while running. */
   onCancel?: () => void;
 };
@@ -187,6 +187,13 @@ export function GenerateResultPane({
               src={previewUrl}
               controls
               playsInline
+              preload="metadata"
+            />
+          ) : resultMediaKind === "audio" ? (
+            <audio
+              className="generate-result-media"
+              src={previewUrl}
+              controls
               preload="metadata"
             />
           ) : (

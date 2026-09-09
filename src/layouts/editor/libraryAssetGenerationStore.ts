@@ -11,18 +11,30 @@ import { applyManifest, getCreation } from "../../library/catalogClient";
 import { hasLocalMedia } from "../../library/previewUrl";
 import {
   creationUpsertWithAddAssetGeneration,
+  makeLibraryAudioGeneration,
   makeTextToImageGeneration,
 } from "../../project/desktopAddAssetGeneration";
+import { importLocalPathsForProject } from "../../project/projectAssetLanding";
+import { sliceAudioRange } from "../../lab/audioTools";
 import {
+  cancelGenerateStillJob,
   invokeBlueGenerateStill,
+  invokeParasceneGenerate,
   invokeParasceneGenerateStill,
   invokeReplicateGenerateStill,
   pendingCreationIdFromRun,
+  predictionIdFromServiceRun,
   watchLocalGenerateStill,
+  watchParasceneGenerate,
   watchParasceneGenerateStill,
 } from "../../services/generateStill";
+import {
+  invokeReplicateGenerate,
+  watchLabGenerate,
+} from "../../services/labGenerate";
 import type { ServiceRun } from "../../services/types";
 import {
+  parasceneAudioModelsForIntent,
   parasceneResolveStillModel,
   parasceneStillModelFamilies,
   type ParasceneStillModelOption,
@@ -34,6 +46,27 @@ import {
 } from "./replicateTextToImageModels";
 import { buildReplicateTextToImageInput } from "./textToImageInput";
 import {
+  buildParasceneAudioArgs,
+  buildReplicateAudioInput,
+  buildVoiceCloneInput,
+  parseVoiceCloneOutput,
+  persistAudioGenerateExtras,
+  pickLocalAudioPath,
+  voiceIdFromCreationMeta,
+  type ReplicateAudioGenerateExtras,
+} from "./audioGenerateInputs";
+import {
+  loadCuratedReplicateAudioModels,
+  REPLICATE_VOICE_CLONE_SLUG,
+} from "./replicateAudioModels";
+import {
+  listenReplicateRunProgress,
+  parseReplicateOwnerName,
+  replicatePredictionWait,
+} from "../../replicate/replicateClient";
+import {
+  draftAudioGenerateExtras,
+  findResumableLibraryAssetPlaceholders,
   makeLibraryAssetPlaceholderDraft,
   newLibraryAssetPlaceholderId,
 } from "./libraryAssetGeneration";
@@ -61,6 +94,7 @@ type LibraryAssetGenerationApplier = {
     id: string;
     aspectRatio: ProjectAspectRatio;
     draft: ReturnType<typeof makeLibraryAssetPlaceholderDraft>;
+    kind?: "image" | "audio";
   }) => void;
   /** Select the new placeholder when generation starts. */
   onGenerationStarted: (placeholderId: string) => void;
@@ -83,7 +117,33 @@ type LibraryAssetGenerationApplier = {
 
 let applier: LibraryAssetGenerationApplier | null = null;
 const inflight = new Set<string>();
+const resumeAttempted = new Set<string>();
 const completingPlaceholders = new Set<string>();
+
+function failLibraryPlaceholder(
+  placeholderId: string,
+  err: unknown,
+  job: {
+    provider: AddAssetGenerationJob["provider"];
+    startedAt: string;
+    model: string;
+    serviceJobId?: string;
+    extras?: ReplicateAudioGenerateExtras;
+  },
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+  applier?.patchPlaceholder(placeholderId, {
+    status: "error",
+    progressNote: message,
+    addAssetDraft: {
+      lastError: message,
+      audioExtras: persistAudioGenerateExtras(job.extras),
+      // Same as timeline / library stills: drop the live job on terminal
+      // failure so resume/zombie sweep does not re-watch a finished job.
+      generationJob: undefined,
+    },
+  });
+}
 
 export function bindLibraryAssetGenerationApplier(
   next: LibraryAssetGenerationApplier | null,
@@ -93,6 +153,12 @@ export function bindLibraryAssetGenerationApplier(
 
 export function isLibraryAssetGenerationInflight(id: string): boolean {
   return inflight.has(id.trim());
+}
+
+export function __resetLibraryAssetGenerationStoreForTests(): void {
+  inflight.clear();
+  resumeAttempted.clear();
+  completingPlaceholders.clear();
 }
 
 export type RetryLibraryAssetPlaceholderOpts = {
@@ -134,6 +200,46 @@ export async function retryLibraryAssetPlaceholder(
       modelId: route.id,
       route,
       sourceCreationId,
+    });
+  }
+
+  if (
+    (intentId === "text_to_speech" || intentId === "text_to_music") &&
+    server === "parascene_blue"
+  ) {
+    const extras = draftAudioGenerateExtras(placeholder.addAssetDraft);
+    const models = parasceneAudioModelsForIntent(intentId);
+    const model =
+      models.find((m) => m.id === modelStored)?.id ??
+      models[0]?.id ??
+      "";
+    if (!model) return null;
+    return startLibraryParasceneAudio({
+      ...base,
+      intentId,
+      modelId: model,
+      extras,
+      pendingCreationId:
+        placeholder.addAssetDraft.generationJob?.pendingCreationId?.trim() ||
+        undefined,
+    });
+  }
+
+  if (
+    (intentId === "text_to_speech" || intentId === "text_to_music") &&
+    server === "replicate"
+  ) {
+    const extras = draftAudioGenerateExtras(placeholder.addAssetDraft);
+    if (modelStored === REPLICATE_VOICE_CLONE_SLUG) return null;
+    const models = await loadCuratedReplicateAudioModels(intentId);
+    const model =
+      models.find((m) => m.id === modelStored) ?? models[0] ?? null;
+    if (!model) return null;
+    return startLibraryReplicateAudio({
+      ...base,
+      intentId,
+      modelId: model.id,
+      extras,
     });
   }
 
@@ -409,18 +515,23 @@ function beginLibraryTextToImagePlaceholder(opts: {
   startedAt: string;
   destination: CreationTarget;
   select?: boolean;
+  intentId?: string;
+  kind?: "image" | "audio";
+  audioExtras?: ReplicateAudioGenerateExtras;
 }): void {
   if (!applier) throw new Error("Library asset generation is not ready.");
   const draft = makeLibraryAssetPlaceholderDraft({
     prompt: opts.prompt,
-    intentId: "text_to_image",
+    intentId: opts.intentId ?? "text_to_image",
     server: opts.server,
     provider: opts.provider,
     model: opts.model,
+    audioExtras: opts.audioExtras,
   });
   applier.beginPlaceholder({
     id: opts.placeholderId,
     aspectRatio: opts.aspectRatio,
+    kind: opts.kind === "audio" ? "audio" : "image",
     draft: {
       ...draft,
       generateDestination: opts.destination,
@@ -588,6 +699,7 @@ async function runLibraryReplicateTextToImage(
   if (!applier) return;
   const { placeholderId, startedAt } = opts;
   const destination = opts.destination ?? "assets";
+  let serviceJobId: string | undefined;
 
   const patchJob = (note: string, status: AddAssetGenerationJob["status"]) => {
     applier?.patchPlaceholder(placeholderId, {
@@ -599,6 +711,7 @@ async function runLibraryReplicateTextToImage(
           provider: "replicate",
           startedAt,
           model: opts.model.id,
+          serviceJobId,
         },
       },
     });
@@ -622,6 +735,8 @@ async function runLibraryReplicateTextToImage(
       clientRequestId: placeholderId,
       label: opts.model.id,
     });
+    if (handle.mode === "job") serviceJobId = handle.id;
+    patchJob(`Running ${opts.model.id}…`, "waiting");
     const result = await watchLocalGenerateStill(handle, {
       onUpdate: (run) => {
         const note = run.progressNote?.trim();
@@ -703,6 +818,7 @@ async function runLibraryBlueDirectTextToImage(
   if (!applier) return;
   const { placeholderId, startedAt } = opts;
   const destination = opts.destination ?? "assets";
+  let serviceJobId: string | undefined;
 
   const patchJob = (note: string, status: AddAssetGenerationJob["status"]) => {
     applier?.patchPlaceholder(placeholderId, {
@@ -714,6 +830,7 @@ async function runLibraryBlueDirectTextToImage(
           provider: "blue_direct",
           startedAt,
           model: opts.modelId,
+          serviceJobId,
         },
       },
     });
@@ -733,6 +850,8 @@ async function runLibraryBlueDirectTextToImage(
       clientRequestId: placeholderId,
       label: opts.modelId,
     });
+    if (handle.mode === "job") serviceJobId = handle.id;
+    patchJob("Running Text to Image on Direct to Blue…", "waiting");
     const result = await watchLocalGenerateStill(handle, {
       onUpdate: (run) => {
         const note = run.progressNote?.trim();
@@ -939,12 +1058,945 @@ async function runLibraryParasceneImageToImage(
   }
 }
 
+export type StartLibraryReplicateAudioOpts = {
+  projectId: string;
+  aspectRatio: ProjectAspectRatio;
+  prompt: string;
+  intentId: "text_to_speech" | "text_to_music";
+  modelId: string;
+  extras?: ReplicateAudioGenerateExtras;
+  destination?: CreationTarget;
+  placeholderId?: string;
+  onPlaceholderReserved?: (assetId: string) => void;
+};
+
+export function startLibraryReplicateAudio(
+  opts: StartLibraryReplicateAudioOpts,
+): string {
+  if (!applier) {
+    throw new Error("Library asset generation is not ready.");
+  }
+  const placeholderId =
+    opts.placeholderId?.trim() || newLibraryAssetPlaceholderId();
+  if (inflight.has(placeholderId)) return placeholderId;
+
+  const startedAt = new Date().toISOString();
+  const destination = opts.destination ?? "assets";
+  beginLibraryTextToImagePlaceholder({
+    placeholderId,
+    aspectRatio: opts.aspectRatio,
+    prompt: opts.prompt,
+    server: "replicate",
+    provider: "replicate",
+    model: opts.modelId,
+    startedAt,
+    destination,
+    select: !opts.placeholderId?.trim(),
+    intentId: opts.intentId,
+    kind: "audio",
+    audioExtras: opts.extras,
+  });
+  opts.onPlaceholderReserved?.(placeholderId);
+
+  inflight.add(placeholderId);
+  void runLibraryReplicateAudio({
+    ...opts,
+    placeholderId,
+    startedAt,
+  }).finally(() => {
+    inflight.delete(placeholderId);
+  });
+
+  return placeholderId;
+}
+
+async function stampLocalAudioProvenance(opts: {
+  creationId: string;
+  prompt: string;
+  model: string;
+  intentId: "text_to_speech" | "text_to_music";
+  server?: "replicate" | "parascene_blue";
+  extras?: ReplicateAudioGenerateExtras;
+}): Promise<void> {
+  try {
+    const creation = await getCreation(opts.creationId);
+    await applyManifest([
+      creationUpsertWithAddAssetGeneration(
+        creation,
+        makeLibraryAudioGeneration({
+          prompt: opts.prompt,
+          creationId: opts.creationId,
+          model: opts.model,
+          intentId: opts.intentId,
+          server: opts.server,
+          extras: opts.extras,
+        }),
+      ),
+    ]);
+  } catch {
+    // Provenance stamp is best-effort.
+  }
+}
+
+async function runLibraryReplicateAudio(
+  opts: StartLibraryReplicateAudioOpts & {
+    placeholderId: string;
+    startedAt: string;
+  },
+): Promise<void> {
+  if (!applier) return;
+  const { placeholderId, startedAt } = opts;
+  const destination = opts.destination ?? "assets";
+  const slug = parseReplicateOwnerName(opts.modelId);
+
+  let serviceJobId: string | undefined;
+  let replicatePredictionId: string | undefined;
+  const extras = persistAudioGenerateExtras(opts.extras);
+  const rememberPrediction = (id?: string | null) => {
+    const trimmed = id?.trim();
+    if (trimmed && !replicatePredictionId) replicatePredictionId = trimmed;
+  };
+  const patchJob = (note: string, status: AddAssetGenerationJob["status"]) => {
+    applier?.patchPlaceholder(placeholderId, {
+      status: "generating",
+      progressNote: note,
+      addAssetDraft: {
+        audioExtras: extras,
+        replicatePredictionId,
+        generationJob: {
+          status,
+          provider: "replicate",
+          startedAt,
+          model: opts.modelId,
+          serviceJobId,
+          replicatePredictionId,
+        },
+      },
+    });
+  };
+
+  try {
+    if (!slug) throw new Error(`Unknown Replicate model ${opts.modelId}`);
+    patchJob(`Running ${opts.modelId}…`, "starting");
+    const input = buildReplicateAudioInput({
+      modelId: opts.modelId,
+      text: opts.prompt,
+      extras: opts.extras,
+    });
+    const unlisten = await listenReplicateRunProgress((ev) => {
+      if (ev.owner !== slug.owner || ev.name !== slug.name) return;
+      rememberPrediction(ev.predictionId);
+      const note = ev.message?.trim();
+      if (note || ev.predictionId) {
+        patchJob(note || `Running ${opts.modelId}…`, "waiting");
+      }
+    });
+    try {
+      const handle = await invokeReplicateGenerate({
+        owner: slug.owner,
+        name: slug.name,
+        input,
+        localFiles: {},
+        requiredFileFields: [],
+        projectId: opts.projectId,
+        target: destination,
+        clientRequestId: placeholderId,
+        label: opts.modelId,
+      });
+      if (handle.mode === "job") serviceJobId = handle.id;
+      patchJob(`Running ${opts.modelId}…`, "waiting");
+      const result = await watchLocalGenerateStill(handle, {
+        onUpdate: (run) => {
+          rememberPrediction(predictionIdFromServiceRun(run));
+          const note = run.progressNote?.trim();
+          const lower = note?.toLowerCase() ?? "";
+          const status: AddAssetGenerationJob["status"] = lower.includes("import")
+            ? "importing"
+            : "waiting";
+          if (note) patchJob(note, status);
+          else if (replicatePredictionId) patchJob(`Running ${opts.modelId}…`, status);
+        },
+      });
+      rememberPrediction(result.predictionId);
+      await stampLocalAudioProvenance({
+        creationId: result.creationId,
+        prompt: opts.prompt,
+        model: opts.modelId,
+        intentId: opts.intentId,
+        extras,
+      });
+      await finishLibraryTextToImagePlaceholder({
+        placeholderId,
+        creationId: result.creationId,
+        prompt: opts.prompt,
+        destination,
+      });
+    } finally {
+      unlisten();
+    }
+  } catch (err) {
+    failLibraryPlaceholder(placeholderId, err, {
+      provider: "replicate",
+      startedAt,
+      model: opts.modelId,
+      serviceJobId,
+      extras,
+    });
+  }
+}
+
+export type StartLibraryParasceneAudioOpts = {
+  projectId: string;
+  projectTitle?: string;
+  imagesGroupId?: string | null;
+  videosGroupId?: string | null;
+  aspectRatio: ProjectAspectRatio;
+  prompt: string;
+  intentId: "text_to_speech" | "text_to_music";
+  modelId: string;
+  extras?: ReplicateAudioGenerateExtras;
+  destination?: CreationTarget;
+  placeholderId?: string;
+  pendingCreationId?: string;
+  onPlaceholderReserved?: (assetId: string) => void;
+};
+
+export function startLibraryParasceneAudio(
+  opts: StartLibraryParasceneAudioOpts,
+): string {
+  if (!applier) {
+    throw new Error("Library asset generation is not ready.");
+  }
+  const placeholderId =
+    opts.placeholderId?.trim() || newLibraryAssetPlaceholderId();
+  if (inflight.has(placeholderId)) return placeholderId;
+
+  const startedAt = new Date().toISOString();
+  const destination = opts.destination ?? "assets";
+  beginLibraryTextToImagePlaceholder({
+    placeholderId,
+    aspectRatio: opts.aspectRatio,
+    prompt: opts.prompt,
+    server: "parascene_blue",
+    provider: "parascene_blue",
+    model: opts.modelId,
+    startedAt,
+    destination,
+    select: !opts.placeholderId?.trim(),
+    intentId: opts.intentId,
+    kind: "audio",
+    audioExtras: opts.extras,
+  });
+  opts.onPlaceholderReserved?.(placeholderId);
+
+  inflight.add(placeholderId);
+  void runLibraryParasceneAudio({
+    ...opts,
+    placeholderId,
+    startedAt,
+  }).finally(() => {
+    inflight.delete(placeholderId);
+  });
+
+  return placeholderId;
+}
+
+async function runLibraryParasceneAudio(
+  opts: StartLibraryParasceneAudioOpts & {
+    placeholderId: string;
+    startedAt: string;
+  },
+): Promise<void> {
+  if (!applier) return;
+  const { placeholderId, startedAt } = opts;
+  const destination = opts.destination ?? "assets";
+  const extras = persistAudioGenerateExtras(opts.extras);
+  const method =
+    opts.intentId === "text_to_music" ? "replicateMusic" : "replicateSpeech";
+  let pendingCreationId = opts.pendingCreationId?.trim() || undefined;
+  let serviceJobId: string | undefined;
+
+  const patchJob = (note: string, status: AddAssetGenerationJob["status"]) => {
+    applier?.patchPlaceholder(placeholderId, {
+      status: "generating",
+      progressNote: note,
+      addAssetDraft: {
+        audioExtras: extras,
+        generationJob: {
+          status,
+          provider: "parascene_blue",
+          startedAt,
+          pendingCreationId,
+          serviceJobId,
+          model: opts.modelId,
+        },
+      },
+    });
+  };
+
+  try {
+    patchJob("Starting audio generation on Parascene…", "starting");
+    const handle = await invokeParasceneGenerate({
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle?.trim() || "Project",
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+      serverId: 1,
+      method,
+      args: buildParasceneAudioArgs({
+        modelId: opts.modelId,
+        text: opts.prompt,
+        extras: opts.extras,
+      }),
+      intent: opts.intentId,
+      mediaType: "audio",
+      target: destination,
+      clientRequestId: placeholderId,
+      creationToken: placeholderId,
+      pendingCreationId,
+      label: opts.modelId,
+    });
+    if (handle.mode === "job") serviceJobId = handle.id;
+    const result = await watchParasceneGenerate(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        const id = pendingCreationIdFromRun(run);
+        if (id) pendingCreationId = id;
+        if (note) patchJob(note, "waiting");
+      },
+    });
+    await stampLocalAudioProvenance({
+      creationId: result.creationId,
+      prompt: opts.prompt,
+      model: opts.modelId,
+      intentId: opts.intentId,
+      server: "parascene_blue",
+      extras,
+    });
+    await finishLibraryTextToImagePlaceholder({
+      placeholderId,
+      creationId: result.creationId,
+      prompt: opts.prompt,
+      destination,
+      projectCreationIds: result.projectCreationIds,
+    });
+  } catch (err) {
+    failLibraryPlaceholder(placeholderId, err, {
+      provider: "parascene_blue",
+      startedAt,
+      model: opts.modelId,
+      serviceJobId,
+      extras,
+    });
+  }
+}
+
+export type StartLibraryParasceneVoiceTrainOpts = {
+  projectId: string;
+  projectTitle?: string;
+  aspectRatio: ProjectAspectRatio;
+  sourceAssetId: string;
+  sourceLabel?: string;
+  placeholderId?: string;
+  onPlaceholderReserved?: (assetId: string) => void;
+  onVoiceReady?: (opts: { creationId: string; voiceId: string }) => void;
+};
+
+export function startLibraryParasceneVoiceTrain(
+  opts: StartLibraryParasceneVoiceTrainOpts,
+): string {
+  if (!applier) {
+    throw new Error("Library asset generation is not ready.");
+  }
+  const placeholderId =
+    opts.placeholderId?.trim() || newLibraryAssetPlaceholderId();
+  if (inflight.has(placeholderId)) return placeholderId;
+
+  const startedAt = new Date().toISOString();
+  const prompt = opts.sourceLabel?.trim() || "Voice train";
+  beginLibraryTextToImagePlaceholder({
+    placeholderId,
+    aspectRatio: opts.aspectRatio,
+    prompt,
+    server: "parascene_blue",
+    provider: "parascene_blue",
+    model: "minimax/voice-cloning",
+    startedAt,
+    destination: "assets",
+    select: !opts.placeholderId?.trim(),
+    intentId: "text_to_speech",
+    kind: "audio",
+    audioExtras: persistAudioGenerateExtras({
+      cloneSourceAssetId: opts.sourceAssetId,
+    }),
+  });
+  opts.onPlaceholderReserved?.(placeholderId);
+
+  inflight.add(placeholderId);
+  void runLibraryParasceneVoiceTrain({
+    ...opts,
+    placeholderId,
+    startedAt,
+    prompt,
+  }).finally(() => {
+    inflight.delete(placeholderId);
+  });
+
+  return placeholderId;
+}
+
+async function runLibraryParasceneVoiceTrain(
+  opts: StartLibraryParasceneVoiceTrainOpts & {
+    placeholderId: string;
+    startedAt: string;
+    prompt: string;
+  },
+): Promise<void> {
+  if (!applier) return;
+  const { placeholderId, startedAt } = opts;
+  const extras = persistAudioGenerateExtras({
+    cloneSourceAssetId: opts.sourceAssetId,
+  });
+  let pendingCreationId: string | undefined;
+  let serviceJobId: string | undefined;
+
+  const patchJob = (note: string, status: AddAssetGenerationJob["status"]) => {
+    applier?.patchPlaceholder(placeholderId, {
+      status: "generating",
+      progressNote: note,
+      addAssetDraft: {
+        audioExtras: extras,
+        generationJob: {
+          status,
+          provider: "parascene_blue",
+          startedAt,
+          pendingCreationId,
+          serviceJobId,
+          model: "minimax/voice-cloning",
+        },
+      },
+    });
+  };
+
+  try {
+    const sourceAssetId = opts.sourceAssetId.trim();
+    if (!sourceAssetId) throw new Error("Pick a Library audio file to train.");
+    patchJob("Training voice on Parascene…", "starting");
+    const handle = await invokeParasceneGenerate({
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle?.trim() || "Project",
+      serverId: 1,
+      method: "replicateVoiceTrain",
+      args: { voice_file: sourceAssetId },
+      intent: "voice_train",
+      mediaType: "audio",
+      target: "assets",
+      clientRequestId: placeholderId,
+      creationToken: placeholderId,
+      label: "replicateVoiceTrain",
+    });
+    if (handle.mode === "job") serviceJobId = handle.id;
+    const result = await watchParasceneGenerate(handle, {
+      onUpdate: (run) => {
+        const note = run.progressNote?.trim();
+        const id = pendingCreationIdFromRun(run);
+        if (id) pendingCreationId = id;
+        if (note) patchJob(note, "waiting");
+      },
+    });
+    const creation = await getCreation(result.creationId);
+    const voiceId = voiceIdFromCreationMeta(creation);
+    if (!voiceId) {
+      throw new Error("Voice train finished without a voice_id.");
+    }
+    await stampLocalAudioProvenance({
+      creationId: result.creationId,
+      prompt: opts.prompt,
+      model: "minimax/voice-cloning",
+      intentId: "text_to_speech",
+      server: "parascene_blue",
+      extras: { voiceId, cloneSourceAssetId: sourceAssetId },
+    });
+    await finishLibraryTextToImagePlaceholder({
+      placeholderId,
+      creationId: result.creationId,
+      prompt: opts.prompt,
+      destination: "assets",
+      projectCreationIds: result.projectCreationIds,
+    });
+    opts.onVoiceReady?.({ creationId: result.creationId, voiceId });
+  } catch (err) {
+    failLibraryPlaceholder(placeholderId, err, {
+      provider: "parascene_blue",
+      startedAt,
+      model: "minimax/voice-cloning",
+      serviceJobId,
+      extras,
+    });
+  }
+}
+
+export type StartLibraryVoiceCloneOpts = {
+  projectId: string;
+  aspectRatio: ProjectAspectRatio;
+  sourcePath: string;
+  sourceLabel?: string;
+  sourceAssetId?: string;
+  placeholderId?: string;
+  onPlaceholderReserved?: (assetId: string) => void;
+  onVoiceReady?: (opts: { creationId: string; voiceId: string }) => void;
+};
+
+export function startLibraryVoiceClone(opts: StartLibraryVoiceCloneOpts): string {
+  if (!applier) {
+    throw new Error("Library asset generation is not ready.");
+  }
+  const placeholderId =
+    opts.placeholderId?.trim() || newLibraryAssetPlaceholderId();
+  if (inflight.has(placeholderId)) return placeholderId;
+
+  const startedAt = new Date().toISOString();
+  const prompt = opts.sourceLabel?.trim() || "Voice clone";
+  beginLibraryTextToImagePlaceholder({
+    placeholderId,
+    aspectRatio: opts.aspectRatio,
+    prompt,
+    server: "replicate",
+    provider: "replicate",
+    model: REPLICATE_VOICE_CLONE_SLUG,
+    startedAt,
+    destination: "assets",
+    select: !opts.placeholderId?.trim(),
+    intentId: "text_to_speech",
+    kind: "audio",
+    audioExtras: persistAudioGenerateExtras({
+      cloneSourceAssetId: opts.sourceAssetId,
+    }),
+  });
+  opts.onPlaceholderReserved?.(placeholderId);
+
+  inflight.add(placeholderId);
+  void runLibraryVoiceClone({
+    ...opts,
+    placeholderId,
+    startedAt,
+    prompt,
+  }).finally(() => {
+    inflight.delete(placeholderId);
+  });
+
+  return placeholderId;
+}
+
+async function runLibraryVoiceClone(
+  opts: StartLibraryVoiceCloneOpts & {
+    placeholderId: string;
+    startedAt: string;
+    prompt: string;
+  },
+): Promise<void> {
+  if (!applier) return;
+  const { placeholderId, startedAt } = opts;
+  const slug = parseReplicateOwnerName(REPLICATE_VOICE_CLONE_SLUG);
+
+  let serviceJobId: string | undefined;
+  let replicatePredictionId: string | undefined;
+  const extras = persistAudioGenerateExtras({
+    cloneSourceAssetId: opts.sourceAssetId,
+  });
+  const rememberPrediction = (id?: string | null) => {
+    const trimmed = id?.trim();
+    if (trimmed && !replicatePredictionId) replicatePredictionId = trimmed;
+  };
+  const patchJob = (note: string, status: AddAssetGenerationJob["status"]) => {
+    applier?.patchPlaceholder(placeholderId, {
+      status: "generating",
+      progressNote: note,
+      addAssetDraft: {
+        audioExtras: extras,
+        replicatePredictionId,
+        generationJob: {
+          status,
+          provider: "replicate",
+          startedAt,
+          model: REPLICATE_VOICE_CLONE_SLUG,
+          serviceJobId,
+          replicatePredictionId,
+        },
+      },
+    });
+  };
+
+  try {
+    if (!slug) throw new Error("Voice cloning model is missing.");
+    const sourcePath = opts.sourcePath.trim();
+    if (!sourcePath) throw new Error("Pick a Library audio file to clone.");
+    patchJob("Cloning voice…", "starting");
+    const unlisten = await listenReplicateRunProgress((ev) => {
+      if (ev.owner !== slug.owner || ev.name !== slug.name) return;
+      rememberPrediction(ev.predictionId);
+      const note = ev.message?.trim();
+      if (note || ev.predictionId) patchJob(note || "Cloning voice…", "waiting");
+    });
+    try {
+      const handle = await invokeReplicateGenerate({
+        owner: slug.owner,
+        name: slug.name,
+        input: buildVoiceCloneInput(),
+        localFiles: { voice_file: sourcePath },
+        requiredFileFields: ["voice_file"],
+        label: REPLICATE_VOICE_CLONE_SLUG,
+        clientRequestId: placeholderId,
+      });
+      if (handle.mode === "job") serviceJobId = handle.id;
+      patchJob("Cloning voice…", "waiting");
+      const result = await watchLabGenerate(handle, {
+        onUpdate: (run) => {
+          rememberPrediction(predictionIdFromServiceRun(run));
+          const note = run.progressNote?.trim();
+          if (note) patchJob(note, "waiting");
+        },
+      });
+      rememberPrediction(result.predictionId);
+      const finished = await finishVoiceCloneImport({
+        placeholderId,
+        projectId: opts.projectId,
+        prompt: opts.prompt,
+        result,
+        patchJob,
+      });
+      opts.onVoiceReady?.(finished);
+    } finally {
+      unlisten();
+    }
+  } catch (err) {
+    failLibraryPlaceholder(placeholderId, err, {
+      provider: "replicate",
+      startedAt,
+      model: REPLICATE_VOICE_CLONE_SLUG,
+      serviceJobId,
+      extras,
+    });
+  }
+}
+
+async function finishVoiceCloneImport(opts: {
+  placeholderId: string;
+  projectId: string;
+  prompt: string;
+  result: Parameters<typeof parseVoiceCloneOutput>[0];
+  patchJob: (note: string, status: AddAssetGenerationJob["status"]) => void;
+}): Promise<{ creationId: string; voiceId: string }> {
+  const parsed = parseVoiceCloneOutput(opts.result);
+  if (!parsed.voiceId) {
+    throw new Error("Voice clone finished without a voice_id.");
+  }
+  const previewPath = parsed.previewPath;
+  if (!previewPath) {
+    throw new Error("Voice clone finished without a 5s preview audio file.");
+  }
+  opts.patchJob("Trimming preview…", "importing");
+  let importPath = previewPath;
+  try {
+    const sliced = await sliceAudioRange({
+      sourcePath: previewPath,
+      inSec: 0,
+      outSec: 5,
+    });
+    if (sliced.path.trim()) importPath = sliced.path;
+  } catch {
+    importPath = previewPath;
+  }
+  const imported = await importLocalPathsForProject({
+    projectId: opts.projectId,
+    paths: [importPath],
+  });
+  const creationId = imported.creations[0]?.id?.trim();
+  if (!creationId) {
+    throw new Error("Could not import the cloned voice preview.");
+  }
+  await stampLocalAudioProvenance({
+    creationId,
+    prompt: opts.prompt,
+    model: REPLICATE_VOICE_CLONE_SLUG,
+    intentId: "text_to_speech",
+    extras: { voiceId: parsed.voiceId },
+  });
+  await finishLibraryTextToImagePlaceholder({
+    placeholderId: opts.placeholderId,
+    creationId,
+    prompt: opts.prompt,
+    destination: "assets",
+  });
+  return { creationId, voiceId: parsed.voiceId };
+}
+
+async function finishLibraryFromReplicatePrediction(opts: {
+  placeholderId: string;
+  projectId: string;
+  predictionId: string;
+  prompt: string;
+  model: string;
+  kind: "image" | "audio";
+  intentId?: string;
+  extras?: ReplicateAudioGenerateExtras;
+  destination: CreationTarget;
+  patchJob: (note: string, status: AddAssetGenerationJob["status"]) => void;
+}): Promise<void> {
+  opts.patchJob(`Resuming Replicate wait (${opts.predictionId})…`, "waiting");
+  const result = await replicatePredictionWait(opts.predictionId);
+  if (
+    result.error ||
+    result.status === "failed" ||
+    result.status === "canceled" ||
+    result.status === "cancelled"
+  ) {
+    throw new Error(
+      result.error?.trim() || `Replicate ${result.status || "failed"}`,
+    );
+  }
+  const path =
+    opts.kind === "audio"
+      ? pickLocalAudioPath(result.localPaths)
+      : result.localPaths.map((row) => row.trim()).find(Boolean) ?? null;
+  if (!path) {
+    throw new Error("Replicate finished without a local file.");
+  }
+  opts.patchJob("Import into Assets…", "importing");
+  const imported = await importLocalPathsForProject({
+    projectId: opts.projectId,
+    paths: [path],
+  });
+  const creationId = imported.creations[0]?.id?.trim();
+  if (!creationId) {
+    throw new Error("Could not import Replicate output.");
+  }
+  if (opts.kind === "audio") {
+    await stampLocalAudioProvenance({
+      creationId,
+      prompt: opts.prompt,
+      model: opts.model,
+      intentId:
+        opts.intentId === "text_to_music" ? "text_to_music" : "text_to_speech",
+      extras: opts.extras,
+    });
+  }
+  await finishLibraryTextToImagePlaceholder({
+    placeholderId: opts.placeholderId,
+    creationId,
+    prompt: opts.prompt,
+    destination: opts.destination,
+  });
+}
+
+export function cancelLibraryAssetGeneration(
+  placeholder: Pick<LibraryAssetPlaceholder, "id" | "addAssetDraft">,
+): void {
+  const id = placeholder.id.trim();
+  if (!id) return;
+  inflight.delete(id);
+  resumeAttempted.add(id);
+  const serviceJobId = placeholder.addAssetDraft.generationJob?.serviceJobId?.trim();
+  if (serviceJobId) {
+    void cancelGenerateStillJob(serviceJobId).catch(() => {});
+  }
+  failLibraryPlaceholder(id, new Error("Cancelled"), {
+    provider: placeholder.addAssetDraft.generationJob?.provider ?? "replicate",
+    startedAt:
+      placeholder.addAssetDraft.generationJob?.startedAt ??
+      new Date().toISOString(),
+    model:
+      placeholder.addAssetDraft.generationJob?.model?.trim() ||
+      placeholder.addAssetDraft.replicateModel?.trim() ||
+      "",
+    extras: draftAudioGenerateExtras(placeholder.addAssetDraft),
+  });
+}
+
+export function reconcileLibraryAssetGenerations(opts: {
+  projectId: string;
+  projectTitle: string;
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  placeholders: Record<string, LibraryAssetPlaceholder>;
+}): boolean {
+  let started = false;
+  for (const placeholder of findResumableLibraryAssetPlaceholders(
+    opts.placeholders,
+  )) {
+    if (inflight.has(placeholder.id) || resumeAttempted.has(placeholder.id)) {
+      continue;
+    }
+    const job = placeholder.addAssetDraft.generationJob;
+    const serviceJobId = job?.serviceJobId?.trim();
+    const predictionId =
+      job?.replicatePredictionId?.trim() ||
+      placeholder.addAssetDraft.replicatePredictionId?.trim() ||
+      "";
+    if (!job || (!serviceJobId && !predictionId)) continue;
+    const extras = draftAudioGenerateExtras(placeholder.addAssetDraft);
+    const startedAt = job.startedAt;
+    const model = job.model?.trim() || placeholder.addAssetDraft.replicateModel?.trim() || "";
+    inflight.add(placeholder.id);
+    resumeAttempted.add(placeholder.id);
+    started = true;
+    const isClone = model === REPLICATE_VOICE_CLONE_SLUG;
+    const provider = job.provider ?? "replicate";
+    void (async () => {
+      const patchJob = (
+        note: string,
+        status: AddAssetGenerationJob["status"],
+      ) => {
+        applier?.patchPlaceholder(placeholder.id, {
+          status: "generating",
+          progressNote: note,
+          addAssetDraft: {
+            audioExtras: extras,
+            lastError: undefined,
+            generationJob: {
+              status,
+              provider,
+              startedAt,
+              model,
+              serviceJobId: serviceJobId || undefined,
+              replicatePredictionId: predictionId || undefined,
+            },
+            replicatePredictionId: predictionId || undefined,
+          },
+        });
+      };
+      try {
+        patchJob("Resuming generation…", "waiting");
+        if (isClone) {
+          if (serviceJobId) {
+            try {
+              const result = await watchLabGenerate(
+                { mode: "job", id: serviceJobId },
+                {
+                  onUpdate: (run) => {
+                    const note = run.progressNote?.trim();
+                    if (note) patchJob(note, "waiting");
+                  },
+                },
+              );
+              await finishVoiceCloneImport({
+                placeholderId: placeholder.id,
+                projectId: opts.projectId,
+                prompt: placeholder.addAssetDraft.prompt?.trim() || "Voice clone",
+                result,
+                patchJob,
+              });
+              return;
+            } catch (err) {
+              if (!predictionId) throw err;
+            }
+          }
+          if (!predictionId) {
+            throw new Error("No Replicate prediction id to resume voice clone.");
+          }
+          const result = await replicatePredictionWait(predictionId);
+          await finishVoiceCloneImport({
+            placeholderId: placeholder.id,
+            projectId: opts.projectId,
+            prompt: placeholder.addAssetDraft.prompt?.trim() || "Voice clone",
+            result,
+            patchJob,
+          });
+          return;
+        }
+        if (serviceJobId) {
+          try {
+            const watch =
+              provider === "parascene_blue"
+                ? watchParasceneGenerateStill
+                : watchLocalGenerateStill;
+            const result = await watch(
+              { mode: "job", id: serviceJobId },
+              {
+                onUpdate: (run) => {
+                  const note = run.progressNote?.trim();
+                  if (note) patchJob(note, "waiting");
+                },
+              },
+            );
+            if (placeholder.kind === "audio") {
+              const intentId =
+                placeholder.addAssetDraft.intentId === "text_to_music"
+                  ? "text_to_music"
+                  : "text_to_speech";
+              await stampLocalAudioProvenance({
+                creationId: result.creationId,
+                prompt: placeholder.addAssetDraft.prompt?.trim() || "",
+                model,
+                intentId,
+                server:
+                  provider === "parascene_blue" ? "parascene_blue" : "replicate",
+                extras,
+              });
+            }
+            await finishLibraryTextToImagePlaceholder({
+              placeholderId: placeholder.id,
+              creationId: result.creationId,
+              prompt: placeholder.addAssetDraft.prompt?.trim() || "",
+              destination:
+                placeholder.addAssetDraft.generateDestination === "timeline"
+                  ? "timeline"
+                  : "assets",
+              projectCreationIds:
+                "projectCreationIds" in result
+                  ? result.projectCreationIds
+                  : undefined,
+              imagesGroupId:
+                "imagesGroupId" in result ? result.imagesGroupId : undefined,
+            });
+            return;
+          } catch (err) {
+            if (!predictionId) throw err;
+          }
+        }
+        if (!predictionId) {
+          throw new Error("No Replicate prediction id to resume generation.");
+        }
+        await finishLibraryFromReplicatePrediction({
+          placeholderId: placeholder.id,
+          projectId: opts.projectId,
+          predictionId,
+          prompt: placeholder.addAssetDraft.prompt?.trim() || "",
+          model,
+          kind: placeholder.kind,
+          intentId: placeholder.addAssetDraft.intentId,
+          extras,
+          destination:
+            placeholder.addAssetDraft.generateDestination === "timeline"
+              ? "timeline"
+              : "assets",
+          patchJob,
+        });
+      } catch (err) {
+        failLibraryPlaceholder(placeholder.id, err, {
+          provider,
+          startedAt,
+          model,
+          serviceJobId,
+          extras,
+        });
+      } finally {
+        inflight.delete(placeholder.id);
+        resumeAttempted.delete(placeholder.id);
+      }
+    })();
+  }
+  return started;
+}
+
 export function libraryAssetGenerationFromPlaceholder(
   placeholder: {
     addAssetDraft: {
       prompt?: string;
       replicateModel?: string;
       server?: string;
+      intentId?: string;
+      audioExtras?: ReplicateAudioGenerateExtras;
     };
     addAssetGeneration?: AddAssetGeneration;
   } | null,
@@ -958,6 +2010,17 @@ export function libraryAssetGenerationFromPlaceholder(
     serverRaw === "replicate" || serverRaw === "blue_direct"
       ? serverRaw
       : "parascene_blue";
+  const intentId = placeholder.addAssetDraft.intentId?.trim();
+  if (intentId === "text_to_speech" || intentId === "text_to_music") {
+    return makeLibraryAudioGeneration({
+      prompt,
+      creationId,
+      model: placeholder.addAssetDraft.replicateModel ?? "",
+      intentId,
+      server: serverRaw === "parascene_blue" ? "parascene_blue" : "replicate",
+      extras: persistAudioGenerateExtras(placeholder.addAssetDraft.audioExtras),
+    });
+  }
   return makeTextToImageGeneration({
     prompt,
     creationId,

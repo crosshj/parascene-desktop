@@ -1,8 +1,8 @@
 # Plan: Local agent interface, integration testing, documentation
 
-Local, dev-only semantic API on the running desktop app. Same surface later serves integration tests, in-app help verification, screenshot generation, and (later) agent QA. Not screenshots or DOM as the source of truth. LLM discovers workflows once; repeat runs are deterministic and token-cheap.
+Strategy and current status live in [GUIDE-help-and-tests.md](./GUIDE-help-and-tests.md). Read that first. This file is the 2026-09-04 requirements capture (phases 0–5). Do not treat stale “still to run” lines here as the scoreboard.
 
-This file is the full requirements capture after the 2026-09-04 design session. Do not implement from the original draft alone.
+Local, dev-only semantic API on the running desktop app. Same surface later serves integration tests, in-app help verification, screenshot generation, and (later) agent QA. Not screenshots or DOM as the source of truth. LLM discovers workflows once; repeat runs are deterministic and token-cheap.
 
 # Hard constraint: no regressions for current users
 
@@ -115,17 +115,17 @@ Shipped: Help opens in the default browser (not a second webview — Windows Web
 
 Articles are static HTML under `public/help/`, linked with a back control on detail pages. First-run screenshots in `public/help/desktop/screens/` (1280×900, one-still new account):
 
-- getting started — login, Library (one still), Sync, empty Projects, Director, Editor, New asset
+- getting started — login, Library (one still), empty Projects, Director, Editor, New asset
 - sync
 - projects (create / open / close / delete)
 - folders (regular vs project)
 - generate an image (Parascene Text to Image)
 - local tools (FFmpeg required; Demucs / Whisper optional; Settings → Local tools)
-- overview of the main screens
+- (Overview was a third tour of the same screens; folded into Getting started. Screen jumps land on those headings.)
 
 Export later, after this slice is proven.
 
-Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started`, `overview`, `projects`, `folders`, `sync`, `generate`, `tools`, plus screen jumps `library`, `director`, `editor`.
+Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started` (also `overview` / `screens`), `projects`, `folders`, `sync` (also `local-and-cloud` / `this-computer` / `cloud` / `remote`), `generate`, `audio`, `image-models`, `audio-models`, `video-models`, `settings`, `tools`, plus screen jumps `library`, `director`, `editor` on Getting started.
 
 Done: several in-app articles exist, match the tested journeys and the first-run screens, and stale button-label copy can be detected. Follow-the-API help audit and screenshot regen stay Phase 4.
 
@@ -134,6 +134,8 @@ Done: several in-app articles exist, match the tested journeys and the first-run
 Only after 0–3 are cheap and maintainable.
 
 More tests: projects, assets, timeline, editing, generation, references, audio, models, settings, save/load, export, failures, recovery.
+
+Remote / local identity is [PLAN-remote-local-consistency.md](./PLAN-remote-local-consistency.md). 08–11 ran. That is the same-object track, not leftover Help coverage. See [GUIDE-help-and-tests.md](./GUIDE-help-and-tests.md).
 
 More help around user goals, not code folders.
 

@@ -17,6 +17,7 @@ import {
   AGENT_TEST_SPEECH_DURATION_SEC,
   AGENT_TEST_SPEECH_PATH,
   AGENT_TEST_STILL_PATH,
+  AGENT_TEST_STILL_PROMPT,
 } from "../src/fixtures/agentTestSpeech";
 
 type ProjectCreateResult = {
@@ -59,6 +60,7 @@ describe("agent audio to video", () => {
         "agent-test-still",
       ],
       pathContains: ["agent-test-speech", "agent-test-still"],
+      promptContains: [AGENT_TEST_STILL_PROMPT],
       projectId,
       folderId,
     });

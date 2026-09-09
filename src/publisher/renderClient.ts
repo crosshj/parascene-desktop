@@ -8,6 +8,7 @@ import {
 } from "../project/types";
 import { getCreations } from "../library/catalogClient";
 import { syncLinkedVideoAudio } from "../layouts/editor/linkedVideoAudio";
+import { persistClipVolume } from "../project/clipVolume";
 import { recordUiOpTrace } from "../layouts/editor/uiOpTrace";
 
 export type RenderSlideshowRecipe = {
@@ -34,6 +35,10 @@ export type RenderTimelineClipInput = {
   includeAudio?: boolean;
   /** Set on Master Audio companions linked to a video Include Audio clip. */
   linkedVideoClipId?: string;
+  /** 2 = A2 user audio; omit / 1 = Master Audio. */
+  audioTrack?: 1 | 2;
+  /** Per-instance gain 0–100. Omitted / 100 = unity. */
+  volume?: number;
   reverse?: boolean;
   framing?: "fit" | "fill" | "stretch";
   /** Image instance zoom (1 = none). Baked into preview/export frames. */
@@ -105,6 +110,8 @@ export function timelineClipsToRenderInput(
     outSec: clip.outSec,
     includeAudio: clip.includeAudio,
     linkedVideoClipId: clip.linkedVideoClipId,
+    audioTrack: clip.audioTrack === 2 ? 2 : undefined,
+    volume: persistClipVolume(clip),
     reverse: clip.reverse,
     framing: clip.framing,
     zoom: clip.zoom,

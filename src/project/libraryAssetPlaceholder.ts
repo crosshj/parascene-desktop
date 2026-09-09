@@ -10,7 +10,7 @@ export type LibraryAssetPlaceholderStatus = "generating" | "done" | "error";
 /** In-flight or recently finished Generate → Assets target on a project asset id. */
 export type LibraryAssetPlaceholder = {
   id: string;
-  kind: "image";
+  kind: "image" | "audio";
   aspectRatio: ProjectAspectRatio;
   status: LibraryAssetPlaceholderStatus;
   addAssetDraft: AddAssetDraft;
@@ -55,7 +55,7 @@ export function normalizeLibraryAssetPlaceholder(
       : undefined;
   return {
     id,
-    kind: "image",
+    kind: row.kind === "audio" ? "audio" : "image",
     aspectRatio,
     status,
     addAssetDraft: draft as AddAssetDraft,

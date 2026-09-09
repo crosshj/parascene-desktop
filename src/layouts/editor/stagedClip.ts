@@ -1081,6 +1081,7 @@ export type TimelineGhostClip = {
   startSec: number;
   durationSec: number;
   lane: "video" | "audio";
+  audioTrack?: 1 | 2;
   label: string;
   thumbUrl: string | null;
   framing?: StagedClipFraming;

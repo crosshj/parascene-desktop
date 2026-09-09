@@ -93,6 +93,16 @@ export type TimelineClip = {
    * the owning video clip. Kept in sync for move/resize/render precedence.
    */
   linkedVideoClipId?: string;
+  /**
+   * Audio lane: 1 = A1 Master (default / omitted), 2 = user A2.
+   * Linked video-audio companions always live on A1.
+   */
+  audioTrack?: 1 | 2;
+  /**
+   * Per-instance gain on this timeline clip (0–100). Omitted / 100 = unity.
+   * Independent of the monitor / preview master volume.
+   */
+  volume?: number;
   /** Play a behind-the-scenes FFmpeg-reversed copy of the source asset. */
   reverse?: boolean;
   transform?: "hold" | "kenBurns";
@@ -202,6 +212,17 @@ export type AddAssetDraft = {
   blueJobId?: string;
   /** Active remote generation — cleared on success or hard failure. */
   generationJob?: AddAssetGenerationJob;
+  /** Speech / music extras so retry and resume use the same inputs. */
+  audioExtras?: {
+    voiceId?: string;
+    geminiVoice?: string;
+    stylePrompt?: string;
+    lyrics?: string;
+    instrumental?: boolean;
+    lyricsOptimizer?: boolean;
+    emotion?: string;
+    cloneSourceAssetId?: string;
+  };
   /** Optional Replicate model params (resolution, audio, seed, …). */
   replicateTweaks?: {
     resolution?: string;
@@ -317,6 +338,21 @@ export type AddAssetGeneration = {
     seed?: number | null;
     characterOrientation?: string;
     keepOriginalSound?: boolean;
+  };
+  /** MiniMax / Replicate voice id stamped on a cloned 5s project audio asset. */
+  voiceId?: string;
+  /** Gemini TTS style prompt (speaker direction). */
+  stylePrompt?: string;
+  /** Speech / music extras so Clone can refill the same form. */
+  audioExtras?: {
+    voiceId?: string;
+    geminiVoice?: string;
+    stylePrompt?: string;
+    lyrics?: string;
+    instrumental?: boolean;
+    lyricsOptimizer?: boolean;
+    emotion?: string;
+    cloneSourceAssetId?: string;
   };
 };
 
@@ -614,6 +650,8 @@ export type Project = {
   labAnimatePrompt: string | null;
   /** Preferred main song creation id for Director / Lab (optional). */
   mainAudioCreationId: string | null;
+  /** User-toggled A2 audio lane; stays visible when empty. */
+  editorAudio2: boolean;
   /** Lab lyric align output — timed lines on the main song. */
   lyricAlignment: LyricAlignment | null;
   /** Lab MV storyboard pipeline output. */

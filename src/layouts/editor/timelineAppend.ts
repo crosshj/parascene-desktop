@@ -1,7 +1,11 @@
+import { clipAudioTrack } from "../../project/audioTrack";
+
 export type TimelineInterval = {
   startSec: number;
   endSec: number;
   lane?: "video" | "audio";
+  audioTrack?: 1 | 2;
+  linkedVideoClipId?: string;
 };
 
 /** Lane used for placement / overlap checks (default video). */
@@ -38,7 +42,12 @@ export function pasteAppendStartSec(
   let startBase = 0;
   for (const source of sources) {
     const lane = clipLane(source);
-    const laneClips = existing.filter((c) => clipLane(c) === lane);
+    const sourceTrack = clipAudioTrack(source);
+    const laneClips = existing.filter((c) => {
+      if (clipLane(c) !== lane) return false;
+      if (lane !== "audio") return true;
+      return clipAudioTrack(c) === sourceTrack;
+    });
     const laneEnd = laneAppendStartSec(laneClips);
     const rel = source.startSec - origin;
     startBase = Math.max(startBase, laneEnd - rel);

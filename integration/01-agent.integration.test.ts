@@ -40,6 +40,9 @@ describe("agent API", () => {
     expect(ids).toContain("generation.a2v");
     expect(ids).toContain("library.import");
     expect(ids).toContain("cloud.delete");
+    expect(ids).toContain("cloud.lookup");
+    expect(ids).toContain("project.assets.remove");
+    expect(ids).toContain("project.assets.delete");
     expect(ids).toContain("library.lookup");
     expect(ids).toContain("window.setSize");
     expect(ids).toContain("shell.show");

@@ -5,7 +5,7 @@
  *
  * Generate “Parascene” UI server (`parascene_blue`) routes to:
  * - **server 6** — Blue methods (`text2image`, `image2image`, video methods)
- * - **server 1** — Replicate / Replicate Pro / PixelLab stills (+ upload staging elsewhere)
+ * - **server 1** — Replicate / Replicate Pro / PixelLab stills, speech, music, voice train
  */
 
 import productCaps from "../../../docs/parascene-product-server-caps.json";
@@ -34,6 +34,30 @@ export type ParasceneStillModelOption = ParasceneMethodOption & {
   supportsInputImages: boolean;
 };
 
+export type ParasceneFieldShowWhen = {
+  field: string;
+  equals: string;
+};
+
+export type ParasceneSelectOption = {
+  value?: string;
+  label?: string;
+  hint?: string;
+  fields?: Record<string, ParasceneFieldDef>;
+};
+
+export type ParasceneFieldDef = {
+  label?: string;
+  type?: string;
+  hidden?: boolean;
+  required?: boolean;
+  default?: unknown;
+  max_length?: number;
+  hint?: string;
+  options?: ParasceneSelectOption[];
+  show_when?: ParasceneFieldShowWhen;
+};
+
 export type ParasceneMethodDef = {
   id?: string;
   name?: string;
@@ -43,11 +67,8 @@ export type ParasceneMethodDef = {
   supports_intents?: GenerateIntentId[];
   fields?: {
     model?: {
-      options?: Array<{
-        value?: string;
-        label?: string;
-        hint?: string;
-      }>;
+      options?: ParasceneSelectOption[];
+      default?: string;
     };
     input_images?: unknown;
     [key: string]: unknown;
@@ -78,7 +99,7 @@ type ProductCapsFile = {
   >;
 };
 
-const CAPS = productCaps as ProductCapsFile;
+const CAPS = productCaps as unknown as ProductCapsFile;
 
 /** Product lane servers (1 + 6) in caps snapshot order. */
 export function productCapsServerIds(): ParasceneProductServerId[] {
@@ -217,10 +238,21 @@ function stillFamilyLabel(
   return `${name} (${formatParasceneCredits(credits)})`;
 }
 
+const AUDIO_METHOD_TO_INTENT: Record<string, GenerateIntentId> = {
+  replicateSpeech: "text_to_speech",
+  replicateMusic: "text_to_music",
+};
+
 /** API method name for sdk.create on the Parascene Blue product path (server 6). */
 export function parasceneMethodForIntent(
   intentId: GenerateIntentId,
 ): string | null {
+  if (intentId === "text_to_speech" || intentId === "text_to_music") {
+    for (const [method, mapped] of Object.entries(AUDIO_METHOD_TO_INTENT)) {
+      if (mapped === intentId && serverCaps(1)?.methods?.[method]) return method;
+    }
+    return null;
+  }
   const server = serverCaps(6);
   if (!server?.methods) return null;
   for (const [method, mapped] of Object.entries(METHOD_TO_INTENT)) {
@@ -238,6 +270,9 @@ export function parasceneServerIdForIntent(
 ): ParasceneProductServerId | null {
   if (intentId === "text_to_image" || intentId === "image_to_image") {
     return parasceneStillModelsForIntent(intentId).length > 0 ? 6 : null;
+  }
+  if (intentId === "text_to_speech" || intentId === "text_to_music") {
+    return parasceneMethodForIntent(intentId) ? 1 : null;
   }
   if (parasceneMethodForIntent(intentId)) return 6;
   return null;
@@ -401,9 +436,85 @@ export function parasceneIntentIsWired(intentId: GenerateIntentId): boolean {
   }
   const method = parasceneMethodForIntent(intentId);
   if (!method) return false;
-  const def = serverCaps(6)?.methods?.[method];
+  const serverId =
+    intentId === "text_to_speech" || intentId === "text_to_music" ? 1 : 6;
+  const def = serverCaps(serverId)?.methods?.[method];
   if (!def || def.staging_only) return false;
   return true;
+}
+
+export type ParasceneAudioModelOption = {
+  id: string;
+  value: string;
+  label: string;
+  hint?: string;
+  method: "replicateSpeech" | "replicateMusic";
+  serverId: 1;
+  fields: Record<string, ParasceneFieldDef>;
+};
+
+export const SPEECH_PROMPT_MAX_CHARS = 400;
+
+export function parasceneSpeechPromptMaxChars(): number {
+  const raw = serverCaps(1)?.methods?.replicateSpeech?.fields?.prompt;
+  const max =
+    raw && typeof raw === "object" && raw !== null && "max_length" in raw
+      ? Number((raw as { max_length?: unknown }).max_length)
+      : NaN;
+  return Number.isFinite(max) && max > 0 ? max : SPEECH_PROMPT_MAX_CHARS;
+}
+
+export function parasceneFieldIsVisible(
+  field: ParasceneFieldDef,
+  values: Record<string, string>,
+): boolean {
+  if (field.show_when?.field) {
+    return values[field.show_when.field] === field.show_when.equals;
+  }
+  return field.hidden !== true;
+}
+
+export function parasceneAudioModelsForIntent(
+  intentId: "text_to_speech" | "text_to_music",
+): ParasceneAudioModelOption[] {
+  const method =
+    intentId === "text_to_speech" ? "replicateSpeech" : "replicateMusic";
+  const def = serverCaps(1)?.methods?.[method];
+  const opts = def?.fields?.model?.options ?? [];
+  const models: ParasceneAudioModelOption[] = [];
+  for (const opt of opts) {
+    const value = String(opt.value ?? "").trim();
+    if (!value) continue;
+    const hint =
+      typeof opt.hint === "string" && opt.hint.trim() ? opt.hint.trim() : undefined;
+    models.push({
+      id: value,
+      value,
+      label: String(opt.label ?? value).trim(),
+      hint,
+      method,
+      serverId: 1,
+      fields: opt.fields ?? {},
+    });
+  }
+  return models;
+}
+
+export function parasceneResolveAudioModel(
+  intentId: "text_to_speech" | "text_to_music",
+  modelId: string,
+): ParasceneAudioModelOption | null {
+  const id = modelId.trim();
+  if (!id) return null;
+  return (
+    parasceneAudioModelsForIntent(intentId).find(
+      (m) => m.id === id || m.value === id,
+    ) ?? null
+  );
+}
+
+export function parasceneVoiceTrainMethod(): ParasceneMethodDef | null {
+  return serverCaps(1)?.methods?.replicateVoiceTrain ?? null;
 }
 
 /** Blue still models on server 6 (`text2image` / `image2image`). */

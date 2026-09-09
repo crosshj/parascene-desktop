@@ -3,9 +3,12 @@ import type { Creation } from "../../library/types";
 import type { LibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
 import type { ParasceneStillModelOption } from "./parasceneProductCaps";
 import {
+  __resetLibraryAssetGenerationStoreForTests,
   bindLibraryAssetGenerationApplier,
+  cancelLibraryAssetGeneration,
   retryLibraryAssetPlaceholder,
   startLibraryParasceneImageToImage,
+  startLibraryReplicateAudio,
   waitForCatalogLocalMedia,
 } from "./libraryAssetGenerationStore";
 
@@ -23,6 +26,61 @@ vi.mock("./runParasceneImageToImage", () => ({
     imagesGroupId: null,
   })),
 }));
+
+const invokeReplicateGenerate = vi.fn(async () => ({
+  mode: "job" as const,
+  id: "job-audio",
+}));
+const watchLocalGenerateStill = vi.fn(async () => ({
+  creationId: "audio-99",
+  localPaths: ["/tmp/audio-99.mp3"],
+}));
+const cancelGenerateStillJob = vi.fn(async () => {});
+
+vi.mock("../../services/labGenerate", () => ({
+  invokeReplicateGenerate: (opts: unknown) => invokeReplicateGenerate(opts),
+  watchLabGenerate: vi.fn(),
+}));
+
+vi.mock("../../services/generateStill", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../services/generateStill")>();
+  return {
+    ...actual,
+    watchLocalGenerateStill: (handle: unknown, opts?: unknown) =>
+      watchLocalGenerateStill(handle, opts),
+    cancelGenerateStillJob: (jobId: string) => cancelGenerateStillJob(jobId),
+  };
+});
+
+vi.mock("../../replicate/replicateClient", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../replicate/replicateClient")>();
+  return {
+    ...actual,
+    listenReplicateRunProgress: vi.fn(async () => () => {}),
+    replicatePredictionWait: vi.fn(),
+  };
+});
+
+vi.mock("./replicateAudioModels", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./replicateAudioModels")>();
+  return {
+    ...actual,
+    loadCuratedReplicateAudioModels: vi.fn(async () => [
+      {
+        id: "minimax/speech-2.8-turbo",
+        intentId: "text_to_speech",
+        label: "MiniMax Speech 2.8 Turbo",
+        hint: "Narration",
+        textField: "text",
+        owner: "minimax",
+        name: "speech-2.8-turbo",
+        inputs: [],
+      },
+    ]),
+  };
+});
 
 const blueRoute: ParasceneStillModelOption = {
   id: "6:image2image:qga10b_qgo10b",
@@ -77,12 +135,21 @@ function failedPlaceholder(
 
 describe("retryLibraryAssetPlaceholder", () => {
   beforeEach(() => {
+    __resetLibraryAssetGenerationStoreForTests();
     getCreation.mockReset();
     getCreation.mockResolvedValue({
       id: "remote-99",
       localPath: "/tmp/remote-99.png",
       localThumbPath: "/tmp/remote-99.jpg",
     } as Creation);
+    invokeReplicateGenerate.mockReset();
+    watchLocalGenerateStill.mockReset();
+    cancelGenerateStillJob.mockReset();
+    invokeReplicateGenerate.mockResolvedValue({ mode: "job", id: "job-audio" });
+    watchLocalGenerateStill.mockResolvedValue({
+      creationId: "audio-99",
+      localPaths: ["/tmp/audio-99.mp3"],
+    });
     bindLibraryAssetGenerationApplier({
       beginPlaceholder: vi.fn(),
       onGenerationStarted: vi.fn(),
@@ -131,6 +198,151 @@ describe("retryLibraryAssetPlaceholder", () => {
     expect(beginPlaceholder).toHaveBeenCalledWith(
       expect.objectContaining({ id: "placeholder-retry" }),
     );
+  });
+
+  it("retries speech with the persisted voice extras", async () => {
+    const beginPlaceholder = vi.fn();
+    bindLibraryAssetGenerationApplier({
+      beginPlaceholder,
+      onGenerationStarted: vi.fn(),
+      patchPlaceholder: vi.fn(),
+      completePlaceholder: vi.fn(),
+      addCreations: vi.fn(async () => {}),
+      setImagesGroupId: vi.fn(),
+    });
+
+    const id = await retryLibraryAssetPlaceholder({
+      placeholder: {
+        id: "audio-retry",
+        kind: "audio",
+        aspectRatio: "16:9",
+        status: "error",
+        addAssetDraft: {
+          prompt: "hello there",
+          intentId: "text_to_speech",
+          server: "replicate",
+          provider: "replicate",
+          methodId: "text_to_speech",
+          replicateModel: "minimax/speech-2.8-turbo",
+          audioExtras: { voiceId: "English_expressive_narrator" },
+          lastError: "network",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+      projectId: "project-1",
+      projectTitle: "Demo",
+      imagesGroupId: null,
+      videosGroupId: null,
+    });
+
+    expect(id).toBe("audio-retry");
+    expect(beginPlaceholder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "audio-retry",
+        kind: "audio",
+        draft: expect.objectContaining({
+          audioExtras: { voiceId: "English_expressive_narrator" },
+        }),
+      }),
+    );
+  });
+});
+
+describe("library audio generation lifecycle", () => {
+  beforeEach(() => {
+    __resetLibraryAssetGenerationStoreForTests();
+    getCreation.mockReset();
+    getCreation.mockResolvedValue({
+      id: "audio-99",
+      localPath: "/tmp/audio-99.mp3",
+    } as Creation);
+    invokeReplicateGenerate.mockReset();
+    watchLocalGenerateStill.mockReset();
+    cancelGenerateStillJob.mockReset();
+    invokeReplicateGenerate.mockResolvedValue({ mode: "job", id: "job-audio" });
+    watchLocalGenerateStill.mockResolvedValue({
+      creationId: "audio-99",
+      localPaths: ["/tmp/audio-99.mp3"],
+    });
+    cancelGenerateStillJob.mockResolvedValue(undefined);
+  });
+
+  it("starts speech with extras and persists the service job id", async () => {
+    const beginPlaceholder = vi.fn();
+    const patchPlaceholder = vi.fn();
+    bindLibraryAssetGenerationApplier({
+      beginPlaceholder,
+      onGenerationStarted: vi.fn(),
+      patchPlaceholder,
+      completePlaceholder: vi.fn(),
+      addCreations: vi.fn(async () => {}),
+      setImagesGroupId: vi.fn(),
+    });
+
+    startLibraryReplicateAudio({
+      projectId: "project-1",
+      aspectRatio: "16:9",
+      prompt: "hello there",
+      intentId: "text_to_speech",
+      modelId: "minimax/speech-2.8-turbo",
+      extras: { voiceId: "English_expressive_narrator" },
+    });
+
+    expect(beginPlaceholder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "audio",
+        draft: expect.objectContaining({
+          audioExtras: { voiceId: "English_expressive_narrator" },
+        }),
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(invokeReplicateGenerate).toHaveBeenCalled();
+    });
+    expect(invokeReplicateGenerate.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          text: "hello there",
+          voice_id: "English_expressive_narrator",
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(patchPlaceholder).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          addAssetDraft: expect.objectContaining({
+            generationJob: expect.objectContaining({
+              serviceJobId: "job-audio",
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it("cancels the persisted service job id", () => {
+    cancelLibraryAssetGeneration({
+      id: "ph-audio",
+      addAssetDraft: {
+        prompt: "hello",
+        intentId: "text_to_speech",
+        server: "replicate",
+        provider: "replicate",
+        methodId: "text_to_speech",
+        audioExtras: { voiceId: "English_expressive_narrator" },
+        generationJob: {
+          status: "waiting",
+          provider: "replicate",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          serviceJobId: "job-audio",
+          model: "minimax/speech-2.8-turbo",
+        },
+      },
+    });
+    expect(cancelGenerateStillJob).toHaveBeenCalledWith("job-audio");
   });
 });
 

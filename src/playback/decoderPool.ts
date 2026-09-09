@@ -14,9 +14,11 @@ import {
 } from "../layouts/editor/linkedVideoAudio";
 import {
   clipSpeed,
+  pickMonitorAudioLayers,
   resolveTimelineFrame,
   type TimelineLayer,
 } from "../layouts/editor/timelineCompose";
+import { monitorElementVolume } from "../project/clipVolume";
 import type { TimelineClip } from "../project/types";
 import {
   assetDecoderKey,
@@ -237,6 +239,8 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
   let statusEl: HTMLSpanElement | null = null;
   let audioSlot: AudioSlot | null = null;
   let lastAudioKey: string | null = null;
+  let audioSlot2: AudioSlot | null = null;
+  let lastAudioKey2: string | null = null;
   let lastCutStartedAt = 0;
   let lastCutLatencyMs: number | null = null;
   let stallReason: string | null = null;
@@ -607,13 +611,27 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     })();
   };
 
+  const releaseNamedAudioSlot = (track: 1 | 2) => {
+    if (track === 1) {
+      if (!audioSlot) return;
+      audioSlot.workGen += 1;
+      audioSlot.el.pause();
+      audioSlot.el.remove();
+      audioSlot = null;
+      lastAudioKey = null;
+      return;
+    }
+    if (!audioSlot2) return;
+    audioSlot2.workGen += 1;
+    audioSlot2.el.pause();
+    audioSlot2.el.remove();
+    audioSlot2 = null;
+    lastAudioKey2 = null;
+  };
+
   const releaseAudioSlot = () => {
-    if (!audioSlot) return;
-    audioSlot.workGen += 1;
-    audioSlot.el.pause();
-    audioSlot.el.remove();
-    audioSlot = null;
-    lastAudioKey = null;
+    releaseNamedAudioSlot(1);
+    releaseNamedAudioSlot(2);
   };
 
   const syncBakeAudio = (currentSec: number, playing: boolean) => {
@@ -622,6 +640,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       releaseAudioSlot();
       return;
     }
+    releaseNamedAudioSlot(2);
     const src = mediaUrlForBakePath(path);
     const audioKey = `bake:${path}`;
     if (!audioSlot || lastAudioKey !== audioKey) {
@@ -646,7 +665,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       audioSlot.lastPlayClipId = null;
     }
 
-    audioSlot.el.volume = Math.max(0, Math.min(1, volume / 100));
+    audioSlot.el.volume = monitorElementVolume(volume, null);
 
     if (!playing) {
       audioSlot.starting = false;
@@ -688,16 +707,14 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
 
   const applyVideoSoundtrackMute = () => {
     const frame = resolveTimelineFrame(mixClips, mixSec);
+    const a1Clip = pickMonitorAudioLayers(frame.audio).a1?.clip ?? null;
     const liveKey =
       mixPlaying &&
       !audioBakePath &&
-      videoElementCarriesMonitorAudio(
-        frame.visual?.clip ?? null,
-        frame.audio[0]?.clip ?? null,
-      )
+      videoElementCarriesMonitorAudio(frame.visual?.clip ?? null, a1Clip)
         ? activeKey
         : null;
-    const vol = Math.max(0, Math.min(1, volume / 100));
+    const vol = monitorElementVolume(volume, liveKey ? a1Clip : null);
     for (const slot of slots.values()) {
       if (!(slot.media instanceof HTMLVideoElement)) continue;
       const live = liveKey != null && slot.key === liveKey;
@@ -743,23 +760,43 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     }
 
     const frame = resolveTimelineFrame(clips, currentSec);
-    const layer = frame.audio[0] ?? null;
-    const assetId = layer?.clip.assetId?.trim() || null;
+    const { a1, a2 } = pickMonitorAudioLayers(frame.audio);
+    syncLiveAudioLayer(1, a1, playing);
+    syncLiveAudioLayer(2, a2, playing);
+  };
 
+  const syncLiveAudioLayer = (
+    track: 1 | 2,
+    layer: TimelineLayer | null,
+    playing: boolean,
+  ) => {
+    const readSlot = () => (track === 1 ? audioSlot : audioSlot2);
+    const lastKey = track === 1 ? lastAudioKey : lastAudioKey2;
+    const writeSlot = (next: AudioSlot | null, key: string | null) => {
+      if (track === 1) {
+        audioSlot = next;
+        lastAudioKey = key;
+      } else {
+        audioSlot2 = next;
+        lastAudioKey2 = key;
+      }
+    };
+
+    const assetId = layer?.clip.assetId?.trim() || null;
     if (!layer || !assetId) {
-      releaseAudioSlot();
+      releaseNamedAudioSlot(track);
       return;
     }
 
     // Linked Include Audio is the same file as the muted video — don't demux it
     // a second time (that was a multi-GB WebKit spike).
     if (isLinkedVideoAudioClip(layer.clip)) {
-      releaseAudioSlot();
+      releaseNamedAudioSlot(track);
       return;
     }
 
     const reverse = Boolean(layer.clip.reverse);
-    const audioKey = `a:${assetId}:${reverse ? "r" : "f"}`;
+    const audioKey = `a${track}:${assetId}:${reverse ? "r" : "f"}`;
     mediaSources.ensureAsset(assetId);
     if (reverse) mediaSources.ensureReverse(assetId);
 
@@ -768,21 +805,20 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       : mediaSources.getAsset(assetId).detail;
 
     if (reverse && mediaSources.getReverse(assetId).needsBake) {
-      if (audioSlot) {
-        audioSlot.el.pause();
-      }
+      readSlot()?.el.pause();
       return;
     }
     if (!src) return;
 
-    if (!audioSlot || lastAudioKey !== audioKey) {
-      audioSlot?.el.remove();
+    let slot = readSlot();
+    if (!slot || lastKey !== audioKey) {
+      slot?.el.remove();
       const el = document.createElement("audio");
       el.className = "editor-preview-audio-el";
       el.preload = playing ? "auto" : "metadata";
       el.src = src;
       surface.appendChild(el);
-      audioSlot = {
+      slot = {
         assetId,
         reverse,
         el,
@@ -791,51 +827,53 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
         lastSeekEpoch: -1,
         starting: false,
       };
-      lastAudioKey = audioKey;
-    } else if (audioSlot.el.getAttribute("src") !== src) {
-      audioSlot.el.src = src;
-      audioSlot.lastPlayClipId = null;
+      writeSlot(slot, audioKey);
+    } else if (slot.el.getAttribute("src") !== src) {
+      slot.el.src = src;
+      slot.lastPlayClipId = null;
     }
 
-    audioSlot.el.volume = Math.max(0, Math.min(1, volume / 100));
-    audioSlot.el.preload = playing ? "auto" : "metadata";
+    slot.el.volume = monitorElementVolume(volume, layer.clip);
+    slot.el.preload = playing ? "auto" : "metadata";
 
     if (!playing) {
-      audioSlot.starting = false;
-      audioSlot.el.pause();
-      void seekMedia(audioSlot.el, layer.sourceSec);
-      audioSlot.lastPlayClipId = null;
+      slot.starting = false;
+      slot.el.pause();
+      void seekMedia(slot.el, layer.sourceSec);
+      slot.lastPlayClipId = null;
       return;
     }
 
     // Free-run while playing: only re-seek on clip / epoch change.
     const needsSeek =
-      audioSlot.lastPlayClipId !== layer.clip.id ||
-      audioSlot.lastSeekEpoch !== mediaSeekEpoch;
+      slot.lastPlayClipId !== layer.clip.id ||
+      slot.lastSeekEpoch !== mediaSeekEpoch;
     if (!needsSeek) {
-      if (audioSlot.el.paused && !audioSlot.starting) {
-        void audioSlot.el.play().catch(() => {});
+      if (slot.el.paused && !slot.starting) {
+        void slot.el.play().catch(() => {});
       }
       return;
     }
 
-    audioSlot.lastPlayClipId = layer.clip.id;
-    audioSlot.lastSeekEpoch = mediaSeekEpoch;
-    const gen = ++audioSlot.workGen;
-    const el = audioSlot.el;
+    slot.lastPlayClipId = layer.clip.id;
+    slot.lastSeekEpoch = mediaSeekEpoch;
+    const gen = ++slot.workGen;
+    const el = slot.el;
     const target = layer.sourceSec;
-    audioSlot.starting = true;
+    slot.starting = true;
     void (async () => {
       await seekMedia(el, target);
-      if (destroyed || !audioSlot || audioSlot.workGen !== gen) return;
+      const current = readSlot();
+      if (destroyed || !current || current.workGen !== gen) return;
       await waitForCanPlay(el);
-      if (destroyed || !audioSlot || audioSlot.workGen !== gen) return;
+      if (destroyed || readSlot()?.workGen !== gen) return;
       try {
         await el.play();
       } catch {
         // ignore
       }
-      if (audioSlot && audioSlot.workGen === gen) audioSlot.starting = false;
+      const live = readSlot();
+      if (live && live.workGen === gen) live.starting = false;
     })();
   };
 
@@ -858,6 +896,7 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
       if (next === audioBakePath) return;
       audioBakePath = next;
       lastAudioKey = null;
+      releaseNamedAudioSlot(2);
     },
     setVisualSuppressed(suppressed) {
       if (suppressed === visualSuppressed) return;
@@ -867,13 +906,19 @@ export function createDecoderPool(options: DecoderPoolOptions): DecoderPool {
     },
     setVolume(next) {
       volume = Math.max(0, Math.min(100, next));
-      const vol = Math.max(0, Math.min(1, volume / 100));
-      if (audioSlot) audioSlot.el.volume = vol;
-      for (const slot of slots.values()) {
-        if (slot.media instanceof HTMLVideoElement && !slot.media.muted) {
-          slot.media.volume = vol;
+      if (audioBakePath?.trim()) {
+        const master = monitorElementVolume(volume, null);
+        if (audioSlot) audioSlot.el.volume = master;
+      } else {
+        const { a1, a2 } = pickMonitorAudioLayers(
+          resolveTimelineFrame(mixClips, mixSec).audio,
+        );
+        if (audioSlot) audioSlot.el.volume = monitorElementVolume(volume, a1?.clip ?? null);
+        if (audioSlot2) {
+          audioSlot2.el.volume = monitorElementVolume(volume, a2?.clip ?? null);
         }
       }
+      applyVideoSoundtrackMute();
     },
     setMediaSeekEpoch(epoch) {
       mediaSeekEpoch = epoch;

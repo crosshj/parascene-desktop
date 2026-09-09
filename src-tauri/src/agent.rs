@@ -176,7 +176,25 @@ fn actions() -> Vec<AgentAction> {
             id: "library.lookup".into(),
             scope: "library".into(),
             status: "wired".into(),
-            summary: "Return matching local catalog rows by id, title, or path".into(),
+            summary: "Return matching local catalog rows by id, title, or path, with origin, folders, group, and cabinet".into(),
+        },
+        AgentAction {
+            id: "cloud.lookup".into(),
+            scope: "cloud".into(),
+            status: "wired".into(),
+            summary: "GET one Parascene Creation; 404/410 is found:false".into(),
+        },
+        AgentAction {
+            id: "project.assets.remove".into(),
+            scope: "project".into(),
+            status: "wired".into(),
+            summary: "Assets Remove from project (Library and website stay; cabinet ungroups)".into(),
+        },
+        AgentAction {
+            id: "project.assets.delete".into(),
+            scope: "project".into(),
+            status: "wired".into(),
+            summary: "Assets Delete from project and Library (Parascene Creation too when it exists)".into(),
         },
         AgentAction {
             id: "generation.start".into(),
@@ -189,6 +207,24 @@ fn actions() -> Vec<AgentAction> {
             scope: "generation".into(),
             status: "wired".into(),
             summary: "Put audio on the timeline and run LTX audio-to-video (full mix)".into(),
+        },
+        AgentAction {
+            id: "generation.audio".into(),
+            scope: "generation".into(),
+            status: "wired".into(),
+            summary: "Generate speech or music on Parascene (Gemini TTS / Lyria)".into(),
+        },
+        AgentAction {
+            id: "timeline.place".into(),
+            scope: "project".into(),
+            status: "wired".into(),
+            summary: "Drop an audio asset on Editor A1 or A2".into(),
+        },
+        AgentAction {
+            id: "publisher.render".into(),
+            scope: "publisher".into(),
+            status: "wired".into(),
+            summary: "Render the open project timeline on Publisher".into(),
         },
         AgentAction {
             id: "library.import".into(),
@@ -285,7 +321,11 @@ fn ui_timeout_for(action: &str) -> Duration {
     match action {
         "sync.thumbs" => Duration::from_secs(6 * 60),
         "sync.media" => Duration::from_secs(15 * 60),
-        "generation.start" | "generation.a2v" => Duration::from_secs(12 * 60),
+        "generation.start" | "generation.a2v" | "generation.audio" | "publisher.render" => {
+            Duration::from_secs(12 * 60)
+        }
+        "cloud.delete" | "project.delete" | "project.create"
+        | "project.assets.remove" | "project.assets.delete" => Duration::from_secs(3 * 60),
         _ => UI_TIMEOUT,
     }
 }
@@ -369,8 +409,12 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         | "folder.create"
         | "folder.delete"
         | "cloud.delete"
+        | "cloud.lookup"
         | "generation.start"
         | "generation.a2v"
+        | "generation.audio"
+        | "timeline.place"
+        | "publisher.render"
         | "library.import"
         | "sync.start"
         | "sync.folders"
@@ -378,6 +422,8 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         | "sync.media"
         | "library.clearLocal"
         | "library.lookup"
+        | "project.assets.remove"
+        | "project.assets.delete"
         | "shell.show" => {
             let _ = require_signed_in()?;
             wait_ui(app, action, args)
@@ -639,8 +685,14 @@ mod tests {
     #[test]
     fn actions_include_planned_cloud_delete() {
         assert!(actions().iter().any(|a| a.id == "cloud.delete" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "cloud.lookup" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "project.assets.remove" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "project.assets.delete" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "generation.start" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "generation.a2v" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "generation.audio" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "timeline.place" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "publisher.render" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.import" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "project.create" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.clearLocal" && a.status == "wired"));

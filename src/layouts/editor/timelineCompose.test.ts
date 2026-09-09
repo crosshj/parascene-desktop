@@ -10,6 +10,7 @@ import {
   finalizeVideoResizeEndSec,
   peekNextVisualClip,
   peekPrevVisualClip,
+  pickMonitorAudioLayers,
   resolveTimelineFrame,
   timelineSequenceDuration,
 } from "./timelineCompose";
@@ -327,6 +328,47 @@ describe("resolveTimelineFrame", () => {
       4,
     );
     expect(frame.audio.map((l) => l.clip.id)).toEqual(["linked", "bed"]);
+  });
+
+  it("stacks A2 after the A1 winner", () => {
+    const frame = resolveTimelineFrame(
+      [
+        clip({
+          id: "bed",
+          startSec: 0,
+          endSec: 20,
+          lane: "audio",
+          kind: "audio",
+          assetId: "song",
+        }),
+        clip({
+          id: "linked",
+          startSec: 2,
+          endSec: 8,
+          lane: "audio",
+          kind: "audio",
+          assetId: "take",
+          linkedVideoClipId: "vid",
+        }),
+        clip({
+          id: "line",
+          startSec: 3,
+          endSec: 7,
+          lane: "audio",
+          kind: "audio",
+          assetId: "speech",
+          audioTrack: 2,
+        }),
+      ],
+      4,
+    );
+    expect(frame.audio.map((l) => l.clip.id)).toEqual([
+      "linked",
+      "bed",
+      "line",
+    ]);
+    expect(pickMonitorAudioLayers(frame.audio).a1?.clip.id).toBe("linked");
+    expect(pickMonitorAudioLayers(frame.audio).a2?.clip.id).toBe("line");
   });
 });
 

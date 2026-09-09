@@ -267,6 +267,7 @@ pub async fn library_slice_audio(
     source_path: String,
     in_sec: f64,
     out_sec: f64,
+    volume: Option<f64>,
 ) -> Result<String, String> {
     let src = PathBuf::from(&source_path);
     if !src.is_file() {
@@ -276,15 +277,30 @@ pub async fn library_slice_audio(
         return Err("outSec must be greater than inSec".into());
     }
     let dur = out_sec - in_sec;
+    let gain = volume
+        .filter(|v| v.is_finite())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
     let ffmpeg = resolve_ffmpeg()
         .ok_or_else(|| "FFmpeg is required. Install with: brew install ffmpeg".to_string())?;
 
-    let key = hash_key(&[
-        &source_path,
-        &format!("{in_sec:.3}"),
-        &format!("{out_sec:.3}"),
+    let in_tag = format!("{in_sec:.3}");
+    let out_tag = format!("{out_sec:.3}");
+    let vol_tag = if (gain - 1.0).abs() > 1e-4 {
+        format!("vol{gain:.4}")
+    } else {
+        String::new()
+    };
+    let mut key_parts = vec![
+        source_path.as_str(),
+        in_tag.as_str(),
+        out_tag.as_str(),
         "slice",
-    ]);
+    ];
+    if !vol_tag.is_empty() {
+        key_parts.push(vol_tag.as_str());
+    }
+    let key = hash_key(&key_parts);
     let dir = cache_dir("audio")?;
     let slice_path = dir.join(format!("{key}.slice.wav"));
 
@@ -294,26 +310,33 @@ pub async fn library_slice_audio(
 
     let tmp = dir.join(format!("{key}.slice.tmp.wav"));
     let _ = fs::remove_file(&tmp);
-    run_ffmpeg(
-        &ffmpeg,
-        &[
-            "-y",
-            "-ss",
-            &format!("{in_sec:.3}"),
-            "-t",
-            &format!("{dur:.3}"),
-            "-i",
-            src.to_str().ok_or("Invalid source path")?,
-            "-vn",
-            "-acodec",
-            "pcm_s16le",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            tmp.to_str().ok_or("Invalid temp path")?,
-        ],
-    )?;
+    let ss = format!("{in_sec:.3}");
+    let t = format!("{dur:.3}");
+    let src_s = src.to_str().ok_or("Invalid source path")?.to_string();
+    let tmp_s = tmp.to_str().ok_or("Invalid temp path")?.to_string();
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-ss".into(),
+        ss,
+        "-t".into(),
+        t,
+        "-i".into(),
+        src_s,
+        "-vn".into(),
+        "-acodec".into(),
+        "pcm_s16le".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+    ];
+    if (gain - 1.0).abs() > 1e-4 {
+        args.push("-af".into());
+        args.push(format!("volume={gain:.6}"));
+    }
+    args.push(tmp_s);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_ffmpeg(&ffmpeg, &arg_refs)?;
     fs::rename(&tmp, &slice_path).map_err(|e| format!("Could not finalize slice: {e}"))?;
     Ok(slice_path.to_string_lossy().to_string())
 }

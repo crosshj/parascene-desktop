@@ -38,7 +38,7 @@ export type BuildRunner = (
     onProgress: (note: string) => void;
     onPendingCreation: (
       id: string | null,
-      mediaType?: "image" | "video" | null,
+      mediaType?: "image" | "video" | "audio" | null,
     ) => void;
   }) => Promise<{
     summary: string;

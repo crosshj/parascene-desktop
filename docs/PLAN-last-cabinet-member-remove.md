@@ -6,12 +6,13 @@ This bit us while recapturing Help Audio to Video screens. After a clip existed,
 
 ## What is broken
 
-- Images / Videos are containers. Assets shows members, not the cover.
-- The last member often lives only in group meta. It is not a `folder_items` row.
-- `library_remove_project_assets` only unfiles folder members. Last clip / last still is a no-op or an error.
-- “Delete from group” is a cloud delete, not “take this out of the project.”
-- Clearing `videosGroupId` / `imagesGroupId` does not stick. Open and remount run `recoverMissingCabinetIdsFromCreations` if the stamped cover is still on the project. Folder reconcile writes the cover back. Assets expands the member again.
-- Local hide in memory dies on the next persist or remount.
+Last Videos member is still unproven (needs a clip / A2V). Last Images member Remove is proven in suite 10.
+
+Native `library_remove_project_assets` only unfiles `folder_items` rows. Editor Remove ungroups first, then unfiles the cover. Cabinet usage (`project_cabinet`) is not a timeline-style blocker, so the empty cover can leave the folder.
+
+Pointer-clear must land in the same persist write as hiding the cover from `creationIds`, before native unfile. Otherwise Shell re-files the cover (pointer still set) and remount recover puts the member back.
+
+Recover still restores a stamped cover that remains among project assets (generate). After last-member Remove the cover is unfiled first, so remount has nothing to recover.
 
 ## Contract
 
@@ -30,33 +31,32 @@ Reopen, remount, sync, and folder reconcile must not put the member or an empty 
 
 Native remove
 
-- `library_remove_project_assets` accepts cabinet members, not only `folder_items`.
-- Last member ungroups; empty cover unfiles; pointer-clear is part of the same write.
-- Do not throw because the folder would have zero video (or zero image) tiles.
+- Done for last Images: `library_remove_project_assets` does not throw on cabinet usage when unfiling the empty cover.
+- Last member ungroups in JS; empty cover unfiles; pointer-clear + hide from `creationIds` persist before native unfile.
+- Last Videos member still needs a clip (A2V).
 
 Store and recover
 
-- A cleared `imagesGroupId` / `videosGroupId` means “no cabinet,” not “find one.”
-- Recover stamped covers only when the user (or generate) asks for a cabinet again.
-- Folder remirror must not re-add a cover we just removed.
+- After last-member Remove, the cover is not among project assets, so recover cannot bounce it.
+- Recover still runs when a live stamped cover remains in the folder (generate).
+- Folder remirror must not re-add a cover we just removed (pointer is already null).
 
 Editor
 
-- Remove from project on the last still or last clip uses the path above. Confirm stays “Remove,” not a Parascene delete.
-- Keep “Delete from group” for actual cloud delete. Do not force that path to empty a cabinet.
-- After remove, Assets has no leftover video/image tile. Selection moves off the gone id.
+- Assets offers Remove and Delete on every real asset, including the last still or last clip. Timeline use is the only blocker. “Delete from group” is gone; Delete is the cloud-delete verb.
+- Remove from project on the last still or last clip uses the path above. Confirm stays “Remove,” not a Parascene delete. Library keeps the file. The website Creation stays. If it was in Images/Videos, the cloud group ungroups that id.
+- Delete leaves the project and Library. If it is a Parascene Creation, the website deletes it and the group updates. Do not offer only “Delete from group” as a stand-in for Remove.
+- After remove or delete, Assets has no leftover video/image tile. Selection moves off the gone id. Remount / Sync do not resurrect a removed member or a deleted Creation.
 
 Proof
 
-- Project with one still in Images: Remove → Images empty, still still in Library, reopen stays empty.
-- Project with one clip in Videos: same.
-- After Audio to Video has written a clip: Remove that clip → V1 can be empty, Assets has no video tile, speech and still stay. Help recapture does not need a second project.
+- Done: project with one still in Images — Remove → Images empty, still still in Library, reopen stays empty (suite 10).
+- Not this run: project with one clip in Videos.
+- Not this run: after Audio to Video has written a clip — Remove that clip → V1 empty, Assets has no video tile, speech and still stay.
 
 ## Done
 
-- Last Images member and last Videos member leave via UI Remove.
-- Native remove does not throw on that last id.
-- Library still has the file.
-- Remount / reopen / reconcile does not bounce the tile or the cover.
-- Empty cabinet is gone from the project folder.
-- No SQLite hand-edit. No “make another project that looks like this one.”
+- Last Images member leaves via Assets Remove (shared agent path). Native unfile does not throw on that cover.
+- Library still has the file. Website Creation stays. Remount / reopen does not bounce the tile or the cover.
+- Empty Images cabinet is gone from the project folder.
+- Last Videos member and Help A2V recapture still need a clip.

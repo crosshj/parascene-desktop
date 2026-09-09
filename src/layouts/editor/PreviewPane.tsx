@@ -152,6 +152,7 @@ import {
   continuityModeForIntent,
   makeAddAssetIntent,
   normalizeGenerateServer,
+  isLibraryAudioIntent,
   resolveAddAssetIntent,
 } from "./previewIntent";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
@@ -160,6 +161,7 @@ import {
   resolveAddAssetGenerationFromCreation,
   isTextToImageGeneration,
   isImageToImageGeneration,
+  isLibraryAudioGeneration,
   reviewGenerationIdentity,
 } from "../../project/desktopAddAssetGeneration";
 import {
@@ -184,6 +186,16 @@ type PreviewPaneProps = {
     prompt: string;
     model?: string;
     startFrameAssetId?: string;
+    audioExtras?: {
+      voiceId?: string;
+      geminiVoice?: string;
+      stylePrompt?: string;
+      lyrics?: string;
+      instrumental?: boolean;
+      lyricsOptimizer?: boolean;
+      emotion?: string;
+      cloneSourceAssetId?: string;
+    };
   } | null;
   /** Exit + slot once a library placeholder asset is reserved. */
   onLibraryAssetGenerationStarted?: (assetId: string) => void;
@@ -191,6 +203,8 @@ type PreviewPaneProps = {
   onDiscardLibraryAssetPlaceholder?: () => void;
   /** Clear a failed Generate → Assets placeholder so the form can run again. */
   onRetryLibraryAssetPlaceholder?: () => void;
+  /** Stop an in-flight Generate → Assets job. */
+  onCancelLibraryAssetPlaceholder?: () => void;
   /** Placeholder clip on the timeline for add-asset generation. */
   addAssetPlaceholderClip?: TimelineClip | null;
   addAssetGenerationSession?: AddAssetGenerationSession | null;
@@ -276,9 +290,16 @@ type PreviewPaneProps = {
   /** Show a left-edge control to reopen the assets pane. */
   showAssetsExpand?: boolean;
   onExpandAssets?: () => void;
-  /** Shared preview volume (0–100). */
+  /**
+   * Source-preview transport volume (0–100).
+   * Timeline audio instance vs Assets listen — caller decides which.
+   */
   volume?: number;
   onVolumeChange?: (volume: number) => void;
+  /** Timeline mix master. Must not follow a selected clip instance. */
+  monitorVolume?: number;
+  volumeLabel?: string;
+  volumeTitle?: string;
   /** Open this still composition in the preview sandbox (from Assets). */
   openCompositionId?: string | null;
   onOpenCompositionIdChange?: (id: string | null) => void;
@@ -417,6 +438,7 @@ export function PreviewPane({
   onLibraryAssetGenerationStarted,
   onDiscardLibraryAssetPlaceholder,
   onRetryLibraryAssetPlaceholder,
+  onCancelLibraryAssetPlaceholder,
   addAssetPlaceholderClip = null,
   addAssetGenerationSession = null,
   lyricAlignment = null,
@@ -462,6 +484,9 @@ export function PreviewPane({
   onExpandAssets,
   volume: volumeProp,
   onVolumeChange,
+  monitorVolume,
+  volumeLabel = "Volume",
+  volumeTitle,
   openCompositionId = null,
   onOpenCompositionIdChange,
   onToggleTimelinePlay,
@@ -1368,9 +1393,10 @@ export function PreviewPane({
             ? useDetail || thumb
             : Boolean(stagedDraft)),
       );
-  /** Video with Audio Include unticked — mute preview and lock volume. */
+  /** Mute source video when Include Audio is off, or timeline owns the monitor. */
   const audioExcluded =
-    isVideo && stagedDraft != null && !stagedDraft.includeAudio;
+    monitorMode === "timeline" ||
+    (isVideo && stagedDraft != null && !stagedDraft.includeAudio);
   const volumeEnabled = canPlay && !audioExcluded && !canPlaySlideshow;
   const sourcePreviewLoops =
     monitorMode === "source" && (isVideo || isAudio || canPlaySlideshow);
@@ -1710,6 +1736,13 @@ export function PreviewPane({
           "parascene_blue",
         "assets",
       );
+    }
+    if (isLibraryAudioGeneration(activeReviewGeneration)) {
+      const audioIntent =
+        activeReviewGeneration.intentId === "text_to_music"
+          ? "text_to_music"
+          : "text_to_speech";
+      return makeAddAssetIntent(audioIntent, "replicate", "assets");
     }
     return (
       resolveAddAssetIntent(activeReviewPlacedClip?.addAssetDraft ?? {}) ?? {
@@ -2890,8 +2923,12 @@ export function PreviewPane({
     const el = mediaRef.current;
     if (!el) return;
     el.muted = audioExcluded;
+    if (monitorMode === "timeline") {
+      el.pause();
+      return;
+    }
     if (!audioExcluded) el.volume = volume / 100;
-  }, [audioExcluded, volume]);
+  }, [audioExcluded, monitorMode, volume]);
 
   const showAspectOverlay =
     !fillPreviewSurface &&
@@ -3273,6 +3310,8 @@ export function PreviewPane({
                       startFrameAssetId:
                         selectedLibraryPlaceholder.addAssetDraft
                           .startFrameAssetId,
+                      audioExtras:
+                        selectedLibraryPlaceholder.addAssetDraft.audioExtras,
                     }}
                   />
                 </div>
@@ -3301,6 +3340,16 @@ export function PreviewPane({
                       (selectedLibraryPlaceholderPhase === "error"
                         ? selectedLibraryPlaceholder.progressNote
                         : null)
+                    }
+                    resultMediaKind={
+                      selectedLibraryPlaceholder.kind === "audio"
+                        ? "audio"
+                        : "image"
+                    }
+                    onCancel={
+                      generateDualPhase === "running"
+                        ? onCancelLibraryAssetPlaceholder
+                        : undefined
                     }
                   />
                 </div>
@@ -3348,7 +3397,11 @@ export function PreviewPane({
                     errorMessage={libraryGenerateState.errorMessage}
                     doneMessage={libraryGenerateState.progressNote}
                     resultPreviewUrl={libraryGenerateState.resultPreviewUrl}
-                    resultMediaKind="image"
+                    resultMediaKind={
+                      isLibraryAudioIntent(addAssetIntent?.intentId)
+                        ? "audio"
+                        : "image"
+                    }
                   />
                 </div>
               </>
@@ -3362,13 +3415,15 @@ export function PreviewPane({
                 locked
                 reviewGeneration={
                   isTextToImageGeneration(activeReviewGeneration) ||
-                  isImageToImageGeneration(activeReviewGeneration)
+                  isImageToImageGeneration(activeReviewGeneration) ||
+                  isLibraryAudioGeneration(activeReviewGeneration)
                     ? activeReviewGeneration
                     : null
                 }
                 placedClip={
                   isTextToImageGeneration(activeReviewGeneration) ||
-                  isImageToImageGeneration(activeReviewGeneration)
+                  isImageToImageGeneration(activeReviewGeneration) ||
+                  isLibraryAudioGeneration(activeReviewGeneration)
                     ? null
                     : activeReviewPlacedClip
                 }
@@ -3381,7 +3436,8 @@ export function PreviewPane({
                 audioAssets={audioAssets}
                 progressHostedExternally={
                   !isTextToImageGeneration(activeReviewGeneration) &&
-                  !isImageToImageGeneration(activeReviewGeneration)
+                  !isImageToImageGeneration(activeReviewGeneration) &&
+                  !isLibraryAudioGeneration(activeReviewGeneration)
                 }
                 onStartGeneration={() => {}}
                 onGenerateNew={
@@ -3400,6 +3456,11 @@ export function PreviewPane({
               />
             ) : showAddAssetIntent ? (
               <AddAssetIntentPanel
+                key={
+                  libraryFormSeed
+                    ? `seed:${libraryFormSeed.model ?? ""}:${libraryFormSeed.prompt}`
+                    : "add-asset"
+                }
                 intent={addAssetIntent}
                 onIntentChange={(next) => onAddAssetIntentChange?.(next)}
                 libraryFormSeed={libraryFormSeed}
@@ -3663,7 +3724,7 @@ export function PreviewPane({
                   bakeInfoByClipId={bakeInfoByClipId}
                   audioBakePath={audioBakePath}
                   fragmentCache={fragmentCache}
-                  volume={volume}
+                  volume={monitorVolume ?? volume}
                   stageW={stage.w}
                   stageH={stage.h}
                   matteW={matte.w}
@@ -3807,7 +3868,7 @@ export function PreviewPane({
                       d="M2 6h3l3-3v10L5 10H2zm8.2 1.2a2.2 2.2 0 0 1 0 1.6l-.8-.5a1.2 1.2 0 0 0 0-.6zm1.6-2a4.2 4.2 0 0 1 0 5.6l-.8-.5a3.2 3.2 0 0 0 0-4.6z"
                     />
                   </svg>
-                  <span className="visually-hidden">Volume</span>
+                  <span className="visually-hidden">{volumeLabel}</span>
                   <input
                     type="range"
                     className="editor-transport-scrub"
@@ -3815,11 +3876,11 @@ export function PreviewPane({
                     max={100}
                     value={volume}
                     disabled={!volumeEnabled}
-                    aria-label="Volume"
+                    aria-label={volumeLabel}
                     title={
                       audioExcluded
                         ? "Audio include is off for this clip"
-                        : undefined
+                        : volumeTitle
                     }
                     style={
                       {

@@ -86,24 +86,28 @@ export function ProjectWelcome() {
   return (
     <div className="project-welcome" aria-label="Project picker">
       <div className="project-welcome-inner">
-        <h1>Projects</h1>
-        <p className="muted">
-          Open a recent project or start a new one. Editing modes appear after a
-          project is loaded.
-        </p>
+        <header className="project-welcome-head">
+          <div className="project-welcome-title-row">
+            <h1>Projects</h1>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void handleCreateProject()}
+            >
+              New project
+            </button>
+          </div>
+          <p className="muted">
+            Open a recent project or start a new one. Editing modes appear after
+            a project is loaded.
+          </p>
+        </header>
 
-        <div className="project-welcome-actions">
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={() => void handleCreateProject()}
-          >
-            New project
-          </button>
-        </div>
-
-        <section aria-label="Recent projects">
+        <section
+          className="project-welcome-recent"
+          aria-label="Recent projects"
+        >
           <h2 className="project-welcome-heading">Recent</h2>
           {recentProjects.length === 0 ? (
             <p className="muted">No recent projects yet.</p>
@@ -114,56 +118,61 @@ export function ProjectWelcome() {
                 const trulyLegacy = isTrulyLegacyProject(p);
                 const showLegacyOpen =
                   trulyLegacy && p.lifecycle !== "legacy" && !p.documentCorrupt;
+                const issueTitle =
+                  issue === "Needs repair"
+                    ? "This project’s saved document is corrupt. Open to repair malformed timeline clips."
+                    : issue === "Needs folder"
+                      ? "Project files are split across folders. Open to fix or gather them into one folder."
+                      : issue === "Retry setup"
+                        ? "Project folder setup did not finish. Open to retry."
+                        : issue === "Legacy"
+                          ? p.lifecycle === "legacy"
+                            ? "Opens without a project folder (intentional legacy)."
+                            : "Pre–project-folder document. Open migrates into a folder when possible; use Open as legacy to skip."
+                          : undefined;
                 return (
-                  <li key={p.id} className="recent-project-row">
+                  <li
+                    key={p.id}
+                    className={`recent-project-row${
+                      issue ? " has-folder-issue" : ""
+                    }`}
+                  >
                     <button
                       type="button"
-                      className={`recent-project-btn${
-                        issue ? " has-folder-issue" : ""
-                      }`}
+                      className="recent-project-btn"
                       disabled={busy}
-                      title={
-                        issue === "Needs repair"
-                          ? "This project’s saved document is corrupt. Open to repair malformed timeline clips."
-                          : issue === "Needs folder"
-                            ? "Project files are split across folders. Open to fix or gather them into one folder."
-                            : issue === "Retry setup"
-                              ? "Project folder setup did not finish. Open to retry."
-                              : issue === "Legacy"
-                                ? p.lifecycle === "legacy"
-                                  ? "Opens without a project folder (intentional legacy)."
-                                  : "Pre–project-folder document. Open migrates into a folder when possible; use Open as legacy to skip."
-                                : undefined
-                      }
+                      title={issueTitle ?? p.title}
                       onClick={() => void handleOpenProject(p.id)}
                     >
-                      {p.title}
+                      <span className="recent-project-name">{p.title}</span>
                       {issue ? (
-                        <span className="recent-project-issue"> · {issue}</span>
+                        <span className="recent-project-issue">{issue}</span>
                       ) : null}
                     </button>
-                    {showLegacyOpen ? (
+                    <div className="recent-project-actions">
+                      {showLegacyOpen ? (
+                        <button
+                          type="button"
+                          className="btn ghost recent-project-legacy-btn"
+                          disabled={busy}
+                          title="Open without creating or assigning a project folder"
+                          onClick={() =>
+                            void handleOpenProject(p.id, { asLegacy: true })
+                          }
+                        >
+                          Open as legacy
+                        </button>
+                      ) : null}
                       <button
                         type="button"
-                        className="btn ghost recent-project-legacy-btn"
+                        className="btn ghost recent-project-delete-btn"
                         disabled={busy}
-                        title="Open without creating or assigning a project folder"
-                        onClick={() =>
-                          void handleOpenProject(p.id, { asLegacy: true })
-                        }
+                        title="Delete this project (keeps Library media)"
+                        onClick={() => void handleDeleteProject(p.id, p.title)}
                       >
-                        Open as legacy
+                        Delete
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="btn ghost recent-project-delete-btn"
-                      disabled={busy}
-                      title="Delete this project (keeps Library media)"
-                      onClick={() => void handleDeleteProject(p.id, p.title)}
-                    >
-                      Delete
-                    </button>
+                    </div>
                   </li>
                 );
               })}

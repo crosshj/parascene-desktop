@@ -19,11 +19,28 @@
     <main>
       <h1>Video models</h1>
       <p>
-        You pick an intent first — what you have, and what you want back —
-        then a system, then a model. Wan, LTX, and MiniMax H3 show up under
-        more than one intent. Replicate adds other labs for Text to Video and
-        Image to Video.
+        Two lists on this page. The form asks for an intent first, then a
+        system, then a model from a family.
       </p>
+
+      <div class="catalog-split">
+        <div>
+          <p class="group">Models</p>
+          <p>
+            The family that draws the clip — Wan, LTX, MiniMax H3. One family
+            can run more than one intent. Replicate adds other labs for Text
+            to Video and Image to Video.
+          </p>
+        </div>
+        <div>
+          <p class="group">Intents</p>
+          <p>
+            The job. Invent a clip, make a still move, talk to speech, copy
+            motion or edit a clip you already have, or hold refs. The form
+            calls these intents.
+          </p>
+        </div>
+      </div>
 
       <h2>In the form</h2>
       <ol class="steps">
@@ -56,7 +73,18 @@
         to Video yet.
       </p>
 
-      <h2>Wan</h2>
+      <h2>Models</h2>
+      <p>
+        Same family, different recipes. The codes in the list are what the
+        form shows after you pick the intent.
+      </p>
+
+      <h3 class="model-brand model-brand--wan" id="wan">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 16 8 6l4 8 4-8 4 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Wan
+      </h3>
       <p>
         Fast. Text to Video and Image to Video stay silent unless you add audio
         yourself. On Direct to Blue, Wan also edits a clip you already have.
@@ -68,7 +96,13 @@
         <li>Wan — Animate 2 — <code>wan_animate</code> (needs a character still)</li>
       </ul>
 
-      <h2>LTX</h2>
+      <h3 class="model-brand model-brand--ltx" id="ltx">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="6" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.7" />
+          <path d="M17 9.5 21 7v8l-4-2.5V9.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+        </svg>
+        LTX
+      </h3>
       <p>
         Often writes audio with the picture. This is the family for a talking
         clip — the one we used after the goblin still.
@@ -83,7 +117,12 @@
         <li>LTX — IC-LoRA ingredients — <code>ltx_ingredients</code></li>
       </ul>
 
-      <h2>MiniMax H3</h2>
+      <h3 class="model-brand model-brand--minimax" id="minimax">
+        <svg class="model-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 18V7.5L12 14l7-6.5V18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        MiniMax H3
+      </h3>
       <p>
         Strong native audio (FL2VA / Ref2VA). These do not appear under
         Parascene — use Direct to Blue, or Replicate for Text to Video and
@@ -95,31 +134,39 @@
         <li>MiniMax H3 — reference-to-video (Ref2VA) — <code>minimax_r2v</code></li>
       </ul>
 
-      <h2>Text to Video</h2>
+      <h2>Intents</h2>
       <p>
-        A prompt. No still. The clip can land on the timeline or in Assets.
-        Parascene: Wan or LTX. Direct to Blue adds MiniMax H3. Replicate is
-        MiniMax H3, Seedance, Kling, Veo, Vidu, and the other video models you
-        have enabled.
+        Pick the job. The model list shrinks to the recipes that can do it.
       </p>
 
-      <h2>Image to Video</h2>
+      <h3>Text to Video</h3>
       <p>
-        A still becomes motion. <strong>First</strong> is the start frame.
-        <strong>Last</strong> is optional — when both are set, Wan, MiniMax H3,
-        and LTX style transition can land on the second still.
-      </p>
-      <p>
-        On Replicate you can also <strong>motion match</strong>: a character
-        still plus the previous clip on the timeline as the motion.
+        Invent a clip from a prompt. No still, no existing video — you want
+        a new shot from words. The clip can land on the timeline or in
+        Assets. Parascene: Wan or LTX. Direct to Blue adds MiniMax H3.
+        Replicate is MiniMax H3, Seedance, Kling, Veo, Vidu, and the other
+        video models you have enabled.
       </p>
 
-      <h2>Audio to Video</h2>
+      <h3>Image to Video</h3>
       <p>
-        Speech or a mix is already on the audio lane. First frame is the face.
-        Source audio is <strong>full mix</strong> or <strong>vocals</strong>.
-        The clip is shorter than the speech — later clips fill the rest the
-        same way.
+        Make a still move. Keep the face and the room; add camera and
+        motion. <strong>First</strong> is the start frame. <strong>Last</strong>
+        is optional — when both are set, Wan, MiniMax H3, and LTX style
+        transition can land on the second still.
+      </p>
+      <p>
+        On Replicate you can also <strong>motion match</strong>: keep the
+        character from a still, and copy the motion from the previous clip
+        on the timeline.
+      </p>
+
+      <h3>Audio to Video</h3>
+      <p>
+        Turn speech you already have into a talking clip. The still is the
+        face; the audio on the timeline is the timing. Source audio is
+        <strong>full mix</strong> or <strong>vocals</strong>. The clip is
+        shorter than the speech — later clips fill the rest the same way.
       </p>
       <p>
         Parascene and Direct to Blue: <code>ltx_a2v</code>. Direct to Blue
@@ -127,17 +174,20 @@
         <a href="audio.html">Generate a video with audio</a>.
       </p>
 
-      <h2>Video to Video</h2>
+      <h3>Video to Video</h3>
       <p>
-        A clip you already have, plus a prompt. Some models also want a
-        character still. Direct to Blue: Bernini-R, Wan Animate 2, and LTX
+        You already have a clip. Copy the motion from it, or edit the clip
+        itself — restyle it, recast who is in it, or keep the same camera.
+        Some models also want a character still so the new clip stays on
+        that person. Direct to Blue: Bernini-R, Wan Animate 2, and LTX
         IC-LoRA.
       </p>
 
-      <h2>Refs to Video</h2>
+      <h3>Refs to Video</h3>
       <p>
-        Stills — and sometimes clips or audio — as references: who is in the
-        shot, what they wear, where they are. Then a prompt.
+        Hold onto who, what, and where, then write a new clip that stays
+        on those pieces. Stills — and sometimes clips or audio — are
+        references, not a finished shot. Then a prompt.
       </p>
       <p>
         MiniMax H3 Ref2VA takes up to nine stills, three clips, and three
@@ -149,6 +199,10 @@
       <p class="more">
         <a href="audio.html">Generate a video with audio</a> — LTX Audio to
         Video on the goblin still.
+      </p>
+      <p class="more">
+        <a href="audio-models.html">Audio models</a> — speak a line or write a
+        score before the talking clip.
       </p>
       <p class="more">
         <a href="image-models.html">Image models</a> — the stills these clips

@@ -100,7 +100,7 @@ function Root() {
   if (!session || status === "signed_out" || status === "connecting") {
     return (
       <>
-        <AgentBridge />
+        <AgentBridge key="agent-actions-v9" />
         <LoginScreen />
       </>
     );
@@ -108,7 +108,7 @@ function Root() {
 
   return (
     <ShellProvider>
-      <AgentBridge />
+      <AgentBridge key="agent-actions-v9" />
       <ReauthOverlay />
       <AppChrome>
         <LayoutRouter />

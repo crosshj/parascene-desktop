@@ -121,7 +121,7 @@ const KNOWN_HINTS: Array<{ test: RegExp; hint: string }> = [
   {
     test: /folder id already exists/i,
     hint:
-      "Pending create targets a folder id already on cloud (often after a partial upload). Sync drops that create unless a pending delete for the same id remains (project release). Retry Sync folders. See docs/STANDARDS-sync-diagnostics.md.",
+      "Pending create targets a folder id already on cloud (often after a partial upload). Sync drops that create unless a pending delete remains and the folder still exists locally (project release). Retry Sync folders. See docs/STANDARDS-sync-diagnostics.md.",
   },
   {
     test: /folder not found/i,

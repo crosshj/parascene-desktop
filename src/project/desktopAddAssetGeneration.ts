@@ -69,6 +69,33 @@ function trimAssetId(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function parseAudioGenerateExtras(
+  value: unknown,
+): NonNullable<AddAssetGeneration["audioExtras"]> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const trimmed = (key: string): string | undefined => {
+    const raw = row[key];
+    return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  };
+  const out: NonNullable<AddAssetGeneration["audioExtras"]> = {};
+  const voiceId = trimmed("voiceId");
+  if (voiceId) out.voiceId = voiceId;
+  const geminiVoice = trimmed("geminiVoice");
+  if (geminiVoice) out.geminiVoice = geminiVoice;
+  const stylePrompt = trimmed("stylePrompt");
+  if (stylePrompt) out.stylePrompt = stylePrompt;
+  const lyrics = trimmed("lyrics");
+  if (lyrics) out.lyrics = lyrics;
+  if (row.instrumental === true) out.instrumental = true;
+  if (row.lyricsOptimizer === true) out.lyricsOptimizer = true;
+  const emotion = trimmed("emotion");
+  if (emotion) out.emotion = emotion;
+  const cloneSourceAssetId = trimmed("cloneSourceAssetId");
+  if (cloneSourceAssetId) out.cloneSourceAssetId = cloneSourceAssetId;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function stringIdList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const ids = [
@@ -219,6 +246,15 @@ export function normalizeAddAssetGeneration(
   const useNearestDuration = row.useNearestDuration === true ? true : undefined;
   const replicateTweaks = parseReplicateVideoTweaks(row.replicateTweaks);
   const mediaRefs = pickGenerateMediaRefFields(row);
+  const voiceId =
+    typeof row.voiceId === "string" && row.voiceId.trim()
+      ? row.voiceId.trim()
+      : undefined;
+  const stylePrompt =
+    typeof row.stylePrompt === "string" && row.stylePrompt.trim()
+      ? row.stylePrompt.trim()
+      : undefined;
+  const audioExtras = parseAudioGenerateExtras(row.audioExtras);
   return {
     prompt: row.prompt,
     audioMode,
@@ -246,6 +282,23 @@ export function normalizeAddAssetGeneration(
     startOffsetSeconds: mediaRefs.startOffsetSeconds,
     useNearestDuration,
     replicateTweaks,
+    voiceId:
+      voiceId ??
+      audioExtras?.voiceId ??
+      audioExtras?.geminiVoice,
+    stylePrompt: stylePrompt ?? audioExtras?.stylePrompt,
+    audioExtras:
+      parseAudioGenerateExtras({
+        ...audioExtras,
+        voiceId:
+          voiceId ?? audioExtras?.voiceId ?? audioExtras?.geminiVoice,
+        geminiVoice:
+          audioExtras?.geminiVoice ??
+          voiceId ??
+          audioExtras?.voiceId,
+        stylePrompt: stylePrompt ?? audioExtras?.stylePrompt,
+        lyrics: audioExtras?.lyrics ?? lyricsText,
+      }) ?? audioExtras,
   };
 }
 
@@ -392,6 +445,20 @@ function deriveIntentFromParasceneMethod(opts: {
       mode: "start_frame",
     };
   }
+  if (method === "replicatespeech") {
+    return {
+      intentId: "text_to_speech",
+      methodId: "text_to_speech",
+      mode: "none",
+    };
+  }
+  if (method === "replicatemusic") {
+    return {
+      intentId: "text_to_music",
+      methodId: "text_to_music",
+      mode: "none",
+    };
+  }
   if (
     method === "replicate" ||
     method === "replicatepro" ||
@@ -456,6 +523,33 @@ function deriveIntentFromParasceneMethod(opts: {
   return null;
 }
 
+function deriveAudioExtrasFromParasceneArgs(
+  args: Record<string, unknown>,
+  model: string,
+): NonNullable<AddAssetGeneration["audioExtras"]> | undefined {
+  const voice = asTrimmedString(args.voice);
+  const customId = asTrimmedString(args.voice_id);
+  const voiceId = customId || voice;
+  const extras: Record<string, unknown> = {};
+  if (voiceId) extras.voiceId = voiceId;
+  if (/gemini/i.test(model) && (voice || voiceId)) {
+    extras.geminiVoice = voice || voiceId;
+  }
+  const style = asTrimmedString(args.style);
+  if (style) extras.stylePrompt = style;
+  const emotion = asTrimmedString(args.emotion);
+  if (emotion) extras.emotion = emotion;
+  const lyrics = asTrimmedString(args.lyrics);
+  if (lyrics) extras.lyrics = lyrics;
+  if (args.is_instrumental === true || args.is_instrumental === "true") {
+    extras.instrumental = true;
+  }
+  if (args.lyrics_optimizer === true || args.lyrics_optimizer === "true") {
+    extras.lyricsOptimizer = true;
+  }
+  return parseAudioGenerateExtras(extras);
+}
+
 function deriveServerFromParasceneMeta(
   meta: Record<string, unknown>,
   method: string,
@@ -518,6 +612,7 @@ export function deriveAddAssetGenerationFromParasceneMeta(
 
     const prompt =
       asTrimmedString(args.prompt) ||
+      asTrimmedString(args.text) ||
       asTrimmedString(meta.user_prompt) ||
       asTrimmedString(creation.prompt) ||
       "";
@@ -535,6 +630,11 @@ export function deriveAddAssetGenerationFromParasceneMeta(
     const model = asTrimmedString(args.model) || undefined;
     const server = deriveServerFromParasceneMeta(meta, method);
 
+    const audioExtras =
+      intent.intentId === "text_to_speech" || intent.intentId === "text_to_music"
+        ? deriveAudioExtrasFromParasceneArgs(args, model ?? "")
+        : undefined;
+
     const generation: AddAssetGeneration = {
       prompt,
       generatedAt,
@@ -545,6 +645,10 @@ export function deriveAddAssetGenerationFromParasceneMeta(
       server,
       provider: server,
       methodId: intent.methodId,
+      voiceId: audioExtras?.voiceId ?? audioExtras?.geminiVoice,
+      stylePrompt: audioExtras?.stylePrompt,
+      lyricsText: audioExtras?.lyrics,
+      audioExtras,
     };
 
     if (intent.mode === "start_frame" && inputImageUrl) {
@@ -813,6 +917,52 @@ export function makeTextToImageGeneration(opts: {
     provider: server,
     methodId: "text_to_image",
   };
+}
+
+/** Provenance stamp for library speech / music / voice-clone assets. */
+export function makeLibraryAudioGeneration(opts: {
+  prompt: string;
+  creationId: string;
+  model: string;
+  intentId: "text_to_speech" | "text_to_music";
+  server?: "replicate" | "parascene_blue";
+  voiceId?: string;
+  lyricsText?: string;
+  extras?: NonNullable<AddAssetGeneration["audioExtras"]>;
+}): AddAssetGeneration {
+  const extras = parseAudioGenerateExtras(opts.extras);
+  const voiceId =
+    opts.voiceId?.trim() ||
+    extras?.voiceId ||
+    extras?.geminiVoice ||
+    undefined;
+  const lyricsText = opts.lyricsText?.trim() || extras?.lyrics || undefined;
+  const server = opts.server === "parascene_blue" ? "parascene_blue" : "replicate";
+  return {
+    prompt: opts.prompt.trim(),
+    generatedAt: new Date().toISOString(),
+    creationId: opts.creationId.trim(),
+    mode: "none",
+    model: opts.model.trim(),
+    intentId: opts.intentId,
+    server,
+    provider: server,
+    methodId: opts.intentId,
+    voiceId,
+    lyricsText,
+    stylePrompt: extras?.stylePrompt,
+    audioExtras: extras,
+  };
+}
+
+export function isLibraryAudioGeneration(
+  generation: AddAssetGeneration | null | undefined,
+): boolean {
+  if (!generation) return false;
+  return (
+    generation.intentId === "text_to_speech" ||
+    generation.intentId === "text_to_music"
+  );
 }
 
 /** Provenance stamp for library Image → Image generates. */

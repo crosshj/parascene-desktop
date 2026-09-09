@@ -7,6 +7,7 @@ import {
   isImageToImageGeneration,
   isTextToImageGeneration,
   makeImageToImageGeneration,
+  makeLibraryAudioGeneration,
   mergeAddAssetGenerationIntoRemoteJson,
   mergeStampWithDerivedGeneration,
   normalizeAddAssetGeneration,
@@ -43,6 +44,73 @@ describe("normalizeAddAssetGeneration", () => {
       inputVideoAssetId: "vid-1",
       referenceImageAssetIds: ["img-1"],
       startOffsetSeconds: 1.25,
+    });
+  });
+
+  it("keeps a cloned MiniMax voice_id stamp", () => {
+    expect(
+      normalizeAddAssetGeneration({
+        prompt: "clone",
+        generatedAt: "2026-09-07T00:00:00.000Z",
+        creationId: "voice-1",
+        intentId: "text_to_speech",
+        voiceId: "R8_FDU1SV5S",
+      })?.voiceId,
+    ).toBe("R8_FDU1SV5S");
+  });
+
+  it("stamps Gemini extras so a later catalog read still has speaker and style", () => {
+    const stamped = makeLibraryAudioGeneration({
+      prompt: "line",
+      creationId: "tts-2",
+      model: "google/gemini-3.1-flash-tts",
+      intentId: "text_to_speech",
+      extras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+    });
+    expect(stamped).toMatchObject({
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+    });
+    const upsert = creationUpsertWithAddAssetGeneration(
+      baseCreation(),
+      stamped,
+    );
+    expect(
+      addAssetGenerationFromCreation(
+        baseCreation(upsert.remoteJson),
+      ),
+    ).toMatchObject({
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: {
+        voiceId: "Kore",
+        geminiVoice: "Kore",
+        stylePrompt: "warm studio",
+      },
+    });
+  });
+
+  it("keeps Gemini speaker extras so Clone can refill Voice and Style", () => {
+    expect(
+      normalizeAddAssetGeneration({
+        prompt: "line",
+        generatedAt: "2026-09-07T00:00:00.000Z",
+        creationId: "tts-1",
+        intentId: "text_to_speech",
+        model: "google/gemini-3.1-flash-tts",
+        voiceId: "Kore",
+        stylePrompt: "warm studio",
+        audioExtras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+      }),
+    ).toMatchObject({
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: {
+        voiceId: "Kore",
+        geminiVoice: "Kore",
+        stylePrompt: "warm studio",
+      },
     });
   });
 });
@@ -288,6 +356,55 @@ describe("deriveAddAssetGenerationFromParasceneMeta", () => {
       intentId: "video_to_video",
       methodId: "video_to_video",
       model: "bernini_r_v2v",
+    });
+  });
+
+  it("derives replicateSpeech with voice extras", () => {
+    const creation = baseCreation(
+      parasceneRemoteJson({
+        method: "replicateSpeech",
+        server_id: 1,
+        server_name: "Parascene",
+        completed_at: "2026-09-09T18:00:00.000Z",
+        args: {
+          model: "google/gemini-3.1-flash-tts",
+          prompt: "The night market is still open.",
+          voice: "Kore",
+          style: "warm studio",
+        },
+      }),
+    );
+    creation.mediaType = "audio";
+    const derived = deriveAddAssetGenerationFromParasceneMeta(creation);
+    expect(derived).toMatchObject({
+      prompt: "The night market is still open.",
+      intentId: "text_to_speech",
+      methodId: "text_to_speech",
+      model: "google/gemini-3.1-flash-tts",
+      server: "parascene_blue",
+      voiceId: "Kore",
+      stylePrompt: "warm studio",
+      audioExtras: { geminiVoice: "Kore", stylePrompt: "warm studio" },
+    });
+  });
+
+  it("derives replicateMusic from Parascene meta.args", () => {
+    const creation = baseCreation(
+      parasceneRemoteJson({
+        method: "replicateMusic",
+        server_id: 1,
+        args: {
+          model: "google/lyria-3",
+          prompt: "dramatic night market score",
+        },
+      }),
+    );
+    creation.mediaType = "audio";
+    expect(deriveAddAssetGenerationFromParasceneMeta(creation)).toMatchObject({
+      intentId: "text_to_music",
+      methodId: "text_to_music",
+      model: "google/lyria-3",
+      prompt: "dramatic night market score",
     });
   });
 

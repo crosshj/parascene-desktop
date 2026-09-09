@@ -111,6 +111,13 @@ h2 {
   scroll-margin-top: 3.5rem;
 }
 
+h3 {
+  margin: 1.5rem 0 0.45rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  scroll-margin-top: 3.5rem;
+}
+
 p {
   margin: 0 0 0.9rem;
 }
@@ -381,6 +388,85 @@ ul.steps {
 
 .model-card figcaption {
   font-size: 0.78rem;
+}
+
+.catalog-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 0 0 1.35rem;
+}
+
+.catalog-split > div {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.catalog-split .group {
+  margin: 0 0 0.35rem;
+}
+
+.catalog-split p:last-child {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+@media (max-width: 36rem) {
+  .catalog-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.model-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 1.75rem 0 0.65rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  scroll-margin-top: 3.5rem;
+}
+
+.model-brand-mark {
+  flex: none;
+  width: 1.7rem;
+  height: 1.7rem;
+}
+
+.model-brand--wan {
+  color: #ffedd5;
+  background: #9a3412;
+  border: 1px solid #c2410c;
+}
+
+.model-brand--ltx {
+  color: #cffafe;
+  background: #134e4a;
+  border: 1px solid #0f766e;
+}
+
+.model-brand--minimax {
+  color: #e0e7ff;
+  background: #312e81;
+  border: 1px solid #4f46e5;
+}
+
+.model-brand--gemini {
+  color: #e0f2fe;
+  background: #0c4a6e;
+  border: 1px solid #0284c7;
+}
+
+.model-brand--lyria {
+  color: #fef3c7;
+  background: #78350f;
+  border: 1px solid #d97706;
 }
 
 .model-names {

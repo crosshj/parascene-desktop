@@ -202,6 +202,7 @@ export function SchemaScalarField({
               aria-label={showFieldChrome ? undefined : label}
               value={value}
               disabled={disabled}
+              maxLength={field.maxLength ?? undefined}
               onChange={(e) => setValue(e.target.value)}
             />
           ) : field.typeName === "integer" || field.typeName === "number" ? (
