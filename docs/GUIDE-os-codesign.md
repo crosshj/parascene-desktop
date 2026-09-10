@@ -1,4 +1,4 @@
-# OS code signing (optional follow-up)
+# Guide — OS code signing (optional)
 
 Tauri **updater** signing (minisign keypair / `TAURI_SIGNING_PRIVATE_KEY`) is separate from **OS** code signing. OS signing removes Gatekeeper / SmartScreen friction on **first install** and hardens the macOS update path. Neither requires the Mac App Store nor the Microsoft Store.
 

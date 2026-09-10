@@ -2,8 +2,7 @@
 
 **Status:** Core Editor Generate path **shipped** (placeholders, independent first/last sources, multi-server, Result | Form, Generate new with durable frame stamps). Marker/scene strip and batch flows remain open.  
 **Date:** July 2026 (status refreshed August 2026)  
-**Supersedes:** [mv-build-retrospective.md](./mv-build-retrospective.md) (abandoned path)  
-**Related:** [PLAN-song-to-video.md](./PLAN-song-to-video.md), [PLAN-mv-storyboard-lab.md](./PLAN-mv-storyboard-lab.md), [PLAN-parascene-blue-direct.md](./PLAN-parascene-blue-direct.md)
+**Related:** [PLAN-song-to-video.md](./PLAN-song-to-video.md) (Lab done; Director handoff never shipped), [GUIDE-generation-lanes.md](./GUIDE-generation-lanes.md)
 
 ---
 

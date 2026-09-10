@@ -2,7 +2,7 @@
 
 **Audience:** humans and coding agents working on Library folders, project ownership, Images/Videos cabinets, legacy open, Lab filing, or Assets display.
 
-**Related:** [PLAN-project-owned-folders.md](./PLAN-project-owned-folders.md) (folder ownership cutover). This document is the **cabinet-era product model** and process catalog. Where the older plan’s “same inventory in Library and Assets” wording conflicts with cabinets, **this document wins for display**; ownership authority remains native `folder_items`.
+This document is the **cabinet-era product model** and process catalog. Ownership authority remains native `folder_items`. Display may expand cabinet members in Assets; that is not a second membership.
 
 ---
 
@@ -288,7 +288,6 @@ Legacy flat projects are valid forever without cabinets. Cabinets are additive o
 | Open / remirror / gather / collapse-on-open | `src/app/ShellProvider.tsx` |
 | Sync remirror helpers | `src/project/reconcileProjectLibrary.ts` |
 | Mutation / usage lock | `src/project/projectMutationCoordinator.ts` |
-| Prior ownership plan | `docs/PLAN-project-owned-folders.md` |
 | Sync failure diagnostics | `docs/STANDARDS-sync-diagnostics.md` |
 
 ---
@@ -297,7 +296,7 @@ Legacy flat projects are valid forever without cabinets. Cabinets are additive o
 
 | Topic | Status |
 | --- | --- |
-| PLAN “Editor Assets and Library read the same inventory” vs cabinet display expansion | **Conflict noted** — display may show more than folder tiles; ownership stays folder (+ cabinet-member exception). PLAN “same inventory” is display-incomplete; ownership authority unchanged. |
+| “Editor Assets and Library read the same inventory” vs cabinet display expansion | **Closed** — display may show more than folder tiles; ownership stays folder (+ cabinet-member exception). |
 | `fileCreationIntoProjectGroup` cover-only filing | **Closed** — files cover only; members live in group meta |
 | Ensure/jobs `projectCreationIds` | **Closed** — covers only |
 | Timeline refs to cabinet members **not** in `folder_items` | **Closed** — allowed when cover is in folder (`isProjectOwnedCreation`) |
@@ -306,7 +305,19 @@ Legacy flat projects are valid forever without cabinets. Cabinets are additive o
 
 ---
 
-## 8. Agent checklist
+## 8. Leftover (validation)
+
+The folder model is implemented. These are still open:
+
+- Live capability/version check so mixed server deploys fail closed instead of assuming the current Folder API.
+- Open copies of real legacy profiles: all-root, one-folder, previously bound, mixed folders, missing files, composition-heavy, interrupted migrate.
+- Old + new clients against the deployed server: conflicts, retries, crash between SQLite writes, partial sync.
+- Manual Tauri: create / rename / reopen, Library manage of a closed project, blocked delete, generate/import, composition cleanup, locked remote project folder, recovery copy.
+- After that observation window: drop leftover legacy JSON fields, compatibility commands, and the queued-op adapter if nothing still writes them.
+
+---
+
+## 9. Agent checklist
 
 Before changing folder/cabinet code:
 
@@ -315,5 +326,5 @@ Before changing folder/cabinet code:
 3. Is this legacy open? **Do not** invent cabinets or drop timeline refs to “clean” the folder.
 4. Is the chooser missing a project? Check storage heal / corrupt isolation — **not** folder membership.
 5. After filing media, did you update **group meta** and file the **cover** (not every member)? Timeline may reference members via cabinet ownership.
-6. Read this doc + `PLAN-project-owned-folders.md` before “simplifying” ownership.
+6. Read this doc before “simplifying” ownership.
 7. Sync folders failing with a cryptic API string? Follow `docs/STANDARDS-sync-diagnostics.md` (`[folder-sync]` console + `folder_pending_ops`) before guessing double-instance / locks.

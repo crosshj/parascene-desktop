@@ -1,6 +1,6 @@
 # Parascene Desktop
 
-Desktop shell for Parascene (Tauri 2 + React + TypeScript) on **macOS** and **Windows**.
+Local-first desktop studio for Parascene (Tauri 2 + React + TypeScript) on **macOS** and **Windows**. Library, projects, timeline, generate (Parascene / Direct to Blue / Replicate), and Publisher live here. In-app Help is under `public/help/`.
 
 ## Prerequisites
 
@@ -29,7 +29,8 @@ http://127.0.0.1:17423/oauth/callback
 |--------|---------|
 | `npm run dev` | Run the desktop app (needs Rust — see Prerequisites) |
 | `npm run build` | Production bundle (DMG on macOS, NSIS `.exe` on Windows) |
-| `npm run test` | Vitest |
+| `npm run test` | Vitest (unit) |
+| `npm run test:integration` | Suites 01–12 against an already-running `npm run dev` app |
 | `npm run lint` / `npm run typecheck` | Quality gates |
 
 `vite:dev` / `vite:build` are internals used by Tauri — don’t run them alone.
@@ -42,8 +43,8 @@ Matches [Log in with Parascene](https://www.parascene.com/help/developer/login-w
 2. System browser opens **Parascene** `/oauth/authorize` (consent / trust this app)
 3. After approve, browser returns to the app via loopback `http://127.0.0.1:17423/oauth/callback`
 4. App exchanges the auth code with Parascene `/oauth/token` using PKCE only (no developer API key)
-5. Access/refresh tokens + userinfo are stored in the OS secure store in **release** builds (macOS Keychain / Windows Credential Manager). In **debug** (`tauri dev`), they live in the local catalog SQLite (`…/Parascene/Library/catalog.sqlite`) so the secure store does not prompt on every restart.
-6. Further Parascene API calls go through `src/sdk/parascene.ts`
+5. Access/refresh tokens + userinfo are stored in the OS secure store in **release** builds (macOS Keychain / Windows Credential Manager). In **debug** (`tauri dev`), they live in `session.sqlite` so the secure store does not prompt on every restart.
+6. Parascene work goes through Rust / `service_invoke` — FE enqueues and paints, it does not own the loop. Folder reconcile in `folderSync.ts` is leftover to migrate, not a pattern to copy. OAuth is not a job.
 
 ## Download & install
 
@@ -85,50 +86,53 @@ GitHub Actions:
 - Pushes to `main` update prerelease **Desktop — latest main** (`desktop-latest`) with both platform installers.
 - Push a `desktop-v*` tag for a versioned release (both workflows attach artifacts + updater `latest.json`).
 - PRs also upload workflow **Artifacts**; prefer the Releases page for sharing.
-- **Updater signing** (Tauri keypair) is required for CI builds — see [docs/PLAN-desktop-updater.md](docs/PLAN-desktop-updater.md). Set `TAURI_SIGNING_PRIVATE_KEY` in repo secrets.
-- **OS codesign** (Apple Developer ID / Windows Authenticode) is still optional — [docs/PLAN-os-codesign.md](docs/PLAN-os-codesign.md). Until then, use the install workarounds below for first install; later versions can update in-app via **Help → Check for Updates…**.
+- **Updater signing** (Tauri keypair) is required for CI builds — see [docs/GUIDE-desktop-updater.md](docs/GUIDE-desktop-updater.md). Set `TAURI_SIGNING_PRIVATE_KEY` in repo secrets.
+- **OS codesign** (Apple Developer ID / Windows Authenticode) is still optional — [docs/GUIDE-os-codesign.md](docs/GUIDE-os-codesign.md). Until then, use the install workarounds above for first install; later versions can update in-app via **Help → Check for Updates…**.
 
-## Chrome & layouts
+## Chrome
 
-Header: **Library** | **Project** · spacer · context tabs. Library context: Creations | Sync. Project context (when open): Director | Editor | Hook.
+Header: **Library** | **Project** · spacer · context tabs.
 
-- **Library** — Creations + Sync read local SQLite; **Sync from Parascene** pulls your creations list (`GET /api/create/images`). Media file download comes later.
-- **Project** — picker when nothing is open; workspace modes when loaded
-- **Director** — preview, scenes, instruction box
-- **Editor** — assets, preview, timeline stub, assistant stub
-- **Hook** — vertical preview, 9s range stub, suggestions, disabled publish
+- **Library** → Creations | Sync. Catalog is local SQLite. Sync pulls the creations list, then newest media; more pages download as you scroll.
+- **Project** (nothing open) → picker (recent + New project).
+- **Project** (open) → Director | Editor | Publisher. **Labs** only when that setting is on.
 
-Fixtures under `src/fixtures/` still back the Project workspace mock. The Library catalog is filled by syncing from your Parascene account.
+Help opens in the default browser (`public/help/`).
 
 ## Local data root
 
-On first Library open the app creates (under the OS videos folder — `~/Movies` on macOS, `Videos` on Windows):
+Under the OS videos folder (`~/Movies` on macOS, `Videos` on Windows), per signed-in account:
 
 ```text
 …/Parascene/
-  Library/          # durable media + catalog.sqlite
-  Projects/
-  Exports/
-  Cache/
+  accounts.json
+  session.sqlite          # debug auth
+  users/<slug>/
+    Library/              # catalog.sqlite, media, thumbs
+    Projects/
+    Exports/
+    Cache/
+    user.sqlite           # project documents, settings secrets
 ```
-
-Catalog metadata is SQLite under `Library/`. **Sync from cloud** pulls the full creations list, then downloads the newest screenful of media; more pages download as you scroll the Creations grid. Files land in `Library/media` and `Library/thumbs`.
 
 API origin defaults to `https://api.parascene.com` (override with `VITE_PARASCENE_API_BASE_URL`).
 
-## Non-goals (this pass)
+## Docs
 
-No timeline editing, FFmpeg, rendering, generation, or real Hook publishing.
+Scoreboards first:
 
-## Plans / roadmap
+- [docs/GUIDE-help-and-tests.md](docs/GUIDE-help-and-tests.md) — Help, integration tests, leftover after 1.1.58
+- [docs/STATUS-new-asset.md](docs/STATUS-new-asset.md) — Generate intent × server (live vs coming soon)
 
-- [docs/PLAN-from-chatgpt.md](docs/PLAN-from-chatgpt.md) — where the product plan stands (shell done → Library next)
-- [docs/GUIDE-architecture-principles.md](docs/GUIDE-architecture-principles.md) — local-first; ease web/DB load; gens without Creation rows (maybe)
-- [docs/PLAN-library-sync.md](docs/PLAN-library-sync.md) — local Library + sync design
-- [docs/PLAN-macos-desktop-shell.md](docs/PLAN-macos-desktop-shell.md) — shell leftovers
-- [docs/PLAN-desktop-updater.md](docs/PLAN-desktop-updater.md) — in-app updates (Tauri updater)
-- [docs/PLAN-os-codesign.md](docs/PLAN-os-codesign.md) — Apple / Windows OS signing (optional)
-- [docs/PLAN-ffmpeg.md](docs/PLAN-ffmpeg.md) — FFmpeg detect + install assist
-- [LOCAL_TOOLS.md](LOCAL_TOOLS.md) — FFmpeg, Demucs, and other local installs for Lab/Editor
-- [docs/PLAN-parascene-generation.md](docs/PLAN-parascene-generation.md) — generation API deps (first–last frame, short duration, prompt relay)
-- [docs/mockups/](docs/mockups/) — Director / Editor / Hook / Library target visuals
+Settled rules:
+
+- [docs/GUIDE-architecture-principles.md](docs/GUIDE-architecture-principles.md) — local-first; ease web/DB load
+- [docs/GUIDE-desktop-vs-web.md](docs/GUIDE-desktop-vs-web.md) — which surface owns a feature
+- [docs/GUIDE-generation-lanes.md](docs/GUIDE-generation-lanes.md) — Parascene vs Direct to Blue vs Replicate
+- [docs/GUIDE-generation-inputs-provenance.md](docs/GUIDE-generation-inputs-provenance.md) — what Form must show
+- [docs/GUIDE-backend-ownership.md](docs/GUIDE-backend-ownership.md) — Rust owns loops; FE enqueues and paints
+- [docs/REQUIREMENTS-project-folders-cabinets.md](docs/REQUIREMENTS-project-folders-cabinets.md) — project folder + Images/Videos cabinets
+- [LOCAL_TOOLS.md](LOCAL_TOOLS.md) — FFmpeg, Demucs, Whisper
+- [docs/GUIDE-desktop-updater.md](docs/GUIDE-desktop-updater.md) / [docs/GUIDE-os-codesign.md](docs/GUIDE-os-codesign.md)
+
+Aspiration (not a schedule): [docs/BACKLOG-desktop.md](docs/BACKLOG-desktop.md). Mockups are references, not specs: [docs/mockups/](docs/mockups/).

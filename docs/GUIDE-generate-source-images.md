@@ -27,7 +27,15 @@ Parascene target
 - Hosted still, fit, grouped or not: send existing URL. Durable id = that Creation. Do not group. Do not upload a clone.
 - Hosted still, fill/stretch, grouped or not: bake JPEG, upload new Creation, append only the new id to Images. Durable id = new Creation. Do not re-send the original member.
 - Not hosted (local-only image): upload new Creation, append the new id. Durable id = new Creation.
-- Video still (video may be hosted / in Videos): extract locally, upload to Parascene ephemeral Blue CDN (`still_url`). Do not create a still Creation. Do not file Images. Durable input = that `still_url`. Drop the temp extract from project membership. See [PLAN-ephemeral-frame-cdn.md](./PLAN-ephemeral-frame-cdn.md).
+- Video still (video may be hosted / in Videos): extract locally, upload to Parascene ephemeral Blue CDN (`still_url`). Do not create a still Creation. Do not file Images. Durable input = that `still_url`. Drop the temp extract from project membership.
+
+Ephemeral still (Parascene video extract)
+
+- Desktop ffmpeg still (timeline source time — trim / loop / ping-pong already applied).
+- `POST /api/create/ephemeral-still/start` → PUT jpeg to Blue → `POST .../finalize` → `{ still_url }`.
+- Generate `input_images` uses that stable Parascene path. Job mints a Blue fetch for the model only.
+- Unpinned. ~24h TTL. No Creation row. Do not pin (that is durable audio — [GUIDE-blue-cdn-audio.md](./GUIDE-blue-cdn-audio.md)).
+- Do not put `o_…` or ticking `/cdn/…` in desktop state. CDN still-at-time (`?t=`) is later, not this path — [PLAN-blue-cdn-frames.md](./PLAN-blue-cdn-frames.md).
 
 Blue / Replicate target
 

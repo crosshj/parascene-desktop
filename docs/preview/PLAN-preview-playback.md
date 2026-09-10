@@ -1,8 +1,6 @@
 # Plan: Preview playback
 
-The execution plan. Supersedes the Cursor and Codex drafts as what we implement. Those drafts stay in this folder as history.
-
-Sources: [PLAN-mse-preview-load-guarantee.md](./PLAN-mse-preview-load-guarantee.md), [PLAN-timeline-preview-reliability.md](./PLAN-timeline-preview-reliability.md), [NOTES-preview-plan-comparison.md](./NOTES-preview-plan-comparison.md), [NOTES-preview-plan-comparison-codex.md](./NOTES-preview-plan-comparison-codex.md), [PLAN-preview-reliability-recommendation.md](./PLAN-preview-reliability-recommendation.md). Lessons: [NOTES-timeline-preview.md](./NOTES-timeline-preview.md).
+The execution plan. Lessons: [NOTES-timeline-preview.md](./NOTES-timeline-preview.md).
 
 Normative failure map: [REQUIREMENTS-preview-failure-map.md](./REQUIREMENTS-preview-failure-map.md). Every stage below must close its F-numbers; responses and surfacing follow its K-kind policy table (K1 stale … K7 bug); stage 4 tests are written against them.
 

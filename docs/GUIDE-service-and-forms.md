@@ -1,10 +1,10 @@
-# Plan: Service API and shared forms
+# Guide: Service API and shared forms
 
-Extends `docs/PLAN-backend-ownership.md` (Rust owns loops; FE enqueues and paints). This plan is the shape: one service front door, one form renderer, one asset id.
+Extends [GUIDE-backend-ownership.md](./GUIDE-backend-ownership.md) (Rust owns loops; FE enqueues and paints). Shape: one service front door, one form renderer, one asset id.
 
-Status: direction settled; migration incremental.
+Phases 0–6 are built. Leftover is validation, not a new system.
 
-Related: `docs/GUIDE-architecture-principles.md`, `docs/GUIDE-desktop-vs-web.md`, `docs/GUIDE-generation-inputs-provenance.md`, `docs/PLAN-generation-provenance.md`, `docs/PLAN-backend-ownership.md`.
+Related: [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [GUIDE-desktop-vs-web.md](./GUIDE-desktop-vs-web.md), [GUIDE-generation-inputs-provenance.md](./GUIDE-generation-inputs-provenance.md), [GUIDE-backend-ownership.md](./GUIDE-backend-ownership.md).
 
 ## Direction, agreed
 

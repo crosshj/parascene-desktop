@@ -2,6 +2,8 @@
 
 Project-scoped path: Lab smoke → Director storyboard → Editor AI Fill → render. Related: [PLAN-parascene-generation.md](./PLAN-parascene-generation.md), [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md).
 
+Phase 1 (Lab) shipped. Phase 2 (Director product handoff) never left Lab — treat as aspiration, not next.
+
 ## Settled
 
 - [x] AI Fill = vocal isolate + `ltx_a2v` lip sync; keep A1 song audio; discard gen audio

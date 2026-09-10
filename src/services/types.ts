@@ -2,7 +2,7 @@
  * Service API contract types.
  *
  * FE collects values + AssetRefs, invokes, watches a handle, paints status.
- * See docs/PLAN-service-and-forms.md.
+ * See docs/GUIDE-service-and-forms.md.
  */
 
 /** Catalog creation id — FE currency. No localPath / remoteUrl / isLocal. */

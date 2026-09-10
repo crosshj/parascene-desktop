@@ -1,6 +1,6 @@
 ---
 description: Generation inputs & provenance — Parascene vs local-capable servers (frame upload, Form truth, no temp local as Parascene FIRST)
-globs: docs/GUIDE-generation-inputs-provenance.md,docs/PLAN-generation-provenance.md,docs/GUIDE-architecture-principles.md,src/layouts/editor/addAssetGenerate.ts,src/layouts/editor/addAssetGenerationStore.ts,src/layouts/editor/addAssetStartFrame.ts,src/layouts/editor/AddAssetGeneratePanel.tsx,src/layouts/editor/AddAssetIntentPanel.tsx,src/layouts/editor/runParascene*.ts,src/layouts/editor/libraryAssetGenerationStore.ts,src/layouts/editor/BlueDirect*.tsx,src/layouts/editor/useReplicate*.tsx,src/project/desktopAddAssetGeneration.ts,src/app/ShellProvider.tsx,src/sync/**/*.ts
+globs: docs/GUIDE-generation-inputs-provenance.md,docs/GUIDE-generate-source-images.md,docs/GUIDE-architecture-principles.md,src/layouts/editor/addAssetGenerate.ts,src/layouts/editor/addAssetGenerationStore.ts,src/layouts/editor/addAssetStartFrame.ts,src/layouts/editor/AddAssetGeneratePanel.tsx,src/layouts/editor/AddAssetIntentPanel.tsx,src/layouts/editor/runParascene*.ts,src/layouts/editor/libraryAssetGenerationStore.ts,src/layouts/editor/BlueDirect*.tsx,src/layouts/editor/useReplicate*.tsx,src/project/desktopAddAssetGeneration.ts,src/app/ShellProvider.tsx,src/sync/**/*.ts
 alwaysApply: false
 ---
 
@@ -9,7 +9,7 @@ alwaysApply: false
 Before changing Generate, frame extract/upload, Form review, catalog stamps, or sync of generation meta:
 
 1. **Read** [docs/GUIDE-generation-inputs-provenance.md](docs/GUIDE-generation-inputs-provenance.md).
-2. Skim [docs/PLAN-generation-provenance.md](docs/PLAN-generation-provenance.md) for catalog stamp vs derive rules.
+2. How a still is sent: [docs/GUIDE-generate-source-images.md](docs/GUIDE-generate-source-images.md).
 
 ## Non-negotiables
 

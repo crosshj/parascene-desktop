@@ -42,7 +42,7 @@ A change to a row names the test and the article. Empty test or “static shots�
 
 Phases 0–3 shipped in 1.1.58: account isolation, agent API, suites 01–07, in-app Help.
 
-Help IA since then: contents groups are Overview, Setup, Journeys, Topics. No Overview article — Getting started stays first-run only. Overview is Getting started, Sync, Folders, Projects. Sync also covers this computer versus the cloud (old `local-and-cloud.html` is gone). Topics is the model lists (`audio-models.html` names only). Generate speech/music is a sibling sitting (`generate-audio.html`, suite 12). Parascene audio SVG covers are skipped. Generated tiles color by model (FLASH / LYRIA / MM SPEECH / MM MUSIC), same as BYO Replicate.
+Help IA since then: contents groups are Overview, Setup, Journeys, Topics. No Overview article — Getting started stays first-run only. Overview is Getting started, Sync, Folders, Projects. Sync also covers this computer versus the cloud. Topics is the model lists (`audio-models.html` names only). Generate speech/music is a sibling sitting (`generate-audio.html`, suite 12). Parascene audio SVG covers are skipped. Generated tiles color by model (FLASH / LYRIA / MM SPEECH / MM MUSIC), same as BYO Replicate.
 
 Same-object track since then (the away work): `library.lookup` / `cloud.lookup` inspect. Shared Assets Remove/Delete. Suites 08–11 written and run. Sync newest no longer prunes grouped members. Last Images Remove no longer bounces. Folder sync drops stale creates and dead unfile-moves; teardown flushes `agent-test-*` pending ops. Seed `28006` was wrongly deleted once; it is protected now.
 
@@ -54,7 +54,7 @@ Still open on product from the identity track: last Videos member Remove (needs 
 
 Live Parascene. Already signed in. Be gentle. Cheap generate for 08–11 (`sd15` lofi). Help goblin is 05–07 only.
 
-`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` on server 1, then a Publisher mix. Finish list: [PLAN-generate-audio.md](./PLAN-generate-audio.md).
+`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` on server 1, then a Publisher mix.
 
 Teardown: this-run ids, `agent-test-*` title/path, this-run prompts, and leftover projects/folders whose titles match. Suite 12 also sweeps at start so an interrupted run is cleaned by the next run. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
 
@@ -63,9 +63,8 @@ Phase 5 later: change a user-visible workflow → run the matching suite → ver
 # Pointers
 
 - Agent how-to: [dev/agent-interface.md](./dev/agent-interface.md)
-- Original 0–5 requirements: [PLAN_LocalAgentInterface_IntegrationTesting_DocumentationPlan.md](./PLAN_LocalAgentInterface_IntegrationTesting_DocumentationPlan.md)
+- Original 0–5 requirements (history): [PLAN_LocalAgentInterface_IntegrationTesting_DocumentationPlan.md](./PLAN_LocalAgentInterface_IntegrationTesting_DocumentationPlan.md)
 - Same-object track: [PLAN-remote-local-consistency.md](./PLAN-remote-local-consistency.md)
 - Last cabinet member: [PLAN-last-cabinet-member-remove.md](./PLAN-last-cabinet-member-remove.md)
 - Help voice: `.cursor/rules/help-walkthrough-voice.mdc`
-- Generate speech/music finish: [PLAN-generate-audio.md](./PLAN-generate-audio.md)
 - Seed ids: `src/library/seedLibraryCreations.ts`

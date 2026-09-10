@@ -1,6 +1,8 @@
 # Plan: V2V and Ref2V
 
-Ship Video to Video and Refs to Video on Generate across Parascene, Direct to Blue, and Replicate. MiniMax H3 is the first Refs to Video model where the live contract allows it.
+Ship Video to Video and Refs to Video on Generate across Parascene, Direct to Blue, and Replicate. MiniMax H3 is the first Refs to Video model where the live contract allows it. Lanes: [GUIDE-generation-lanes.md](./GUIDE-generation-lanes.md). Live vs WIP: [STATUS-new-asset.md](./STATUS-new-asset.md).
+
+Parascene + Direct to Blue shipped. Leftover is Replicate H3 (Lab crawl) and Help articles for those journeys.
 
 Live caps (2026-09-02)
 

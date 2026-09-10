@@ -1,4 +1,4 @@
-# Desktop updater (Tauri)
+# Guide — Desktop updater (Tauri)
 
 In-app updates use [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/). After a one-time install (Gatekeeper / SmartScreen may still apply while OS builds are unsigned), later versions install via **Help → Check for Updates…** (or the account menu).
 
@@ -42,4 +42,4 @@ npm run build
 
 ## OS codesign
 
-Separate from updater signing. See [PLAN-os-codesign.md](./PLAN-os-codesign.md).
+Separate from updater signing. See [GUIDE-os-codesign.md](./GUIDE-os-codesign.md).

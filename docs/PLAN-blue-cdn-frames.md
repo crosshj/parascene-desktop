@@ -1,6 +1,6 @@
 # Plan: Blue CDN video frames
 
-Short-term: do not add video still-at-time on CDN. Desktop extracts; Parascene stores the jpeg on ephemeral Blue CDN. See [PLAN-ephemeral-frame-cdn.md](./PLAN-ephemeral-frame-cdn.md).
+Short-term: do not add video still-at-time on CDN. Desktop extracts; Parascene stores the jpeg on ephemeral Blue CDN. See [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md).
 
 If CDN later grows a still-at-time (or last-frame) query, port the desktop extract rules. Do not invent a second seek recipe.
 

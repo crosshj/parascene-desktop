@@ -1,6 +1,6 @@
 //! Parascene Blue direct — Settings credentials, Lab capabilities, runs, local history.
 //! Hits the Blue generation server (default https://blue.parascene.com) with user Blue
-//! credentials; outputs land local-only (no Parascene Creation). See docs/PLAN-parascene-blue-direct.md.
+//! credentials; outputs land local-only (no Parascene Creation). See docs/GUIDE-generation-lanes.md.
 
 mod client;
 mod commands;

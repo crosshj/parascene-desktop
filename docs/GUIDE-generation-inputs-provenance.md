@@ -2,7 +2,7 @@
 
 **Status:** Settled principles — implementation debt remains (see “Current flaw”)  
 **Audience:** Anyone changing Generate, frame extract/upload, Form review, catalog stamps, or sync  
-**Related:** [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md) (how to send a project still — hosted / grouped / target / video extract), [GUIDE-generate-wait.md](./GUIDE-generate-wait.md) (Parascene create wait), [PLAN-generation-provenance.md](./PLAN-generation-provenance.md), [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [GUIDE-desktop-vs-web.md](./GUIDE-desktop-vs-web.md), [PLAN-parascene-generation.md](./PLAN-parascene-generation.md)
+**Related:** [GUIDE-generate-source-images.md](./GUIDE-generate-source-images.md) (how to send a project still — hosted / grouped / target / video extract), [GUIDE-generate-wait.md](./GUIDE-generate-wait.md) (Parascene create wait), [GUIDE-architecture-principles.md](./GUIDE-architecture-principles.md), [GUIDE-desktop-vs-web.md](./GUIDE-desktop-vs-web.md), [GUIDE-generation-lanes.md](./GUIDE-generation-lanes.md)
 
 ---
 
@@ -60,7 +60,7 @@ After a successful gen, Form / `addAssetGeneration` / derived meta must name the
 
 ### 3. Parascene project gen ≡ synced cloud asset
 
-Same as [PLAN-generation-provenance.md](./PLAN-generation-provenance.md): after Parascene generate, **do not** rewrite catalog `remoteJson` for provenance. Sync’s snapshot of Creation meta is enough. Project-made and sync-only rows must match.
+After Parascene generate, **do not** rewrite catalog `remoteJson` for provenance. Sync’s snapshot of Creation meta is enough. Project-made and sync-only rows must match.
 
 ### 4. Local-only gens still use a Parascene-like data shape
 

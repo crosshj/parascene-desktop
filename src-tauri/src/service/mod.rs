@@ -1,6 +1,6 @@
 //! Service kernel — describe / invoke front door over the jobs table.
 //!
-//! See docs/PLAN-service-and-forms.md. FE never owns provider recipes.
+//! See docs/GUIDE-service-and-forms.md. FE never owns provider recipes.
 
 use crate::auth_store;
 use crate::library::clip_thumb::ensure_clip_thumb_path;

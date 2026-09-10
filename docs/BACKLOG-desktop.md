@@ -1,6 +1,6 @@
-# Prioritized Desktop Backlog
+# Desktop backlog (aspiration)
 
-Ordered by expected leverage relative to implementation effort.
+Not a schedule. Live leftover is [GUIDE-help-and-tests.md](./GUIDE-help-and-tests.md) and [STATUS-new-asset.md](./STATUS-new-asset.md). #3 is done. #21 is the near-term product hole. #1 and #4–#20 are a dream list.
 
 ## Principle
 

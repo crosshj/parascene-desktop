@@ -2,7 +2,7 @@
 
 The desktop app is an **AI video creator** surface. Several capabilities depend on **Parascene video generation** (API / product), not only on local shell work. Verify and drive support upstream where missing; desktop UI can stub until the platform contract exists.
 
-Related: [PLAN-from-chatgpt.md](./PLAN-from-chatgpt.md), Hook mocks in [mockups/hook.png](./mockups/hook.png) (short-form ~9s).
+Related: [GUIDE-generation-lanes.md](./GUIDE-generation-lanes.md), Hook mocks in [mockups/hook.png](./mockups/hook.png) (short-form ~9s; Hook is not a shipping tab).
 
 ## Required / desired generation support
 
@@ -16,7 +16,7 @@ Generation should accept (or clearly document):
 
 **Desktop (shipped):** Editor Generate supports independent first/last sources (timeline neighbor, Assets still, or none) across Parascene, Direct to Blue, and Replicate where the model allows FLF. Provenance stamps preview URLs + durable image sources for Form review and Generate new.
 
-Desktop use cases: guided continuity between scenes, “bridge” clips, controlled motion between two stills. Remaining platform work is mostly deeper Blue methods (v2v / r2v) — see [PLAN-parascene-blue-direct.md](./PLAN-parascene-blue-direct.md).
+Desktop use cases: guided continuity between scenes, “bridge” clips, controlled motion between two stills. V2V / Refs leftover (Replicate H3): [PLAN-v2v-ref2v.md](./PLAN-v2v-ref2v.md). Lanes: [GUIDE-generation-lanes.md](./GUIDE-generation-lanes.md).
 
 ### 2. Explicit duration (prefer under 9 seconds)
 
@@ -39,8 +39,8 @@ Clarify with Parascene product/API what “relay” means in practice (session o
 | First–last frames on generate | **Desktop shipped** for timeline Generate; platform/API depth for new Blue methods |
 | Duration control (&lt; ~9s) | Parascene platform / API (+ desktop passes through) |
 | Prompt relay contract | Parascene platform + desktop assistant wiring |
-| Local library of results | Desktop — [PLAN-library-sync.md](./PLAN-library-sync.md) |
-| Local media tools | Desktop — [PLAN-ffmpeg.md](./PLAN-ffmpeg.md) |
+| Local library of results | Desktop — Library catalog + sync |
+| Local media tools | Desktop — [LOCAL_TOOLS.md](../LOCAL_TOOLS.md) |
 
 ## Cloud vs local vs generation-without-creation
 

@@ -1,6 +1,6 @@
 # Desktop mockups (from ChatGPT)
 
-Visual **references** from [ChatGPT share](https://chatgpt.com/share/6a56996c-fb70-83ea-a3c0-1bb8b4468f30). See also [PLAN-from-chatgpt.md](../PLAN-from-chatgpt.md).
+Visual **references** from [ChatGPT share](https://chatgpt.com/share/6a56996c-fb70-83ea-a3c0-1bb8b4468f30). Directional only — chrome in the app is Library | Project with Director / Editor / Publisher (Labs optional). Hook in these mocks is not a shipping tab.
 
 ## Customize — mockups are not specs
 

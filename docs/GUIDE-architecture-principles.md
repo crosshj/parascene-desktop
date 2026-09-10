@@ -1,6 +1,6 @@
 # Guide — Architecture principles (desktop vs cloud)
 
-**Also see:** [PLAN-backend-ownership.md](./PLAN-backend-ownership.md) — Rust vs React boundary, what still lives in the FE that should move behind the jobs/workers model.
+**Also see:** [GUIDE-backend-ownership.md](./GUIDE-backend-ownership.md) — Rust vs React boundary. Stills-first production: prefer preparing inputs over fighting weak clips in the edit ([BACKLOG-desktop.md](./BACKLOG-desktop.md) principle).
 
 ## Soften load on Parascene web / DB
 
@@ -15,7 +15,7 @@ Implications:
 
 ## Not everything in the cloud
 
-**Settled direction:** We do **not** assume every asset, intermediate, or edit must live in Parascene cloud storage/DB. Durable local Library / Projects / Exports / Cache ([PLAN-library-sync.md](./PLAN-library-sync.md)) is first-class. Cloud remains the source for Parascene-owned creations the user chooses to sync, account identity, and product features that require the platform.
+**Settled direction:** We do **not** assume every asset, intermediate, or edit must live in Parascene cloud storage/DB. Durable local Library / Projects / Exports / Cache is first-class. Cloud remains the source for Parascene-owned creations the user chooses to sync, account identity, and product features that require the platform.
 
 ## Generations without Parascene “creations”
 
@@ -38,7 +38,7 @@ This is **not** only “desktop talks to third-party APIs.” Replicate direct a
 
 **Settled — catalog:** For **Parascene Creation-backed** gens, Parascene `meta.method` / `meta.args` (snapshotted into local `remoteJson` by sync) is the source of truth. A Creation generated inside a desktop project must leave the catalog looking the same as one that only arrived through sync — **do not** post-mutate `remoteJson` with a desktop stamp after generate. Result | Form derives from that meta.
 
-**Settled — inputs:** Parascene cannot read local files; durable I2V/I2I frames must be Creations. Direct to Blue / Replicate may use local extracts, and must store **Parascene-like** provenance locally. See [GUIDE-generation-inputs-provenance.md](./GUIDE-generation-inputs-provenance.md) (guardrails) and [PLAN-generation-provenance.md](./PLAN-generation-provenance.md).
+**Settled — inputs:** Parascene cannot read local files; durable I2V/I2I frames must be Creations. Direct to Blue / Replicate may use local extracts, and must store **Parascene-like** provenance locally. See [GUIDE-generation-inputs-provenance.md](./GUIDE-generation-inputs-provenance.md).
 
 **Local-only** gens (Direct to Blue, Replicate direct) have no Creation meta; they stamp `meta.desktop.addAssetGeneration`, and sync preserves it.
 

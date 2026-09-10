@@ -15,7 +15,7 @@ Today those fields are stored on the staged draft / timeline clip, but the previ
 ## Non-goals (this pass)
 
 - Full timeline sequence playback (multi-clip compose)
-- Export / FFmpeg encode of the staged image clip ([PLAN-ffmpeg.md](./PLAN-ffmpeg.md) readiness is separate)
+- Export / FFmpeg encode of the staged image clip ([LOCAL_TOOLS.md](../LOCAL_TOOLS.md) is separate)
 - Multiple Ken Burns presets, manual keyframes, or per-clip motion editors
 - Replacing `<video>` / `<audio>` preview yet (images only first)
 - Fit / fullscreen chrome controls (still deferred in the preview deck)
@@ -147,5 +147,5 @@ v1 can still ship Hold + one auto path; this note is the target for the motion e
 - Staging model: `src/layouts/editor/stagedClip.ts`, `PreviewStaging.tsx`
 - Preview shell: `src/layouts/editor/PreviewPane.tsx`
 - Ken Burns control reference: [YouTube — FCPX Ken Burns controls](https://www.youtube.com/watch?v=VddMB0Eme_A)
-- FFmpeg / export later: [PLAN-ffmpeg.md](./PLAN-ffmpeg.md)
+- FFmpeg / export later: [LOCAL_TOOLS.md](../LOCAL_TOOLS.md)
 - Editor mock reference: [mockups/editor.png](./mockups/editor.png)

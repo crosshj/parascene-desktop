@@ -2,7 +2,7 @@
  * Thin invoke wrappers over the Rust service kernel.
  *
  * UI tracks a handle and renders status — it does not own provider recipes.
- * See docs/PLAN-service-and-forms.md.
+ * See docs/GUIDE-service-and-forms.md.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";

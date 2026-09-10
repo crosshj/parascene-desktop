@@ -1,6 +1,6 @@
 ---
 description: Folder/Sync failures must leave a [folder-sync] console trace + pending-ops context — triage SQLite pending ops before guessing
-globs: src/sync/**/*.ts,src/library/folderClient.ts,src/library/LibraryView.tsx,src/app/ShellProvider.tsx,src-tauri/src/library/folders.rs,src-tauri/src/library/project_assets.rs,docs/STANDARDS-sync-diagnostics.md,docs/REQUIREMENTS-project-folders-cabinets.md,docs/PLAN-project-owned-folders.md
+globs: src/sync/**/*.ts,src/library/folderClient.ts,src/library/LibraryView.tsx,src/app/ShellProvider.tsx,src-tauri/src/library/folders.rs,src-tauri/src/library/project_assets.rs,docs/STANDARDS-sync-diagnostics.md,docs/REQUIREMENTS-project-folders-cabinets.md
 alwaysApply: false
 ---
 

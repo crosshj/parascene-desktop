@@ -1,6 +1,6 @@
 /**
  * Pure helpers for OpenAPI / Blue input schema → form values / payload.
- * Shared by Lab and Generate (see docs/PLAN-service-and-forms.md).
+ * Shared by Lab and Generate (see docs/GUIDE-service-and-forms.md).
  */
 
 import {

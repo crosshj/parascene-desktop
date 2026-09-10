@@ -1,7 +1,7 @@
 /**
  * Shared Generate / workflow input collector.
  * Values in → onSubmit out. Dual-view Result | Form stays outside.
- * See docs/PLAN-service-and-forms.md.
+ * See docs/GUIDE-service-and-forms.md.
  */
 import type { FormEvent, ReactNode } from "react";
 import type { ReplicateInputField } from "../replicate/replicateClient";
