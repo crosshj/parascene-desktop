@@ -21,6 +21,7 @@ Strategy: [docs/GUIDE-help-and-tests.md](docs/GUIDE-help-and-tests.md). Help is 
 - Image models is a Topics page: one prompt, then the still from every Text to Image model. No app screenshots. Grok sits with the other frontier stills; its tile is the Generate still.
 - Video models is a Topics page: Models vs Intents at the top, then a brand bar per family (Wan, LTX, MiniMax H3), then the five intents. No app screenshots. No integration test yet.
 - Audio models is a Topics page: intents first (Text to Speech, Text to Music), then the four curated models. No app screenshots. No integration test.
+- Speech voices is a Topics listening page: the same line on Gemini and MiniMax, Custom voice ids, MiniMax pauses / emotion / sounds, Gemini Style. Live clips from 13. Form shots only for Custom, MiniMax marks, and Gemini Style. Do not mention the MiniMax FAQ as a test source.
 - Never mention tests, fixtures, agent actions, or that a screenshot “was written by” a test.
 - Do not show repo paths (`desktop/media/…`, `agent-test-…`) in prose. File names in `src=` are fine.
 

@@ -125,7 +125,7 @@ Articles are static HTML under `public/help/`, linked with a back control on det
 
 Export later, after this slice is proven.
 
-Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started` (also `overview` / `screens`), `projects`, `folders`, `sync` (also `local-and-cloud` / `this-computer` / `cloud` / `remote`), `generate`, `audio`, `image-models`, `audio-models`, `video-models`, `settings`, `tools`, plus screen jumps `library`, `director`, `editor` on Getting started.
+Behavioral truth stays the agent API. `src/help/help.test.ts` locks topic links and the button labels the journeys name. Topic ids: `getting-started` (also `overview` / `screens`), `projects`, `folders`, `sync` (also `local-and-cloud` / `this-computer` / `cloud` / `remote`), `generate`, `audio`, `image-models`, `audio-models`, `speech-voices`, `video-models`, `settings`, `tools`, plus screen jumps `library`, `director`, `editor` on Getting started.
 
 Done: several in-app articles exist, match the tested journeys and the first-run screens, and stale button-label copy can be detected. Follow-the-API help audit and screenshot regen stay Phase 4.
 

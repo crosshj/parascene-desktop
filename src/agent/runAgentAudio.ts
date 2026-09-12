@@ -1,6 +1,10 @@
 import { cacheMissingMedia, getCreation } from "../library/catalogClient";
 import { audioWaveformPeaks } from "../lab/audioTools";
 import { requestOpenNewAsset } from "../layouts/editor/addAssetEvents";
+import {
+  buildParasceneAudioArgs,
+  persistAudioGenerateExtras,
+} from "../layouts/editor/audioGenerateInputs";
 import { formatStagedDuration } from "../layouts/editor/stagedClip";
 import { clipAudioTrack } from "../project/audioTrack";
 import { flushProjectStore } from "../project/projectStore";
@@ -22,6 +26,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/** Voice / Emotion / Style sit below the fold on the New asset form. */
+function revealSpeechFormFields() {
+  const body = document.querySelector(".add-asset-generate-body");
+  if (!(body instanceof HTMLElement)) return;
+  const sections = Array.from(
+    body.querySelectorAll<HTMLElement>(".add-asset-generate-section"),
+  );
+  const heading = (section: HTMLElement) =>
+    (section.querySelector("h3")?.textContent ?? "").trim().toLowerCase();
+  const target =
+    sections.find((section) => heading(section) === "voice id") ??
+    sections.find((section) => heading(section) === "style") ??
+    sections.find((section) => heading(section) === "emotion") ??
+    sections.find((section) => heading(section) === "voice");
+  if (target) target.scrollIntoView({ block: "center" });
+  else body.scrollTop = body.scrollHeight;
+}
+
 export function nextAudioStartSec(
   clips: readonly TimelineClip[],
   audioTrack: 1 | 2,
@@ -39,6 +61,8 @@ export async function runAgentAudio(opts: {
   prompt: string;
   model: string;
   voice?: string;
+  emotion?: string;
+  style?: string;
   generate?: boolean;
 }): Promise<{
   creationId: string;
@@ -50,13 +74,19 @@ export async function runAgentAudio(opts: {
   staged: boolean;
 }> {
   const { shell, projectId } = opts;
+  const voice = opts.voice?.trim() || undefined;
+  const emotion = opts.emotion?.trim() || undefined;
+  const style = opts.style?.trim() || undefined;
   requestOpenNewAsset({
     intent: opts.intent,
     prompt: opts.prompt,
     model: opts.model,
-    voice: opts.voice,
+    voice,
+    emotion,
+    style,
   });
   await sleep(700);
+  revealSpeechFormFields();
 
   if (opts.generate === false) {
     return {
@@ -64,7 +94,7 @@ export async function runAgentAudio(opts: {
       projectId,
       intent: opts.intent,
       model: opts.model,
-      voice: opts.voice?.trim() || null,
+      voice: voice || null,
       localPath: null,
       staged: true,
     };
@@ -75,12 +105,18 @@ export async function runAgentAudio(opts: {
     throw new Error("generation.audio refuses voice train / voice cloning");
   }
 
-  const args: Record<string, unknown> = {
-    prompt: opts.prompt,
-    model,
-  };
-  const voice = opts.voice?.trim();
-  if (voice) args.voice = voice;
+  const isMiniMax = /minimax/i.test(model);
+  const extras = persistAudioGenerateExtras({
+    voiceId: voice && isMiniMax ? voice : undefined,
+    geminiVoice: voice && !isMiniMax ? voice : undefined,
+    emotion,
+    stylePrompt: style,
+  });
+  const args = buildParasceneAudioArgs({
+    modelId: model,
+    text: opts.prompt,
+    extras,
+  });
 
   const result = await runLabParasceneGenerate({
     projectId,

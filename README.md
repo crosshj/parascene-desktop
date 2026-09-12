@@ -30,7 +30,7 @@ http://127.0.0.1:17423/oauth/callback
 | `npm run dev` | Run the desktop app (needs Rust — see Prerequisites) |
 | `npm run build` | Production bundle (DMG on macOS, NSIS `.exe` on Windows) |
 | `npm run test` | Vitest (unit) |
-| `npm run test:integration` | Suites 01–12 against an already-running `npm run dev` app |
+| `npm run test:integration` | Suites 01–13 against an already-running `npm run dev` app |
 | `npm run lint` / `npm run typecheck` | Quality gates |
 
 `vite:dev` / `vite:build` are internals used by Tauri — don’t run them alone.

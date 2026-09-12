@@ -27,6 +27,7 @@ A change to a row names the test and the article. Empty test or “static shots�
 - Getting started — `getting-started.html` — no live test (already signed in) — static first-run shots
 - Generate an image — `generate.html` — 05 — live shots from 05
 - Generate speech and music — `generate-audio.html` — 12 — live shots from 12 (own project; Flash TTS on A1, disk speech on A2 after a gap; Publisher mix proof). In-app audio icon; Flash tile is tinted FLASH. Disk import stays plain.
+- Speech voices — `speech-voices.html` — 13 — live clips from 13 (own project; same line on Gemini and MiniMax; Custom FAQ ids; pauses, emotion, sounds, Style). Form shots for Custom, MiniMax marks, Gemini Style.
 - Generate a video with audio — `audio.html` — 06 — live shots from 06 (same project, same goblin)
 - Image models — `image-models.html` — 07 — stills from 07. Edit / Kontext named, no thumbs
 - Audio models — `audio-models.html` — none — names only
@@ -42,7 +43,7 @@ A change to a row names the test and the article. Empty test or “static shots�
 
 Phases 0–3 shipped in 1.1.58: account isolation, agent API, suites 01–07, in-app Help.
 
-Help IA since then: contents groups are Overview, Setup, Journeys, Topics. No Overview article — Getting started stays first-run only. Overview is Getting started, Sync, Folders, Projects. Sync also covers this computer versus the cloud. Topics is the model lists (`audio-models.html` names only). Generate speech/music is a sibling sitting (`generate-audio.html`, suite 12). Parascene audio SVG covers are skipped. Generated tiles color by model (FLASH / LYRIA / MM SPEECH / MM MUSIC), same as BYO Replicate.
+Help IA since then: contents groups are Overview, Setup, Journeys, Topics. No Overview article — Getting started stays first-run only. Overview is Getting started, Sync, Folders, Projects. Sync also covers this computer versus the cloud. Topics is the model lists (`audio-models.html` names only) plus Speech voices (`speech-voices.html`, suite 13). Generate speech/music is a sibling sitting (`generate-audio.html`, suite 12). Parascene audio SVG covers are skipped. Generated tiles color by model (FLASH / LYRIA / MM SPEECH / MM MUSIC), same as BYO Replicate.
 
 Same-object track since then (the away work): `library.lookup` / `cloud.lookup` inspect. Shared Assets Remove/Delete. Suites 08–11 written and run. Sync newest no longer prunes grouped members. Last Images Remove no longer bounces. Folder sync drops stale creates and dead unfile-moves; teardown flushes `agent-test-*` pending ops. Seed `28006` was wrongly deleted once; it is protected now.
 
@@ -54,9 +55,9 @@ Still open on product from the identity track: last Videos member Remove (needs 
 
 Live Parascene. Already signed in. Be gentle. Cheap generate for 08–11 (`sd15` lofi). Help goblin is 05–07 only.
 
-`npm test` is unit. `npm run test:integration` is 01–12 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` on server 1, then a Publisher mix.
+`npm test` is unit. `npm run test:integration` is 01–13 against `npm run dev`. One integration file at a time. Do not run 05–07 while iterating 08–11. Suite 12 needs live Parascene `replicateSpeech` on server 1, then a Publisher mix. Suite 13 needs the same speech path; skip already-published Help clips.
 
-Teardown: this-run ids, `agent-test-*` title/path, this-run prompts, and leftover projects/folders whose titles match. Suite 12 also sweeps at start so an interrupted run is cleaned by the next run. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
+Teardown: this-run ids, `agent-test-*` title/path, this-run prompts, and leftover projects/folders whose titles match. Suites 12 and 13 also sweep at start so an interrupted run is cleaned by the next run. Then `sync.folders` with `dropTitleContains: agent-test-`. Then assert `28006` is still in the catalog.
 
 Phase 5 later: change a user-visible workflow → run the matching suite → verify that article → update copy or shots only if the UI the article names changed. Do not review the whole Help corpus. Do not touch tests or docs only because an implementation file changed.
 

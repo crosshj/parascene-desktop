@@ -5,6 +5,8 @@ export type OpenNewAssetDetail = {
   prompt?: string;
   model?: string;
   voice?: string;
+  emotion?: string;
+  style?: string;
 };
 
 export function requestOpenNewAsset(detail: OpenNewAssetDetail = {}) {

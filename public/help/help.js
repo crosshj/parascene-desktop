@@ -69,6 +69,13 @@
     window.addEventListener("scroll", onScroll, { passive: true });
   }
 
+  document.querySelectorAll("a[href]").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    if (!/^(https?:)?\/\//i.test(href)) return;
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+  });
+
   const images = Array.from(document.querySelectorAll("main figure img"));
   if (!images.length) return;
 

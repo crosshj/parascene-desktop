@@ -787,7 +787,9 @@ async function runAction(
         intent,
         prompt,
         model,
-        voice: argString(args, "voice") || undefined,
+        voice: argString(args, "voice") || argString(args, "voice_id") || undefined,
+        emotion: argString(args, "emotion") || undefined,
+        style: argString(args, "style") || undefined,
         generate: argBoolean(args, "generate"),
       });
       showProject(ctx.shell, "editor");

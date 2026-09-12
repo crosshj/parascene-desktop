@@ -47,13 +47,15 @@ describe("help pages", () => {
     expect(html).toContain("Local tools");
     expect(html).toContain('class="help-wordmark"');
     expect(html).toContain('class="topic-icon"');
-    expect(html.match(/class="topic-icon"/g)?.length).toBe(12);
+    expect(html.match(/class="topic-icon"/g)?.length).toBe(13);
     expect(html).not.toContain("local-and-cloud.html");
     expect(html).not.toContain("This computer and the cloud");
     expect(html).toContain("image-models.html");
     expect(html).toContain("Image models");
     expect(html).toContain("audio-models.html");
     expect(html).toContain("Audio models");
+    expect(html).toContain("speech-voices.html");
+    expect(html).toContain("Speech voices");
     expect(html).toContain("video-models.html");
     expect(html).toContain("Video models");
   });
@@ -67,10 +69,14 @@ describe("help pages", () => {
     expect(css).toContain(".model-names");
     expect(css).toContain(".catalog-split");
     expect(css).toContain(".model-brand");
+    expect(css).toContain(".voice-grid");
+    expect(css).toContain(".voice-card");
     expect(css).toContain(".home-icon");
     const js = readHelp("help.js");
     expect(js).toContain("help-lightbox");
     expect(js).toContain("Escape");
+    expect(js).toContain('target", "_blank"');
+    expect(js).toContain("noopener noreferrer");
   });
 
   it("keeps first-run screen headings on Getting started, not a second Overview", () => {
@@ -189,6 +195,7 @@ describe("help pages", () => {
     expect(generateAudio).toContain("desktop/media/generate-audio-kore.mp3");
     expect(generateAudio).toContain("desktop/media/agent-test-speech.mp3");
     expect(generateAudio).toContain("Where to go from here");
+    expect(generateAudio).toContain("speech-voices.html");
     expect(generateAudio).toContain("audio-models.html");
     expect(generateAudio).toContain("audio.html");
     expect(generateAudio).not.toMatch(/the (A2V |desktop )?test/i);
@@ -230,6 +237,7 @@ describe("help pages", () => {
     const topics = index.slice(index.lastIndexOf("Topics"));
     expect(topics).toContain("image-models.html");
     expect(topics).toContain("audio-models.html");
+    expect(topics).toContain("speech-voices.html");
     expect(topics).toContain("video-models.html");
     expect(topics).not.toContain("audio.html");
     expect(topics).not.toContain("settings.html");
@@ -307,6 +315,7 @@ describe("help pages", () => {
     expect(videoModels).toContain("Replicate");
     expect(videoModels).toContain("Where to go from here");
     expect(videoModels).toContain("audio.html");
+    expect(videoModels).toContain("speech-voices.html");
     expect(videoModels).toContain("audio-models.html");
     expect(videoModels).toContain("image-models.html");
     expect(videoModels).not.toContain("desktop/screens/");
@@ -332,6 +341,7 @@ describe("help pages", () => {
     expect(audioModels).toContain("Direct to Blue");
     expect(audioModels).toContain("Train voice");
     expect(audioModels).toContain("Where to go from here");
+    expect(audioModels).toContain("speech-voices.html");
     expect(audioModels).toContain("generate-audio.html");
     expect(audioModels).toContain("audio.html");
     expect(audioModels).toContain("video-models.html");
@@ -375,11 +385,33 @@ describe("help pages", () => {
   });
 
   it("never mentions tests in the user-facing articles", () => {
+    const speechVoices = readHelp("speech-voices.html");
+    expect(speechVoices).toContain('class="home-icon"');
+    expect(speechVoices).toContain("All topics");
+    expect(speechVoices).toContain("<h1>Speech voices</h1>");
+    expect(speechVoices).toContain("Hello. This is how I sound.");
+    expect(speechVoices).toContain("English_Whispering_girl");
+    expect(speechVoices).toContain("Custom");
+    expect(speechVoices).toContain("&lt;#1.0#&gt;");
+    expect(speechVoices).toContain("Emotion");
+    expect(speechVoices).toContain("Braces like");
+    expect(speechVoices).not.toContain("{happy}The results are in.{/happy}");
+    expect(speechVoices).toContain("(laughs)");
+    expect(speechVoices).toContain("Style");
+    expect(speechVoices).toContain(
+      'href="https://platform.minimax.io/docs/faq/system-voice-id" target="_blank" rel="noopener noreferrer"',
+    );
+    expect(speechVoices).toContain("desktop/screens/editor-speech-voices-custom.png");
+    expect(speechVoices).toContain("generate-audio.html");
+    expect(speechVoices).toContain("audio-models.html");
+    expect(speechVoices).not.toMatch(/the (A2V |desktop )?test/i);
+
     const pages = [
       "index.html",
       "settings.html",
       "tools.html",
       "generate-audio.html",
+      "speech-voices.html",
       ...JOURNEYS,
     ];
     for (const page of pages) {
@@ -407,6 +439,9 @@ describe("help pages", () => {
     expect(tools).toContain("Demucs");
     expect(tools).toContain("Whisper");
     expect(tools).toContain("brew install ffmpeg");
+    expect(tools).toContain(
+      'href="https://www.python.org/downloads/" target="_blank" rel="noopener noreferrer"',
+    );
     expect(tools).toContain("winget install ffmpeg");
     expect(tools).toContain('class="for-mac"');
     expect(tools).toContain('class="for-windows"');

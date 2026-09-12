@@ -82,6 +82,7 @@ import {
   OPEN_NEW_ASSET_EVENT,
   type OpenNewAssetDetail,
 } from "./addAssetEvents";
+import { persistAudioGenerateExtras } from "./audioGenerateInputs";
 import { loadLastGenerateIntent } from "./generateIntentPrefs";
 import { isImageToImageGeneration, isLibraryAudioGeneration, isTextToImageGeneration } from "../../project/desktopAddAssetGeneration";
 import { libraryAudioCloneSeed } from "./libraryAssetGeneration";
@@ -1252,12 +1253,21 @@ export function EditorLayout() {
           ? detail.intent
           : "text_to_image";
       const voice = detail?.voice?.trim();
+      const emotion = detail?.emotion?.trim();
+      const style = detail?.style?.trim();
+      const isMiniMax = /minimax/i.test(model ?? "");
+      const audioExtras = persistAudioGenerateExtras({
+        voiceId: voice && isMiniMax ? voice : undefined,
+        geminiVoice: voice && !isMiniMax ? voice : undefined,
+        emotion,
+        stylePrompt: style,
+      });
       setLibraryGenerateSeed(
-        prompt || model || voice
+        prompt || model || audioExtras
           ? {
               prompt,
               model: model || undefined,
-              audioExtras: voice ? { geminiVoice: voice, voiceId: voice } : undefined,
+              audioExtras,
             }
           : null,
       );

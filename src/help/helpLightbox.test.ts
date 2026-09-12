@@ -56,12 +56,31 @@ describe("help lightbox", () => {
     expect(root.hidden).toBe(true);
   });
 
+  it("opens http links in a new window and leaves Help links here", () => {
+    mountHelp(`
+      <main>
+        <a href="index.html">All topics</a>
+        <a href="https://platform.minimax.io/docs/faq/system-voice-id">MiniMax list</a>
+      </main>
+    `);
+
+    const internal = document.querySelector('a[href="index.html"]') as HTMLAnchorElement;
+    const external = document.querySelector(
+      'a[href="https://platform.minimax.io/docs/faq/system-voice-id"]',
+    ) as HTMLAnchorElement;
+    expect(internal.target).toBe("");
+    expect(external.target).toBe("_blank");
+    expect(external.rel).toContain("noopener");
+    expect(external.rel).toContain("noreferrer");
+  });
+
   it("does not require each help page to implement a lightbox", () => {
     const pages = [
       "generate.html",
       "audio.html",
       "image-models.html",
       "audio-models.html",
+      "speech-voices.html",
       "video-models.html",
       "getting-started.html",
       "settings.html",

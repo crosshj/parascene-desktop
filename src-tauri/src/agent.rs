@@ -212,7 +212,7 @@ fn actions() -> Vec<AgentAction> {
             id: "generation.audio".into(),
             scope: "generation".into(),
             status: "wired".into(),
-            summary: "Generate speech or music on Parascene (Gemini TTS / Lyria)".into(),
+            summary: "Generate speech or music on Parascene (Gemini TTS / MiniMax / Lyria)".into(),
         },
         AgentAction {
             id: "timeline.place".into(),
