@@ -63,8 +63,10 @@ export function isPlaceholderAudioCover(
 ): boolean {
   const trimmed = path?.trim();
   if (!trimmed) return false;
-  const file = trimmed.split(/[?#]/)[0] ?? "";
-  return pathExtension(file) === "svg";
+  const file = (trimmed.split(/[?#]/)[0] ?? "").toLowerCase();
+  if (pathExtension(file) === "svg") return true;
+  if (file.includes("audio-cover")) return true;
+  return /\/api\/create\/images\/\d+\/audio\/?$/.test(file);
 }
 
 /**

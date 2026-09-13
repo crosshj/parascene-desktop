@@ -63,6 +63,8 @@ export function CreationLightbox({
     folderId: string;
     folderKind: "regular" | "project";
     coverCreationId: string | null;
+    /** v2 projects always keep one cover — set only. */
+    canClear?: boolean;
     onSetCover: (creationId: string | null) => Promise<void>;
   } | null;
 }) {
@@ -139,6 +141,7 @@ export function CreationLightbox({
 
   async function onToggleFolderCover() {
     if (!folderCover) return;
+    if (isFolderCover && folderCover.canClear === false) return;
     setActionError(null);
     setBusyKind("cover");
     try {
@@ -350,7 +353,9 @@ export function CreationLightbox({
               <button
                 type="button"
                 className="btn ghost"
-                disabled={busy}
+                disabled={
+                  busy || (isFolderCover && folderCover.canClear === false)
+                }
                 onClick={() => {
                   void onToggleFolderCover();
                 }}
@@ -358,7 +363,9 @@ export function CreationLightbox({
                 {busyKind === "cover"
                   ? "Saving…"
                   : isFolderCover
-                    ? "Clear cover"
+                    ? folderCover.canClear === false
+                      ? "Project cover"
+                      : "Clear cover"
                     : coverLabel}
               </button>
             ) : null}

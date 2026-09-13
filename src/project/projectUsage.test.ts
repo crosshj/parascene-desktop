@@ -8,6 +8,7 @@ import {
   collectProjectAssetUsage,
   collectProjectReferencedCreationIds,
   describeMissingProjectReferences,
+  dropCreationsFromStoredProject,
   formatMissingProjectReferenceLines,
   outsideOwnedReferenceIds,
   pruneMissingProjectReferences,
@@ -192,6 +193,31 @@ describe("collectProjectAssetUsage", () => {
     expect(pruned.storyboardProposal?.generationPlan?.steps[0]?.creationId).toBeUndefined();
     expect(pruned.imagesGroupId).toBeNull();
     expect(collectProjectReferencedCreationIds(pruned)).not.toContain("gone-clip");
+  });
+
+  it("drops membership and every project pointer when deleting a creation", () => {
+    const project = createStoredProject("Usage", ["keep", "296611"]);
+    project.timeline = [
+      {
+        id: "clip",
+        label: "0:12",
+        startSec: 0,
+        endSec: 12,
+        assetId: "296611",
+        kind: "video",
+        addAssetGeneration: {
+          prompt: "Generate",
+          generatedAt: "now",
+          creationId: "296611",
+          startFrameAssetId: "still-1",
+        },
+      },
+    ];
+    const next = dropCreationsFromStoredProject(project, ["296611"]);
+    expect(next.creationIds).toEqual(["keep"]);
+    expect(
+      (next.timeline ?? []).some((clip) => clip.assetId === "296611"),
+    ).toBe(false);
   });
 
   it("computes outside references from the already-normalized project", () => {

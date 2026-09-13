@@ -765,6 +765,44 @@ input[type="checkbox"].control,
   letter-spacing: 0.025em;
 }
 
+.library-folder-project-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.library-folder-open-project,
+.library-folder-delete-project {
+  height: 1.75rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.library-folder-open-project:hover,
+.library-folder-open-project:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  outline: none;
+}
+
+.library-folder-delete-project {
+  color: color-mix(in srgb, #c45c5c 80%, var(--text));
+}
+
+.library-folder-delete-project:hover,
+.library-folder-delete-project:focus-visible {
+  border-color: color-mix(in srgb, #c45c5c 55%, var(--border));
+  background: color-mix(in srgb, #c45c5c 12%, var(--surface));
+  outline: none;
+}
+
 .folder-edit-dialog {
   width: min(26rem, 100%);
 }

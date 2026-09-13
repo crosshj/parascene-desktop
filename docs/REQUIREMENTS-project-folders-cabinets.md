@@ -2,7 +2,7 @@
 
 **Audience:** humans and coding agents working on Library folders, project ownership, Images/Videos cabinets, legacy open, Lab filing, or Assets display.
 
-This document is the **cabinet-era product model** and process catalog. Ownership authority remains native `folder_items`. Display may expand cabinet members in Assets; that is not a second membership.
+New projects are v2 (Parascene project Creation + group v2 `items[]`). This document is the **cabinet-era / v1** product model. Do not file Images/Videos cabinets onto a v2 project. v2 membership is view+pointer pairs, not `folder_items` + covers. Leftover (Add To Folder proof, Blue `local://`, folder-as-v2) lives on [PLAN-shot-session-refs-ledger.md](./PLAN-shot-session-refs-ledger.md). Ownership authority on v1 remains native `folder_items`. Display may expand cabinet members in Assets; that is not a second membership.
 
 ---
 
@@ -95,9 +95,9 @@ For each process: **When**, **Writes**, **Why**, **Risk**.
 ### 4.3c Delete project
 
 - **When:** Chooser **Delete** (after confirm).
-- **Writes:** Native `library_delete_project` first (convert marked folder to a regular folder with the same id/title/members; queue ownership-asserted cloud meta clear with `project_id`; clear usage/membership rows; **keep** catalog media). Then remove the project document from localStorage (healthy or corrupt). Sync uploads the marker clear in the same delete action.
-- **Why:** Projects can be retired without deleting Library files or exploding folder membership; never leave a marked folder without a document.
-- **Risk:** Confirm is mandatory. Do not delete media as part of this action. Empty project list is allowed after the last delete. Marker clears without `project_id` are rejected by the Folder API (`project folder is locked on this client`) — see [STANDARDS-sync-diagnostics.md](./STANDARDS-sync-diagnostics.md).
+- **Writes:** Confirm is mandatory. Wipe children first (www costume + local leftovers; skip seed `28006`), then the project document / Parascene project Creation. v1: delete folder members, then native delete and the leftover folder. Sync folders in the same action.
+- **Why:** Delete means the work is gone.
+- **Risk:** Confirm must say files leave this computer and Parascene. Progress and failures stay on the confirm. Never sweep seed `28006`. Empty project list is allowed after the last delete.
 
 Library delete of a creation is **item-scoped**: block only when that creation has usage rows or belongs to a project folder that cannot be audited on this device. Unrelated orphan/stale project folders must not lock the whole catalog.
 

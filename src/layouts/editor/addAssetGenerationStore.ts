@@ -121,6 +121,25 @@ export type AddAssetGenerationSuccess = {
   startOffsetSeconds?: number;
 };
 
+/** v2 files the generated output only. Start / last frames are clip provenance, not list rows. */
+export function v2GenerateMembershipIds(result: {
+  creationId: string;
+  projectCreationIds?: readonly string[] | null;
+  startFrameAssetId?: string | null;
+  firstFrameSource?: { kind?: string; assetId?: string } | null;
+  lastFrameSource?: { kind?: string; assetId?: string } | null;
+  projectCreationIdsToRemove?: readonly string[] | null;
+}): string[] {
+  const drop = new Set(
+    (result.projectCreationIdsToRemove ?? [])
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+  const id = result.creationId.trim();
+  if (!id || drop.has(id)) return [];
+  return [id];
+}
+
 /** Native folder_items after Generate: cabinet covers only, never members. */
 export function generateFolderIdsToFile(result: {
   projectCreationIds?: readonly string[] | null;

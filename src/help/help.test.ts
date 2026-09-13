@@ -149,9 +149,18 @@ describe("help pages", () => {
     expect(projects).toContain("New project");
     expect(projects).toContain("Close project");
     expect(projects).toContain("Delete project");
+    expect(projects).toContain("Open project");
     expect(projects).toContain("Untitled project");
     expect(projects).toContain("this computer");
+    expect(projects).toContain("desktop/screens/library-project.png");
+    expect(projects).toContain("desktop/screens/library-project-delete.png");
     expect(projects).toContain("sync.html");
+    expect(
+      existsSync(join(HELP_ROOT, "desktop/screens/library-project.png")),
+    ).toBe(true);
+    expect(
+      existsSync(join(HELP_ROOT, "desktop/screens/library-project-delete.png")),
+    ).toBe(true);
     expect(projects).not.toContain("local-and-cloud.html");
 
     const folders = readHelp("folders.html");

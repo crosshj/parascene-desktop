@@ -13,6 +13,9 @@ export type LibraryFolder = {
   projectId: string | null;
   /** Catalog creation used as Library / Director artwork when set. */
   coverCreationId?: string | null;
+  /** v2 Parascene project container — not a native folder_items row. */
+  containerVersion?: "v1" | "v2";
+  parasceneProjectId?: string | null;
 };
 
 export type CloudFolderRow = {

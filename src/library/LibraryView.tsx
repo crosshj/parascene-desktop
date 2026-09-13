@@ -21,6 +21,20 @@ import type { LibrarySurface } from "../app/shellSession";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { identifyDesktopCabinet } from "../project/desktopProjectGroups";
 import {
+  collectProjectV2MemberIds,
+  isStoredProjectV2,
+  isV2ProjectFolder,
+  omitProjectV2Creations,
+} from "../project/projectV2";
+import { wipeProjectConfirmOptions } from "../project/confirmWipeProject";
+import {
+  OPEN_LIBRARY_FOLDER_EVENT,
+  PREVIEW_WIPE_PROJECT_EVENT,
+  takePendingLibraryFolderId,
+} from "./libraryFolderEvents";
+import { mergeV2ProjectFolders } from "../project/projectV2Actions";
+import { loadStoredProjects } from "../project/projectStore";
+import {
   appendMembersToGroupCover,
   followUpDesktopCabinetGroupAppend,
 } from "./libraryGroupMembers";
@@ -1204,7 +1218,10 @@ function CreationsPanel({
     recentProjects,
     project,
     createProject,
+    openProject,
+    deleteProject,
     addCreationsToProject,
+    setV2ProjectCover,
     removeCreationsFromProject,
     deleteLibraryCreation,
     releaseOrphanFolder,
@@ -1232,7 +1249,10 @@ function CreationsPanel({
   const [groupMemberIds, setGroupMemberIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [folderViewId, setFolderViewId] = useState<string | null>(null);
+  const [folderViewId, setFolderViewId] = useState<string | null>(() => {
+    const pending = takePendingLibraryFolderId();
+    return pending === undefined ? null : pending;
+  });
   /** Members loaded by id — not the paginated home catalog. */
   const [folderMembers, setFolderMembers] = useState<Creation[] | null>(null);
   const [folderMembersLoading, setFolderMembersLoading] = useState(false);
@@ -1315,6 +1335,7 @@ function CreationsPanel({
       setGroupMemberIds(new Set(groupMembers));
       setFolderViewId((current) => {
         if (!current) return null;
+        if (isV2ProjectFolder({ id: current })) return current;
         return nextFolders.some((folder) => folder.id === current)
           ? current
           : null;
@@ -1325,6 +1346,35 @@ function CreationsPanel({
       setFoldersLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const onOpenFolder = (event: Event) => {
+      const folderId = (event as CustomEvent<{ folderId?: string | null }>)
+        .detail?.folderId;
+      setFolderViewId(folderId?.trim() || null);
+    };
+    const onPreviewWipe = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string; title?: string }>)
+        .detail;
+      const id = detail?.id?.trim() ?? "";
+      if (!id) return;
+      void confirm(
+        wipeProjectConfirmOptions({
+          id,
+          title: detail?.title ?? "Untitled project",
+          deleteProject,
+        }),
+      ).then((ok) => {
+        if (ok) setFolderViewId(null);
+      });
+    };
+    window.addEventListener(OPEN_LIBRARY_FOLDER_EVENT, onOpenFolder);
+    window.addEventListener(PREVIEW_WIPE_PROJECT_EVENT, onPreviewWipe);
+    return () => {
+      window.removeEventListener(OPEN_LIBRARY_FOLDER_EVENT, onOpenFolder);
+      window.removeEventListener(PREVIEW_WIPE_PROJECT_EVENT, onPreviewWipe);
+    };
+  }, [confirm, deleteProject]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1341,6 +1391,7 @@ function CreationsPanel({
         setGroupMemberIds(new Set(groupMembers));
         setFolderViewId((current) => {
           if (!current) return null;
+          if (isV2ProjectFolder({ id: current })) return current;
           return nextFolders.some((folder) => folder.id === current)
             ? current
             : null;
@@ -1368,9 +1419,32 @@ function CreationsPanel({
     };
   }, [refreshFolders]);
 
+  const libraryFolders = useMemo(
+    () =>
+      mergeV2ProjectFolders({
+        folders,
+        storedProjects: loadStoredProjects().filter(
+          (project) =>
+            isStoredProjectV2(project) ||
+            recentProjects.some((recent) => recent.id === project.id),
+        ),
+        creations: creations ?? [],
+      }),
+    [creations, folders, recentProjects],
+  );
+
+  const folderViewIdResolved =
+    folderViewId &&
+    isV2ProjectFolder({ id: folderViewId }) &&
+    !libraryFolders.some((folder) => folder.id === folderViewId)
+      ? null
+      : folderViewId;
+
   const folderView = useMemo(
-    () => folders.find((folder) => folder.id === folderViewId) ?? null,
-    [folderViewId, folders],
+    () =>
+      libraryFolders.find((folder) => folder.id === folderViewIdResolved) ??
+      null,
+    [folderViewIdResolved, libraryFolders],
   );
 
   const folderMemberIdsKey = folderView?.memberIds.join("\0") ?? "";
@@ -1652,9 +1726,17 @@ function CreationsPanel({
         inProjectIds,
       );
     }
+    const v2Hidden = collectProjectV2MemberIds(boardCreations);
+    const hiddenMembers = new Set([...groupMemberIds, ...v2Hidden]);
+    for (const project of loadStoredProjects()) {
+      if (!isStoredProjectV2(project)) continue;
+      for (const id of project.creationIds) {
+        if (/^\d+$/.test(id)) hiddenMembers.add(id);
+      }
+    }
     const unfiled = omitGroupMemberCreations(
-      omitFiledCreations(boardCreations, filedIds),
-      groupMemberIds,
+      omitProjectV2Creations(omitFiledCreations(boardCreations, filedIds)),
+      hiddenMembers,
     );
     return filterCreationsVisible(
       unfiled,
@@ -1662,7 +1744,7 @@ function CreationsPanel({
       selectedIds,
       deferredKeepIds,
       inProjectIds,
-      groupMemberIds,
+      hiddenMembers,
     );
   }, [
     boardCreations,
@@ -1806,7 +1888,7 @@ function CreationsPanel({
     ) {
       return [];
     }
-    return folders.filter((folder) =>
+    return libraryFolders.filter((folder) =>
       folderMatchesFilters(
         folder,
         gridFilters,
@@ -1823,11 +1905,11 @@ function CreationsPanel({
     folderFilterMembersById.size,
     folderFilterMembersLoading,
     folderView,
-    folders,
     gridBlank,
     gridFilters,
     groupMemberIds,
     inProjectIds,
+    libraryFolders,
     needsFolderMemberFilter,
     projectFolderIds,
     selectedFolderIds,
@@ -1848,6 +1930,24 @@ function CreationsPanel({
     foldersPending;
 
   const boardFolders = showFolderSkeletons ? folderPlaceholders : homeFolders;
+
+  const folderProjectOpenId = useMemo(() => {
+    if (!folderView || folderView.kind !== "project") return null;
+    if (isV2ProjectFolder(folderView)) {
+      return (
+        folderView.projectId ??
+        folderView.parasceneProjectId ??
+        folderView.id
+      );
+    }
+    if (
+      folderView.projectId &&
+      localProjectIds.has(folderView.projectId)
+    ) {
+      return folderView.projectId;
+    }
+    return null;
+  }, [folderView, localProjectIds]);
 
   const loadingFolderIds = useMemo(
     () =>
@@ -2033,14 +2133,15 @@ function CreationsPanel({
 
   const pickableFolders = useMemo(
     () =>
-      folders.filter(
+      libraryFolders.filter(
         (folder) =>
           folder.kind === "regular" ||
+          isV2ProjectFolder(folder) ||
           (folder.kind === "project" &&
             Boolean(folder.projectId) &&
             localProjectIds.has(folder.projectId as string)),
       ),
-    [folders, localProjectIds],
+    [libraryFolders, localProjectIds],
   );
 
   const onCreateFolderFromSelection = useCallback(
@@ -2064,8 +2165,12 @@ function CreationsPanel({
       if (selectedIds.size === 0) return;
       try {
         if (folder.kind === "project") {
-          if (!folder.projectId) return;
-          const result = await addCreationsToProject(folder.projectId, [
+          const targetId =
+            folder.projectId ??
+            folder.parasceneProjectId ??
+            folder.id;
+          if (!targetId) return;
+          const result = await addCreationsToProject(targetId, [
             ...selectedIds,
           ]);
           if (!result) return;
@@ -2108,10 +2213,21 @@ function CreationsPanel({
   const onSetFolderCoverFromLightbox = useCallback(
     async (creationId: string | null) => {
       if (!folderView) return;
+      if (isV2ProjectFolder(folderView)) {
+        if (!creationId) return;
+        await setV2ProjectCover(
+          folderView.projectId ??
+            folderView.parasceneProjectId ??
+            folderView.id,
+          creationId,
+        );
+        await refreshFolders();
+        return;
+      }
       await setFolderCover(folderView.id, creationId);
       await refreshFolders();
     },
-    [folderView, refreshFolders],
+    [folderView, refreshFolders, setV2ProjectCover],
   );
 
   const onSaveFolderEdit = useCallback(
@@ -2130,8 +2246,8 @@ function CreationsPanel({
   );
 
   const selectedFolders = useMemo(
-    () => folders.filter((folder) => selectedFolderIds.has(folder.id)),
-    [folders, selectedFolderIds],
+    () => libraryFolders.filter((folder) => selectedFolderIds.has(folder.id)),
+    [libraryFolders, selectedFolderIds],
   );
   const canDeleteSelectedFolders =
     selectedFolderIds.size > 0 &&
@@ -2348,20 +2464,23 @@ function CreationsPanel({
             onToggle={onToggleFilter}
             selectedCount={selectedIds.size}
             selectedFolderCount={selectedFolderIds.size}
-            hasOpenProject={folders.some(
+            hasOpenProject={libraryFolders.some(
               (folder) =>
-                folder.kind === "project" &&
-                Boolean(folder.projectId) &&
-                localProjectIds.has(folder.projectId as string),
+                isV2ProjectFolder(folder) ||
+                (folder.kind === "project" &&
+                  Boolean(folder.projectId) &&
+                  localProjectIds.has(folder.projectId as string)),
             )}
             inFolderView={Boolean(folderView)}
             folderViewLocked={Boolean(
               folderView?.kind === "project" &&
+                !isV2ProjectFolder(folderView) &&
                 (!folderView.projectId || !localProjectIds.has(folderView.projectId)),
             )}
             onReleaseOrphanFolder={
               folderView?.kind === "project" &&
               folderView.id &&
+              !isV2ProjectFolder(folderView) &&
               (!folderView.projectId || !localProjectIds.has(folderView.projectId))
                 ? () => {
                     void releaseOrphanFolder(folderView.id)
@@ -2479,6 +2598,37 @@ function CreationsPanel({
                 ) : (
                   <>
                     <span className="folder-project-badge">Project</span>
+                    {folderProjectOpenId ? (
+                      <div className="library-folder-project-actions">
+                        <button
+                          type="button"
+                          className="library-folder-open-project"
+                          onClick={() => {
+                            void openProject(folderProjectOpenId);
+                          }}
+                        >
+                          Open project
+                        </button>
+                        <button
+                          type="button"
+                          className="library-folder-delete-project"
+                          title="Delete this project and its files"
+                          onClick={() => {
+                            void confirm(
+                              wipeProjectConfirmOptions({
+                                id: folderProjectOpenId,
+                                title: folderView.title,
+                                deleteProject,
+                              }),
+                            ).then((ok) => {
+                              if (ok) setFolderViewId(null);
+                            });
+                          }}
+                        >
+                          Delete project
+                        </button>
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
@@ -2521,7 +2671,7 @@ function CreationsPanel({
                 selectedFolderIds={selectedFolderIds}
                 dimmedIds={dimmedIds}
                 inProjectIds={inProjectIds}
-                layoutResetKey={`${gridFilterKey}:${folderViewId ?? "home"}`}
+                layoutResetKey={`${gridFilterKey}:${folderViewIdResolved ?? "home"}`}
                 folderPackHeight={homeFolderAspect.packHeight}
                 folderAspectCss={homeFolderAspect.aspectCss}
                 folderCollageIdsByFolderId={folderCollageIdsByFolderId}
@@ -2569,6 +2719,7 @@ function CreationsPanel({
                         folderId: folderView.id,
                         folderKind: folderView.kind,
                         coverCreationId: folderView.coverCreationId ?? null,
+                        canClear: !isV2ProjectFolder(folderView),
                         onSetCover: onSetFolderCoverFromLightbox,
                       }
                     : null

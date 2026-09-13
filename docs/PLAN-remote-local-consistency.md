@@ -9,9 +9,9 @@ That is why desktop and web drift: nothing fails when a cover bounces, a local-o
 # What 01–07 actually assert
 
 - 02 — clear local, newest adds some rows, some folder has members, some thumb, some media. Counts only. Not which ids.
-- 03 — create project binds a project folder. No Sync. No cabinet. No delete-and-keep-media.
-- 04 — regular folder ≠ project folder. Both empty. No cloud.
-- 05 / 06 / 07 — generate works, files exist, teardown sweep. No “still on the website,” no cabinet contract, no remount.
+- 03 — New project is v2. Library Project tile `project-v2-<id>`. Rename keeps that id. www costume empty / unpublished / same title. Close/reopen. Library Delete project shots. `project.delete` wipe. No Sync.
+- 04 — regular folder ≠ Project tile. Both empty. No cloud.
+- 05 / 06 / 07 — generate works, files exist, teardown sweep. 05 also asserts the goblin still on the project www costume. 08 is the cheap same-object generate.
 
 Unit tests mock the catalog. They cannot see live Parascene.
 
@@ -19,25 +19,28 @@ Unit tests mock the catalog. They cannot see live Parascene.
 
 `library.lookup` now also returns origin, `localOnly`, `remoteUrl`, thumb path, download state, folder ids, group kind, member ids, cabinet pointers.
 
-`cloud.lookup` `{ id }` is wired. 404/410 is `found: false`.
+`cloud.lookup` `{ id }` is wired. 404/410 is `found: false`. `view: "www"` is the website costume.
 
 `project.assets.remove` / `project.assets.delete` share the Editor Assets path.
 
 # Assets panel — Remove vs Delete
 
-The Editor Assets menu must offer both on every real asset (loose tile, Images/Videos member, last member). Timeline use is the only blocker.
+The Editor Assets menu must offer both on every real asset (loose tile, Images/Videos member, last member).
+
+v2 membership is the Parascene group list (`PATCH /api/create/group` remove, `DELETE` the Creation). Local timeline, in-flight generates, and leftover refs follow that API. They do not veto Remove or Delete.
 
 Remove from project
 
-- Leaves the project. Library keeps the file.
-- Parascene Creation stays. If it was in an Images/Videos group, the website group updates (ungroup). Sync and remount do not put it back in the project.
+- Drops the pair from the project group on Parascene and locally. Library keeps the file.
+- Parascene Creation stays. www costume loses that member. v1 Images/Videos ungroups. Sync and remount do not put it back in the project.
 - Local-only: unfile only. No cloud call.
+- Timeline clips may still name the file. That is not a blocker.
 
 Delete
 
-- Leaves the project and Library.
-- If the user is deleting a Parascene Creation, the website deletes it too (and the group updates). `cloud.lookup` is 404. Sync does not resurrect it.
-- Local-only: local delete only. `cloud.lookup` stays 404.
+- Deletes the Creation locally and on Parascene, and clears every project reference to it (including timeline clips).
+- `cloud.lookup` is 404. Sync does not resurrect it.
+- Local-only: local delete + clear refs. `cloud.lookup` stays 404.
 
 Assets now offers Remove and Delete on every real tile, including cabinet members. Remove ungroups; Delete deletes the Creation when it is on Parascene. Last Images member Remove is proven in suite 10. Last Videos member still needs a clip (A2V).
 
@@ -47,13 +50,13 @@ Agent needs `project.assets.remove` and `project.assets.delete` on the same path
 
 Each test: invoke setup → user flow → assert local catalog and, when Parascene-backed, the same id on or off the website.
 
-- Parascene generate: one Creation id locally and remotely. File on disk. Project folder shows the Images cover, not loose members. Thumb present. Sync newest does not duplicate or drop it.
+- Parascene generate: one Creation id locally and remotely. File on disk. v2: the still is a pair on the same project id (www costume lists it). v1: project folder shows the Images cover, not loose members. Thumb present. Sync newest does not duplicate or drop it.
 - Local-only (Add from disk / Direct to Blue / Replicate): no website Creation. Sync newest does not prune it.
-- Delete project: document gone. Library file stays. Website Creation stays. Folder becomes regular or empty-delete without deleting media.
+- Delete project: warn, then wipe children (www costume + local leftovers), then the project. Seed `28006` is never swept.
 - Cloud delete, then Sync: local row gone. No ghost cover.
 - Folder sync: members match both sides for a folder this run created. Conflicts later.
-- Project folder: exactly one, kind project. Images / Videos covers plus local-only. Members are not loose tiles. Reopen is the same.
-- Assets Remove / Delete: both work on loose tiles and cabinet members. Suite 10 proves last Images member Remove, Parascene Delete, local-only Delete, and timeline refuse. Last Videos member still needs a clip (A2V). See PLAN-last-cabinet-member-remove.md.
+- New project: one Library Project tile, same Parascene id, no Images/Videos cabinets. Reopen is the same. v1 leftover still uses a native project folder + cabinets.
+- Assets Remove / Delete: both work on v2 pairs and v1 cabinet members. Suite 10 proves Remove last still (pair dropped, Creation stays), Remove of a timeline-used import (file stays), Parascene Delete, and local-only Delete (www omits `local://`). Last Videos member still needs a clip (A2V). See PLAN-last-cabinet-member-remove.md.
 - Thumbs / media: after `sync.thumbs` / `sync.media`, every cacheable row this run owns has `localThumbPath` / `localPath`. Check rows, not `withThumb > 0`.
 - Groups: cover exists, source ids exist, opening a group does not file members into the project folder.
 - Later: a cleared catalog on this machine restores the same Creation ids. The project document does not come back.
@@ -62,11 +65,11 @@ Each test: invoke setup → user flow → assert local catalog and, when Parasce
 
 0 — Done. `library.lookup` inspects origin, disk, folders, group, cabinet. `cloud.lookup` treats 404 as a result. `project.assets.remove` / `project.assets.delete` use the Assets-panel path. No screenshots.
 
-1 — Done. Suite 08 (`integration/08-identity.integration.test.ts`) passed on a signed-in `npm run dev` app. Cheap generate → inspect → `sync.start` → same id → `project.delete` → file and remote remain → `cloud.delete` → both gone.
+1 — Suite 08: cheap generate → inspect → www costume lists the still → `sync.start` → same id → `project.delete` (wipe children, then project) → project and member 404 both sides.
 
 2 — Done. Suite 09 (`integration/09-local-only.integration.test.ts`) passed. `library.import` → inspect local-only → `sync.start` does not prune → `cloud.lookup` 404.
 
-3 — Done. Suite 10 (`integration/10-assets.integration.test.ts`) passed. Cheap generate: Remove last Images member → Library and website stay, remount empty. Delete a later Parascene still → local and cloud gone, Sync does not resurrect. Delete a local-only import. Timeline-used audio refuses both. Last Videos member still needs a clip (A2V); not in this run.
+3 — Done. Suite 10 (`integration/10-assets.integration.test.ts`) passed. Cheap generate: Remove last Images member → Library and website stay, remount empty. Delete a later Parascene still → local and cloud gone, Sync does not resurrect. Delete a local-only import. Timeline-used audio Remove unfiles and keeps the file. Last Videos member still needs a clip (A2V); not in this run.
 
 4 — Done. Suite 11 (`integration/11-thumbs-media.integration.test.ts`) passed. Cheap generate, then `sync.thumbs` / `sync.media`, then that id has `localThumbPath` and `localPath` on disk.
 
@@ -88,6 +91,6 @@ Help is not the proof. These tests are.
 
 Lookup can answer origin, disk, folder, group, and cabinet for one id.
 
-08–11 passed against a signed-in `npm run dev` app. They fail if that id drifts: duplicate covers, bounced last Images member, Remove hidden for cabinet members, Delete skipping the website, local-only pruned, delete project eating media, sync counts lying.
+08–11 passed against a signed-in `npm run dev` app. They fail if that id drifts: duplicate covers, bounced last Images member, Remove hidden for cabinet members, Delete skipping the website, local-only pruned, default project delete leaving members, sync counts lying.
 
 A change to folder, cabinet, or sync names which suite it affects.

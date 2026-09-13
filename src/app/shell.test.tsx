@@ -30,6 +30,7 @@ let fixtureSyncStatus = {
 };
 
 let oauthCallback: { code: string; state: string | null } | null = null;
+let nextV2ProjectId = 90001;
 
 const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   if (cmd === "keychain_get") return store.get(String(args?.key ?? "")) ?? null;
@@ -149,6 +150,24 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
       aspect916: 0,
       aspect45: 0,
       aspect169: 0,
+    };
+  }
+  if (cmd === "library_ensure_library_id") {
+    return "lib-test";
+  }
+  if (cmd === "library_create_project_v2") {
+    const id = String(nextV2ProjectId++);
+    return {
+      id,
+      title: String(args?.title ?? "Untitled project"),
+      type: "project",
+      filename: `project/${id}`,
+      created_at: "2026-08-06T12:00:00.000Z",
+      items: [],
+      meta: {
+        type: "project",
+        group: { kind: "group_v2", items: [] },
+      },
     };
   }
   if (cmd === "library_list_folders") {
@@ -299,6 +318,7 @@ describe("auth shell", () => {
     store.clear();
     localStorage.clear();
     oauthCallback = null;
+    nextV2ProjectId = 90001;
     fixtureCreations = [];
     fixtureProjectFolders = new Map();
     fixtureSyncStatus = {

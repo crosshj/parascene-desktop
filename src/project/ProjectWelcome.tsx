@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useShell } from "../app/ShellProvider";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { wipeProjectConfirmOptions } from "./confirmWipeProject";
 import { isTrulyLegacyProject } from "./projectStore";
 
 function projectChooserAnnotation(project: {
@@ -58,23 +59,14 @@ export function ProjectWelcome() {
   };
 
   const handleDeleteProject = async (id: string, title: string) => {
-    const label = title.trim() || "Untitled project";
-    await confirm({
-      title: `Delete “${label}”?`,
-      message:
-        "This removes the project from this device. Library media files are kept. If the project has a folder, that folder becomes a regular Library folder (same name and members) and is no longer marked as a project.",
-      confirmLabel: "Delete project",
-      danger: true,
-      errorTitle: "Could not delete project",
-      onConfirm: async () => {
-        setDeletingProjectId(id);
-        try {
-          await deleteProject(id);
-        } finally {
-          setDeletingProjectId(null);
-        }
-      },
-    });
+    await confirm(
+      wipeProjectConfirmOptions({
+        id,
+        title,
+        deleteProject,
+        onBusy: (busy) => setDeletingProjectId(busy ? id : null),
+      }),
+    );
   };
 
   const busy =
@@ -167,7 +159,7 @@ export function ProjectWelcome() {
                         type="button"
                         className="btn ghost recent-project-delete-btn"
                         disabled={busy}
-                        title="Delete this project (keeps Library media)"
+                        title="Delete this project and its files"
                         onClick={() => void handleDeleteProject(p.id, p.title)}
                       >
                         Delete

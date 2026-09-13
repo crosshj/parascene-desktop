@@ -68,14 +68,15 @@ Wired (need a signed-in session unless noted; UI must be up):
 
 Navigation (no data change):
 
-- `shell.show` `{ tab?, surface?, mode?, panel? }` — show a page. `tab` is `library` | `project`. `surface` is `creations` | `sync` (implies Library). `mode` is `director` | `editor` | `hook` | `lab` (implies Project; editor/hook/lab need an open project). `panel: "newAsset"` opens Editor New asset without generating.
+- `shell.show` `{ tab?, surface?, mode?, panel?, folderId? }` — show a page. `tab` is `library` | `project`. `surface` is `creations` | `sync` (implies Library). `mode` is `director` | `editor` | `hook` | `lab` (implies Project; editor/hook/lab need an open project). `panel: "newAsset"` opens Editor New asset without generating. `folderId` opens that Library folder (the Project tile for a v2 project).
 
 Domain actions still land on the page a person would use. That is not the only way to get there — use `shell.show` to go to a page without mutating.
 
-- `project.create` `{ title? }` — lands Director
-- `project.open` `{ id, mode? }` — default Director; pass `mode: "editor"` to open in Editor
+- `project.create` `{ title? }` — lands Director. New projects are v2 (`containerVersion`, `parasceneProjectId`). `folderId` is the Library tile `project-v2-<id>`, not a native folder.
+- `project.open` `{ id, mode? }` — default Director; pass `mode: "editor"` to open in Editor. `id` may be the local document, the Parascene project id, or the Library tile id.
 - `project.close` — Project chooser
-- `project.delete` `{ id }` — Project chooser; leftover folder deleted when empty
+- `project.rename` `{ id?, title }` — lands Director and edits the Project field. Same local id. v2 patches the Parascene project title.
+- `project.delete` `{ id, confirm? }` — lands the Library Project tile (Delete project next to Open project). Default wipes children first (www costume + local leftovers; skips seed `28006`), then the project. `confirm: true` opens that warning and does not delete (Help shots). This computer and Parascene. Cannot be undone. Integration teardown uses this wipe.
 - `folder.create` `{ title? }` — Library creations
 - `folder.delete` `{ id }` — Library creations
 - `generation.start` `{ prompt?, projectId?, model?, aspectRatio?, size? }` — lands Editor, then generates a still. Default `sd15: lofi_V2pre` (~0.1 credit). Walkthrough / Help still uses `xai/grok-imagine-image` and the shared goblin prompt. `size` is for models that reject aspect ratios (Recraft). Do not use this just to open Editor. Waits up to 12 minutes.
@@ -85,10 +86,10 @@ Domain actions still land on the page a person would use. That is not the only w
 - `publisher.render` `{ projectId? }` — lands Publisher (Hook) and runs the same timeline encode as Render. Waits until ready (up to 12 minutes). Returns `renderId`, `path`, `durationSec`.
 - `library.import` `{ paths, projectId? }` — copy local files into Library (and the project when `projectId` is set). No file dialog.
 - `cloud.delete` `{ id?, imagesGroupId?, ids? }` — Library creations. Skips seed id `28006` (account avatar).
-- `cloud.lookup` `{ id }` — GET one Parascene Creation. `found: false` with `status` 404/410 is a result, not an error. Grouped Images/Videos members often 404 here; the cover row still lists that id in `memberIds`.
+- `cloud.lookup` `{ id, view? }` — GET one Parascene Creation. Default is the desktop/raw GET. `view: "www"` omits the desktop header and returns the website costume under `www` (published, group kind, `source_creations`, `supported`, no raw `items[]`). `found: false` with `status` 404/410 is a result, not an error. Grouped Images/Videos members often 404 here; the cover row still lists that id in `memberIds`.
 - `library.lookup` `{ id?, ids?, titleContains?, pathContains?, promptContains? }` — no navigation (query only). Each found row includes origin (`local` | `parascene`), `localOnly`, `remoteUrl`, `localPath`, `localThumbPath`, `downloadState`, folder ids, group kind / member ids, and cabinet pointers (`images` | `videos` | `cover`). `titleContains` / `pathContains` / `promptContains` scan the local catalog (used by integration teardown). Generated stills are titled with a filename; match them by prompt.
-- `project.assets.remove` `{ id?, ids?, projectId? }` — same path as Editor Assets Remove. Leaves Library. Parascene Creation stays; Images/Videos ungroups. Timeline use is the only blocker.
-- `project.assets.delete` `{ id?, ids?, projectId? }` — same path as Editor Assets Delete. Leaves project and Library. Parascene Creation is deleted when it exists. Timeline use is the only blocker.
+- `project.assets.remove` `{ id?, ids?, projectId? }` — same path as Editor Assets Remove. Leaves Library. Parascene Creation stays. v2 PATCHes the group list; v1 Images/Videos ungroups. v2 does not refuse because a clip or in-flight generate still names the id.
+- `project.assets.delete` `{ id?, ids?, projectId? }` — same path as Editor Assets Delete. Deletes the Creation locally and on Parascene when it exists, and clears project refs (including timeline clips). v2 does not refuse because a clip or in-flight generate still names the id.
 - `sync.start` / `sync.folders` / `sync.thumbs` / `sync.media` — Sync page. `sync.folders` accepts optional `dropTitleContains` (drops matching pending creates/updates, keeps deletes, then uploads). Integration teardown uses `agent-test-` so project delete does not leave a stuck folder queue.
 - `library.clearLocal` `{ confirm: true }` — Library creations
 - `window.setSize` `{ width?, height? }` — no navigation. Default **1280×900**. Does not require signed-in.

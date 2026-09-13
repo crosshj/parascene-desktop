@@ -88,55 +88,58 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const runConfirm = useCallback(async () => {
-    const current = pendingRef.current;
-    if (!current || current.busy) return;
+  const runWork = useCallback(
+    async (work: ((activity: ConfirmActivity) => Promise<void>) | undefined) => {
+      const current = pendingRef.current;
+      if (!current || current.busy) return;
 
-    if (!current.onConfirm) {
-      close(true);
-      return;
-    }
+      if (!work) {
+        close(true);
+        return;
+      }
 
-    const busy: Pending = {
-      ...current,
-      busy: true,
-      hideCancel: true,
-      displayMessage: current.displayMessage || "Working…",
-    };
-    pendingRef.current = busy;
-    setPending(busy);
-
-    try {
-      await current.onConfirm({
-        setMessage: (message) => {
-          const trimmed = message.trim();
-          if (!trimmed) return;
-          setPending((prev) => {
-            if (!prev || !prev.busy) return prev;
-            const next = { ...prev, displayMessage: trimmed };
-            pendingRef.current = next;
-            return next;
-          });
-        },
-      });
-      close(true);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      const failed: Pending = {
+      const busy: Pending = {
         ...current,
-        busy: false,
-        errorMode: true,
+        busy: true,
         hideCancel: true,
-        onConfirm: undefined,
-        displayTitle: current.errorTitle ?? "Could not complete action",
-        displayMessage: detail,
-        confirmLabel: "OK",
-        danger: false,
+        displayMessage: current.displayMessage || "Working…",
       };
-      pendingRef.current = failed;
-      setPending(failed);
-    }
-  }, [close]);
+      pendingRef.current = busy;
+      setPending(busy);
+
+      try {
+        await work({
+          setMessage: (message) => {
+            const trimmed = message.trim();
+            if (!trimmed) return;
+            setPending((prev) => {
+              if (!prev || !prev.busy) return prev;
+              const next = { ...prev, displayMessage: trimmed };
+              pendingRef.current = next;
+              return next;
+            });
+          },
+        });
+        close(true);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        const failed: Pending = {
+          ...current,
+          busy: false,
+          errorMode: true,
+          hideCancel: true,
+          onConfirm: undefined,
+          displayTitle: current.errorTitle ?? "Could not complete action",
+          displayMessage: detail,
+          confirmLabel: "OK",
+          danger: false,
+        };
+        pendingRef.current = failed;
+        setPending(failed);
+      }
+    },
+    [close],
+  );
 
   useEffect(
     () =>
@@ -242,7 +245,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
                     dismiss(true);
                     return;
                   }
-                  void runConfirm();
+                  void runWork(pending.onConfirm);
                 }}
               >
                 {pending.busy

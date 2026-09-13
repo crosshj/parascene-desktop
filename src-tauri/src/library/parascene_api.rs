@@ -105,13 +105,22 @@ async fn request_json(
     path: &str,
     body: Option<&Value>,
 ) -> Result<(u16, Value), String> {
-    request_json_limited(method, path, body).await
+    request_json_limited(method, path, body, true).await
+}
+
+async fn request_json_www(
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
+    request_json_limited(method, path, body, false).await
 }
 
 async fn request_json_limited(
     method: reqwest::Method,
     path: &str,
     body: Option<&Value>,
+    desktop: bool,
 ) -> Result<(u16, Value), String> {
     let url = if path.starts_with("http") {
         path.to_string()
@@ -129,6 +138,9 @@ async fn request_json_limited(
             .request(method.clone(), &url)
             .header("Authorization", format!("Bearer {token}"))
             .header("Accept", "application/json");
+        if desktop {
+            req = req.header("X-Parascene-Desktop", "1");
+        }
         if let Some(b) = body {
             req = req
                 .header("Content-Type", "application/json")
@@ -611,6 +623,16 @@ pub async fn get_creation(id: &str) -> Result<Value, String> {
     get_creation_once(id).await
 }
 
+/// Same GET as the website: no desktop header, so group v2 is costumed.
+pub async fn get_creation_as_www(id: &str) -> Result<Value, String> {
+    let path = format!("/api/create/images/{}", urlencoding_path(id));
+    let (status, value) = request_json_www(reqwest::Method::GET, &path, None).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "get creation failed"));
+    }
+    Ok(owned_creation_row(value))
+}
+
 /// Wait-loop GET. Rate-limit/403 trips a process-wide cooldown; do not retry here.
 pub async fn get_creation_poll(id: &str) -> Result<Value, String> {
     get_creation_once(id).await
@@ -721,6 +743,38 @@ pub async fn create_media(opts: CreateOpts) -> Result<Value, String> {
     }
     if status >= 400 {
         return Err(api_error(status, &value, "create failed"));
+    }
+    Ok(value)
+}
+
+pub async fn create_group_v2(
+    title: &str,
+    items: &Value,
+    ids: &[Value],
+    creation_type: Option<&str>,
+) -> Result<Value, String> {
+    let mut body = json!({
+        "title": title,
+        "items": items,
+    });
+    if !ids.is_empty() {
+        body["ids"] = json!(ids);
+    }
+    if let Some(creation_type) = creation_type.map(str::trim).filter(|value| !value.is_empty()) {
+        body["type"] = json!(creation_type);
+    }
+    let (status, value) = request_json(reqwest::Method::POST, "/api/create/group", Some(&body)).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "create group failed"));
+    }
+    Ok(value)
+}
+
+pub async fn patch_group_v2(id: &str, body: &Value) -> Result<Value, String> {
+    let path = format!("/api/create/group/{}", urlencoding_path(id));
+    let (status, value) = request_json(reqwest::Method::PATCH, &path, Some(body)).await?;
+    if status >= 400 {
+        return Err(api_error(status, &value, "patch group failed"));
     }
     Ok(value)
 }

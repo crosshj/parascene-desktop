@@ -2448,6 +2448,24 @@ pub fn library_apply_manifest(creations: Vec<CreationUpsert>) -> Result<SyncStat
     sync_status(&conn, &paths)
 }
 
+const LIBRARY_ID_META_KEY: &str = "library_id";
+
+/// Mint once per Library. Used in `local://<libraryId>/<assetId>` pointers.
+#[tauri::command]
+pub fn library_ensure_library_id() -> Result<String, String> {
+    let paths = default_paths()?;
+    let conn = ready_connection(&paths)?;
+    if let Some(existing) = meta_get(&conn, LIBRARY_ID_META_KEY)? {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    let minted = uuid::Uuid::new_v4().to_string();
+    meta_set(&conn, LIBRARY_ID_META_KEY, &minted)?;
+    Ok(minted)
+}
+
 /// Clear local preview files/paths so thumbs can be re-downloaded (e.g. after fit repair).
 #[tauri::command]
 pub fn library_invalidate_thumbs(ids: Vec<String>) -> Result<u32, String> {

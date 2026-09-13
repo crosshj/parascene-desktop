@@ -19,12 +19,17 @@ async function invokeResult(
   return handle.data;
 }
 
-export async function getRemoteCreation(id: string): Promise<RemoteCreateImage> {
+export async function getRemoteCreation(
+  id: string,
+  opts?: { view?: "www" | "desktop" },
+): Promise<RemoteCreateImage> {
   const trimmed = id.trim();
   if (!trimmed) {
     throw new Error("getRemoteCreation requires id");
   }
-  const data = await invokeResult("parascene", "get_creation", { id: trimmed });
+  const payload: Record<string, unknown> = { id: trimmed };
+  if (opts?.view === "www") payload.view = "www";
+  const data = await invokeResult("parascene", "get_creation", payload);
   return data as RemoteCreateImage;
 }
 

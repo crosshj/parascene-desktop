@@ -1,4 +1,8 @@
-import { normalizeStoredTimeline, type StoredProject } from "./projectStore";
+import {
+  normalizeStoredTimeline,
+  removeCreationIds,
+  type StoredProject,
+} from "./projectStore";
 import { normalizeStillWorkstreams } from "./stillWorkstream";
 import { isProjectOwnedCreation } from "./projectOwnership";
 import type { TimelineClip } from "./types";
@@ -21,7 +25,41 @@ export type ProjectReferenceScan = {
   imagesGroupId?: string | null;
   videosGroupId?: string | null;
   assets?: readonly { id: string }[];
+  libraryAssetPlaceholders?: StoredProject["libraryAssetPlaceholders"];
 };
+
+/**
+ * Start-frame / media-ref provenance is not playable folder membership.
+ * A framed start still or V2V input can exist in Library without being an
+ * Assets tile — blocking save on those refs fails generate and delete.
+ */
+export function usageRequiresProjectFolder(usageKind: string): boolean {
+  return (
+    usageKind !== "generation_start_frame" &&
+    usageKind !== "generation_media_ref"
+  );
+}
+
+/** Parascene ids a live generate already owns but may not have filed yet. */
+export function inFlightProjectCreationIds(
+  project: ProjectReferenceScan,
+): Set<string> {
+  const ids = new Set<string>();
+  const add = (id?: string | null) => {
+    const trimmed = id?.trim();
+    if (trimmed) ids.add(trimmed);
+  };
+  for (const placeholder of Object.values(project.libraryAssetPlaceholders ?? {})) {
+    add(placeholder.addAssetDraft?.generationJob?.pendingCreationId);
+  }
+  for (const clip of normalizeStoredTimeline(project.timeline)) {
+    add(clip.addAssetDraft?.generationJob?.pendingCreationId);
+    if (clip.isAddAssetPlaceholder) {
+      add(clip.addAssetGeneration?.creationId);
+    }
+  }
+  return ids;
+}
 
 /**
  * The single registry of persisted creation references that protect Library
@@ -544,4 +582,14 @@ export function pruneMissingProjectReferences(
         ? null
         : project.videosGroupId,
   };
+}
+
+/** Unfile ids and drop every project pointer at them so Delete can persist. */
+export function dropCreationsFromStoredProject(
+  project: StoredProject,
+  creationIds: readonly string[],
+): StoredProject {
+  const ids = [...new Set(creationIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) return project;
+  return pruneMissingProjectReferences(removeCreationIds(project, ids), ids);
 }

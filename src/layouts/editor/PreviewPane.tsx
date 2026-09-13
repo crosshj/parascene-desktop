@@ -148,6 +148,7 @@ import { useConfirm } from "../../ui/ConfirmDialog";
 import type { AddAssetIntent, SelectionIntentModeId } from "./previewIntent";
 import {
   addAssetIntentAllowsLibraryGeneration,
+  audioGenerateServer,
   audioModeForIntent,
   continuityModeForIntent,
   makeAddAssetIntent,
@@ -1742,7 +1743,11 @@ export function PreviewPane({
         activeReviewGeneration.intentId === "text_to_music"
           ? "text_to_music"
           : "text_to_speech";
-      return makeAddAssetIntent(audioIntent, "replicate", "assets");
+      return makeAddAssetIntent(
+        audioIntent,
+        audioGenerateServer(activeReviewGeneration),
+        "assets",
+      );
     }
     return (
       resolveAddAssetIntent(activeReviewPlacedClip?.addAssetDraft ?? {}) ?? {

@@ -80,16 +80,138 @@ describe("projectMutationCoordinator", () => {
     native.listFolders.mockResolvedValue([]);
   });
 
-  it("rejects a newly owned creation that disappeared before the document commit", async () => {
+  it("drops a newly owned creation that disappeared before the document commit", async () => {
+    const project = { ...createStoredProject("Race"), lifecycle: "ready" as const };
+    saveStoredProjects([project]);
+    native.existingCreationIds.mockResolvedValue([]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({ ...row, creationIds: ["deleted-result"] })),
+    );
+
+    expect(next[0].creationIds).toEqual([]);
+    expect(loadStoredProjectsStrict()[0].creationIds).toEqual([]);
+  });
+
+  it("keeps a cataloged generate result when a sibling id is still missing", async () => {
+    const project = { ...createStoredProject("Race"), lifecycle: "ready" as const };
+    saveStoredProjects([project]);
+    native.existingCreationIds.mockImplementation(async (ids) =>
+      ids.filter((id) => id === "music-1"),
+    );
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        creationIds: ["music-1", "296610"],
+      })),
+    );
+
+    expect(next[0].creationIds).toEqual(["music-1"]);
+    expect(loadStoredProjectsStrict()[0].creationIds).toEqual(["music-1"]);
+  });
+
+  it("allows a framed start still that is not yet an Assets tile", async () => {
+    const project = {
+      ...createStoredProject("TestProject", ["still-1"]),
+      lifecycle: "ready" as const,
+    };
+    saveStoredProjects([project]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        creationIds: ["still-1", "296620"],
+        timeline: [
+          {
+            id: "clip-1",
+            label: "0:12",
+            startSec: 0,
+            endSec: 11.9,
+            assetId: "296620",
+            kind: "video" as const,
+            addAssetGeneration: {
+              prompt: "go",
+              generatedAt: "2026-01-01T00:00:00.000Z",
+              creationId: "296620",
+              startFrameAssetId: "296611",
+              firstFrameSource: { kind: "asset" as const, assetId: "296611" },
+            },
+          },
+        ],
+      })),
+    );
+
+    expect(next[0].creationIds).toEqual(["still-1", "296620"]);
+    expect(next[0].timeline?.[0].addAssetGeneration?.startFrameAssetId).toBe(
+      "296611",
+    );
+  });
+
+  it("allows an in-flight pending creation that is not in the folder yet", async () => {
+    const project = {
+      ...createStoredProject("TestProject", ["still-1"]),
+      lifecycle: "ready" as const,
+    };
+    saveStoredProjects([project]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        timeline: [
+          {
+            id: "clip-1",
+            label: "0:12",
+            startSec: 0,
+            endSec: 11.9,
+            assetId: "",
+            kind: "video" as const,
+            isAddAssetPlaceholder: true,
+            addAssetDraft: {
+              prompt: "go",
+              generationJob: {
+                status: "waiting" as const,
+                provider: "parascene_blue" as const,
+                startedAt: "2026-01-01T00:00:00.000Z",
+                pendingCreationId: "296611",
+              },
+            },
+            addAssetGeneration: {
+              prompt: "go",
+              generatedAt: "2026-01-01T00:00:00.000Z",
+              creationId: "296611",
+            },
+          },
+        ],
+      })),
+    );
+
+    expect(next[0].timeline?.[0].addAssetGeneration?.creationId).toBe("296611");
+  });
+
+  it("rejects when a missing Library file is still referenced on the timeline", async () => {
     const project = { ...createStoredProject("Race"), lifecycle: "ready" as const };
     saveStoredProjects([project]);
     native.existingCreationIds.mockResolvedValue([]);
 
     await expect(
       mutateStoredProjects((projects) =>
-        projects.map((row) => ({ ...row, creationIds: ["deleted-result"] })),
+        projects.map((row) => ({
+          ...row,
+          creationIds: ["296610"],
+          timeline: [
+            {
+              id: "clip-1",
+              label: "9.0s",
+              startSec: 0,
+              endSec: 9,
+              assetId: "296610",
+              kind: "video" as const,
+            },
+          ],
+        })),
       ),
-    ).rejects.toThrow("deleted-result");
+    ).rejects.toThrow("296610");
 
     expect(loadStoredProjectsStrict()[0].creationIds).toEqual([]);
     expect(native.markProjectUsageStale).not.toHaveBeenCalled();
@@ -107,6 +229,68 @@ describe("projectMutationCoordinator", () => {
     expect(native.existingCreationIds).toHaveBeenCalledWith(["result-1"]);
     expect(native.markProjectUsageStale).toHaveBeenCalledOnce();
     expect(native.replaceProjectUsage).toHaveBeenCalledOnce();
+  });
+
+  it("does not veto a v2 save when a timeline ref is outside membership", async () => {
+    const project = {
+      ...createStoredProject("TestProject", ["owned"]),
+      containerVersion: "v2" as const,
+      parasceneProjectId: "44",
+      lifecycle: "ready" as const,
+    };
+    saveStoredProjects([project]);
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        timeline: [
+          {
+            id: "clip-1",
+            label: "11.9s",
+            startSec: 0,
+            endSec: 11.9,
+            assetId: "296611",
+            kind: "video" as const,
+          },
+        ],
+      })),
+    );
+
+    expect(next[0].creationIds).toEqual(["owned"]);
+    expect(next[0].timeline?.[0].assetId).toBe("296611");
+  });
+
+  it("does not veto a v2 save when another membership id is still missing", async () => {
+    const project = {
+      ...createStoredProject("TestProject", ["music-1"]),
+      containerVersion: "v2" as const,
+      parasceneProjectId: "44",
+      lifecycle: "ready" as const,
+      timeline: [
+        {
+          id: "clip-1",
+          label: "theme",
+          startSec: 0,
+          endSec: 8,
+          assetId: "296610",
+          kind: "audio" as const,
+        },
+      ],
+    };
+    saveStoredProjects([project]);
+    native.existingCreationIds.mockImplementation(async (ids) =>
+      ids.filter((id) => id !== "296610"),
+    );
+
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({
+        ...row,
+        creationIds: ["music-1", "296610"],
+      })),
+    );
+
+    expect(next[0].creationIds).toEqual(["music-1"]);
+    expect(next[0].timeline?.[0].assetId).toBe("296610");
   });
 
   it("names the project when rejecting a new outside-folder reference", async () => {
@@ -218,7 +402,7 @@ describe("projectMutationCoordinator", () => {
     expect(native.getCreations).toHaveBeenCalled();
   });
 
-  it("rejects membership shrink that leaves a timeline reference outside without the legacy flag", async () => {
+  it("does not block a save when an existing timeline ref loses folder membership", async () => {
     const project = {
       ...createStoredProject("Crossed Signals", ["owned", "still-used"]),
       lifecycle: "ready" as const,
@@ -235,13 +419,12 @@ describe("projectMutationCoordinator", () => {
     };
     saveStoredProjects([project]);
 
-    await expect(
-      mutateStoredProjects((projects) =>
-        projects.map((row) => ({ ...row, creationIds: ["owned"] })),
-      ),
-    ).rejects.toThrow(
-      "Cannot save “Crossed Signals” clip “11.5s”: creation still-used is outside the project folder",
+    const next = await mutateStoredProjects((projects) =>
+      projects.map((row) => ({ ...row, creationIds: ["owned"] })),
     );
+
+    expect(next[0].creationIds).toEqual(["owned"]);
+    expect(next[0].timeline?.[0].assetId).toBe("still-used");
   });
 
   it("allows membership remirror to leave timeline refs outside after native commit", async () => {

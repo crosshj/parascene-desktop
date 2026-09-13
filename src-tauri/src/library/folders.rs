@@ -1573,7 +1573,7 @@ pub(crate) fn clear_local_folder_state(conn: &Connection) -> Result<(), String> 
 pub fn current_folder_snapshot() -> Result<Vec<JsonValue>, String> {
     let paths = default_paths()?;
     let conn = ready_connection(&paths)?;
-    Ok(list_folders(&conn)?
+    let mut out: Vec<JsonValue> = list_folders(&conn)?
         .into_iter()
         .map(|folder| {
             json!({
@@ -1584,7 +1584,22 @@ pub fn current_folder_snapshot() -> Result<Vec<JsonValue>, String> {
                 "projectId": folder.project_id,
             })
         })
-        .collect())
+        .collect();
+    let seen: std::collections::HashSet<String> = out
+        .iter()
+        .filter_map(|folder| folder.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    for folder in super::project_documents::v2_project_folder_snapshots() {
+        let id = folder
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if id.is_empty() || seen.contains(id) {
+            continue;
+        }
+        out.push(folder);
+    }
+    Ok(out)
 }
 
 /// Creation ids that currently belong to any folder.

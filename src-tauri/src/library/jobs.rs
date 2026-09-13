@@ -22,6 +22,7 @@ use super::parascene_api::{
     CreateOpts, WaitKind,
 };
 use super::project_assets::{import_local_paths_for_project, library_add_project_assets};
+use super::project_documents::load_project_document_json;
 use super::render::{await_timeline_render, RenderTimelineClipInput};
 use super::sync_full::run_sync_full;
 use super::sync_newest::run_sync_newest;
@@ -2505,6 +2506,21 @@ fn parascene_generate_cabinet_kind(payload: &Value) -> &'static str {
     "images"
 }
 
+fn v2_parascene_project_id(project_id: Option<&str>) -> Option<i64> {
+    let id = project_id.map(str::trim).filter(|s| !s.is_empty())?;
+    let doc = load_project_document_json(id).ok().flatten()?;
+    if doc.get("containerVersion").and_then(|v| v.as_str()) != Some("v2") {
+        return None;
+    }
+    let raw = doc.get("parasceneProjectId")?;
+    raw.as_i64().or_else(|| {
+        raw.as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse().ok())
+    })
+}
+
 /// Catalog ids to file into the project folder after Generate: the Images/Videos
 /// cover when grouping succeeded. Members stay in group meta (Assets expands).
 fn generate_result_project_ids(creation_id: &str, group_id: Option<&str>) -> Vec<String> {
@@ -2539,6 +2555,7 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let v2_group_id = v2_parascene_project_id(project_id);
     let images_group_id = payload_str(&payload, "imagesGroupId");
     let videos_group_id = payload_str(&payload, "videosGroupId");
     let cabinet = parascene_generate_cabinet_kind(&payload);
@@ -2615,7 +2632,7 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
             args,
             creation_token: token,
             mutate_of_id: payload.get("mutateOfId").and_then(|v| v.as_i64()),
-            group_id: payload.get("groupId").and_then(|v| v.as_i64()),
+            group_id: v2_group_id.or_else(|| payload.get("groupId").and_then(|v| v.as_i64())),
         })
         .await?;
         let id = creation_id(&started).ok_or_else(|| "create missing id".to_string())?;
@@ -2692,6 +2709,23 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
             "Image generation"
         };
         return Err(creation_failure_message(&done, fail_label));
+    }
+
+    if v2_group_id.is_some() {
+        let media_type = if cabinet == "videos" {
+            "video"
+        } else if cabinet == "audio" {
+            "audio"
+        } else {
+            "image"
+        };
+        return Ok(json!({
+            "creationId": id,
+            "projectCreationIds": generate_result_project_ids(&id, None),
+            "status": creation_status(&done),
+            "target": target,
+            "mediaType": media_type,
+        }));
     }
 
     if cabinet == "audio" {

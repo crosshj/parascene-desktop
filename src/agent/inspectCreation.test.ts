@@ -5,6 +5,7 @@ import {
   inspectCabinetRole,
   inspectLocalRow,
   inspectRemoteRow,
+  inspectWwwCreation,
   isCloudMissingStatus,
   statusFromCloudError,
 } from "./inspectCreation";
@@ -172,6 +173,118 @@ describe("inspectRemoteRow", () => {
       groupKind: "group",
       memberIds: ["9"],
     });
+  });
+});
+
+describe("inspectWwwCreation", () => {
+  it("reads an empty project costume and flags no raw items", () => {
+    const inspected = inspectWwwCreation({
+      id: 99,
+      title: "Trip",
+      published: false,
+      media_type: "image",
+      filename: "project/99.json",
+      url: null,
+      thumbnail_url: null,
+      meta: {
+        type: "project",
+        group: {
+          kind: "group_creations",
+          badge: "project",
+          cover_source_id: null,
+          source_creations: [],
+          supported: {
+            publish: false,
+            ungroup: false,
+            carousel: false,
+          },
+        },
+      },
+    });
+    expect(inspected.costumeApplied).toBe(true);
+    expect(inspected.rawItemsLeaked).toBe(false);
+    expect(inspected.groupKind).toBe("group_creations");
+    expect(inspected.creationType).toBe("project");
+    expect(inspected.badge).toBe("project");
+    expect(inspected.published).toBe(false);
+    expect(inspected.members).toEqual([]);
+    expect(inspected.supported?.publish).toBe(false);
+  });
+
+  it("reads costume members, pixels, and audio type", () => {
+    const inspected = inspectWwwCreation({
+      id: 99,
+      title: "Trip",
+      published: false,
+      media_type: "image",
+      url: "https://cdn.example/cover.png",
+      thumbnail_url: "https://cdn.example/cover.png",
+      meta: {
+        type: "project",
+        group: {
+          kind: "group_creations",
+          badge: "project",
+          cover_source_id: 11,
+          source_creations: [
+            {
+              id: 11,
+              file_path: "/api/images/created/219_11.png",
+              meta: { media_type: "image" },
+            },
+            {
+              id: 22,
+              file_path: "/api/create/images/22/audio",
+              meta: { media_type: "audio" },
+            },
+          ],
+        },
+      },
+    });
+    expect(inspected.members).toEqual([
+      {
+        id: "11",
+        mediaType: "image",
+        filePath: "/api/images/created/219_11.png",
+      },
+      {
+        id: "22",
+        mediaType: "audio",
+        filePath: "/api/create/images/22/audio",
+      },
+    ]);
+    expect(inspected.coverSourceId).toBe("11");
+  });
+
+  it("omits local pointers from raw items and flags a leak", () => {
+    const inspected = inspectWwwCreation({
+      id: 99,
+      title: "Trip",
+      published: false,
+      items: [
+        {
+          pointer: { kind: "creation", creationId: 11 },
+          cover: true,
+          view: { mediaType: "image", url: "https://cdn.example/a.png" },
+        },
+        {
+          pointer: { kind: "local", uri: "local://lib-1/only-here" },
+          view: { mediaType: "image" },
+        },
+      ],
+      meta: {
+        type: "project",
+        group: {
+          kind: "group_v2",
+          items: [
+            { pointer: { kind: "creation", creationId: 11 } },
+            { pointer: { kind: "local", uri: "local://lib-1/only-here" } },
+          ],
+        },
+      },
+    });
+    expect(inspected.costumeApplied).toBe(false);
+    expect(inspected.rawItemsLeaked).toBe(true);
+    expect(inspected.members.map((member) => member.id)).toEqual(["11"]);
   });
 });
 

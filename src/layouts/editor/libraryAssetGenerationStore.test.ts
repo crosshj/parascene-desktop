@@ -16,6 +16,7 @@ const getCreation = vi.fn();
 
 vi.mock("../../library/catalogClient", () => ({
   applyManifest: vi.fn(),
+  existingCreationIds: async (ids: string[]) => ids,
   getCreation: (...args: unknown[]) => getCreation(...args),
 }));
 
@@ -330,6 +331,44 @@ describe("library audio generation lifecycle", () => {
         }),
       );
     });
+  });
+
+  it("files music even when a sibling video is not in the catalog yet", async () => {
+    const completePlaceholder = vi.fn();
+    const patchPlaceholder = vi.fn();
+    const addCreations = vi.fn(async () => {
+      throw new Error(
+        "Cannot save the project because 1 Library file(s) no longer exist: 296610",
+      );
+    });
+    bindLibraryAssetGenerationApplier({
+      beginPlaceholder: vi.fn(),
+      onGenerationStarted: vi.fn(),
+      patchPlaceholder,
+      completePlaceholder,
+      addCreations,
+      setImagesGroupId: vi.fn(),
+    });
+
+    startLibraryReplicateAudio({
+      projectId: "project-1",
+      aspectRatio: "16:9",
+      prompt: "theme music",
+      intentId: "text_to_music",
+      modelId: "minimax/speech-2.8-turbo",
+    });
+
+    await vi.waitFor(() => {
+      expect(completePlaceholder).toHaveBeenCalledWith({
+        placeholderId: expect.any(String),
+        creationId: "audio-99",
+      });
+    });
+    expect(addCreations).toHaveBeenCalled();
+    expect(patchPlaceholder).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ status: "error" }),
+    );
   });
 
   it("cancels the persisted service job id", () => {

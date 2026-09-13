@@ -6,10 +6,12 @@ import {
   expectCloudMissing,
 } from "./cloudIdentity";
 import { sweepTestCreations } from "./teardown";
+import { expectWwwMissing, expectWwwProjectCostume } from "./wwwCostume";
 
 type ProjectCreateResult = {
   projectId?: string;
   folderId?: string | null;
+  parasceneProjectId?: string | null;
 };
 
 type GenerateResult = {
@@ -38,6 +40,7 @@ const prompt = "a red cube on a white table, photorealistic, no text";
 
 let projectId = "";
 let folderId = "";
+let parasceneProjectId = "";
 let creationId = "";
 let imagesGroupId = "";
 let localPath = "";
@@ -55,7 +58,7 @@ describe("agent identity", () => {
   }, 300_000);
 
   it(
-    "keeps one Parascene still the same object through generate, sync, delete project, and cloud delete",
+    "keeps one Parascene still the same object through generate and sync, then wipes it with the project",
     async () => {
       const agent = await loadAgentManifest();
       await requireSignedIn(agent);
@@ -67,7 +70,13 @@ describe("agent identity", () => {
       );
       projectId = created.projectId ?? "";
       folderId = created.folderId ?? "";
+      parasceneProjectId = created.parasceneProjectId ?? "";
       expect(projectId).toBeTruthy();
+      expect(parasceneProjectId).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        empty: true,
+      });
 
       const generated = await invokeOk<GenerateResult>(
         agent,
@@ -96,6 +105,11 @@ describe("agent identity", () => {
       expect(localRow?.localPath).toBeTruthy();
 
       await expectCloudHasCreation(agent, creationId, imagesGroupId);
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [creationId],
+        requirePixels: [creationId],
+      });
 
       await invokeOk(agent, "sync.start");
 
@@ -112,31 +126,14 @@ describe("agent identity", () => {
       await invokeOk(agent, "project.delete", { id: projectId });
       projectId = "";
 
+      await expectWwwMissing(agent, parasceneProjectId);
+
       const afterProjectDelete = await invokeOk<LookupResult>(
         agent,
         "library.lookup",
         { id: creationId },
       );
-      expect(afterProjectDelete.found).toHaveLength(1);
-      expect(afterProjectDelete.found?.[0]?.id).toBe(creationId);
-      expect(afterProjectDelete.found?.[0]?.localPath).toBeTruthy();
-      expect(existsSync(afterProjectDelete.found?.[0]?.localPath ?? "")).toBe(
-        true,
-      );
-
-      await expectCloudHasCreation(agent, creationId, imagesGroupId);
-
-      await invokeOk(agent, "cloud.delete", {
-        ids: [creationId, imagesGroupId].filter(Boolean),
-      });
-
-      const afterCloudDelete = await invokeOk<LookupResult>(
-        agent,
-        "library.lookup",
-        { id: creationId },
-      );
-      expect(afterCloudDelete.found ?? []).toHaveLength(0);
-
+      expect(afterProjectDelete.found ?? []).toHaveLength(0);
       await expectCloudMissing(agent, creationId);
       if (imagesGroupId && imagesGroupId !== creationId) {
         await expectCloudMissing(agent, imagesGroupId);

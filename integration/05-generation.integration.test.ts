@@ -13,6 +13,7 @@ import {
   writeGenerateJourney,
 } from "./journeyState";
 import { sweepTestCreations } from "./teardown";
+import { expectWwwProjectCostume } from "./wwwCostume";
 import {
   AGENT_TEST_EDITOR_GENERATE_PROMPT_SCREEN,
   AGENT_TEST_EDITOR_GENERATE_RESULT_SCREEN,
@@ -25,6 +26,7 @@ import { AGENT_TEST_STILL_ASPECT } from "../src/fixtures/agentTestSpeech";
 type ProjectCreateResult = {
   projectId?: string;
   folderId?: string | null;
+  parasceneProjectId?: string | null;
 };
 
 type GenerateResult = {
@@ -38,6 +40,7 @@ const stamp = Date.now();
 const title = `${JOURNEY_PROJECT_TITLE_PREFIX}${stamp}`;
 let projectId = "";
 let folderId = "";
+let parasceneProjectId = "";
 let creationId = "";
 let imagesGroupId = "";
 let handedOff = false;
@@ -82,7 +85,13 @@ describe("agent generation", () => {
       );
       projectId = created.projectId ?? "";
       folderId = created.folderId ?? "";
+      parasceneProjectId = created.parasceneProjectId ?? "";
       expect(projectId).toBeTruthy();
+      expect(parasceneProjectId).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        empty: true,
+      });
 
       await invokeOk(agent, "shell.show", {
         mode: "editor",
@@ -108,6 +117,11 @@ describe("agent generation", () => {
       expect(creationId).toBeTruthy();
       expect(generated.projectId).toBe(projectId);
       expect(generated.localPath).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [creationId],
+        requirePixels: [creationId],
+      });
 
       await invokeOk(agent, "shell.show", { mode: "editor" });
       await invokeOk(agent, "window.setSize", { width: 1280, height: 900 });

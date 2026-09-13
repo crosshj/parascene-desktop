@@ -37,6 +37,7 @@ import {
   clearAddAssetGenerationIfClipMissing,
   getAddAssetGenerationSession,
   generateFolderIdsToFile,
+  v2GenerateMembershipIds,
   isAddAssetGenerationInflight,
   reconcileAddAssetGenerations,
   startAddAssetGenerationJob,
@@ -45,6 +46,20 @@ import {
 
 const runMock = vi.mocked(runAddAssetGeneration);
 const resumeBlueMock = vi.mocked(resumeBlueDirectAddAssetWait);
+
+describe("v2GenerateMembershipIds", () => {
+  it("files only the generated video, not the start still", () => {
+    expect(
+      v2GenerateMembershipIds({
+        creationId: "296620",
+        projectCreationIds: ["296620", "296611"],
+        startFrameAssetId: "296611",
+        firstFrameSource: { kind: "asset", assetId: "296611" },
+        projectCreationIdsToRemove: ["local-bridge-extract"],
+      }),
+    ).toEqual(["296620"]);
+  });
+});
 
 describe("generateFolderIdsToFile", () => {
   it("files the Videos cover, not the generated member", () => {

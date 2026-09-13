@@ -21,6 +21,7 @@ pub(crate) mod paths;
 mod plate;
 mod project_assets;
 mod project_documents;
+mod project_v2;
 mod render;
 mod reverse;
 mod slideshow;
@@ -39,7 +40,8 @@ pub use account::{
 pub use beats::library_detect_beats;
 pub use catalog::{
     current_sync_status, library_apply_manifest, library_cloud_ids_since, library_ensure_ready,
-    library_existing_creation_ids, library_filter_counts, library_get_creation,
+    library_ensure_library_id, library_existing_creation_ids, library_filter_counts,
+    library_get_creation,
     library_get_creations, library_invalidate_thumbs, library_list_creations,
     library_list_filter_creations, library_list_group_member_ids, library_sync_status,
 };
@@ -70,7 +72,8 @@ pub use lab_deps::{library_install_demucs, library_lab_deps_status, library_open
 pub use lab_transcribe::library_transcribe_local;
 pub use merge::library_merge_timeline_clips;
 pub use parascene_api::{
-    delete_audio_clip, delete_creation, get_creation, get_credits, get_library_folders,
+    delete_audio_clip, delete_creation, get_creation, get_creation_as_www, get_credits,
+    get_library_folders,
     group_creations, mutate_library_folders, record_audio_clip, ungroup_creations,
     upload_ephemeral_still, upload_fit_thumbnail, upload_generic_image,
 };
@@ -78,6 +81,7 @@ pub use plate::{
     library_bake_plate_still, library_cache_composition_run, library_delete_composition_run,
 };
 pub use project_documents::{projects_migrate_and_load, projects_save};
+pub use project_v2::{library_create_project_v2, library_get_project_v2, library_patch_project_v2};
 pub use project_assets::{
     library_add_existing_project_asset, library_add_project_assets, library_check_creation_usage,
     library_delete_creation_checked, library_delete_project, library_delete_project_asset,

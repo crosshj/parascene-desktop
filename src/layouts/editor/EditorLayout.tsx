@@ -75,6 +75,7 @@ import {
 import type { StartAddAssetGenerationRequest } from "./AddAssetGeneratePanel";
 import type { AddAssetIntent } from "./previewIntent";
 import {
+  audioGenerateServer,
   makeAddAssetIntent,
   normalizeGenerateServer,
 } from "./previewIntent";
@@ -163,8 +164,9 @@ import { useConfirm } from "../../ui/ConfirmDialog";
 import {
   applyProjectAssetDelete,
   applyProjectAssetRemove,
-  collectTimelineUsedAssetIds,
+  collectTimelineBlockingAssetIds,
 } from "../../agent/projectAssetOps";
+import { isStoredProjectV2 } from "../../project/projectV2";
 import {
   isActiveLibraryAssetPlaceholder,
   libraryAssetPlaceholderIdsInList,
@@ -604,8 +606,9 @@ export function EditorLayout() {
       projectId: project.id,
       projectTitle: project.title,
       projectCabinets,
+      skipCabinetExpand: project.containerVersion === "v2",
     }),
-    [project.id, project.title, projectCabinets],
+    [project.containerVersion, project.id, project.title, projectCabinets],
   );
   const { assets: pickerAssets } = useProjectPickerCatalog(
     project.assets,
@@ -2043,15 +2046,19 @@ export function EditorLayout() {
     }
   };
 
+  const projectIsV2 = isStoredProjectV2(project);
   const timelineUsedAssetIds = useMemo(
-    () => collectTimelineUsedAssetIds(project.timeline),
-    [project.timeline],
+    () =>
+      projectIsV2
+        ? undefined
+        : collectTimelineBlockingAssetIds(displayTimeline),
+    [displayTimeline, projectIsV2],
   );
 
   const assetsUsedOnTimeline = (assetIds: readonly string[]) => {
     const selected = new Set(assetIds);
     const used = new Set<string>();
-    for (const id of timelineUsedAssetIds) {
+    for (const id of timelineUsedAssetIds ?? []) {
       if (selected.has(id)) used.add(id);
     }
     return used;
@@ -2062,7 +2069,7 @@ export function EditorLayout() {
     projectTitle: project.title,
     imagesGroupId: project.imagesGroupId ?? null,
     videosGroupId: project.videosGroupId ?? null,
-    timelineUsedIds: timelineUsedAssetIds,
+    timelineUsedIds: timelineUsedAssetIds ?? new Set<string>(),
     removeCreationsFromOpenProject,
     addCreationsToOpenProject,
     deleteLibraryCreation,
@@ -2071,7 +2078,9 @@ export function EditorLayout() {
   });
 
   const removeAssetsFromProject = async (assetIds: string[]) => {
-    const usedIds = assetsUsedOnTimeline(assetIds);
+    const usedIds = projectIsV2
+      ? new Set<string>()
+      : assetsUsedOnTimeline(assetIds);
     if (usedIds.size > 0) {
       await confirm({
         title: usedIds.size === 1 ? "Asset in use" : "Assets in use",
@@ -2105,6 +2114,10 @@ export function EditorLayout() {
         ? count === 1
           ? "Removes this placeholder from Assets. Nothing was saved to the library."
           : `Removes these ${count} placeholders from Assets. Nothing was saved to the library.`
+        : project.containerVersion === "v2"
+          ? count === 1
+            ? "Leaves the project. Library keeps the file."
+            : `Leaves the project. Library keeps the files.`
         : count === 1
           ? "Leaves the project. Library keeps the file. If it is in Images or Videos, the website group updates. The Creation stays."
           : `Leaves the project. Library keeps the files. If they are in Images or Videos, the website group updates. Creations stay.`,
@@ -2215,26 +2228,13 @@ export function EditorLayout() {
   };
 
   const deleteAssetsFromProjectAndLibrary = async (assetIds: string[]) => {
-    const usedIds = assetsUsedOnTimeline(assetIds);
-    if (usedIds.size > 0) {
-      await confirm({
-        title: usedIds.size === 1 ? "Asset in use" : "Assets in use",
-        message:
-          usedIds.size === 1
-            ? "One selected asset is used on the timeline. Remove its clips first, then try again."
-            : `${usedIds.size} selected assets are used on the timeline. Remove their clips first, then try again.`,
-        confirmLabel: "OK",
-        hideCancel: true,
-      });
-      return;
-    }
     const count = assetIds.length;
     const ok = await confirm({
       title: count === 1 ? "Delete asset?" : `Delete ${count} assets?`,
       message:
         count === 1
-          ? "Removes this from the project and Library. If it is a Parascene Creation, it is deleted on the website too."
-          : `Removes these ${count} from the project and Library. Parascene Creations are deleted on the website too.`,
+          ? "Deletes this from the project and Library, including timeline clips that use it. If it is a Parascene Creation, the website copy is deleted too."
+          : `Deletes these ${count} from the project and Library, including timeline clips that use them. Parascene Creations are deleted on the website too.`,
       confirmLabel: "Delete",
       cancelLabel: "Cancel",
       danger: true,
@@ -2541,7 +2541,13 @@ export function EditorLayout() {
         model: seed.model,
         audioExtras: seed.extras,
       });
-      setAddAssetIntent(makeAddAssetIntent(seed.intentId, "replicate", "assets"));
+      setAddAssetIntent(
+        makeAddAssetIntent(
+          seed.intentId,
+          audioGenerateServer(generation),
+          "assets",
+        ),
+      );
       setAddAssetSlotActive(true);
       return;
     }
@@ -2629,6 +2635,7 @@ export function EditorLayout() {
           projectTitle={project.title}
           imagesGroupId={project.imagesGroupId}
           videosGroupId={project.videosGroupId}
+          skipCabinetExpand={project.containerVersion === "v2"}
           filter={assetFilter}
           selectedId={selectedAssetId}
           selectedIds={selectedAssetIds}

@@ -82,6 +82,14 @@ Done when
 - Project can answer what was tried and what it cost after the artifacts are gone.
 - Reopening the project restores the shot chat (durable turns), not a blank assistant.
 
+Project v2 leftover
+
+New project is already v2. Not a new container track.
+
+- Add To Folder into a v2 project: click already PATCHes a pair. Prove it on suite 04.
+- Direct-to-Blue still into a v2 project as `local://` (disk import already proven in 12).
+- Later: same list primitive for folders; retire the chooser; www speaks v2 for real.
+
 Not this pass
 
 - Last Videos cabinet Remove, Help leftover (those stay the near-term hole).

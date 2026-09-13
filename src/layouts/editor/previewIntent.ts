@@ -423,6 +423,18 @@ export function makeAddAssetIntent(
   };
 }
 
+/** Parascene music/speech unless the stamp is explicitly BYO Replicate. */
+export function audioGenerateServer(generation: {
+  server?: string | null;
+  provider?: string | null;
+}): Extract<GenerateServerId, "parascene_blue" | "replicate"> {
+  const server = normalizeGenerateServer(generation.server);
+  if (server === "replicate") return "replicate";
+  const provider = normalizeGenerateServer(generation.provider);
+  if (provider === "replicate") return "replicate";
+  return "parascene_blue";
+}
+
 export function normalizeGenerateServer(
   value: unknown,
 ): GenerateServerId | null {

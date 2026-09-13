@@ -135,6 +135,8 @@ const HELP_FILES: &[&str] = &[
     "help/desktop/screens/editor-speech-voices-gemini-style.png",
     "help/desktop/screens/editor-speech-voices-markup.png",
     "help/desktop/screens/editor.png",
+    "help/desktop/screens/library-project-delete.png",
+    "help/desktop/screens/library-project.png",
     "help/desktop/screens/library.png",
     "help/desktop/screens/login.png",
     "help/desktop/screens/projects.png",

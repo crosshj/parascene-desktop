@@ -4,6 +4,7 @@ import { invokeOk, loadAgentManifest, requireSignedIn } from "./agentClient";
 import { captureHelpScreen, publishHelpAudio, syncHelpFileList } from "./helpArtifacts";
 import { assertRenderProofWindows } from "./probeRenderAudio";
 import { sweepTestCreations } from "./teardown";
+import { expectWwwProjectCostume } from "./wwwCostume";
 import {
   dualTrackProofLayout,
   proofWindows,
@@ -27,6 +28,7 @@ import {
 type ProjectCreateResult = {
   projectId?: string;
   folderId?: string | null;
+  parasceneProjectId?: string | null;
 };
 
 type AudioGenerateResult = {
@@ -59,6 +61,7 @@ const stamp = Date.now();
 const title = `${AGENT_TEST_AUDIO_PROJECT_PREFIX}${stamp}`;
 let projectId = "";
 let folderId = "";
+let parasceneProjectId = "";
 let flashId = "";
 let speechId = "";
 
@@ -98,7 +101,13 @@ describe("agent audio generate", () => {
       );
       projectId = created.projectId ?? "";
       folderId = created.folderId ?? "";
+      parasceneProjectId = created.parasceneProjectId ?? "";
       expect(projectId).toBeTruthy();
+      expect(parasceneProjectId).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        empty: true,
+      });
 
       const form = await invokeOk<AudioGenerateResult>(agent, "generation.audio", {
         projectId,
@@ -128,6 +137,11 @@ describe("agent audio generate", () => {
       flashId = flash.creationId ?? "";
       expect(flashId).toBeTruthy();
       expect(flash.localPath).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [flashId],
+        memberMedia: { [flashId]: "audio" },
+      });
 
       const imported = await invokeOk<ImportResult>(agent, "library.import", {
         projectId,
@@ -136,6 +150,12 @@ describe("agent audio generate", () => {
       speechId = imported.creations?.[0]?.id ?? "";
       expect(speechId).toBeTruthy();
       expect(speechId).not.toBe(flashId);
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [flashId],
+        absentMemberIds: [speechId],
+        memberMedia: { [flashId]: "audio" },
+      });
 
       await invokeOk(agent, "shell.show", { mode: "editor" });
       await invokeOk(agent, "window.setSize", { width: 1280, height: 900 });

@@ -194,6 +194,23 @@ async function frontmostForCapture(pid: number, args: string[]): Promise<void> {
   throw new Error(`Could not bring Parascene to the front (pid ${pid}): ${last}`);
 }
 
+/** Dismiss overlays (Escape) on the running Parascene window. */
+export async function dismissHelpOverlays(): Promise<void> {
+  const pid = await agentPid();
+  await frontmostForCapture(pid, [
+    "-e",
+    `tell application "System Events" to set frontmost of first process whose unix id is ${pid} to true`,
+    "-e",
+    "delay 0.2",
+    "-e",
+    "tell application \"System Events\" to key code 53",
+    "-e",
+    "delay 0.2",
+    "-e",
+    "tell application \"System Events\" to key code 53",
+  ]);
+}
+
 /** Capture the running Parascene window into a help screenshot (1280×900 logical). */
 export async function captureHelpScreen(
   dest: string,

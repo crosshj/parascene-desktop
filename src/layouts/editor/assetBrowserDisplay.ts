@@ -30,6 +30,8 @@ export type FlattenProjectAssetsForDisplayOpts = {
   rootAssets: readonly ProjectAsset[];
   creationsById: Readonly<Record<string, Creation | undefined>>;
   projectCabinets: ProjectCabinetIds | null | undefined;
+  /** v2 projects have no Images/Videos cabinets — list items as-is. */
+  skipCabinetExpand?: boolean;
 };
 
 function cabinetPointerForRole(
@@ -99,6 +101,10 @@ export function flattenProjectAssetsForBrowserDisplay(
 
   for (const asset of opts.rootAssets) {
     const creation = opts.creationsById[asset.id];
+    if (opts.skipCabinetExpand) {
+      pushId(asset.id, asset.kind);
+      continue;
+    }
     if (isLeftoverDesktopCabinet(creation, opts) && !isCurrentCabinetCover(asset.id, opts)) {
       continue;
     }
@@ -132,6 +138,7 @@ export function projectContainerCoverIdsForMemberLoad(
     seen.add(key);
     ids.push(key);
   };
+  if (opts.skipCabinetExpand) return ids;
   add(opts.projectCabinets?.imagesGroupId);
   add(opts.projectCabinets?.videosGroupId);
   for (const asset of opts.rootAssets) {

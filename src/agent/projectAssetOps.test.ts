@@ -4,11 +4,30 @@ import {
   applyProjectAssetRemove,
   assertAssetsNotOnTimeline,
   classifyProjectAssetIds,
+  collectTimelineBlockingAssetIds,
   collectTimelineUsedAssetIds,
 } from "./projectAssetOps";
 
 describe("collectTimelineUsedAssetIds", () => {
-  it("collects clip, slideshow, and start-frame asset ids", () => {
+  it("does not treat a start-frame-only ref as blocking Delete", () => {
+    expect([
+      ...collectTimelineBlockingAssetIds([
+        {
+          assetId: "",
+          addAssetDraft: {
+            startFrameAssetId: "296611",
+            generationJob: { pendingCreationId: "296620" },
+          },
+          addAssetGeneration: {
+            creationId: "296620",
+            startFrameAssetId: "296611",
+          },
+        },
+      ]),
+    ]).toEqual([]);
+  });
+
+  it("collects clip, slideshow, start-frame, and in-flight generate ids", () => {
     const used = collectTimelineUsedAssetIds([
       {
         assetId: "clip-1",
@@ -18,11 +37,24 @@ describe("collectTimelineUsedAssetIds", () => {
           startFrameAssetId: "start-1",
           firstFrameSource: { kind: "asset", assetId: "first-1" },
           lastFrameSource: { kind: "timeline" },
+          inputVideoAssetId: "v2v-1",
+        },
+        addAssetDraft: {
+          generationJob: { pendingCreationId: "296611" },
         },
       },
     ]);
     expect([...used].sort()).toEqual(
-      ["clip-1", "first-1", "gen-1", "speech-1", "start-1", "still-a"].sort(),
+      [
+        "296611",
+        "clip-1",
+        "first-1",
+        "gen-1",
+        "speech-1",
+        "start-1",
+        "still-a",
+        "v2v-1",
+      ].sort(),
     );
   });
 });

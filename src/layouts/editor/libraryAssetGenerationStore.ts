@@ -7,7 +7,11 @@ import type { ProjectAspectRatio } from "../../project/aspectRatios";
 import type { CreationTarget } from "../../services/types";
 import type { AddAssetDraft, AddAssetGeneration } from "../../project/types";
 import type { AddAssetGenerationJob } from "../../project/types";
-import { applyManifest, getCreation } from "../../library/catalogClient";
+import {
+  applyManifest,
+  existingCreationIds,
+  getCreation,
+} from "../../library/catalogClient";
 import { hasLocalMedia } from "../../library/previewUrl";
 import {
   creationUpsertWithAddAssetGeneration,
@@ -579,6 +583,29 @@ export async function waitForCatalogLocalMedia(
   }
 }
 
+function isSiblingCatalogGapError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /Library file\(s\) no longer exist/i.test(message);
+}
+
+async function addCatalogedCreations(creationIds: readonly string[]): Promise<void> {
+  if (!applier) return;
+  const unique = [
+    ...new Set(creationIds.map((id) => id.trim()).filter(Boolean)),
+  ];
+  if (unique.length === 0) return;
+  const ready = await existingCreationIds(unique);
+  if (ready.length === 0) return;
+  try {
+    await applier.addCreations(ready);
+  } catch (err) {
+    // A sibling generate can already be on the remote project list before
+    // that file exists locally. The generated file itself is ready — do not
+    // leave an ERROR tile for that race.
+    if (!isSiblingCatalogGapError(err)) throw err;
+  }
+}
+
 async function finishLibraryTextToImagePlaceholder(opts: {
   placeholderId: string;
   creationId: string;
@@ -601,10 +628,8 @@ async function finishLibraryTextToImagePlaceholder(opts: {
       creationId: opts.creationId,
       label: opts.prompt.trim() || "Image",
     });
-    await applier.addCreations(ids);
-  } else {
-    await applier.addCreations(ids);
   }
+  await addCatalogedCreations(ids);
   applier.completePlaceholder({
     placeholderId: opts.placeholderId,
     creationId: opts.creationId,
@@ -1024,9 +1049,11 @@ async function runLibraryParasceneImageToImage(
     if (result.imagesGroupId) {
       applier.setImagesGroupId(result.imagesGroupId);
     }
-    if (result.projectCreationIds.length > 0) {
-      await applier.addCreations(result.projectCreationIds);
-    }
+    await addCatalogedCreations(
+      result.projectCreationIds.length > 0
+        ? result.projectCreationIds
+        : [result.creationId],
+    );
 
     // Parascene Creation meta is provenance — do not rewrite remoteJson.
 

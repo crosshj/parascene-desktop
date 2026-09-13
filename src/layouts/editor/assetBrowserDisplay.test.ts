@@ -168,4 +168,23 @@ describe("flattenProjectAssetsForBrowserDisplay", () => {
       }).map((row) => row.id),
     ).toEqual([pack, "p1", "p2", "solo"]);
   });
+
+  it("lists v2 items as-is without expanding cabinets", () => {
+    const imagesCover = "images-cabinet";
+    expect(
+      flattenProjectAssetsForBrowserDisplay({
+        projectId: PROJECT_ID,
+        projectTitle: PROJECT_TITLE,
+        rootAssets: [asset(imagesCover), asset("solo")],
+        creationsById: {
+          [imagesCover]: groupCover(imagesCover, ["m1", "m2"]),
+          m1: still("m1"),
+          m2: still("m2"),
+          solo: still("solo"),
+        },
+        projectCabinets: { imagesGroupId: imagesCover, videosGroupId: null },
+        skipCabinetExpand: true,
+      }).map((row) => row.id),
+    ).toEqual([imagesCover, "solo"]);
+  });
 });

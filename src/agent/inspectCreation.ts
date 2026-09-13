@@ -54,6 +54,144 @@ export type InspectedRemoteRow = {
   memberIds: string[];
 };
 
+export type WwwCostumeMember = {
+  id: string;
+  mediaType: string;
+  filePath: string | null;
+};
+
+export type WwwCostumeSnapshot = {
+  id: string;
+  title: string;
+  published: boolean;
+  mediaType: string;
+  url: string | null;
+  thumbnailUrl: string | null;
+  filename: string;
+  creationType: string;
+  groupKind: string | null;
+  badge: string | null;
+  coverSourceId: string | null;
+  members: WwwCostumeMember[];
+  supported: Record<string, boolean> | null;
+  rawItemsLeaked: boolean;
+  costumeApplied: boolean;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asId(value: unknown): string {
+  return typeof value === "string" || typeof value === "number"
+    ? String(value).trim()
+    : "";
+}
+
+function asNullableString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function groupRecord(row: RemoteCreateImage): Record<string, unknown> | null {
+  const meta = asRecord(row.meta);
+  return asRecord(meta?.group) ?? asRecord(row.group);
+}
+
+function supportedFromGroup(
+  group: Record<string, unknown> | null,
+): Record<string, boolean> | null {
+  const raw = asRecord(group?.supported);
+  if (!raw) return null;
+  const out: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "boolean") out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function membersFromSources(sources: unknown): WwwCostumeMember[] {
+  if (!Array.isArray(sources)) return [];
+  const out: WwwCostumeMember[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    const rec = asRecord(source);
+    const id = asId(rec?.id ?? source);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const meta = asRecord(rec?.meta);
+    out.push({
+      id,
+      mediaType: String(meta?.media_type ?? rec?.media_type ?? ""),
+      filePath: asNullableString(rec?.file_path ?? rec?.url),
+    });
+  }
+  return out;
+}
+
+function membersFromRawItems(items: unknown): WwwCostumeMember[] {
+  if (!Array.isArray(items)) return [];
+  const out: WwwCostumeMember[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const rec = asRecord(item);
+    const pointer = asRecord(rec?.pointer);
+    if (!pointer) continue;
+    const kind = String(pointer.kind ?? "").trim();
+    if (kind && kind !== "creation") continue;
+    const id = asId(pointer.creationId ?? pointer.id);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const view = asRecord(rec?.view) ?? {};
+    out.push({
+      id,
+      mediaType: String(view.mediaType ?? view.media_type ?? ""),
+      filePath: asNullableString(view.filePath ?? view.url ?? view.file_path),
+    });
+  }
+  return out;
+}
+
+/** Website GET costume: old group shape, no raw `items[]`. */
+export function inspectWwwCreation(row: RemoteCreateImage): WwwCostumeSnapshot {
+  const meta = asRecord(row.meta);
+  const group = groupRecord(row);
+  const groupKind =
+    typeof group?.kind === "string" && group.kind.trim()
+      ? group.kind.trim()
+      : null;
+  const sourceCreations = group?.source_creations;
+  const costumeApplied =
+    groupKind === "group_creations" || Array.isArray(sourceCreations);
+  const members = costumeApplied
+    ? membersFromSources(sourceCreations)
+    : membersFromRawItems(row.items ?? group?.items);
+  return {
+    id: String(row.id),
+    title: typeof row.title === "string" ? row.title : "",
+    published: row.published === true,
+    mediaType: String(row.media_type ?? ""),
+    url: asNullableString(row.url),
+    thumbnailUrl: asNullableString(row.thumbnail_url),
+    filename: typeof row.filename === "string" ? row.filename : "",
+    creationType: String(meta?.type ?? meta?.creation_type ?? "").trim(),
+    groupKind,
+    badge:
+      typeof group?.badge === "string" && group.badge.trim()
+        ? group.badge.trim()
+        : null,
+    coverSourceId: asId(group?.cover_source_id) || null,
+    members,
+    supported: supportedFromGroup(group),
+    rawItemsLeaked:
+      Array.isArray(row.items) || Array.isArray(group?.items),
+    costumeApplied,
+  };
+}
+
 export function groupFieldsFromRemoteJson(
   remoteJson: string | null | undefined,
   filename?: string | null,

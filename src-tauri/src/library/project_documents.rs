@@ -62,6 +62,94 @@ pub fn is_migrated(account_root: &Path) -> Result<bool, String> {
     is_migrated_conn(&conn)
 }
 
+pub fn list_project_document_jsons() -> Result<Vec<Value>, String> {
+    let root = account_root()?;
+    let path = user_db_path(&root);
+    if !path.is_file() {
+        return Ok(vec![]);
+    }
+    let conn = open_user_db(&path)?;
+    ensure_schema(&conn)?;
+    load_rows(&conn)
+}
+
+pub fn v2_project_folder_snapshots() -> Vec<Value> {
+    let rows = list_project_document_jsons().unwrap_or_default();
+    let mut out = Vec::new();
+    for doc in rows {
+        if doc.get("containerVersion").and_then(|v| v.as_str()) != Some("v2") {
+            continue;
+        }
+        let para = doc
+            .get("parasceneProjectId")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                doc.get("parasceneProjectId")
+                    .and_then(|v| v.as_i64())
+                    .map(|n| n.to_string())
+            });
+        let Some(para) = para else { continue };
+        let local_id = doc
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
+        let title = doc
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Untitled project")
+            .to_string();
+        let member_count = doc
+            .get("creationIds")
+            .and_then(|v| v.as_array())
+            .map(|rows| rows.len())
+            .unwrap_or(0);
+        out.push(json!({
+            "id": format!("project-v2-{para}"),
+            "title": title,
+            "kind": "project",
+            "memberCount": member_count,
+            "projectId": local_id,
+            "containerVersion": "v2",
+            "parasceneProjectId": para,
+        }));
+    }
+    out
+}
+
+pub fn load_project_document_json(project_id: &str) -> Result<Option<Value>, String> {
+    let trimmed = project_id.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let root = account_root()?;
+    let path = user_db_path(&root);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let conn = open_user_db(&path)?;
+    ensure_schema(&conn)?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT json FROM project_documents WHERE id = ?1",
+            params![trimmed],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match raw {
+        Some(json) => Ok(serde_json::from_str(&json).ok()),
+        None => Ok(None),
+    }
+}
+
 fn load_rows(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare("SELECT json FROM project_documents ORDER BY sort_index ASC, id ASC")

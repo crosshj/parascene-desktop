@@ -160,10 +160,19 @@ export type StoredProject = {
   timelineMonitorActive?: boolean;
   /** Timeline playhead seconds; omitted → 0. */
   timelinePlayheadSec?: number;
-  /** Parascene Images group creation id; omitted → null. */
+  /** Parascene Images group creation id; omitted → null. v1 cabinets only. */
   imagesGroupId?: string | null;
-  /** Parascene Videos group creation id; omitted → null. */
+  /** Parascene Videos group creation id; omitted → null. v1 cabinets only. */
   videosGroupId?: string | null;
+  /**
+   * v2 = Parascene project Creation container (`items[]`).
+   * Omitted / `v1` = today's folder + Images/Videos cabinets.
+   */
+  containerVersion?: "v1" | "v2";
+  /** Parascene project Creation id when `containerVersion` is v2. */
+  parasceneProjectId?: string | null;
+  /** v2 cover — flagged item, not “first member”. */
+  coverCreationId?: string | null;
   /** Lab still prompt for Project groups; omitted → null (use Lab default). */
   labStillPrompt?: string | null;
   /** Lab animate prompt for Project groups; omitted → null (use Lab default). */
@@ -1219,6 +1228,14 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     timelinePlayheadSec: normalizeTimelinePlayheadSec(project.timelinePlayheadSec),
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
+    containerVersion:
+      project.containerVersion === "v2"
+        ? "v2"
+        : project.containerVersion === "v1"
+          ? "v1"
+          : undefined,
+    parasceneProjectId: normalizeOptionalId(project.parasceneProjectId),
+    coverCreationId: normalizeOptionalId(project.coverCreationId),
     labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
     labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
@@ -1460,6 +1477,9 @@ export function createStoredProject(
     timelinePlayheadSec: 0,
     imagesGroupId: null,
     videosGroupId: null,
+    containerVersion: undefined,
+    parasceneProjectId: null,
+    coverCreationId: null,
     labStillPrompt: null,
     labAnimatePrompt: null,
     mainAudioCreationId: null,
@@ -1538,6 +1558,33 @@ export function mergeCreationIds(
     ...project,
     creationIds: [...next],
     updatedAt: new Date().toISOString(),
+  };
+}
+
+/** Drop ids from the project list only. Timeline clips keep their pointers. */
+export function unfileCreationMembership(
+  project: StoredProject,
+  creationIds: readonly string[],
+): StoredProject {
+  if (creationIds.length === 0) return project;
+  const remove = new Set(
+    creationIds.map((id) => String(id).trim()).filter(Boolean),
+  );
+  if (remove.size === 0) return project;
+  const nextIds = project.creationIds.filter((id) => !remove.has(id));
+  if (nextIds.length === project.creationIds.length) {
+    if (project.coverCreationId && remove.has(project.coverCreationId)) {
+      return { ...project, coverCreationId: nextIds[0] ?? null };
+    }
+    return project;
+  }
+  return {
+    ...project,
+    creationIds: nextIds,
+    coverCreationId:
+      project.coverCreationId && remove.has(project.coverCreationId)
+        ? nextIds[0] ?? null
+        : project.coverCreationId,
   };
 }
 
@@ -2336,6 +2383,13 @@ export function storedProjectToUi(project: StoredProject): Project {
     stillWorkstreams,
     imagesGroupId: normalizeOptionalId(project.imagesGroupId),
     videosGroupId: normalizeOptionalId(project.videosGroupId),
+    containerVersion:
+      project.containerVersion === "v2"
+        ? "v2"
+        : project.containerVersion === "v1"
+          ? "v1"
+          : undefined,
+    parasceneProjectId: normalizeOptionalId(project.parasceneProjectId),
     labStillPrompt: normalizeOptionalPrompt(project.labStillPrompt),
     labAnimatePrompt: normalizeOptionalPrompt(project.labAnimatePrompt),
     mainAudioCreationId: normalizeOptionalId(project.mainAudioCreationId),
@@ -2374,6 +2428,8 @@ export function emptyUiProject(): Project {
     stillWorkstreams: [],
     imagesGroupId: null,
     videosGroupId: null,
+    containerVersion: undefined,
+    parasceneProjectId: null,
     labStillPrompt: null,
     labAnimatePrompt: null,
     mainAudioCreationId: null,

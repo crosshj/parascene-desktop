@@ -12,6 +12,7 @@ import {
   mergeCreationIds,
   partitionStoredProjects,
   removeCreationIds,
+  unfileCreationMembership,
   renameStoredProject,
   repairMalformedTimelineClips,
   resetProjectStoreForTests,
@@ -50,6 +51,24 @@ describe("projectStore", () => {
     expect(loaded[0].title).toBe("Demo");
     expect(loaded[0].creationIds).toEqual(["c1", "c2"]);
     expect(loaded[0].aspectRatio).toBe("16:9");
+  });
+
+  it("keeps v2 container fields through normalize and UI mapping", () => {
+    const a = {
+      ...createStoredProject("V2 Demo", ["11", "local-still"]),
+      containerVersion: "v2" as const,
+      parasceneProjectId: "44",
+      coverCreationId: "11",
+      lifecycle: "ready" as const,
+    };
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects();
+    expect(loaded[0].containerVersion).toBe("v2");
+    expect(loaded[0].parasceneProjectId).toBe("44");
+    expect(loaded[0].coverCreationId).toBe("11");
+    const ui = storedProjectToUi(loaded[0]);
+    expect(ui.containerVersion).toBe("v2");
+    expect(ui.parasceneProjectId).toBe("44");
   });
 
   it("merges creation ids without duplicates", () => {
@@ -279,6 +298,28 @@ describe("projectStore", () => {
     expect(next.creationIds).toEqual([]);
     expect(next.timeline).toEqual([]);
     expect(next.mainAudioCreationId).toBeNull();
+  });
+
+  it("unfiles membership without dropping timeline clips", () => {
+    let a = createStoredProject("Demo", ["img1", "keep"]);
+    a = {
+      ...a,
+      coverCreationId: "img1",
+      timeline: [
+        {
+          id: "clip-a",
+          label: "A",
+          startSec: 0,
+          endSec: 2,
+          assetId: "img1",
+          kind: "image",
+        },
+      ],
+    };
+    const next = unfileCreationMembership(a, ["img1"]);
+    expect(next.creationIds).toEqual(["keep"]);
+    expect(next.coverCreationId).toBe("keep");
+    expect(next.timeline?.[0]?.assetId).toBe("img1");
   });
 
   it("renames a project", () => {

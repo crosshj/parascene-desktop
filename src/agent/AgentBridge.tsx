@@ -11,9 +11,9 @@ import {
   getCreation,
   getSyncStatus,
   importLocalPaths,
-  importProjectAssetPaths,
   listCreations,
 } from "../library/catalogClient";
+import { importLocalPathsForProject } from "../project/projectAssetLanding";
 import {
   groupSourceCreationIds,
   isGroupCreation,
@@ -29,14 +29,24 @@ import {
 import { dropPendingCreatesByTitle } from "../sync/folderSync";
 import type { SyncStatus } from "../library/types";
 import { requestOpenNewAsset } from "../layouts/editor/addAssetEvents";
+import {
+  requestOpenLibraryFolder,
+  requestPreviewWipeProject,
+} from "../library/libraryFolderEvents";
 import { parasceneResolveStillModel } from "../layouts/editor/parasceneProductCaps";
 import type { LayoutMode } from "../app/shellSession";
 import { getProjectFolder } from "../project/projectFolderClient";
 import { flushProjectStore, loadStoredProjects } from "../project/projectStore";
+import { isStoredProjectV2, v2FolderId } from "../project/projectV2";
+import {
+  findStoredProjectForV2Ref,
+  mergeV2ProjectFolders,
+} from "../project/projectV2Actions";
 import { runLabParasceneGenerate } from "../services/labParasceneGenerate";
 import {
   inspectLocalRow,
   inspectRemoteRow,
+  inspectWwwCreation,
   isCloudMissingStatus,
   statusFromCloudError,
   type InspectCabinetInput,
@@ -109,6 +119,27 @@ function showLibrary(
   shell.setLibrarySurface(surface);
 }
 
+function libraryFolderIdForProject(id: string): string | null {
+  const stored = findStoredProjectForV2Ref(loadStoredProjects(), id);
+  if (!stored) return null;
+  if (isStoredProjectV2(stored) && stored.parasceneProjectId) {
+    return v2FolderId(stored.parasceneProjectId);
+  }
+  return stored.boundFolderId?.trim() || null;
+}
+
+async function showLibraryProjectFolder(
+  shell: NonNullable<ReturnType<typeof useShellOptional>>,
+  projectId: string,
+  folderId?: string,
+): Promise<void> {
+  showLibrary(shell, "creations");
+  shell.setCreationsFilterId("all");
+  const next = folderId?.trim() || libraryFolderIdForProject(projectId);
+  if (next) requestOpenLibraryFolder(next);
+  await sleep(800);
+}
+
 function showProject(
   shell: ReturnType<typeof useShellOptional>,
   mode?: LayoutMode,
@@ -163,6 +194,7 @@ function watchHoldMs(action: string): number {
       return 1800;
     case "cloud.delete":
     case "project.create":
+    case "project.rename":
     case "project.delete":
     case "project.assets.remove":
     case "project.assets.delete":
@@ -194,7 +226,10 @@ async function inspectContext(
   folders: InspectFolderInput[];
   cabinets: InspectCabinetInput;
 }> {
-  const folders = (await listFolders().catch(() => [])).map((folder) => ({
+  const folders = mergeV2ProjectFolders({
+    folders: await listFolders().catch(() => []),
+    storedProjects: loadStoredProjects(),
+  }).map((folder) => ({
     id: folder.id,
     title: folder.title,
     kind: folder.kind,
@@ -482,6 +517,20 @@ async function runAction(
       const title = argString(args, "title") || "Untitled project";
       const id = await ctx.shell.createProject(title);
       if (!id) throw new Error("Create project returned no id");
+      await flushProjectStore();
+      const stored = loadStoredProjects().find((row) => row.id === id);
+      if (stored && isStoredProjectV2(stored)) {
+        const para = stored.parasceneProjectId?.trim() ?? "";
+        return {
+          projectId: id,
+          title: stored.title || title,
+          folderId: para ? v2FolderId(para) : null,
+          folderTitle: stored.title || title,
+          folderKind: "project",
+          containerVersion: "v2",
+          parasceneProjectId: para || null,
+        };
+      }
       const folder = await getProjectFolder(id).catch(() => null);
       return {
         projectId: id,
@@ -489,6 +538,8 @@ async function runAction(
         folderId: folder?.id ?? null,
         folderTitle: folder?.title ?? null,
         folderKind: folder?.kind ?? null,
+        containerVersion: stored?.containerVersion ?? "v1",
+        parasceneProjectId: stored?.parasceneProjectId ?? null,
       };
     }
     case "project.open": {
@@ -520,6 +571,12 @@ async function runAction(
       }
       if (tab === "library") {
         showLibrary(ctx.shell, surface ?? "creations");
+        const folderId = argString(args, "folderId");
+        if (folderId) {
+          ctx.shell.setCreationsFilterId("all");
+          requestOpenLibraryFolder(folderId);
+          await sleep(400);
+        }
       } else {
         const nextMode = mode ?? (panel === "newAsset" ? "editor" : undefined);
         if (
@@ -561,36 +618,59 @@ async function runAction(
       ctx.shell.closeProject();
       return { ok: true };
     }
+    case "project.rename": {
+      if (!ctx.shell) throw new Error("Shell is not mounted");
+      const id =
+        argString(args, "id") ||
+        argString(args, "projectId") ||
+        ctx.shell.openProjectId ||
+        "";
+      const nextTitle = argString(args, "title");
+      if (!id) throw new Error("project.rename requires id");
+      if (!nextTitle) throw new Error("project.rename requires title");
+      showProject(ctx.shell, "director");
+      if (ctx.shell.openProjectId !== id) {
+        const opened = await ctx.shell.openProject(id, true);
+        if (!opened) throw new Error("Could not open project to rename");
+        await sleep(400);
+      }
+      await ctx.shell.renameProject(id, nextTitle);
+      return { projectId: id, title: nextTitle };
+    }
     case "project.delete": {
       if (!ctx.shell) throw new Error("Shell is not mounted");
-      showProject(ctx.shell);
       const id =
         argString(args, "id") ||
         argString(args, "projectId") ||
         ctx.shell.openProjectId ||
         "";
       if (!id) throw new Error("project.delete requires id");
-      let folderId: string | null = null;
-      try {
-        folderId = (await getProjectFolder(id)).id;
-      } catch {
-        /* already released */
+      const confirmOnly =
+        args?.confirm === true ||
+        argString(args, "confirm").toLowerCase() === "true";
+      await showLibraryProjectFolder(
+        ctx.shell,
+        id,
+        argString(args, "folderId"),
+      );
+      if (confirmOnly) {
+        const stored = findStoredProjectForV2Ref(loadStoredProjects(), id);
+        requestPreviewWipeProject({
+          id,
+          title: stored?.title.trim() || "Untitled project",
+        });
+        await sleep(500);
+        return { projectId: id, confirm: true };
       }
       const ok = await ctx.shell.deleteProject(id);
       if (!ok) throw new Error("Could not delete project");
-      if (folderId) {
-        try {
-          await deleteFolder(folderId);
-        } catch {
-          /* leftover folder may still have members */
-        }
-      }
+      requestOpenLibraryFolder(null);
       try {
         await ctx.shell.syncProjectFolders();
       } catch {
         /* cloud folder flush is best-effort teardown */
       }
-      return { projectId: id, folderId };
+      return { projectId: id };
     }
     case "folder.create": {
       showLibrary(ctx.shell, "creations");
@@ -706,7 +786,7 @@ async function runAction(
       }
       showProject(ctx.shell, projectId ? "editor" : undefined);
       const imported = projectId
-        ? await importProjectAssetPaths(projectId, paths)
+        ? await importLocalPathsForProject({ projectId, paths })
         : await importLocalPaths(paths);
       if (projectId && imported.creations.length) {
         await ctx.shell.addCreationsToProject(
@@ -858,12 +938,19 @@ async function runAction(
       if (id.startsWith("local-") || id.startsWith("fixture-")) {
         return { id, found: false, status: 404, error: "local-only" };
       }
+      const view =
+        argString(args, "view").toLowerCase() === "www" ? "www" : "desktop";
       try {
-        const row = await getRemoteCreation(id);
+        const row = await getRemoteCreation(
+          id,
+          view === "www" ? { view: "www" } : undefined,
+        );
         return {
           found: true,
           status: 200,
+          view,
           ...inspectRemoteRow(row),
+          ...(view === "www" ? { www: inspectWwwCreation(row) } : {}),
         };
       } catch (err) {
         const status = statusFromCloudError(err);

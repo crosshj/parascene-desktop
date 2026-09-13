@@ -1137,6 +1137,16 @@ export async function fileCreationIntoProjectGroup(opts: {
   message: string;
   projectCreationIds: string[];
 }> {
+  const { loadStoredProjects } = await import("../project/projectStore");
+  const { isStoredProjectV2 } = await import("../project/projectV2");
+  const storedProject = loadStoredProjects().find((project) => project.id === opts.projectId);
+  if (storedProject && isStoredProjectV2(storedProject)) {
+    return {
+      groupId: null,
+      message: "v2 project — skipped cabinet file",
+      projectCreationIds: [opts.creationId],
+    };
+  }
   const kind: ProjectGroupKind =
     opts.mediaType === "image" ? "images" : "videos";
   const stored =

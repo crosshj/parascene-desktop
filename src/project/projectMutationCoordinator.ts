@@ -16,7 +16,11 @@ import {
   isMembershipMirrorStaleError,
   mirrorProjectFolderMembership,
 } from "./projectFolderMembership";
-import { collectProjectAssetUsage } from "./projectUsage";
+import {
+  collectProjectAssetUsage,
+  inFlightProjectCreationIds,
+  usageRequiresProjectFolder,
+} from "./projectUsage";
 import { existingCreationIds, getCreations } from "../library/catalogClient";
 import { listFolders } from "../library/folderClient";
 import {
@@ -24,6 +28,7 @@ import {
   isProjectOwnedCreation,
   projectCabinetCoverIdsInFolder,
 } from "./projectOwnership";
+import { isStoredProjectV2 } from "./projectV2";
 
 let mutationTail: Promise<unknown> = Promise.resolve();
 
@@ -149,7 +154,7 @@ async function persistStoredProjects(
 
     const changed: Array<{ previous: StoredProject | null; next: StoredProject }> = [];
     const newlyRequiredCreationIds = new Set<string>();
-    const next = proposed.map((project) => {
+    let next = proposed.map((project) => {
       const before = previousById.get(project.id) ?? null;
       if (before && JSON.stringify(before) === JSON.stringify(project)) {
         return before;
@@ -161,6 +166,7 @@ async function persistStoredProjects(
       );
       const cabinetMembers =
         cabinetMembersByProject.get(project.id) ?? new Set<string>();
+      const inFlight = inFlightProjectCreationIds(project);
       for (const creationId of nextMembers) {
         if (!previousMembers.has(creationId)) {
           newlyRequiredCreationIds.add(creationId);
@@ -170,15 +176,24 @@ async function persistStoredProjects(
         if (!previousReferences.has(usage.creationId)) {
           newlyRequiredCreationIds.add(usage.creationId);
         }
-        if (isProjectOwnedCreation(project, usage.creationId, cabinetMembers)) {
+        // v2 membership is the Parascene items[] list, not a local folder.
+        // Timeline / leftover refs must not veto a save that follows the API.
+        if (isStoredProjectV2(project)) {
           continue;
         }
-        const isPreservedLegacyOutsideReference =
-          Boolean(before) &&
-          previousReferences.has(usage.creationId) &&
-          !previousMembers.has(usage.creationId);
+        if (!usageRequiresProjectFolder(usage.usageKind)) {
+          continue;
+        }
         if (
-          !isPreservedLegacyOutsideReference &&
+          isProjectOwnedCreation(project, usage.creationId, cabinetMembers) ||
+          inFlight.has(usage.creationId)
+        ) {
+          continue;
+        }
+        const isPreservedOutsideReference =
+          Boolean(before) && previousReferences.has(usage.creationId);
+        if (
+          !isPreservedOutsideReference &&
           options?.allowLegacyOutsideTransition !== true
         ) {
           const projectTitle = project.title.trim() || "Untitled project";
@@ -198,17 +213,50 @@ async function persistStoredProjects(
     });
     if (changed.length === 0) return previous;
 
-    // Global Library deletion uses this same queue. Verifying new ownership
-    // and references here means a generation/import result cannot be deleted
-    // between its catalog check and the project-document commit.
+    // Global Library deletion uses this same queue. A timeline/composition
+    // reference to a vanished file still blocks the save. Membership-only ids
+    // can appear on a v2 remote list while a sibling generate is still
+    // landing locally — drop those until the catalog has them.
     if (newlyRequiredCreationIds.size > 0 && options?.allowMissingCreationIds !== true) {
       const required = [...newlyRequiredCreationIds];
       const existing = new Set(await existingCreationIds(required));
       const missing = required.filter((creationId) => !existing.has(creationId));
       if (missing.length > 0) {
-        throw new Error(
-          `Cannot save the project because ${missing.length} Library file(s) no longer exist: ${missing.join(", ")}`,
-        );
+        const missingSet = new Set(missing);
+        const referenced = [
+          ...new Set(
+            changed.flatMap((row) => {
+              if (isStoredProjectV2(row.next)) return [];
+              const inFlight = inFlightProjectCreationIds(row.next);
+              return collectProjectAssetUsage(row.next)
+                .filter(
+                  (usage) =>
+                    usageRequiresProjectFolder(usage.usageKind) &&
+                    missingSet.has(usage.creationId) &&
+                    !inFlight.has(usage.creationId),
+                )
+                .map((usage) => usage.creationId);
+            }),
+          ),
+        ];
+        if (referenced.length > 0) {
+          throw new Error(
+            `Cannot save the project because ${referenced.length} Library file(s) no longer exist: ${referenced.join(", ")}`,
+          );
+        }
+        const drop = new Set(missing);
+        const strippedById = new Map<string, StoredProject>();
+        next = next.map((project) => {
+          const filtered = project.creationIds.filter((id) => !drop.has(id));
+          if (filtered.length === project.creationIds.length) return project;
+          const stripped = { ...project, creationIds: filtered };
+          strippedById.set(project.id, stripped);
+          return stripped;
+        });
+        for (const row of changed) {
+          const stripped = strippedById.get(row.next.id);
+          if (stripped) row.next = stripped;
+        }
       }
     }
 

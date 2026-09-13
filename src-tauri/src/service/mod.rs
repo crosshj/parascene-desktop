@@ -6,7 +6,8 @@ use crate::auth_store;
 use crate::library::clip_thumb::ensure_clip_thumb_path;
 use crate::library::run_refresh_creations_by_id;
 use crate::library::{
-    delete_audio_clip, delete_creation, get_creation, get_credits, get_library_folders,
+    delete_audio_clip, delete_creation, get_creation, get_creation_as_www, get_credits,
+    get_library_folders,
     group_creations, jobs_cancel, jobs_enqueue, jobs_get, jobs_list, library_read_file_base64,
     library_read_local_thumb_base64, mutate_library_folders, record_audio_clip, ungroup_creations,
     upload_ephemeral_still, upload_fit_thumbnail, upload_generic_image, EnqueueJobRequest, Job,
@@ -267,7 +268,8 @@ fn registry() -> Vec<OpDef> {
             operation: "get_creation",
             status: "wired",
             label: "Get creation",
-            description: "Fetch one Parascene creation record (sync Result handle).",
+            description:
+                "Fetch one Parascene creation. view=www omits the desktop header (website costume).",
             job_kind: None,
             placement: Some(placement_parascene_creation()),
         },
@@ -686,7 +688,16 @@ async fn run_sync_operation(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "get_creation requires id".to_string())?;
-            let row = get_creation(id).await?;
+            let view = payload
+                .get("view")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let row = if view.eq_ignore_ascii_case("www") {
+                get_creation_as_www(id).await?
+            } else {
+                get_creation(id).await?
+            };
             Ok(row)
         }
         ("parascene", "upload_fit_thumbnail") => {

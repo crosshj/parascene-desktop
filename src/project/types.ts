@@ -638,6 +638,9 @@ export type Project = {
    */
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  /** v2 project Creation container. Omitted on v1 / older docs. */
+  containerVersion?: "v1" | "v2";
+  parasceneProjectId?: string | null;
   /**
    * Lab Project-groups still prompt (image mint). Null uses the shared Lab
    * default until the user edits it in Lab.

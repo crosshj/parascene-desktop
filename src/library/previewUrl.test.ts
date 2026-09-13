@@ -110,6 +110,10 @@ describe("creationDetailUrl", () => {
       isPlaceholderAudioCover("https://www.parascene.com/static/audio-cover.svg"),
     ).toBe(true);
     expect(isPlaceholderAudioCover("/Library/thumbs/28888_abcd.svg")).toBe(true);
+    expect(isPlaceholderAudioCover("/images/audio-cover-waveform.svg")).toBe(
+      true,
+    );
+    expect(isPlaceholderAudioCover("/api/create/images/22/audio")).toBe(true);
     expect(isPlaceholderAudioCover("/Library/thumbs/20794.png")).toBe(false);
   });
 

@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
-  agentInvoke,
   invokeOk,
   loadAgentManifest,
   requireSignedIn,
@@ -13,11 +12,13 @@ import {
   expectCloudMissing,
 } from "./cloudIdentity";
 import { sweepTestCreations } from "./teardown";
+import { expectWwwProjectCostume } from "./wwwCostume";
 import { AGENT_TEST_SPEECH_PATH } from "../src/fixtures/agentTestSpeech";
 
 type ProjectCreateResult = {
   projectId?: string;
   folderId?: string | null;
+  parasceneProjectId?: string | null;
 };
 
 type GenerateResult = {
@@ -57,6 +58,7 @@ writeFileSync(localPath, TINY_PNG);
 
 let projectId = "";
 let folderId = "";
+let parasceneProjectId = "";
 let stillToRemove = "";
 let stillToDelete = "";
 let imagesGroupId = "";
@@ -107,7 +109,9 @@ describe("agent assets remove and delete", () => {
       );
       projectId = created.projectId ?? "";
       folderId = created.folderId ?? "";
+      parasceneProjectId = created.parasceneProjectId ?? "";
       expect(projectId).toBeTruthy();
+      expect(parasceneProjectId).toBeTruthy();
 
       const generated = await invokeOk<GenerateResult>(
         agent,
@@ -117,6 +121,11 @@ describe("agent assets remove and delete", () => {
       stillToRemove = generated.creationId ?? "";
       imagesGroupId = generated.imagesGroupId ?? "";
       expect(stillToRemove).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [stillToRemove],
+        requirePixels: [stillToRemove],
+      });
 
       const importedStill = await invokeOk<ImportResult>(
         agent,
@@ -133,6 +142,11 @@ describe("agent assets remove and delete", () => {
       );
       audioId = importedAudio.creations?.[0]?.id ?? "";
       expect(audioId).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [stillToRemove],
+        absentMemberIds: [localOnlyId, audioId],
+      });
 
       await invokeOk(agent, "generation.a2v", {
         projectId,
@@ -141,19 +155,15 @@ describe("agent assets remove and delete", () => {
         generate: false,
       });
 
-      const blockedRemove = await agentInvoke(agent, "project.assets.remove", {
+      await invokeOk(agent, "project.assets.remove", {
         id: audioId,
         projectId,
       });
-      expect(blockedRemove.body.ok).toBe(false);
-      expect(blockedRemove.body.error ?? "").toMatch(/timeline/i);
-
-      const blockedDelete = await agentInvoke(agent, "project.assets.delete", {
-        id: audioId,
-        projectId,
-      });
-      expect(blockedDelete.body.ok).toBe(false);
-      expect(blockedDelete.body.error ?? "").toMatch(/timeline/i);
+      const afterAudioRemove = await lookupRow(agent, audioId);
+      expect(afterAudioRemove?.id).toBe(audioId);
+      expect(afterAudioRemove?.inProject).toBe(false);
+      expect(afterAudioRemove?.localPath).toBeTruthy();
+      expect(existsSync(afterAudioRemove?.localPath ?? "")).toBe(true);
 
       const beforeRemove = await lookupRow(agent, stillToRemove);
       expect(beforeRemove?.origin).toBe("parascene");
@@ -176,6 +186,10 @@ describe("agent assets remove and delete", () => {
       expect(existsSync(afterRemove?.localPath ?? "")).toBe(true);
 
       await expectCloudHasCreation(agent, stillToRemove);
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        absentMemberIds: [stillToRemove],
+      });
 
       if (imagesGroupId && imagesGroupId !== stillToRemove) {
         await expectCloudMissing(agent, imagesGroupId);
@@ -197,6 +211,10 @@ describe("agent assets remove and delete", () => {
       stillToDelete = toDelete.creationId ?? "";
       deleteGroupId = toDelete.imagesGroupId ?? "";
       expect(stillToDelete).toBeTruthy();
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        memberIds: [stillToDelete],
+      });
 
       await invokeOk(agent, "project.assets.delete", {
         id: stillToDelete,
@@ -208,6 +226,10 @@ describe("agent assets remove and delete", () => {
       });
       expect(deletedLocal.found ?? []).toHaveLength(0);
       await expectCloudMissing(agent, stillToDelete);
+      await expectWwwProjectCostume(agent, parasceneProjectId, {
+        title,
+        absentMemberIds: [stillToDelete, stillToRemove],
+      });
 
       const localOnlyBefore = await lookupRow(agent, localOnlyId);
       expect(localOnlyBefore?.localOnly).toBe(true);

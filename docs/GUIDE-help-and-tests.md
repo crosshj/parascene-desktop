@@ -33,19 +33,35 @@ A change to a row names the test and the article. Empty test or “static shots�
 - Audio models — `audio-models.html` — none — names only
 - Video models — `video-models.html` — none — names only
 - Sync — `sync.html` — 02 — static first-run. Also the remote-vs-local model (08–11 prove it; no extra Help shots)
-- Projects — `projects.html` — 03 — static first-run
-- Folders — `folders.html` — 04 — no dedicated shots
+- Projects — `projects.html` — 03 — create / rename / open, then Library Delete project shots. New project is v2. Teardown is `project.delete`. 08 is the same wipe after generate.
+- Folders — `folders.html` — 04 — no dedicated shots. Regular folder ≠ Project tile
 - Settings — `settings.html` — none — one static shot
 - Local tools — `tools.html` — none — no shots
 - Assets Remove / Delete — no Help page — 10 (last Images proven; last Videos needs a clip)
 
-# Where we are (2026-09-09)
+# Groups / projects v2
+
+Do not open a new identity suite. New project is v2. Prove the container by extending the numbered files as the product changes:
+
+- 03 — create, rename, close/reopen. Library Project tile. www costume empty / unpublished / same title. Delete shots + `project.delete` wipe.
+- 05 / 12 — generate appends a pair (still / Flash audio). www costume lists that Creation. Disk import is `local://` (www omits it)
+- 08 — `project.delete` clears children (www list first) then deletes the project Creation (local and Parascene)
+- 10 — Assets Remove PATCHes the v2 list (Creation stays); Delete DELETEs the Creation and clears project refs. In-flight / leftover refs do not block either.
+- 04 — a regular folder is still not a project
+
+`cloud.lookup` default stays desktop/raw (08–11 same-object). `view: "www"` is the website GET. Assert `supported` / member `media_type` only when those keys are on the wire.
+
+When the UI a Help article names changed, update that article. Projects / Folders describe the Library Project tile. Do not mention v1/v2 or tests in Help.
+
+# Where we are (2026-09-12)
 
 Phases 0–3 shipped in 1.1.58: account isolation, agent API, suites 01–07, in-app Help.
 
 Help IA since then: contents groups are Overview, Setup, Journeys, Topics. No Overview article — Getting started stays first-run only. Overview is Getting started, Sync, Folders, Projects. Sync also covers this computer versus the cloud. Topics is the model lists (`audio-models.html` names only) plus Speech voices (`speech-voices.html`, suite 13). Generate speech/music is a sibling sitting (`generate-audio.html`, suite 12). Parascene audio SVG covers are skipped. Generated tiles color by model (FLASH / LYRIA / MM SPEECH / MM MUSIC), same as BYO Replicate.
 
 Same-object track since then (the away work): `library.lookup` / `cloud.lookup` inspect. Shared Assets Remove/Delete. Suites 08–11 written and run. Sync newest no longer prunes grouped members. Last Images Remove no longer bounces. Folder sync drops stale creates and dead unfile-moves; teardown flushes `agent-test-*` pending ops. Seed `28006` was wrongly deleted once; it is protected now.
+
+Project v2 since then: every New project mints a Parascene project Creation on a group v2 list. Desktop GET is raw `items[]`. www GET is the old-group costume (`source_creations`, `supported` lockdown, no raw `items[]`). Cover is a flag on one row. 03 / 05 / 08 / 10 / 12 assert that costume on the existing files. v1 projects still open.
 
 Still open on leftover after 1.1.58: follow-the-API help audit, first-run screenshot regen (login, Library with seed tile, Sync, Projects, Director, Editor, Settings), video-models journey, Edit/Kontext thumbs, next goal articles (T2V / I2V / V2V / Refs, timeline edit, export), Settings / tools / failures tests, release audit. Phase 5 (Help is part of feature done) waits on using this map, not on more identity suites.
 
@@ -66,6 +82,7 @@ Phase 5 later: change a user-visible workflow → run the matching suite → ver
 - Agent how-to: [dev/agent-interface.md](./dev/agent-interface.md)
 - Original 0–5 requirements (history): [PLAN_LocalAgentInterface_IntegrationTesting_DocumentationPlan.md](./PLAN_LocalAgentInterface_IntegrationTesting_DocumentationPlan.md)
 - Same-object track: [PLAN-remote-local-consistency.md](./PLAN-remote-local-consistency.md)
+- Shot session / leftover v2: [PLAN-shot-session-refs-ledger.md](./PLAN-shot-session-refs-ledger.md)
 - Last cabinet member: [PLAN-last-cabinet-member-remove.md](./PLAN-last-cabinet-member-remove.md)
 - Help voice: `.cursor/rules/help-walkthrough-voice.mdc`
 - Seed ids: `src/library/seedLibraryCreations.ts`

@@ -155,7 +155,7 @@ export async function sweepTestCreations(
     try {
       await invokeSweep(agent, "folder.delete", { id });
     } catch {
-      /* project.delete often leaves a regular folder, then this removes it */
+      /* v1 leftover folder, or a sweep that already wiped the project */
     }
   }
 

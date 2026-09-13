@@ -30,6 +30,7 @@ export type ProjectImagePickerContext = {
   projectId: string;
   projectTitle: string;
   projectCabinets: ProjectCabinetIds | null | undefined;
+  skipCabinetExpand?: boolean;
 };
 
 export type ProjectPickerAssetKind = ProjectAsset["kind"];
@@ -52,6 +53,7 @@ export function projectPickerAssets(
     rootAssets: assets,
     creationsById,
     projectCabinets: context.projectCabinets,
+    skipCabinetExpand: context.skipCabinetExpand,
   });
   if (!kinds?.length) return flat;
   const allow = new Set(kinds);
@@ -160,6 +162,7 @@ async function loadProjectAssetCreations(
     rootAssets: ids.map((id) => ({ id, name: id, kind: "image" })),
     creationsById: next,
     projectCabinets: context.projectCabinets,
+    skipCabinetExpand: context.skipCabinetExpand,
   });
   const missingCoverIds = coverIds.filter((id) => !next[id]);
   if (missingCoverIds.length > 0) {
@@ -236,6 +239,7 @@ export function useProjectPickerCatalog(
         imagesGroupId: imagesGroupId || null,
         videosGroupId: videosGroupId || null,
       },
+      skipCabinetExpand: context.skipCabinetExpand,
     };
     void loadProjectAssetCreations(ids, loadContext)
       .then((next) => {
@@ -272,7 +276,7 @@ export function useProjectPickerCatalog(
       cancelled = true;
       stop();
     };
-  }, [assetIdsKey, projectId, projectTitle, imagesGroupId, videosGroupId]);
+  }, [assetIdsKey, context.skipCabinetExpand, projectId, projectTitle, imagesGroupId, videosGroupId]);
 
   const catalogAssets = useMemo(() => {
     const resolvedCreationsById = assetIdsKey ? creationsById : {};
@@ -283,6 +287,7 @@ export function useProjectPickerCatalog(
         projectId,
         projectTitle,
         projectCabinets,
+        skipCabinetExpand: context.skipCabinetExpand,
       },
       kindsKey ? (kindsKey.split(",") as ProjectPickerAssetKind[]) : undefined,
     );
@@ -294,6 +299,7 @@ export function useProjectPickerCatalog(
     projectTitle,
     projectCabinets,
     assets,
+    context.skipCabinetExpand,
   ]);
 
   const catalogPreviews = useMemo(() => {

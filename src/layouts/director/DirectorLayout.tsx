@@ -14,6 +14,9 @@ import {
 //   type ProjectLookId,
 // } from "../../project/looks";
 import { getProjectFolder } from "../../project/projectFolderClient";
+import { isStoredProjectV2 } from "../../project/projectV2";
+import { syntheticFolderFromStoredV2 } from "../../project/projectV2Actions";
+import { loadStoredProjects } from "../../project/projectStore";
 
 export function DirectorLayout() {
   const {
@@ -40,8 +43,13 @@ export function DirectorLayout() {
     let cancelled = false;
     void (async () => {
       try {
-        const folder = await getProjectFolder(project.id);
-        const coverId = folder.coverCreationId?.trim();
+        const stored = loadStoredProjects().find((row) => row.id === project.id);
+        const coverId = isStoredProjectV2(project)
+          ? stored
+            ? syntheticFolderFromStoredV2(stored)?.coverCreationId?.trim() ||
+              ""
+            : ""
+          : (await getProjectFolder(project.id)).coverCreationId?.trim() || "";
         if (!coverId) {
           if (!cancelled) setCoverUrl(null);
           return;
@@ -56,7 +64,7 @@ export function DirectorLayout() {
     return () => {
       cancelled = true;
     };
-  }, [project.id]);
+  }, [project]);
 
   const commitTitle = () => {
     const next = titleDraft.trim() || "Untitled project";

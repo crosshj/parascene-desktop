@@ -7,6 +7,9 @@ import {
   ungroupMembersFromProjectGroup,
 } from "../lab/projectGroups";
 import { cabinetPersistPatch } from "../project/cabinetPersist";
+import { isGoneError } from "../project/deleteProjectMedia";
+import { isParasceneCreationId } from "../project/projectV2";
+import { patchV2Membership } from "../project/projectV2Actions";
 import {
   deleteCreationViaService,
   getRemoteCreation,
@@ -19,11 +22,22 @@ export type TimelineAssetClip = {
     startFrameAssetId?: string | null;
     firstFrameSource?: { kind?: string; assetId?: string } | null;
     lastFrameSource?: { kind?: string; assetId?: string } | null;
+    inputVideoAssetId?: string | null;
+    characterImageAssetId?: string | null;
+    referenceImageAssetIds?: readonly string[] | null;
+    referenceVideoAssetIds?: readonly string[] | null;
+    referenceAudioAssetIds?: readonly string[] | null;
   } | null;
   addAssetDraft?: {
     startFrameAssetId?: string | null;
     firstFrameSource?: { kind?: string; assetId?: string } | null;
     lastFrameSource?: { kind?: string; assetId?: string } | null;
+    inputVideoAssetId?: string | null;
+    characterImageAssetId?: string | null;
+    referenceImageAssetIds?: readonly string[] | null;
+    referenceVideoAssetIds?: readonly string[] | null;
+    referenceAudioAssetIds?: readonly string[] | null;
+    generationJob?: { pendingCreationId?: string | null } | null;
   } | null;
   slideshow?: {
     imageAssetIds?: readonly string[] | null;
@@ -44,6 +58,26 @@ export class TimelineAssetInUseError extends Error {
     this.name = "TimelineAssetInUseError";
     this.usedIds = usedIds;
   }
+}
+
+/** Playable timeline media — start-frame / input refs do not block Delete. */
+export function collectTimelineBlockingAssetIds(
+  timeline: readonly TimelineAssetClip[],
+): Set<string> {
+  const used = new Set<string>();
+  const add = (id?: string | null) => {
+    const trimmed = id?.trim();
+    if (trimmed) used.add(trimmed);
+  };
+  for (const clip of timeline) {
+    add(clip.assetId);
+    for (const id of clip.slideshow?.imageAssetIds ?? []) add(id);
+    add(clip.slideshow?.audioAssetId);
+    if (!clip.addAssetDraft?.generationJob) {
+      add(clip.addAssetGeneration?.creationId);
+    }
+  }
+  return used;
 }
 
 export function collectTimelineUsedAssetIds(
@@ -69,6 +103,23 @@ export function collectTimelineUsedAssetIds(
     add(frameId(clip.addAssetDraft?.firstFrameSource));
     add(frameId(clip.addAssetGeneration?.lastFrameSource));
     add(frameId(clip.addAssetDraft?.lastFrameSource));
+    add(clip.addAssetDraft?.generationJob?.pendingCreationId);
+    add(clip.addAssetDraft?.inputVideoAssetId);
+    add(clip.addAssetDraft?.characterImageAssetId);
+    for (const id of clip.addAssetDraft?.referenceImageAssetIds ?? []) add(id);
+    for (const id of clip.addAssetDraft?.referenceVideoAssetIds ?? []) add(id);
+    for (const id of clip.addAssetDraft?.referenceAudioAssetIds ?? []) add(id);
+    add(clip.addAssetGeneration?.inputVideoAssetId);
+    add(clip.addAssetGeneration?.characterImageAssetId);
+    for (const id of clip.addAssetGeneration?.referenceImageAssetIds ?? []) {
+      add(id);
+    }
+    for (const id of clip.addAssetGeneration?.referenceVideoAssetIds ?? []) {
+      add(id);
+    }
+    for (const id of clip.addAssetGeneration?.referenceAudioAssetIds ?? []) {
+      add(id);
+    }
   }
   return used;
 }
@@ -163,6 +214,7 @@ export type ProjectAssetOpContext = {
     videosGroupId: string | null;
     hideIds: string[];
     addIds?: string[];
+    pruneRefs?: boolean;
   }) => Promise<void>;
   onProgress?: (note: string) => void;
 };
@@ -295,6 +347,24 @@ export async function applyProjectAssetRemove(
       videosGroupId: ctx.videosGroupId,
     };
   }
+
+  const { loadStoredProjects } = await import("../project/projectStore");
+  const { isStoredProjectV2 } = await import("../project/projectV2");
+  const storedV2 = loadStoredProjects().find(
+    (project) => project.id === ctx.projectId,
+  );
+  if (storedV2 && isStoredProjectV2(storedV2)) {
+    try {
+      await ctx.removeCreationsFromOpenProject(ids);
+    } catch (error) {
+      console.error("Failed to follow v2 remove locally", error);
+    }
+    return {
+      ids,
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+  }
   assertAssetsNotOnTimeline(ids, ctx.timelineUsedIds);
 
   const imagesMembers = await loadCabinetMemberIds(ctx.imagesGroupId);
@@ -382,7 +452,59 @@ export async function applyProjectAssetDelete(
       videosGroupId: ctx.videosGroupId,
     };
   }
-  assertAssetsNotOnTimeline(ids, ctx.timelineUsedIds);
+
+  const { loadStoredProjects } = await import("../project/projectStore");
+  const { isStoredProjectV2 } = await import("../project/projectV2");
+  const storedV2Delete = loadStoredProjects().find(
+    (project) => project.id === ctx.projectId,
+  );
+  if (storedV2Delete && isStoredProjectV2(storedV2Delete)) {
+    try {
+      await patchV2Membership(storedV2Delete, { remove: ids });
+    } catch (error) {
+      if (!isGoneError(error)) {
+        console.error("Failed to PATCH-remove v2 children before delete", error);
+      }
+    }
+    try {
+      if (ctx.persistOpenProjectAfterAssets) {
+        await ctx.persistOpenProjectAfterAssets({
+          imagesGroupId: null,
+          videosGroupId: null,
+          hideIds: ids,
+          pruneRefs: true,
+        });
+      } else {
+        await ctx.removeCreationsFromOpenProject(ids);
+      }
+    } catch (error) {
+      console.error("Failed to prune local project refs before delete", error);
+    }
+    for (const id of ids) {
+      const row = await getCreation(id).catch(() => null);
+      const remote =
+        (row && !isLocalOnlyCreation(row)) ||
+        (!row && isParasceneCreationId(id));
+      if (remote) {
+        ctx.onProgress?.(`Deleting ${id} on Parascene…`);
+        try {
+          await deleteCreationViaService(id);
+        } catch (error) {
+          if (!isGoneError(error)) throw error;
+        }
+      }
+      try {
+        await ctx.deleteLibraryCreation(id);
+      } catch (error) {
+        console.error(`Failed to delete ${id} from the local catalog`, error);
+      }
+    }
+    return {
+      ids,
+      imagesGroupId: null,
+      videosGroupId: null,
+    };
+  }
 
   const imagesMembers = await loadCabinetMemberIds(ctx.imagesGroupId);
   const videosMembers = await loadCabinetMemberIds(ctx.videosGroupId);

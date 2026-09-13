@@ -57,6 +57,8 @@ type AssetBrowserPaneProps = {
   imagesGroupId?: string | null;
   /** Desktop Videos cabinet id — expand members; hide cover. */
   videosGroupId?: string | null;
+  /** v2 project container — do not explode Images/Videos cabinets. */
+  skipCabinetExpand?: boolean;
   filter: AssetKindFilter;
   selectedId: string | null;
   selectedIds: readonly string[];
@@ -299,6 +301,7 @@ export function AssetBrowserPane({
   projectTitle,
   imagesGroupId = null,
   videosGroupId = null,
+  skipCabinetExpand = false,
   filter,
   selectedId,
   selectedIds,
@@ -484,6 +487,7 @@ export function AssetBrowserPane({
           rootAssets,
           creationsById: {},
           projectCabinets,
+          skipCabinetExpand,
         });
         if (cancelled) return;
 
@@ -512,7 +516,7 @@ export function AssetBrowserPane({
       cancelled = true;
       unlisten?.();
     };
-  }, [assetIdsKey, projectCabinets, projectId, projectTitle, rootAssets]);
+  }, [assetIdsKey, projectCabinets, projectId, projectTitle, rootAssets, skipCabinetExpand]);
 
   /** Flat list for the grid: cabinets expand to members (covers are hidden). */
   const displayAssets = useMemo(
@@ -523,8 +527,9 @@ export function AssetBrowserPane({
         rootAssets,
         creationsById,
         projectCabinets,
+        skipCabinetExpand,
       }),
-    [creationsById, projectCabinets, projectId, projectTitle, rootAssets],
+    [creationsById, projectCabinets, projectId, projectTitle, rootAssets, skipCabinetExpand],
   );
 
   const visible = displayAssets.filter((asset) => {
@@ -1017,14 +1022,7 @@ export function AssetBrowserPane({
                   type="button"
                   className="editor-asset-context-item is-danger"
                   role="menuitem"
-                  disabled={contextMenuTimelineBlocked}
-                  title={
-                    contextMenuTimelineBlocked
-                      ? "Remove timeline clips that use these assets first."
-                      : undefined
-                  }
                   onClick={() => {
-                    if (contextMenuTimelineBlocked) return;
                     const ids = contextMenuRemovableAssetIds;
                     setContextMenu(null);
                     onDeleteAssets(ids);

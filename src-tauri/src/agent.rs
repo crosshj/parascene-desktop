@@ -119,10 +119,16 @@ fn actions() -> Vec<AgentAction> {
             summary: "Close the open project".into(),
         },
         AgentAction {
+            id: "project.rename".into(),
+            scope: "project".into(),
+            status: "wired".into(),
+            summary: "Rename a project (Director Project field; v2 patches the Parascene title)".into(),
+        },
+        AgentAction {
             id: "project.delete".into(),
             scope: "project".into(),
             status: "wired".into(),
-            summary: "Delete a local project (folder may remain as regular)".into(),
+            summary: "Wipe a project and its files from the Library Project tile (confirm:true opens the warning only)".into(),
         },
         AgentAction {
             id: "folder.create".into(),
@@ -182,13 +188,13 @@ fn actions() -> Vec<AgentAction> {
             id: "cloud.lookup".into(),
             scope: "cloud".into(),
             status: "wired".into(),
-            summary: "GET one Parascene Creation; 404/410 is found:false".into(),
+            summary: "GET one Parascene Creation (view=www is the website costume); 404/410 is found:false".into(),
         },
         AgentAction {
             id: "project.assets.remove".into(),
             scope: "project".into(),
             status: "wired".into(),
-            summary: "Assets Remove from project (Library and website stay; cabinet ungroups)".into(),
+            summary: "Assets Remove from project (Library and website stay; v2 drops the pair, v1 ungroups)".into(),
         },
         AgentAction {
             id: "project.assets.delete".into(),
@@ -324,7 +330,7 @@ fn ui_timeout_for(action: &str) -> Duration {
         "generation.start" | "generation.a2v" | "generation.audio" | "publisher.render" => {
             Duration::from_secs(12 * 60)
         }
-        "cloud.delete" | "project.delete" | "project.create"
+        "cloud.delete" | "project.delete" | "project.create" | "project.rename"
         | "project.assets.remove" | "project.assets.delete" => Duration::from_secs(3 * 60),
         _ => UI_TIMEOUT,
     }
@@ -405,6 +411,7 @@ fn invoke_action(app: &AppHandle, action: &str, args: Value) -> Result<Value, St
         "project.create"
         | "project.open"
         | "project.close"
+        | "project.rename"
         | "project.delete"
         | "folder.create"
         | "folder.delete"
@@ -695,6 +702,7 @@ mod tests {
         assert!(actions().iter().any(|a| a.id == "publisher.render" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.import" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "project.create" && a.status == "wired"));
+        assert!(actions().iter().any(|a| a.id == "project.rename" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "library.clearLocal" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "sync.folders" && a.status == "wired"));
         assert!(actions().iter().any(|a| a.id == "sync.thumbs" && a.status == "wired"));

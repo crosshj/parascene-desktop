@@ -36,6 +36,17 @@ describe("creationFlags", () => {
     ).toBe(false);
   });
 
+  it("does not treat a project v2 container as a v1 group", () => {
+    expect(
+      isGroupCreation({
+        filename: "project/44_x",
+        remoteJson: JSON.stringify({
+          meta: { type: "project", group: { kind: "group_v2" } },
+        }),
+      }),
+    ).toBe(false);
+  });
+
   it("reads ordered source creation ids from groups", () => {
     expect(
       groupSourceCreationIds({

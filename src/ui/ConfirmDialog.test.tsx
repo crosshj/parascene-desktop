@@ -137,4 +137,51 @@ describe("ConfirmDialog", () => {
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
   });
+
+  it("stays open with the error when onConfirm throws", async () => {
+    const user = userEvent.setup();
+    const onResult = vi.fn();
+
+    function FailProbe() {
+      const confirm = useConfirm();
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void confirm({
+              title: "Delete “Trip”?",
+              message: "This deletes the project and its files.",
+              confirmLabel: "Delete project",
+              danger: true,
+              errorTitle: "Could not delete project",
+              onConfirm: async () => {
+                throw new Error("Parascene still lists 2 files in this project.");
+              },
+            }).then(onResult);
+          }}
+        >
+          Ask
+        </button>
+      );
+    }
+
+    render(
+      <ConfirmProvider>
+        <FailProbe />
+      </ConfirmProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
+    expect(
+      await screen.findByText("Could not delete project"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Parascene still lists 2 files in this project."),
+    ).toBeInTheDocument();
+    expect(onResult).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    expect(onResult).toHaveBeenCalledWith(false);
+  });
 });
