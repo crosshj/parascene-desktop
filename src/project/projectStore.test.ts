@@ -30,6 +30,7 @@ import {
   storedProjectToUi,
   setStoredProjectEditorAudio2,
   setStoredProjectLabPrompts,
+  setStoredProjectAssistantChat,
   setStoredProjectLyricAlignment,
   normalizeLyricAlignment,
   normalizeTimelineClip,
@@ -955,6 +956,25 @@ describe("projectStore", () => {
     a = setStoredProjectLabPrompts(loaded[0], { labStillPrompt: "" });
     expect(a.labStillPrompt).toBe("");
     expect(a.labAnimatePrompt).toBe("custom animate");
+  });
+
+  it("persists talk-only Assistant turns with the project", () => {
+    let a = createStoredProject("Demo");
+    expect(a.assistantChat).toEqual([]);
+
+    a = setStoredProjectAssistantChat(a, [
+      { role: "user", content: "  rewrite this  ", at: "t1" },
+      { role: "assistant", content: "try a closer crop", at: "t2" },
+    ]);
+    expect(a.assistantChat).toEqual([
+      { role: "user", content: "rewrite this", at: "t1" },
+      { role: "assistant", content: "try a closer crop", at: "t2" },
+    ]);
+
+    saveStoredProjects([a]);
+    const loaded = loadStoredProjects();
+    expect(loaded[0].assistantChat).toEqual(a.assistantChat);
+    expect(storedProjectToUi(loaded[0]).assistantChat).toEqual(a.assistantChat);
   });
 
   it("persists lyric text before timed lines exist", () => {

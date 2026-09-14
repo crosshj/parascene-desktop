@@ -45,8 +45,6 @@ import {
 } from "./timelineFragmentCache";
 import { getCreation } from "../../library/catalogClient";
 import { AssetBrowserPane, type AssetKindFilter } from "./AssetBrowserPane";
-// Assistant is parked until the LLM path works. Keep the import + pane
-// behind SHOW_EDITOR_ASSISTANT so layout can come back in one flip.
 import { AssistantPane } from "./AssistantPane";
 import {
   ASSISTANT_COLLAPSED_STRIP,
@@ -168,6 +166,10 @@ import {
 } from "../../agent/projectAssetOps";
 import { isStoredProjectV2 } from "../../project/projectV2";
 import {
+  editorAssistantVisible,
+  useAssistantLlmConfigured,
+} from "../../project/assistantLlm";
+import {
   isActiveLibraryAssetPlaceholder,
   libraryAssetPlaceholderIdsInList,
 } from "../../project/libraryAssetPlaceholder";
@@ -242,8 +244,6 @@ function timelinePlacementKey(clips: readonly TimelineClip[]): string {
     .join("|");
 }
 
-const SHOW_EDITOR_ASSISTANT = false;
-
 export function EditorLayout() {
   const {
     project,
@@ -268,7 +268,14 @@ export function EditorLayout() {
     rightCollapsed,
     toggleLeft,
     toggleRight,
+    setOpenProjectAssistantChat,
   } = useShell();
+  const projectIsV2 = isStoredProjectV2(project);
+  const llmConfigured = useAssistantLlmConfigured();
+  const showEditorAssistant = editorAssistantVisible(
+    projectIsV2,
+    llmConfigured,
+  );
   const confirm = useConfirm();
 
   const [prefs, setPrefs] = useState<EditorLayoutPrefs>(() =>
@@ -1059,7 +1066,7 @@ export function EditorLayout() {
     } catch {
       splitterCaptureRef.current = null;
     }
-    const reservedRight = !SHOW_EDITOR_ASSISTANT
+    const reservedRight = !showEditorAssistant
       ? 0
       : !rightCollapsed
         ? prefs.assistantWidth
@@ -1080,17 +1087,17 @@ export function EditorLayout() {
 
   const assetsDocked = !narrow && !leftCollapsed;
   const assistantDocked =
-    SHOW_EDITOR_ASSISTANT && !narrow && !rightCollapsed;
+    showEditorAssistant && !narrow && !rightCollapsed;
   const showAssetsDrawer = narrow && assetsDrawerOpen;
   const showAssistantDrawer =
-    SHOW_EDITOR_ASSISTANT && narrow && assistantDrawerOpen;
+    showEditorAssistant && narrow && assistantDrawerOpen;
   const showAssetsPane = assetsDocked || showAssetsDrawer;
   const showAssistantPane = assistantDocked || showAssistantDrawer;
 
   const workspaceClass = [
     "editor-workspace",
     assetsDocked ? "" : "assets-collapsed",
-    SHOW_EDITOR_ASSISTANT
+    showEditorAssistant
       ? assistantDocked
         ? ""
         : "assistant-collapsed"
@@ -2046,7 +2053,6 @@ export function EditorLayout() {
     }
   };
 
-  const projectIsV2 = isStoredProjectV2(project);
   const timelineUsedAssetIds = useMemo(
     () =>
       projectIsV2
@@ -2891,7 +2897,7 @@ export function EditorLayout() {
         onToggleTimelinePlay={toggleTimelinePlaying}
       />
 
-      {SHOW_EDITOR_ASSISTANT && assistantDocked ? (
+      {showEditorAssistant && assistantDocked ? (
         <button
           type="button"
           className={
@@ -2904,9 +2910,16 @@ export function EditorLayout() {
         />
       ) : null}
 
-      {SHOW_EDITOR_ASSISTANT && showAssistantPane ? (
-        <AssistantPane onCollapse={collapseAssistant} drawer={narrow} />
-      ) : SHOW_EDITOR_ASSISTANT ? (
+      {showEditorAssistant && showAssistantPane ? (
+        <AssistantPane
+          projectId={project.id}
+          projectTitle={project.title}
+          messages={project.assistantChat ?? []}
+          onPersist={setOpenProjectAssistantChat}
+          onCollapse={collapseAssistant}
+          drawer={narrow}
+        />
+      ) : showEditorAssistant ? (
         <button
           type="button"
           className="editor-pane-expand right"

@@ -80,7 +80,9 @@ pub use parascene_api::{
 pub use plate::{
     library_bake_plate_still, library_cache_composition_run, library_delete_composition_run,
 };
-pub use project_documents::{projects_migrate_and_load, projects_save};
+pub use project_documents::{
+    load_project_document_json, projects_migrate_and_load, projects_save,
+};
 pub use project_v2::{library_create_project_v2, library_get_project_v2, library_patch_project_v2};
 pub use project_assets::{
     library_add_existing_project_asset, library_add_project_assets, library_check_creation_usage,

@@ -46,6 +46,11 @@ import {
   type LibraryAssetPlaceholder,
 } from "./libraryAssetPlaceholder";
 import {
+  assistantChatEqual,
+  normalizeAssistantChat,
+  type AssistantChatTurn,
+} from "./assistantChat";
+import {
   compositionInternalCreationIds,
   normalizeStillWorkstream,
   normalizeStillWorkstreams,
@@ -187,6 +192,8 @@ export type StoredProject = {
   storyboardProposal?: StoryboardProposal | null;
   /** MV Concept seed prompt; omitted → null. */
   labStoryboardDirection?: string | null;
+  /** Talk-only Editor Assistant turns. Local to this project. */
+  assistantChat?: AssistantChatTurn[];
   /** Generate → Assets placeholders keyed by provisional asset id. */
   libraryAssetPlaceholders?: Record<
     string,
@@ -1243,6 +1250,7 @@ function normalizeStoredProject(project: StoredProject): StoredProject {
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
     labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
+    assistantChat: normalizeAssistantChat(project.assistantChat),
     libraryAssetPlaceholders: normalizeLibraryAssetPlaceholders(
       project.libraryAssetPlaceholders,
     ),
@@ -1487,6 +1495,7 @@ export function createStoredProject(
     lyricAlignment: null,
     storyboardProposal: null,
     labStoryboardDirection: null,
+    assistantChat: [],
     updatedAt: new Date().toISOString(),
     documentRevision: nextProjectDocumentRevision(),
     lifecycle: "provisioning",
@@ -2164,6 +2173,21 @@ export function setStoredProjectLabStoryboardDirection(
   };
 }
 
+export function setStoredProjectAssistantChat(
+  project: StoredProject,
+  messages: readonly AssistantChatTurn[],
+): StoredProject {
+  const assistantChat = normalizeAssistantChat(messages);
+  if (assistantChatEqual(assistantChat, normalizeAssistantChat(project.assistantChat))) {
+    return project;
+  }
+  return {
+    ...project,
+    assistantChat,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function upsertStoredLibraryAssetPlaceholder(
   project: StoredProject,
   placeholder: LibraryAssetPlaceholder,
@@ -2397,6 +2421,7 @@ export function storedProjectToUi(project: StoredProject): Project {
     lyricAlignment: normalizeLyricAlignment(project.lyricAlignment),
     storyboardProposal: normalizeStoryboardProposal(project.storyboardProposal),
     labStoryboardDirection: normalizeOptionalPrompt(project.labStoryboardDirection),
+    assistantChat: normalizeAssistantChat(project.assistantChat),
     timeline,
     selectedTimelineClipId,
     selectedAssetId,
@@ -2437,6 +2462,7 @@ export function emptyUiProject(): Project {
     lyricAlignment: null,
     storyboardProposal: null,
     labStoryboardDirection: null,
+    assistantChat: [],
     timeline: [],
     selectedTimelineClipId: null,
     selectedAssetId: null,

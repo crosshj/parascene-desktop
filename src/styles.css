@@ -8940,7 +8940,100 @@ body.is-timeline-clip-moving * {
 .editor-assistant-msg {
   margin: 0;
   font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
   color: var(--muted);
+}
+
+.editor-assistant-msg.is-user {
+  align-self: flex-end;
+  max-width: 85%;
+  color: var(--text);
+  white-space: pre-wrap;
+  padding: 0.55rem 0.9rem;
+  border-radius: 1.15rem;
+  background-color: rgba(36, 48, 78, 0.96);
+}
+
+.editor-assistant-msg.is-assistant {
+  color: var(--text);
+}
+
+.editor-assistant-md {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.editor-assistant-md p,
+.editor-assistant-md ul,
+.editor-assistant-md ol,
+.editor-assistant-md pre,
+.editor-assistant-md blockquote,
+.editor-assistant-md h3,
+.editor-assistant-md h4,
+.editor-assistant-md h5 {
+  margin: 0;
+}
+
+.editor-assistant-md h3,
+.editor-assistant-md h4,
+.editor-assistant-md h5 {
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.editor-assistant-md ul,
+.editor-assistant-md ol {
+  padding-left: 1.2rem;
+}
+
+.editor-assistant-md li + li {
+  margin-top: 0.2rem;
+}
+
+.editor-assistant-md-code,
+.editor-assistant-md pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8em;
+}
+
+.editor-assistant-md-code {
+  padding: 0.08em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 8%, var(--surface));
+}
+
+.editor-assistant-md pre {
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.editor-assistant-md pre code {
+  font-size: inherit;
+}
+
+.editor-assistant-md blockquote {
+  padding: 0 0 0 0.65rem;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+
+.editor-assistant-md a {
+  color: var(--accent);
+}
+
+.editor-assistant-msg.is-pending {
+  font-style: italic;
+}
+
+.editor-assistant-msg.is-error {
+  color: var(--danger, #c45c5c);
 }
 
 .editor-proposal-list {
@@ -8984,31 +9077,67 @@ body.is-timeline-clip-moving * {
 
 .editor-assistant-composer {
   flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
   padding: 0.65rem 0.75rem 0.75rem;
   border-top: 1px solid var(--border);
-  background: var(--surface-raised);
+}
+
+.editor-assistant-composer-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+  padding: 0.35rem 0.4rem 0.35rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 1.35rem;
+  background: var(--bg);
 }
 
 .editor-assistant-input-label {
+  flex: 1;
+  min-width: 0;
   display: block;
 }
 
 .editor-assistant-composer textarea {
+  display: block;
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  padding: 0.55rem 0.65rem;
-  resize: vertical;
-  min-height: 4.5rem;
-  max-height: 10rem;
+  border: 0;
+  background: transparent;
+  padding: 0.28rem 0;
+  resize: none;
+  min-height: 1.35rem;
+  max-height: 8rem;
+  line-height: 1.4;
+  overflow-y: auto;
 }
 
-.editor-assistant-ask {
-  align-self: stretch;
+.editor-assistant-composer textarea:focus {
+  outline: none;
+}
+
+.editor-assistant-send {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  margin-bottom: 0.05rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: #111118;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.editor-assistant-send:hover:not(:disabled) {
+  background: #fff;
+}
+
+.editor-assistant-send:disabled {
+  background: var(--border);
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
 }
 
 .login-screen {

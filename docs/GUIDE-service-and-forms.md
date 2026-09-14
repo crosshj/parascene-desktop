@@ -129,4 +129,4 @@ Later (same widgets, not a new system): Lab prompt modules, Director title/aspec
 - Generate as open as Lab on day one
 - Wrapping catalog grid reads first
 - Replacing the Result | Form review pane
-- Chat / ShotSpec now — they should call the same `service_invoke` later (`docs/BACKLOG-desktop.md`)
+- ShotSpec later — same `service_invoke`. Editor Assistant is `local.assistant_chat` (v2). Completions go through `llm::complete_turn`; OpenAI is the first adapter, not the pane API. First tools are reads (`project_info`, `list_assets`, `list_timeline`).

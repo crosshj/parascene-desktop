@@ -5,6 +5,7 @@ mod clipboard;
 mod help_window;
 mod http_client;
 mod library;
+mod llm;
 mod media_stream;
 mod oauth_listener;
 mod replicate;
@@ -77,7 +78,8 @@ use replicate::{
     replicate_token_clear, replicate_token_set, replicate_token_status,
 };
 use service::{
-    service_cancel, service_describe, service_get, service_invoke, service_list, service_list_runs,
+    assistant_chat_cancel, service_cancel, service_describe, service_get, service_invoke,
+    service_list, service_list_runs,
 };
 use tauri::webview::PageLoadEvent;
 use tauri::Emitter;
@@ -399,6 +401,7 @@ pub fn run() {
             service_invoke,
             service_get,
             service_cancel,
+            assistant_chat_cancel,
             service_list_runs,
             publisher_list_renders,
             publisher_get_render,

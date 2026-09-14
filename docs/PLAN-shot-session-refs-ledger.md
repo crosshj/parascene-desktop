@@ -27,12 +27,16 @@ Objects
 
 First slice — talk-only chat
 
-- Editor already has a hidden Assistant pane (`SHOW_EDITOR_ASSISTANT`, `AssistantPane`). It stubs `ask` and shows fake proposals. That is the window.
-- Step 1 is a real LLM in that pane. No eyes (does not see Assets / timeline / frames). No ears (no project audio). No arms (no tools, no generate, no cleanup, no ShotSpec writes).
-- It can still talk, and it can help rewrite prompts.
-- Do not revive `src/capabilities/index.ts` stubs (GUIDE-service-and-forms). Wire through Settings + `service_invoke` like other long work.
-- History can stay local for this slice. Project-on-Parascene chat sync comes later.
-- Done when: flip the pane on, type, get a useful reply, iterate a generate prompt. Fake proposal cards can go.
+- Editor Assistant is on for v2 projects when a language-model key is in Settings (uncollapsed). Fake proposals are gone.
+- Talk-only LLM via `service_invoke` `local.assistant_chat` and `llm::complete`. Providers stay behind that call (OpenAI is the first adapter). No eyes, no ears, no arms.
+- History stays on the project document. Project-on-Parascene chat sync comes later.
+- Done when: open a v2 Editor, type, get a useful reply, iterate a generate prompt.
+
+Next slice — read tools
+
+- Same pane and history. Model may call `project_info`, `list_assets`, `list_timeline`.
+- Tool loop stays in Rust. No generate / edit / delete tools yet.
+- Done when: ask what is in the project and the reply uses a read, not a guess.
 
 Shot session (the wizard)
 

@@ -223,7 +223,9 @@ export function SettingsModal({ open, onClose }: Props) {
               placeholder="sk-…"
             />
           </label>
-          <p className="muted settings-hint">Lab storyboard and alignment.</p>
+          <p className="muted settings-hint">
+            Lab storyboard, lyric alignment, and Editor Assistant.
+          </p>
 
           <label>
             Replicate API token

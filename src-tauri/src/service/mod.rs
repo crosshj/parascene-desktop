@@ -2,6 +2,8 @@
 //!
 //! See docs/GUIDE-service-and-forms.md. FE never owns provider recipes.
 
+mod assistant;
+
 use crate::auth_store;
 use crate::library::clip_thumb::ensure_clip_thumb_path;
 use crate::library::run_refresh_creations_by_id;
@@ -445,6 +447,15 @@ fn registry() -> Vec<OpDef> {
             placement: Some(placement_local()),
         },
         OpDef {
+            service: "local",
+            operation: "assistant_chat",
+            status: "wired",
+            label: "Project assistant",
+            description: "Language model for the open v2 project. Read tools for Assets and timeline. No generate.",
+            job_kind: None,
+            placement: Some(placement_local()),
+        },
+        OpDef {
             service: "publisher",
             operation: "render",
             status: "wired",
@@ -552,6 +563,39 @@ pub fn service_describe(request: ServiceDescribeRequest) -> Result<ServiceDescri
         describe.allowed_targets = Some(vec!["assets".into(), "timeline".into()]);
         describe.fields = text_to_image_fields();
     }
+    if def.operation == "assistant_chat" {
+        let configured = crate::llm::any_configured();
+        describe.credentials = Some(ServiceCredentialGate {
+            required: true,
+            configured,
+            code: if configured {
+                None
+            } else {
+                Some("needs_credentials".into())
+            },
+            message: if configured {
+                None
+            } else {
+                Some(crate::llm::missing_credentials_message())
+            },
+        });
+        describe.needs_timeline_context = Some(false);
+        describe.fields = vec![FieldSchema {
+            name: "messages".into(),
+            title: Some("Messages".into()),
+            description: Some("User and assistant turns. No assets or timeline.".into()),
+            kind: "text".into(),
+            required: true,
+            default_value: None,
+            enum_values: None,
+            minimum: None,
+            maximum: None,
+            media_slot: None,
+            hidden: None,
+            advanced: None,
+            persist: None,
+        }];
+    }
     Ok(describe)
 }
 
@@ -567,6 +611,15 @@ pub async fn service_invoke(
         payload = json!({});
     }
     if let Some(obj) = payload.as_object_mut() {
+        if let Some(pid) = request
+            .project_id
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            obj.entry("projectId")
+                .or_insert_with(|| Value::String(pid.to_string()));
+        }
         if let Some(target) = request.target.as_ref().filter(|t| !t.trim().is_empty()) {
             obj.insert("target".into(), Value::String(target.trim().to_string()));
         }
@@ -681,6 +734,7 @@ async fn run_sync_operation(
             let status = auth_store::auth_session_status().await?;
             Ok(status)
         }
+        ("local", "assistant_chat") => assistant::run_assistant_chat(payload).await,
         ("parascene", "get_creation") => {
             let id = payload
                 .get("id")
@@ -873,6 +927,11 @@ pub async fn service_get(id: String) -> Result<Option<Job>, String> {
 #[tauri::command]
 pub fn service_cancel(app: AppHandle, id: String) -> Result<Job, String> {
     jobs_cancel(app, id)
+}
+
+#[tauri::command]
+pub fn assistant_chat_cancel() {
+    assistant::cancel_live_run();
 }
 
 #[tauri::command]

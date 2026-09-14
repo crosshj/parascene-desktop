@@ -120,6 +120,8 @@ describe("help pages", () => {
     expect(start).toContain("New project");
     expect(start).toContain("Untitled project");
     expect(start).toContain("Add asset");
+    expect(start).toContain("look up Assets");
+    expect(start).toContain("OpenAI API key");
     expect(start).toContain("Text to Image");
     expect(start).toContain("Where to go from here");
     expect(start).toContain("generate.html");
@@ -466,6 +468,7 @@ describe("help pages", () => {
     expect(settings).toContain("<h1>Settings</h1>");
     expect(settings).toContain("desktop/screens/settings.png");
     expect(settings).toContain("OpenAI API key");
+    expect(settings).toContain("Editor Assistant");
     expect(settings).toContain("Replicate API token");
     expect(settings).toContain("Clear Replicate token");
     expect(settings).toContain("Parascene Blue credentials");

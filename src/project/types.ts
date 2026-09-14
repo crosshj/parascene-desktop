@@ -661,6 +661,8 @@ export type Project = {
   storyboardProposal: StoryboardProposal | null;
   /** Seed creative direction for MV Concept module. */
   labStoryboardDirection: string | null;
+  /** Editor Assistant turns. Local to this project. */
+  assistantChat?: import("./assistantChat").AssistantChatTurn[];
   timeline: TimelineClip[];
   /** Selected timeline clip id (editor); null when none. */
   selectedTimelineClipId: string | null;

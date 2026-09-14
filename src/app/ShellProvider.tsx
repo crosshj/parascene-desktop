@@ -51,6 +51,7 @@ import {
   setStoredProjectStoryboardProposal,
   patchStoredProjectStoryboardGenerationPlan,
   setStoredProjectLabStoryboardDirection,
+  setStoredProjectAssistantChat,
   upsertStoredLibraryAssetPlaceholder,
   patchStoredLibraryAssetPlaceholder,
   clearStoredLibraryAssetPlaceholder,
@@ -287,6 +288,10 @@ type ShellState = {
   ) => void;
   /** Persist MV Concept seed direction for the open project. */
   setOpenProjectLabStoryboardDirection: (direction: string | null) => void;
+  /** Persist talk-only Editor Assistant turns for the open v2 project. */
+  setOpenProjectAssistantChat: (
+    messages: import("../project/assistantChat").AssistantChatTurn[],
+  ) => void;
   /** Append library creation IDs into the open project (no-op if none open). */
   addCreationsToOpenProject: (creationIds: string[]) => Promise<void>;
   /** Reserve a Generate → Assets placeholder and select it on the open project. */
@@ -2567,6 +2572,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     [patchOpenProject],
   );
 
+  const setOpenProjectAssistantChat = useCallback(
+    (messages: import("../project/assistantChat").AssistantChatTurn[]) => {
+      patchOpenProject((p) => setStoredProjectAssistantChat(p, messages));
+    },
+    [patchOpenProject],
+  );
+
   const value = useMemo(
     () => ({
       primaryTab,
@@ -2602,6 +2614,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectStoryboardProposal,
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
+      setOpenProjectAssistantChat,
       addCreationsToOpenProject,
       beginLibraryAssetPlaceholder,
       patchLibraryAssetPlaceholder,
@@ -2667,6 +2680,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setOpenProjectStoryboardProposal,
       patchOpenProjectStoryboardGenerationPlan,
       setOpenProjectLabStoryboardDirection,
+      setOpenProjectAssistantChat,
       addCreationsToOpenProject,
       beginLibraryAssetPlaceholder,
       patchLibraryAssetPlaceholder,

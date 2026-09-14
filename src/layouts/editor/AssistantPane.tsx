@@ -1,46 +1,117 @@
-import { useState } from "react";
-import { llmAssistantStub } from "../../capabilities";
+import { useEffect, useRef, useState } from "react";
+import {
+  assistantChatInvokePayload,
+  replyFromAssistantResult,
+  type AssistantChatTurn,
+} from "../../project/assistantChat";
+import { cancelAssistantChat } from "../../project/assistantLlm";
+import { requestOpenSettings } from "../../settings/events";
+import { serviceInvoke } from "../../services/serviceClient";
+import { AssistantMarkdown } from "./assistantChatMd";
 
 type AssistantPaneProps = {
+  projectId: string;
+  projectTitle: string;
+  messages: AssistantChatTurn[];
+  onPersist: (messages: AssistantChatTurn[]) => void;
   onCollapse: () => void;
   drawer?: boolean;
 };
 
-type ProposalStub = {
-  id: string;
-  title: string;
-  summary: string;
-};
-
-const STUB_PROPOSALS: ProposalStub[] = [
-  {
-    id: "p1",
-    title: "Tighten the opening",
-    summary: "Trim silence before the first line and land on the vocal earlier.",
-  },
-  {
-    id: "p2",
-    title: "Cut on musical phrases",
-    summary: "Align edit points with phrase boundaries in the bed track.",
-  },
-];
-
 export function AssistantPane({
+  projectId,
+  projectTitle,
+  messages,
+  onPersist,
   onCollapse,
   drawer = false,
 }: AssistantPaneProps) {
   const [prompt, setPrompt] = useState("");
-  const [history, setHistory] = useState<string[]>([
-    "Ask for an edit or shot idea — proposals appear below.",
-  ]);
-  const [proposals] = useState(STUB_PROPOSALS);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const generationRef = useRef(0);
+  const canSend = Boolean(prompt.trim()) && !busy;
+
+  useEffect(() => {
+    const node = historyRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [messages, busy, error]);
+
+  useEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    node.style.height = "0px";
+    node.style.height = `${Math.min(node.scrollHeight, 128)}px`;
+  }, [prompt]);
+
+  useEffect(() => {
+    return () => {
+      generationRef.current += 1;
+      void cancelAssistantChat();
+    };
+  }, []);
+
+  const stop = () => {
+    if (!busy) return;
+    generationRef.current += 1;
+    setBusy(false);
+    setError(null);
+    void cancelAssistantChat();
+  };
 
   const submit = () => {
     const trimmed = prompt.trim();
-    if (!trimmed) return;
-    setHistory((prev) => [...prev, trimmed]);
+    if (!trimmed || busy) return;
+    const userTurn: AssistantChatTurn = {
+      role: "user",
+      content: trimmed,
+      at: new Date().toISOString(),
+    };
+    const nextMessages = [...messages, userTurn];
+    const generation = ++generationRef.current;
+    onPersist(nextMessages);
     setPrompt("");
-    void llmAssistantStub.ask(trimmed);
+    setError(null);
+    setBusy(true);
+    void (async () => {
+      try {
+        const handle = await serviceInvoke({
+          service: "local",
+          operation: "assistant_chat",
+          projectId,
+          payload: assistantChatInvokePayload({
+            projectId,
+            projectTitle,
+            messages,
+            userMessage: trimmed,
+          }),
+        });
+        if (generation !== generationRef.current) return;
+        if (handle.mode !== "result") {
+          throw new Error("Assistant did not return a reply.");
+        }
+        const reply = replyFromAssistantResult(handle.data);
+        if (!reply) throw new Error("Assistant returned an empty reply.");
+        onPersist([
+          ...nextMessages,
+          {
+            role: "assistant",
+            content: reply,
+            at: new Date().toISOString(),
+          },
+        ]);
+      } catch (err) {
+        if (generation !== generationRef.current) return;
+        const message = err instanceof Error ? err.message : String(err);
+        if (/cancelled/i.test(message)) return;
+        setError(message);
+      } finally {
+        if (generation === generationRef.current) setBusy(false);
+      }
+    })();
   };
 
   return (
@@ -77,61 +148,99 @@ export function AssistantPane({
         </button>
       </div>
 
-      <div className="editor-assistant-history">
-        {history.map((line, i) => (
-          <p key={`${i}-${line.slice(0, 12)}`} className="editor-assistant-msg">
-            {line}
+      <div className="editor-assistant-history" ref={historyRef}>
+        {messages.length === 0 ? (
+          <p className="editor-assistant-msg">
+            Talk about this project. Rewrite a generate prompt. Assistant
+            can look up Assets and the timeline. It cannot generate.
           </p>
-        ))}
-
-        <div className="editor-proposal-list" aria-label="Edit proposals">
-          {proposals.map((p) => (
-            <article key={p.id} className="editor-proposal-card">
-              <h3>{p.title}</h3>
-              <p className="muted">{p.summary}</p>
-              <div className="editor-proposal-actions">
-                <button type="button" className="btn ghost" disabled>
-                  Preview
-                </button>
-                <button type="button" className="btn primary" disabled>
-                  Apply
-                </button>
-                <button type="button" className="btn ghost" disabled>
-                  Choose
-                </button>
-                <button type="button" className="btn ghost" disabled>
-                  Discard
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
+        ) : null}
+        {messages.map((turn, i) =>
+          turn.role === "user" ? (
+            <p key={`${turn.at}-${i}`} className="editor-assistant-msg is-user">
+              {turn.content}
+            </p>
+          ) : (
+            <div
+              key={`${turn.at}-${i}`}
+              className="editor-assistant-msg is-assistant"
+            >
+              <AssistantMarkdown text={turn.content} />
+            </div>
+          ),
+        )}
+        {busy ? (
+          <p className="editor-assistant-msg is-pending">Thinking…</p>
+        ) : null}
+        {error ? (
+          <p className="editor-assistant-msg is-error" role="alert">
+            {error}{" "}
+            {/API key|Settings/i.test(error) ? (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => requestOpenSettings()}
+              >
+                Settings
+              </button>
+            ) : null}
+          </p>
+        ) : null}
       </div>
 
       <div className="editor-assistant-composer">
-        <label className="editor-assistant-input-label">
-          <span className="visually-hidden">Instruction</span>
-          <textarea
-            rows={3}
-            placeholder="Describe an edit…"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        <div className="editor-assistant-composer-bar">
+          <label className="editor-assistant-input-label">
+            <span className="visually-hidden">Message</span>
+            <textarea
+              ref={inputRef}
+              rows={1}
+              placeholder="Ask about this project…"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                if (e.key !== "Enter" || e.shiftKey) return;
                 e.preventDefault();
                 submit();
-              }
-            }}
-          />
-        </label>
-        <button
-          type="button"
-          className="btn primary editor-assistant-ask"
-          onClick={submit}
-          disabled={!prompt.trim()}
-        >
-          Ask / Propose
-        </button>
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            className={
+              busy
+                ? "editor-assistant-send is-stop"
+                : "editor-assistant-send"
+            }
+            onClick={busy ? stop : submit}
+            disabled={!busy && !canSend}
+            aria-label={busy ? "Stop" : "Send"}
+          >
+            {busy ? (
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+                <rect
+                  x="4.35"
+                  y="4.35"
+                  width="7.3"
+                  height="7.3"
+                  rx="1.2"
+                  fill="currentColor"
+                />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden>
+                <path
+                  d="M8 3.1v9.3M4.2 7 8 3.1 11.8 7"
+                  stroke="currentColor"
+                  strokeWidth="1.55"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
     </aside>
   );
