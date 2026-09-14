@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Blue — in line vs generating</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d0d12;
+      --ink: #f0f0f5;
+      --muted: #8b8b9a;
+      --line: #2a2a36;
+      --gpu: #16161e;
+      --accent: #c4b5fd;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    main { max-width: 56rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+    h1 { font-size: 1.15rem; font-weight: 600; margin: 0 0 .35rem; }
+    .lede { color: var(--muted); margin: 0 0 1.25rem; max-width: 40rem; }
+    h2 { font-size: .72rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 1.25rem 0 .4rem; }
+    .picks { display: flex; flex-wrap: wrap; gap: .35rem; }
+    .picks button {
+      appearance: none; background: transparent; color: var(--ink);
+      border: 1px solid var(--line); padding: .3rem .55rem; font: inherit; font-size: .85rem;
+      cursor: pointer;
+    }
+    .picks button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+    .stage { margin-top: 1.35rem; }
+    .beat {
+      display: flex; align-items: baseline; gap: .75rem;
+      border: 1px solid var(--line); padding: .55rem .75rem; margin-bottom: .9rem;
+    }
+    .beat[data-phase="start"] { border-color: var(--accent); }
+    .beat[data-phase="end"] { border-color: var(--muted); }
+    .beat-mark {
+      font-size: .68rem; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--muted); min-width: 3.4rem;
+    }
+    .beat[data-phase="start"] .beat-mark { color: var(--accent); }
+    .beat-title { font-weight: 600; }
+    .beat-note { color: var(--muted); font-size: .85rem; }
+
+    .flow { display: flex; flex-direction: column; }
+    .lbl { font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: .15rem 0 .35rem; }
+    .slot {
+      min-height: 5.2rem; border: 1px solid var(--line); padding: .65rem .7rem;
+      display: flex; flex-wrap: wrap; align-content: flex-start; gap: .4rem;
+    }
+    .slot.queue {
+      flex-direction: column-reverse; flex-wrap: nowrap; align-items: stretch;
+      min-height: 6.4rem;
+    }
+    .slot.queue .chip { align-self: stretch; }
+    .slot.queue .empty { align-self: center; }
+    .slot.done {
+      flex-direction: column-reverse; flex-wrap: nowrap; align-items: stretch;
+    }
+    .slot.done .chip { align-self: stretch; }
+    .slot.done .empty { align-self: center; }
+    .slot.gpu { background: var(--gpu); border-color: #3a3a48; flex-direction: column; flex-wrap: nowrap; }
+    .slot.gpu .chip { align-self: flex-start; }
+    .slot.gpu.has-job { border-color: var(--accent); }
+    .arrow {
+      color: var(--muted); font-size: 1.1rem; text-align: center; padding: .15rem 0;
+    }
+    .chip {
+      display: inline-flex; flex-direction: column; gap: .1rem;
+      border: 1px solid var(--line); padding: .35rem .5rem; font-size: .85rem;
+      background: var(--bg); min-width: 5.4rem;
+    }
+    .chip .who { font-weight: 600; }
+    .chip .meta { color: var(--muted); font-size: .72rem; }
+    .chip.on-gpu { border-color: var(--accent); }
+    .chip.in-line { opacity: .95; }
+    .chip.is-done { opacity: 1; }
+    .chip.is-done .who, .chip.is-done .meta { opacity: .5; }
+    .chip.up-next { border-color: var(--accent); }
+    .place { color: var(--accent); font-size: .68rem; letter-spacing: .04em; text-transform: uppercase; }
+    .cost, .wait {
+      display: none; font-variant-numeric: tabular-nums; font-size: .8rem;
+    }
+    .cost { font-weight: 600; }
+    .chip.on-gpu .cost, .chip.is-done .cost { display: block; color: var(--accent); }
+    .chip.on-gpu .wait, .chip.is-done .wait { display: block; color: var(--muted); }
+    .empty { color: var(--muted); font-size: .85rem; align-self: center; }
+    .prog {
+      display: none; height: 3px; background: var(--line); margin-top: .55rem; width: 100%;
+    }
+    .slot.gpu.has-job .prog { display: block; }
+    .prog i { display: block; height: 100%; width: 0; background: var(--accent); transform-origin: left; }
+
+    .caption { margin: .85rem 0 0; min-height: 1.4em; }
+    .caption strong { font-weight: 600; }
+    .bar { margin-top: .85rem; display: flex; gap: .65rem; align-items: center; }
+    .bar button {
+      appearance: none; background: var(--ink); color: var(--bg);
+      border: 0; padding: .4rem .75rem; font: inherit; font-size: .85rem; cursor: pointer;
+    }
+    .tick { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+
+    body.tour h2, body.tour .picks, body.tour .bar { display: none; }
+    body.tour main { max-width: 44rem; padding-top: 1rem; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .chip, .prog i { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>One GPU</h1>
+    <p class="lede">Top to bottom: in line (arrival order), generating, done. Highest max is pulled next (FIFO among equals). Cost is the named price — first price, including an idle box. Max 0 here is at list (product UI cannot sit under the method’s Blue cost). Wait vs without that bid (ticks, same as the clock).</p>
+
+    <h2>FIFO, no line</h2>
+    <div class="picks" id="g-fifo"></div>
+    <h2>Queued, then generate</h2>
+    <div class="picks" id="g-queued"></div>
+    <h2>Same person, several jobs</h2>
+    <div class="picks" id="g-multi"></div>
+    <h2>Queued with priority</h2>
+    <div class="picks" id="g-priority"></div>
+
+    <div class="stage">
+      <div class="beat" id="beat" data-phase="start">
+        <span class="beat-mark" id="beat-mark">Start</span>
+        <span class="beat-title" id="beat-title"></span>
+        <span class="beat-note" id="beat-note"></span>
+      </div>
+      <div class="flow">
+        <div class="lbl">In line · arrival order</div>
+        <div class="slot queue" id="queue"><span class="empty">empty</span></div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="lbl">Generating</div>
+        <div class="slot gpu" id="gpu"><span class="empty">idle</span><span class="prog"><i id="bar"></i></span></div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="lbl" id="done-lbl">Done · newest first</div>
+        <div class="slot done" id="done"><span class="empty">—</span></div>
+      </div>
+      <p class="caption" id="caption"></p>
+      <div class="bar">
+        <button type="button" id="replay">Replay from start</button>
+        <span class="tick" id="clock"></span>
+      </div>
+    </div>
+  </main>
+  <script>
+    const TOUR = new URLSearchParams(location.search).has("tour");
+    const STILL = 3;
+    const STEP = 900;
+    const START_HOLD = 2;
+    const END_HOLD = 3;
+
+    const S = [
+      { group: "fifo", title: "One video, idle", note: "Empty box. Goes straight onto the machine. Never in line.",
+        arrivals: [{ t: 0, id: "a", who: "Alex", kind: "video", max: 0 }] },
+      { group: "fifo", title: "One after another", note: "Blair arrives after Alex is done. FIFO, never queued.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 7, id: "b", who: "Blair", kind: "video", max: 0 }
+        ] },
+      { group: "fifo", title: "A still, idle", note: "Short job. Still no line.",
+        arrivals: [{ t: 0, id: "a", who: "Alex", kind: "still", max: 0 }] },
+
+      { group: "queued", title: "Second waits, then generates", note: "Alex is on the machine. Blair waits in line, then moves onto the GPU.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 2, id: "b", who: "Blair", kind: "video", max: 0 }
+        ] },
+      { group: "queued", title: "Same person, second video", note: "Alex 1 generating. Alex 2 in line. Not two gens at once.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "b", who: "Alex", kind: "video", max: 0, label: "Alex 2" }
+        ] },
+      { group: "queued", title: "www then desktop", note: "Same box. Casey (www) generating, Devon (desktop) in line.",
+        arrivals: [
+          { t: 0, id: "c", who: "Casey", kind: "video", max: 0, via: "www" },
+          { t: 2, id: "d", who: "Devon", kind: "video", max: 0, via: "desktop" }
+        ] },
+      { group: "queued", title: "Three just wait", note: "Max 0. First generates; the other two stay in arrival order.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "b", who: "Blair", kind: "video", max: 0 },
+          { t: 1, id: "c", who: "Casey", kind: "video", max: 0 }
+        ] },
+      { group: "queued", title: "Still behind a video", note: "Blair’s still waits. In line is not “generating a still.”",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "b", who: "Blair", kind: "still", max: 0 }
+        ] },
+      { group: "queued", title: "Race", note: "Three arrive together. One generates; two are in line.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 0, id: "b", who: "Blair", kind: "video", max: 0 },
+          { t: 0, id: "c", who: "Casey", kind: "video", max: 0 }
+        ] },
+      { group: "queued", title: "Sees busy, doesn’t start", note: "Blair opts out. Never enters the line.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 2, id: "b", who: "Blair", kind: "video", max: 0, skip: "doesn’t start" }
+        ] },
+      { group: "queued", title: "Sees busy, uses Replicate", note: "Blair leaves this GPU. Never in line.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 2, id: "b", who: "Blair", kind: "video", max: 0, skip: "Replicate" }
+        ] },
+
+      { group: "multi", title: "Alex queues three", note: "Alex 1 generating. 2 and 3 wait in arrival order. One GPU, not three gens.",
+        arrivals: [
+          { t: 0, id: "a1", who: "Alex", kind: "video", max: 0, label: "Alex 1" },
+          { t: 1, id: "a2", who: "Alex", kind: "video", max: 0, label: "Alex 2" },
+          { t: 2, id: "a3", who: "Alex", kind: "video", max: 0, label: "Alex 3" }
+        ] },
+      { group: "multi", title: "Alex three, Blair one", note: "FIFO. Blair is just another job. Alex 1–3 then Blair. Being a different person does nothing. To go sooner, she bids.",
+        arrivals: [
+          { t: 0, id: "a1", who: "Alex", kind: "video", max: 0, label: "Alex 1" },
+          { t: 0, id: "a2", who: "Alex", kind: "video", max: 0, label: "Alex 2" },
+          { t: 0, id: "a3", who: "Alex", kind: "video", max: 0, label: "Alex 3" },
+          { t: 1, id: "b1", who: "Blair", kind: "video", max: 0, label: "Blair 1" }
+        ] },
+      { group: "multi", title: "Blair bids past the pile", note: "Same pile. Blair max 8. She jumps Alex 2 and 3 and pays 8. Priority is the bid, not who she is.",
+        arrivals: [
+          { t: 0, id: "a1", who: "Alex", kind: "video", max: 0, label: "Alex 1" },
+          { t: 0, id: "a2", who: "Alex", kind: "video", max: 0, label: "Alex 2" },
+          { t: 0, id: "a3", who: "Alex", kind: "video", max: 0, label: "Alex 3" },
+          { t: 1, id: "b1", who: "Blair", kind: "video", max: 8, label: "Blair 1" }
+        ] },
+      { group: "multi", title: "Two people, two each", note: "Alex 1, Blair 1, Alex 2, Blair 2. Line is arrival order. Each extra waits its turn.",
+        arrivals: [
+          { t: 0, id: "a1", who: "Alex", kind: "video", max: 0, label: "Alex 1" },
+          { t: 1, id: "b1", who: "Blair", kind: "video", max: 0, label: "Blair 1" },
+          { t: 2, id: "a2", who: "Alex", kind: "video", max: 0, label: "Alex 2" },
+          { t: 3, id: "b2", who: "Blair", kind: "video", max: 0, label: "Blair 2" }
+        ] },
+      { group: "multi", title: "Bid only the second", note: "Alex 2 max 8 jumps Blair and pays 8. Alex 3 max 0 stays behind. A bid is per job, not per person.",
+        arrivals: [
+          { t: 0, id: "a1", who: "Alex", kind: "video", max: 0, label: "Alex 1" },
+          { t: 1, id: "b1", who: "Blair", kind: "video", max: 0, label: "Blair 1" },
+          { t: 2, id: "a2", who: "Alex", kind: "video", max: 8, label: "Alex 2" },
+          { t: 3, id: "a3", who: "Alex", kind: "video", max: 0, label: "Alex 3" }
+        ] },
+
+      { group: "priority", title: "Bid jumps a waiter", note: "Blair max 0. Casey max 8. Casey goes next and pays 8.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "b", who: "Blair", kind: "video", max: 0 },
+          { t: 2, id: "c", who: "Casey", kind: "video", max: 8 }
+        ] },
+      { group: "priority", title: "Equal bids, FIFO", note: "Both max 9. Same number: who arrived first. Each pays 9.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "b", who: "Blair", kind: "video", max: 9 },
+          { t: 2, id: "c", who: "Casey", kind: "video", max: 9 }
+        ] },
+      { group: "priority", title: "Just wait behind bids", note: "Devon just-wait first. Blair and Casey jump him. Both pay 8. Equal max: FIFO.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "d", who: "Devon", kind: "video", max: 0 },
+          { t: 2, id: "b", who: "Blair", kind: "video", max: 8 },
+          { t: 2, id: "c", who: "Casey", kind: "video", max: 8 }
+        ] },
+      { group: "priority", title: "High bid, idle box", note: "Max 10, nobody else. Starts now. Still pays 10.",
+        arrivals: [{ t: 0, id: "a", who: "Alex", kind: "video", max: 10 }] },
+      { group: "priority", title: "Higher max goes first", note: "Blair max 10, Casey max 3. Blair next, pays 10. Casey pays 3.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "still", max: 0 },
+          { t: 0, id: "b", who: "Blair", kind: "video", max: 10 },
+          { t: 0, id: "c", who: "Casey", kind: "video", max: 3 }
+        ] },
+      { group: "priority", title: "Still max jumps video", note: "One line, not image vs video. Blair still 50 goes before Casey video 0. Leave that.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 0 },
+          { t: 1, id: "c", who: "Casey", kind: "video", max: 0 },
+          { t: 2, id: "b", who: "Blair", kind: "still", max: 50 }
+        ] },
+      { group: "priority", title: "Saturated high bids", note: "Everyone max 8. Each pays 8. No extra GPU. The line stays long.",
+        arrivals: [
+          { t: 0, id: "a", who: "Alex", kind: "video", max: 8 },
+          { t: 0, id: "b", who: "Blair", kind: "video", max: 8 },
+          { t: 0, id: "c", who: "Casey", kind: "video", max: 8 },
+          { t: 1, id: "d", who: "Devon", kind: "video", max: 8 }
+        ] }
+    ];
+
+    const gpuEl = document.getElementById("gpu");
+    const queueEl = document.getElementById("queue");
+    const doneEl = document.getElementById("done");
+    const captionEl = document.getElementById("caption");
+    const beatEl = document.getElementById("beat");
+    const beatMark = document.getElementById("beat-mark");
+    const beatTitle = document.getElementById("beat-title");
+    const beatNote = document.getElementById("beat-note");
+    const clockEl = document.getElementById("clock");
+    const barEl = document.getElementById("bar");
+    const replayEl = document.getElementById("replay");
+    const doneLbl = document.getElementById("done-lbl");
+
+    let current = S[3];
+    let timer = 0;
+    let t = 0;
+    let hold = 0;
+    let phase = "start";
+    let running = null;
+    let pending = [];
+    let chips = new Map();
+    let left = 0;
+    let skipNote = "";
+    let billed = [];
+    let waitInfo = {};
+
+    function dur(kind) { return kind === "still" ? STILL : VIDEO; }
+    function reduce() { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+
+    function orderedPending() {
+      return [...pending].sort((a, b) => b.max - a.max || a.t - b.t || a.id.localeCompare(b.id));
+    }
+
+    function chipHtml(job) {
+      const el = document.createElement("span");
+      el.className = "chip";
+      el.dataset.id = job.id;
+      const kind = job.kind === "still" ? "still" : "video";
+      const bits = [kind];
+      if (job.max > 0) bits.push("max " + job.max);
+      if (job.via) bits.push(job.via);
+      el.innerHTML = `<span class="who">${job.label || job.who}</span><span class="meta">${bits.join(" · ")}</span><span class="cost"></span><span class="wait"></span>`;
+      return el;
+    }
+
+    function putIn(dest, el) {
+      if (dest === gpuEl) {
+        dest.insertBefore(el, dest.querySelector(".prog"));
+      } else {
+        dest.appendChild(el);
+      }
+    }
+
+    function flipTo(el, dest) {
+      const from = el.getBoundingClientRect();
+      putIn(dest, el);
+      const to = el.getBoundingClientRect();
+      const dx = from.left - to.left;
+      const dy = from.top - to.top;
+      if ((!dx && !dy) || reduce()) return;
+      el.style.transition = "none";
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = "transform .55s ease";
+        el.style.transform = "";
+      });
+    }
+
+    function wipeEmpty(el) {
+      const e = el.querySelector(".empty");
+      if (e) e.remove();
+    }
+
+    function showEmpty(el, word) {
+      if (el.querySelector(".chip")) return;
+      if (el.querySelector(".empty")) return;
+      const s = document.createElement("span");
+      s.className = "empty";
+      s.textContent = word;
+      putIn(el, s);
+    }
+
+    function layoutQueue() {
+      const pull = orderedPending()[0];
+      pending.forEach((job) => {
+        const el = chips.get(job.id);
+        if (!el || el.classList.contains("on-gpu") || el.classList.contains("is-done")) return;
+        const next = pull && pull.id === job.id;
+        el.classList.toggle("up-next", next);
+        let place = el.querySelector(".place");
+        if (next) {
+          if (!place) {
+            place = document.createElement("span");
+            place.className = "place";
+            el.prepend(place);
+          }
+          place.textContent = "up next";
+        } else if (place) {
+          place.remove();
+        }
+        queueEl.appendChild(el);
+      });
+      if (pending.length) wipeEmpty(queueEl);
+      else showEmpty(queueEl, "empty");
+    }
+
+    function setBeat(p, extra) {
+      phase = p;
+      beatEl.dataset.phase = p;
+      beatMark.textContent = p === "start" ? "Start" : p === "end" ? "End" : "Playing";
+      beatTitle.textContent = current.title;
+      beatNote.textContent = extra || current.note;
+    }
+
+    function billText() {
+      if (!billed.length) return "";
+      const sum = billed.reduce((a, n) => a + n, 0);
+      return "Cost " + billed.join(" + ") + " = " + sum + ".";
+    }
+
+    function updateDoneLbl() {
+      doneLbl.textContent = billed.length
+        ? "Done · newest first · " + billText().replace(/\.$/, "")
+        : "Done · newest first";
+    }
+
+    function pickNext(list) {
+      return [...list].sort((a, b) => b.max - a.max || a.t - b.t || a.id.localeCompare(b.id))[0];
+    }
+
+    function simulateStarts(arrivals) {
+      const jobs = arrivals.filter((a) => !a.skip).map((a) => ({ ...a }));
+      const incoming = new Map();
+      for (const j of jobs) {
+        if (!incoming.has(j.t)) incoming.set(j.t, []);
+        incoming.get(j.t).push(j);
+      }
+      const starts = {};
+      let pending = [];
+      let running = null;
+      let left = 0;
+      const lastArrive = jobs.reduce((m, j) => Math.max(m, j.t), 0);
+      const cap = lastArrive + jobs.length * VIDEO + 8;
+      for (let t = 0; t <= cap; t++) {
+        const was = running;
+        for (const j of incoming.get(t) || []) pending.push(j);
+        if (!running) {
+          const n = pickNext(pending);
+          if (n) {
+            pending = pending.filter((p) => p.id !== n.id);
+            running = n;
+            left = dur(n.kind);
+            starts[n.id] = t;
+          }
+        }
+        if (was && running === was) {
+          left -= 1;
+          if (left <= 0) {
+            running = null;
+            const n = pickNext(pending);
+            if (n) {
+              pending = pending.filter((p) => p.id !== n.id);
+              running = n;
+              left = dur(n.kind);
+              starts[n.id] = t;
+            }
+          }
+        }
+        if (!running && !pending.length && t >= lastArrive && Object.keys(starts).length === jobs.length) break;
+      }
+      return starts;
+    }
+
+    function computeWaits(sc) {
+      const arr = sc.arrivals;
+      const fifo = simulateStarts(arr.map((a) => ({ ...a, max: 0 })));
+      const info = {};
+      for (const a of arr) {
+        if (a.skip) continue;
+        let without = fifo[a.id];
+        if (a.max > 0) {
+          const alt = simulateStarts(arr.map((x) => (x.id === a.id ? { ...x, max: 0 } : { ...x })));
+          without = alt[a.id];
+        }
+        info[a.id] = {
+          without: without - a.t,
+          fifo: fifo[a.id] - a.t
+        };
+      }
+      return info;
+    }
+
+    function waitLine(job) {
+      const actual = job.started - job.t;
+      const info = waitInfo[job.id];
+      if (!info) return "waited " + actual;
+      if (job.max > 0 && info.without > actual) {
+        return `waited ${actual} · without bid ${info.without}`;
+      }
+      if (job.max <= 0 && info.fifo < actual) {
+        return `waited ${actual} · FIFO ${info.fifo}`;
+      }
+      return "waited " + actual;
+    }
+
+    function setStats(el, job) {
+      const c = el.querySelector(".cost");
+      if (c) c.textContent = job.charged > 0 ? "cost " + job.charged : "";
+      const w = el.querySelector(".wait");
+      if (w) w.textContent = waitLine(job);
+    }
+
+    function say() {
+      if (phase === "start") {
+        captionEl.textContent = "Waiting to begin…";
+        return;
+      }
+      if (phase === "end") {
+        captionEl.textContent = ("End. Machine idle, line empty. " + billText()).trim();
+        return;
+      }
+      const parts = [];
+      if (running) {
+        const cost = running.charged > 0 ? ` Cost ${running.charged}.` : "";
+        parts.push(
+          `<strong>${running.label || running.who}</strong> is generating.${cost} ${waitLine(running)}.`
+        );
+      } else {
+        parts.push("Machine idle.");
+      }
+      if (pending.length) {
+        parts.push("In line: " + pending.map((p) => `${p.label || p.who}${p.max ? " max " + p.max : ""}`).join(" → "));
+        const pull = orderedPending()[0];
+        const front = pending[0];
+        if (pull && front && pull.id !== front.id) {
+          parts.push(`${pull.label || pull.who} is up next.`);
+        }
+      }
+      if (skipNote) parts.push(skipNote);
+      captionEl.innerHTML = parts.join(" ");
+    }
+
+    function setBar() {
+      if (!running) {
+        gpuEl.classList.remove("has-job");
+        barEl.style.width = "0";
+        return;
+      }
+      gpuEl.classList.add("has-job");
+      const total = dur(running.kind);
+      const pct = Math.max(0, Math.min(1, (total - left) / total));
+      barEl.style.transition = reduce() ? "none" : `width ${STEP}ms linear`;
+      barEl.style.width = `${Math.round(pct * 100)}%`;
+    }
+
+    function startJob(job) {
+      pending = pending.filter((p) => p.id !== job.id);
+      running = job;
+      left = dur(job.kind);
+      job.charged = job.max;
+      job.started = t;
+      const el = chips.get(job.id);
+      if (el) {
+        const place = el.querySelector(".place");
+        if (place) place.remove();
+        el.classList.add("on-gpu");
+        el.classList.remove("in-line", "up-next");
+        setStats(el, job);
+        wipeEmpty(gpuEl);
+        flipTo(el, gpuEl);
+      }
+      layoutQueue();
+      setBar();
+      say();
+    }
+
+    function finish() {
+      if (!running) return;
+      if (running.charged > 0) billed.push(running.charged);
+      const el = chips.get(running.id);
+      if (el) {
+        el.classList.remove("on-gpu");
+        el.classList.add("is-done");
+        setStats(el, running);
+        wipeEmpty(doneEl);
+        flipTo(el, doneEl);
+      }
+      updateDoneLbl();
+      running = null;
+      gpuEl.classList.remove("has-job");
+      barEl.style.width = "0";
+      showEmpty(gpuEl, "idle");
+      const n = orderedPending()[0];
+      if (n) startJob(n);
+      else {
+        layoutQueue();
+        say();
+      }
+    }
+
+    function arrive(spec) {
+      if (spec.skip) {
+        skipNote =
+          spec.skip === "Replicate"
+            ? `${spec.who} uses Replicate — never in line.`
+            : `${spec.who} doesn’t start — never in line.`;
+        return;
+      }
+      const job = { ...spec };
+      const el = chipHtml(job);
+      el.classList.add("in-line");
+      chips.set(job.id, el);
+      pending.push(job);
+      wipeEmpty(queueEl);
+      queueEl.appendChild(el);
+    }
+
+    function idleDone() {
+      return !running && pending.length === 0 && t >= 0;
+    }
+
+    function allArrived() {
+      return current.arrivals.every((a) => t >= a.t);
+    }
+
+    function tick() {
+      if (phase === "start") {
+        hold += 1;
+        clockEl.textContent = "start";
+        say();
+        if (hold >= START_HOLD) {
+          phase = "play";
+          setBeat("play");
+          t = -1;
+        }
+        return;
+      }
+
+      if (phase === "play") {
+        const was = running;
+        t += 1;
+        clockEl.textContent = "t = " + t;
+        for (const a of current.arrivals) {
+          if (a.t === t) arrive(a);
+        }
+        if (!running) {
+          const n = orderedPending()[0];
+          if (n) startJob(n);
+          else layoutQueue();
+        } else {
+          layoutQueue();
+        }
+        if (was && running === was) {
+          left -= 1;
+          setBar();
+          if (left <= 0) finish();
+        } else {
+          setBar();
+        }
+        say();
+        if (idleDone() && allArrived()) {
+          phase = "end";
+          hold = 0;
+          setBeat("end", "Scenario finished.");
+          say();
+          clockEl.textContent = "end";
+        }
+        return;
+      }
+
+      if (phase === "end") {
+        hold += 1;
+        clockEl.textContent = "end";
+        if (hold >= END_HOLD) {
+          clearInterval(timer);
+          timer = 0;
+          if (TOUR) {
+            const i = S.indexOf(current);
+            if (i >= 0 && i < S.length - 1) play(S[i + 1]);
+            else document.documentElement.dataset.tour = "done";
+          }
+        }
+      }
+    }
+
+    function resetStage() {
+      running = null;
+      pending = [];
+      chips = new Map();
+      skipNote = "";
+      billed = [];
+      left = 0;
+      t = -1;
+      hold = 0;
+      gpuEl.querySelectorAll(".chip").forEach((c) => c.remove());
+      queueEl.querySelectorAll(".chip, .empty").forEach((c) => c.remove());
+      doneEl.querySelectorAll(".chip, .empty").forEach((c) => c.remove());
+      gpuEl.classList.remove("has-job");
+      barEl.style.width = "0";
+      showEmpty(gpuEl, "idle");
+      showEmpty(queueEl, "empty");
+      showEmpty(doneEl, "—");
+      updateDoneLbl();
+    }
+
+    function play(sc) {
+      current = sc;
+      document.querySelectorAll(".picks button").forEach((b) => {
+        b.setAttribute("aria-pressed", b.dataset.id === sc.title ? "true" : "false");
+      });
+      clearInterval(timer);
+      resetStage();
+      waitInfo = computeWaits(sc);
+      setBeat("start");
+      captionEl.textContent = "Waiting to begin…";
+      clockEl.textContent = "start";
+      timer = setInterval(tick, STEP);
+    }
+
+    function mount() {
+      for (const sc of S) {
+        const host = document.getElementById("g-" + sc.group);
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = sc.title;
+        b.dataset.id = sc.title;
+        b.addEventListener("click", () => play(sc));
+        host.appendChild(b);
+      }
+      replayEl.addEventListener("click", () => play(current));
+      if (TOUR) {
+        document.body.classList.add("tour");
+        document.documentElement.dataset.tour = "playing";
+        play(S[0]);
+      } else {
+        play(current);
+      }
+    }
+
+    mount();
+  </script>
+</body>
+</html>

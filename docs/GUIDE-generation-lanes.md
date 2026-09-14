@@ -2,7 +2,7 @@
 
 Three desktop lanes. Do not conflate them. Live vs coming-soon: [STATUS-new-asset.md](./STATUS-new-asset.md). Web vs desktop: [GUIDE-desktop-vs-web.md](./GUIDE-desktop-vs-web.md). Inputs: [GUIDE-generation-inputs-provenance.md](./GUIDE-generation-inputs-provenance.md).
 
-Capabilities snapshot: [parascene-blue-api-capabilities.json](./parascene-blue-api-capabilities.json). Refresh when the Blue contract changes (`npx tsx scripts/probe-blue-api.mts`).
+Capabilities snapshot: [parascene-blue-api-capabilities.json](./parascene-blue-api-capabilities.json). Refresh when the Blue contract changes (`npx tsx scripts/probe-blue-api.mts`). Shared GPU wait / occupancy / max slider: [PLAN-blue-capacity-priority.md](./PLAN-blue-capacity-priority.md).
 
 ## Lanes
 

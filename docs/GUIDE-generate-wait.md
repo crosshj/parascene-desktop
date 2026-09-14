@@ -23,7 +23,7 @@ Silence (fresh in-flight create only)
 
 Then keep a fixed interval until done. Image 8s. Video 15s. Do not speed up for a `processing` status we do not actually see. Clip duration does not change this.
 
-Timeout starts at create (or resume attach), not at first GET. Image 10 min. Video 20 min. Callers may pass shorter. Cadence saves the rate gate; a short timeout does not.
+Timeout starts at create (or resume attach), not at first GET. Image 10 min. Video 20 min. Callers may pass shorter. Cadence saves the rate gate; a short timeout does not. Line-wait (Blue `pending`) is a different phase: [PLAN-blue-capacity-priority.md](./PLAN-blue-capacity-priority.md). When that lands, this finish clock starts at `running`, not create.
 
 Done
 
