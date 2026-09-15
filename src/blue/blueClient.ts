@@ -77,6 +77,13 @@ export async function blueCapabilities(): Promise<BlueCapabilities> {
   return invoke("blue_capabilities");
 }
 
+export async function blueQuery(
+  method: string,
+  args?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return invoke("blue_query", { method, args: args ?? {} });
+}
+
 export async function blueUploadFile(path: string): Promise<string> {
   return invoke("blue_upload_file", { path });
 }

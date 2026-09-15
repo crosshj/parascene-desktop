@@ -25,6 +25,10 @@ export type ConfirmOptions = {
   danger?: boolean;
   /** Title shown when `onConfirm` throws. */
   errorTitle?: string;
+  /** Extra class on the dialog (e.g. occupancy stats). */
+  dialogClassName?: string;
+  /** Optional stat tiles under the message. */
+  stats?: Array<{ label: string; value: string }>;
   /**
    * When set, the dialog stays open after confirm and runs this work while
    * showing the message as an activity indicator (`setMessage` for progress).
@@ -196,6 +200,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           <div
             className={[
               "confirm-dialog",
+              pending.dialogClassName ?? "",
               pending.busy ? "is-busy" : "",
             ]
               .filter(Boolean)
@@ -211,6 +216,16 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             <p id="confirm-dialog-message" className="muted">
               {pending.displayMessage}
             </p>
+            {pending.stats && pending.stats.length > 0 ? (
+              <dl className="occupancy-stats">
+                {pending.stats.map((row) => (
+                  <div key={row.label} className="occupancy-stat">
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
             {pending.busy ? (
               <div
                 className="confirm-dialog-activity"

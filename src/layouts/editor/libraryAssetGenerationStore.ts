@@ -92,6 +92,7 @@ export type StartLibraryParasceneTextToImageOpts = {
   placeholderId?: string;
   /** Resume wait for this Parascene creation instead of posting create again. */
   pendingCreationId?: string;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onPlaceholderReserved?: (assetId: string) => void;
 };
 
@@ -397,6 +398,7 @@ async function runLibraryParasceneTextToImage(
       creationToken: placeholderId,
       pendingCreationId,
       label: opts.route.label || opts.route.method,
+      gpuBid: opts.gpuBid,
     });
     if (handle.mode === "job") serviceJobId = handle.id;
 
@@ -484,6 +486,7 @@ export type StartLibraryBlueDirectTextToImageOpts = {
   modelId: string;
   destination?: CreationTarget;
   placeholderId?: string;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onPlaceholderReserved?: (assetId: string) => void;
 };
 
@@ -876,6 +879,7 @@ async function runLibraryBlueDirectTextToImage(
       target: destination,
       clientRequestId: placeholderId,
       label: opts.modelId,
+      gpuBid: opts.gpuBid,
     });
     if (handle.mode === "job") serviceJobId = handle.id;
     patchJob("Running Text to Image on Direct to Blue…", "waiting");
@@ -928,6 +932,7 @@ export type StartLibraryParasceneImageToImageOpts = {
   sourceCreationId: string;
   /** When omitted, a new placeholder id is reserved. */
   placeholderId?: string;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onPlaceholderReserved?: (assetId: string) => void;
 };
 
@@ -1020,6 +1025,7 @@ async function runLibraryParasceneImageToImage(
       projectTitle: opts.projectTitle,
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
+      gpuBid: opts.gpuBid,
       onProgress: (note: string) => {
         const lower = note.toLowerCase();
         const status: AddAssetGenerationJob["status"] = lower.includes(

@@ -21,6 +21,7 @@ export type LabParasceneGenerateOpts = {
   intent?: string;
   mutateOfId?: number;
   label?: string;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onProgress?: (note: string) => void;
   onPendingCreation?: (
     id: string | null,
@@ -58,6 +59,7 @@ export async function runLabParasceneGenerate(
     target: "assets",
     label: opts.label ?? opts.method,
     mutateOfId: opts.mutateOfId,
+    gpuBid: opts.gpuBid,
   });
 
   const result = await watchParasceneGenerate(handle, {

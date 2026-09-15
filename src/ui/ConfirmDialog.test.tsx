@@ -184,4 +184,47 @@ describe("ConfirmDialog", () => {
     await user.click(screen.getByRole("button", { name: "OK" }));
     expect(onResult).toHaveBeenCalledWith(false);
   });
+
+  it("shows occupancy stats and generate/cancel", async () => {
+    const user = userEvent.setup();
+    const onResult = vi.fn();
+
+    function OccupancyProbe() {
+      const confirm = useConfirm();
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void confirm({
+              title: "This server is busy",
+              message: "You'll be next. About 12 min until generating starts.",
+              confirmLabel: "Generate",
+              cancelLabel: "Cancel",
+              dialogClassName: "occupancy-dialog",
+              stats: [
+                { label: "Now running", value: "Video · wan" },
+                { label: "Credits", value: "1" },
+              ],
+            }).then(onResult);
+          }}
+        >
+          Ask
+        </button>
+      );
+    }
+
+    render(
+      <ConfirmProvider>
+        <OccupancyProbe />
+      </ConfirmProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveClass("occupancy-dialog");
+    expect(screen.getByText("Video · wan")).toBeInTheDocument();
+    expect(screen.getByText("Credits")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onResult).toHaveBeenCalledWith(false);
+  });
 });

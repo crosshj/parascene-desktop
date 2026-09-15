@@ -40,6 +40,7 @@ import type {
 } from "../../replicate/replicateClient";
 import { ReplicateLocalOutput } from "../../replicate/replicateLocalOutput";
 import { ReplicateDetailClose } from "../../replicate/ReplicateDetailClose";
+import { useConfirmGpuOccupancy } from "../editor/confirmGpuOccupancy";
 import {
   LabLibraryFilePickerDialog,
   type LabRunFilePick,
@@ -183,6 +184,7 @@ export function BlueMethodsPanel({
   const [libraryAudio, setLibraryAudio] = useState<Creation[]>([]);
   const [libraryVideo, setLibraryVideo] = useState<Creation[]>([]);
   const [runBusy, setRunBusy] = useState(false);
+  const confirmGpuOccupancy = useConfirmGpuOccupancy();
   const [runProgress, setRunProgress] =
     useState<ReplicateRunProgressEvent | null>(null);
   const [runSlots, setRunSlots] = useState<RunSlot[]>([]);
@@ -545,6 +547,12 @@ export function BlueMethodsPanel({
       }
     }
 
+    const occupancy = await confirmGpuOccupancy({
+      lane: "direct",
+      method: selected,
+    });
+    if (!occupancy.ok) return;
+
     setRunError(null);
     setRunBusy(true);
     setRunProgress(null);
@@ -578,6 +586,7 @@ export function BlueMethodsPanel({
         method: selected,
         args: input,
         localFiles,
+        gpuBid: occupancy.bid,
         onJob: (jobId) => {
           activeJobIdRef.current = jobId;
         },

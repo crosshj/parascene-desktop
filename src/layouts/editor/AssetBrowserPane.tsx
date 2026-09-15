@@ -33,7 +33,8 @@ import {
 } from "../../project/aspectRatios";
 import type { LibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
 import { isActiveLibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
-import { gpuWaitPhaseFromNote, gpuWaitTitle, isGpuWaitInLine } from "./gpuWait";
+import { gpuWaitPhaseFromNote, gpuWaitPlaceFromNote, gpuWaitTitle, isGpuWaitInLine } from "./gpuWait";
+import { GpuWaitBadge } from "./GpuWaitBadge";
 import type { ProjectAsset } from "../../project/types";
 import {
   compositionInternalCreationIds,
@@ -253,9 +254,13 @@ function PlaceholderAssetTile({
             </span>
           ) : null}
           {generating ? (
-            <span
-              className="editor-timeline-clip-bake is-generating"
-              aria-hidden
+            <GpuWaitBadge
+              phase={
+                isGpuWaitInLine(placeholder.progressNote)
+                  ? "in_line"
+                  : "generating"
+              }
+              place={gpuWaitPlaceFromNote(placeholder.progressNote)}
             />
           ) : null}
         </span>

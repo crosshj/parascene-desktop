@@ -160,6 +160,7 @@ export async function runParasceneProductVideoGeneration(opts: {
   onProgress: (note: string) => void;
   onPendingCreation?: (id: string | null) => void;
   onServiceJobId?: (id: string) => void;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
 }): Promise<{
   creationId: string;
   projectCreationIds: string[];
@@ -299,6 +300,7 @@ export async function runParasceneProductVideoGeneration(opts: {
     target: "timeline",
     clientRequestId: opts.placeholder.id,
     label: model,
+    gpuBid: opts.gpuBid,
   });
   if (handle.mode === "job") {
     opts.onServiceJobId?.(handle.id);

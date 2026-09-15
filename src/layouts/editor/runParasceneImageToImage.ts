@@ -20,6 +20,7 @@ export async function runParasceneImageToImage(opts: {
   projectTitle: string;
   imagesGroupId: string | null;
   videosGroupId: string | null;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onProgress?: (note: string) => void;
 }): Promise<{
   creationId: string;
@@ -76,6 +77,7 @@ export async function runParasceneImageToImage(opts: {
     mediaType: "image",
     intent: "image_to_image",
     label: route.label || route.method,
+    gpuBid: opts.gpuBid,
     onProgress: opts.onProgress,
   });
   return {

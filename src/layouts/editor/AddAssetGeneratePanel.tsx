@@ -96,6 +96,8 @@ import {
   type BlueVideoModelOption,
 } from "./blueVideoModels";
 import { parasceneVideoModelsForIntent } from "./parasceneProductCaps";
+import { useConfirmGpuOccupancy } from "./confirmGpuOccupancy";
+import { isAddAssetGenerationInflight } from "./addAssetGenerationStore";
 import { resolveMotionReferenceVideoPath } from "./addAssetReplicateGenerate";
 import {
   discoverReplicateTweakFields,
@@ -128,6 +130,7 @@ export type StartAddAssetGenerationRequest = {
   /** Direct to Blue (local-only) timeline fill. */
   blueDirect?: boolean;
   mediaRefs?: GenerateMediaRefs;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
 };
 
 type AddAssetGeneratePanelProps = {
@@ -530,6 +533,7 @@ export function AddAssetGeneratePanel({
   onGenerateNew,
   errorRecovery,
 }: AddAssetGeneratePanelProps) {
+  const confirmGpuOccupancy = useConfirmGpuOccupancy();
   const timelineKey = useMemo(() => timelineFingerprint(timeline), [timeline]);
   const [pullEpoch, setPullEpoch] = useState(0);
   const clipDurationSec = addAssetClipDurationSec(clip);
@@ -1564,6 +1568,7 @@ export function AddAssetGeneratePanel({
 
   const handleGenerate = () => {
     if (!fieldsInteractive || !prompt.trim()) return;
+    if (isAddAssetGenerationInflight(clip.id)) return;
     flushPendingDraft();
 
     const abortGenerate = (reason: string, message: string) => {
@@ -1580,6 +1585,19 @@ export function AddAssetGeneratePanel({
     };
 
     void (async () => {
+      let gpuBid: StartAddAssetGenerationRequest["gpuBid"];
+      const start = (
+        request: Omit<StartAddAssetGenerationRequest, "gpuBid">,
+      ) => onStartGeneration({ ...request, gpuBid });
+      if (!isReplicate) {
+        const occupancy = await confirmGpuOccupancy({
+          lane: isBlueDirect ? "direct" : "product",
+          method: blueMethod,
+        });
+        if (!occupancy.ok) return;
+        gpuBid = occupancy.bid;
+      }
+
       const timing = resolveAddAssetGenerationTiming(
         timeline,
         clip,
@@ -1605,7 +1623,7 @@ export function AddAssetGeneratePanel({
           );
           return;
         }
-        onStartGeneration({
+        start({
           clip: clipWithDuration,
           prompt,
           lyricsText,
@@ -1697,7 +1715,7 @@ export function AddAssetGeneratePanel({
             ids: selectedReplicateModel.id,
             reason: `first=${framePathBasename(freshBridge.first.framePath)} last=${framePathBasename(freshBridge.last.framePath)}`,
           });
-          onStartGeneration({
+          start({
             clip: clipWithDuration,
             prompt,
             lyricsText,
@@ -1734,7 +1752,7 @@ export function AddAssetGeneratePanel({
             ids: selectedReplicateModel.id,
             reason: `still=${framePathBasename(freshStart.framePath)}`,
           });
-          onStartGeneration({
+          start({
             clip: clipWithDuration,
             prompt,
             lyricsText,
@@ -1772,7 +1790,7 @@ export function AddAssetGeneratePanel({
           ids: selectedReplicateModel.id,
           reason: `start=${framePathBasename(freshStart.framePath)}`,
         });
-        onStartGeneration({
+        start({
           clip: clipWithDuration,
           prompt,
           lyricsText,
@@ -1803,7 +1821,7 @@ export function AddAssetGeneratePanel({
           ids: resolvedBlueModel,
           reason: "text2video",
         });
-        onStartGeneration({
+        start({
           clip: clipWithDuration,
           prompt,
           lyricsText,
@@ -1844,7 +1862,7 @@ export function AddAssetGeneratePanel({
           );
           return;
         }
-        onStartGeneration({
+        start({
           clip: clipWithDuration,
           prompt,
           lyricsText,
@@ -1877,7 +1895,7 @@ export function AddAssetGeneratePanel({
         );
         return;
       }
-      onStartGeneration({
+      start({
         clip: clipWithDuration,
         prompt,
         lyricsText,

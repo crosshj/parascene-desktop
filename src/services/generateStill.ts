@@ -3,6 +3,7 @@
  * Stills and video share the same kernel; mediaType selects cabinet filing.
  */
 import type { ReplicateRunResult } from "../replicate/replicateClient";
+import { applyGpuBid } from "../layouts/editor/gpuOccupancy";
 import {
   invokeBlueGenerate,
   invokeReplicateGenerate,
@@ -60,6 +61,8 @@ export type InvokeParasceneGenerateOpts = {
   creationToken?: string;
   /** Resume wait for a create that already exists instead of posting again. */
   pendingCreationId?: string;
+  /** Occupancy named price (product). Idle sends list. */
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   mutateOfId?: number;
 };
 
@@ -101,6 +104,9 @@ export async function invokeParasceneGenerate(
 ): Promise<ServiceHandle> {
   const intent = opts.intent ?? "text_to_image";
   const mediaType = resolveMediaType({ intent, mediaType: opts.mediaType });
+  const args = opts.gpuBid
+    ? applyGpuBid(opts.args, opts.gpuBid, "product")
+    : opts.args;
   return serviceInvoke({
     service: "parascene",
     operation: "generate",
@@ -113,7 +119,7 @@ export async function invokeParasceneGenerate(
       mediaType,
       serverId: opts.serverId,
       method: opts.method,
-      args: opts.args,
+      args,
       projectTitle: opts.projectTitle,
       ...(opts.imagesGroupId ? { imagesGroupId: opts.imagesGroupId } : {}),
       ...(opts.videosGroupId ? { videosGroupId: opts.videosGroupId } : {}),
@@ -148,6 +154,7 @@ export async function invokeBlueGenerateStill(
     method: string;
     args: Record<string, unknown>;
     localFiles?: Record<string, string | string[]>;
+    gpuBid?: { maxBid: number; alwaysNext: boolean };
   },
 ): Promise<ServiceHandle> {
   return invokeBlueGenerate({
@@ -158,6 +165,7 @@ export async function invokeBlueGenerateStill(
     projectId: opts.projectId,
     target: opts.target ?? "assets",
     clientRequestId: opts.clientRequestId,
+    gpuBid: opts.gpuBid,
   });
 }
 

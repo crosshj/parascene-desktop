@@ -888,10 +888,42 @@ export class ParasceneSdk {
     return res;
   }
 
-  /**
-   * Start a creation job.
-   * `POST /api/create`
-   */
+    /**
+     * Occupancy / cost peek. No charge, no Creation.
+     * `POST /api/create/query`
+     */
+    async queryCreate(opts: {
+      serverId: number;
+      method: string;
+      args?: Record<string, unknown>;
+    }): Promise<Record<string, unknown>> {
+      const body: Record<string, unknown> = {
+        server_id: opts.serverId,
+        method: opts.method,
+        args: opts.args ?? {},
+      };
+      const res = await this.postBearerAuthed(
+        `${this.apiBaseUrl}/api/create/query`,
+        body,
+      );
+      if (res.status >= 400) {
+        throw new Error(parseApiError(res, `query failed (${res.status})`));
+      }
+      try {
+        const parsed = JSON.parse(res.body) as unknown;
+        if (parsed && typeof parsed === "object") {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        /* fall through */
+      }
+      return {};
+    }
+
+    /**
+     * Start a creation job.
+     * `POST /api/create`
+     */
   async create(opts: {
     serverId: number;
     method: string;

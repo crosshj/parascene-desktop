@@ -11,6 +11,7 @@ import {
   gpuWaitPlaceLine,
   gpuWaitTitle,
   isGpuWaitInLine,
+  stickyGpuWaitNote,
 } from "./gpuWait";
 import { creationIdFromWaitTimeoutError } from "./addAssetGenerationResume";
 
@@ -68,6 +69,7 @@ export function GenerateResultPane({
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [heldStart, setHeldStart] = useState<number | null>(null);
   const [heldPhase, setHeldPhase] = useState(phase);
+  const [heldWaitNote, setHeldWaitNote] = useState("");
   useEffect(() => {
     if (phase !== "running") return;
     const id = window.setInterval(() => setClockMs(Date.now()), 200);
@@ -79,16 +81,24 @@ export function GenerateResultPane({
   if (phase !== heldPhase) {
     setHeldPhase(phase);
     setHeldStart(phase === "running" ? (propStart ?? tickMs) : null);
+    if (phase !== "running" && heldWaitNote) setHeldWaitNote("");
   } else if (phase === "running" && propStart != null && heldStart !== propStart) {
     setHeldStart(propStart);
   }
   if (phase === "running") {
     const started = propStart ?? heldStart ?? tickMs;
     const expected = session?.expectedMs ?? expectedMs;
-    const note =
+    const rawNote =
       session?.progressNote?.trim() ||
       progressNote?.trim() ||
       "Working…";
+    const note = stickyGpuWaitNote(heldWaitNote, rawNote);
+    if (
+      note !== heldWaitNote &&
+      (isGpuWaitInLine(note) || note === gpuWaitTitle("generating"))
+    ) {
+      setHeldWaitNote(note);
+    }
     const inLine = isGpuWaitInLine(note);
     const placeLine = gpuWaitPlaceLine(gpuWaitPlaceFromNote(note));
     const progress = addAssetGenerationProgress(

@@ -551,6 +551,7 @@ export type RunAddAssetGenerationOpts = {
   };
   /** When true, run via Direct to Blue (local-only import). */
   blueDirect?: boolean;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onSteps: (steps: AddAssetGenerationStep[]) => void;
   onProgress: (note: string) => void;
   /** Persist remote job ids for app-restart resume. */
@@ -678,6 +679,7 @@ export async function runAddAssetGeneration(
           model: opts.blueModel?.trim() || "blue",
         });
       },
+      gpuBid: opts.gpuBid,
     });
   }
   const continuityMode = opts.continuityMode ?? "start_frame";
@@ -740,6 +742,7 @@ async function runParasceneProductVideoIntent(
         : undefined,
     referenceCreationIds: opts.mediaRefs?.referenceImageAssetIds,
     onProgress: opts.onProgress,
+    gpuBid: opts.gpuBid,
     onPendingCreation: (id) => {
       if (id) {
         opts.onRemoteJob?.({
@@ -781,6 +784,7 @@ async function runParasceneVideoViaService(opts: {
   model: string;
   onProgress: (note: string) => void;
   onRemoteJob?: RunAddAssetGenerationOpts["onRemoteJob"];
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
 }): Promise<{
   creationId: string;
   projectCreationIds: string[];
@@ -805,6 +809,7 @@ async function runParasceneVideoViaService(opts: {
     target: "timeline",
     clientRequestId: opts.placeholderId,
     label: opts.model,
+    gpuBid: opts.gpuBid,
   });
   if (handle.mode === "job") {
     opts.onRemoteJob?.({
@@ -890,6 +895,7 @@ async function runTextToVideoAddAssetGeneration(
     model,
     onProgress: opts.onProgress,
     onRemoteJob: opts.onRemoteJob,
+    gpuBid: opts.gpuBid,
   });
   pushSteps(completeStep(steps, "generate"));
   pushSteps(advanceStep(steps, "file"));
@@ -994,6 +1000,7 @@ async function runFirstLastAddAssetGeneration(
     model: FLF2V_MODEL,
     onProgress: opts.onProgress,
     onRemoteJob: opts.onRemoteJob,
+    gpuBid: opts.gpuBid,
   });
   pushSteps(completeStep(steps, "generate"));
   pushSteps(advanceStep(steps, "file"));
@@ -1181,6 +1188,7 @@ async function runStartFrameAddAssetGeneration(
       model,
       onProgress: opts.onProgress,
       onRemoteJob: opts.onRemoteJob,
+      gpuBid: opts.gpuBid,
     });
     creationId = result.creationId;
     filedProjectCreationIds = result.projectCreationIds;
@@ -1225,6 +1233,7 @@ async function runStartFrameAddAssetGeneration(
       model,
       onProgress: opts.onProgress,
       onRemoteJob: opts.onRemoteJob,
+      gpuBid: opts.gpuBid,
     });
     creationId = result.creationId;
     filedProjectCreationIds = result.projectCreationIds;

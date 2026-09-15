@@ -2,7 +2,7 @@ use crate::blue::client;
 use crate::blue::credentials::{self, CredentialsStatus};
 use crate::blue::history::{self, JobDetail, JobListRow};
 use crate::blue::run::{self, RunResult};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -28,6 +28,29 @@ pub fn blue_credentials_clear() -> Result<CredentialsStatus, String> {
 pub async fn blue_capabilities() -> Result<Value, String> {
     let creds = credentials::require_credentials()?;
     client::get_json(&creds, "/api").await
+}
+
+#[tauri::command]
+pub async fn blue_query(method: String, args: Option<Value>) -> Result<Value, String> {
+    let creds = credentials::require_credentials()?;
+    let mut query_args = args.unwrap_or_else(|| json!({}));
+    if let Some(obj) = query_args.as_object_mut() {
+        let trimmed = method.trim();
+        if !trimmed.is_empty() {
+            obj.entry("method").or_insert_with(|| json!(trimmed));
+        }
+    }
+    let body = json!({ "method": "query", "args": query_args });
+    let res = client::post_json(&creds, "/api", &body).await?;
+    if res.status >= 400 {
+        let detail = String::from_utf8_lossy(&res.bytes);
+        return Err(format!(
+            "Blue query failed (HTTP {}): {}",
+            res.status,
+            detail.trim()
+        ));
+    }
+    res.json()
 }
 
 #[tauri::command]

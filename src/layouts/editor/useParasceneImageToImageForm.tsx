@@ -22,6 +22,7 @@ import {
 } from "./parasceneProductCaps";
 import { startLibraryParasceneImageToImage } from "./libraryAssetGenerationStore";
 import { GenerateFrameSourcePicker } from "./GenerateFrameSourcePicker";
+import { useConfirmGpuOccupancy } from "./confirmGpuOccupancy";
 import {
   CloneButton,
   GenerateTargetButton,
@@ -78,6 +79,7 @@ export function useParasceneImageToImageForm(
   const placeholderId = opts.placeholderId?.trim() || undefined;
 
   const { project } = useShell();
+  const confirmGpuOccupancy = useConfirmGpuOccupancy();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
 
   const [modelFamilies] = useState(() =>
@@ -221,18 +223,26 @@ export function useParasceneImageToImageForm(
     ) {
       return;
     }
-    startLibraryParasceneImageToImage({
-      projectId: project.id,
-      projectTitle: project.title,
-      imagesGroupId: project.imagesGroupId,
-      videosGroupId: project.videosGroupId,
-      aspectRatio,
-      prompt,
-      modelId: selected.id,
-      route: selected,
-      sourceCreationId: sourceAssetId,
-      placeholderId,
-    });
+    void (async () => {
+      const occupancy = await confirmGpuOccupancy({
+        lane: "product",
+        method: "image2image",
+      });
+      if (!occupancy.ok) return;
+      startLibraryParasceneImageToImage({
+        projectId: project.id,
+        projectTitle: project.title,
+        imagesGroupId: project.imagesGroupId,
+        videosGroupId: project.videosGroupId,
+        aspectRatio,
+        prompt,
+        modelId: selected.id,
+        route: selected,
+        sourceCreationId: sourceAssetId,
+        placeholderId,
+        gpuBid: occupancy.bid,
+      });
+    })();
   };
 
   const fields = (

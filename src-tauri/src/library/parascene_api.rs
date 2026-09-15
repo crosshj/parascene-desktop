@@ -278,6 +278,18 @@ pub fn creation_gpu_wait_note(status: &str, place: Option<u64>) -> String {
     }
 }
 
+/// Polls often omit place. Keep the last in-line place until generating.
+pub fn sticky_line_place(status: &str, current: Option<u64>, last: &mut Option<u64>) -> Option<u64> {
+    if creation_is_generating(status) {
+        *last = None;
+        return None;
+    }
+    if current.is_some() {
+        *last = current;
+    }
+    *last
+}
+
 fn json_u64(value: &Value) -> Option<u64> {
     match value {
         Value::Number(num) => num
@@ -1353,5 +1365,9 @@ mod tests {
             })),
             Some(1)
         );
+        let mut last = Some(2);
+        assert_eq!(sticky_line_place("queued", None, &mut last), Some(2));
+        assert_eq!(sticky_line_place("queued", Some(4), &mut last), Some(4));
+        assert_eq!(sticky_line_place("processing", Some(4), &mut last), None);
     }
 }

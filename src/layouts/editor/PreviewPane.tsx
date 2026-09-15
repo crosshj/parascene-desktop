@@ -130,6 +130,7 @@ import {
 } from "./stagedClip";
 import type { AddAssetGeneration, AddAssetDraft } from "../../project/types";
 import { GenerateResultPane } from "./GenerateResultPane";
+import { generationRemoteCancelSupported } from "./gpuWait";
 import { isDownloadRetryableError } from "./addAssetReplicateGenerate";
 import { creationIdFromWaitTimeoutError } from "./addAssetGenerationResume";
 import {
@@ -3295,7 +3296,13 @@ export function PreviewPane({
                     }
                     nowMs={generateDualNowMs}
                     onCancel={
-                      onCancelAddAssetGeneration
+                      onCancelAddAssetGeneration &&
+                      generationRemoteCancelSupported(
+                        addAssetPlaceholderClip.addAssetDraft?.generationJob
+                          ?.provider ??
+                          addAssetPlaceholderClip.addAssetDraft?.server ??
+                          addAssetPlaceholderClip.addAssetDraft?.provider,
+                      )
                         ? () =>
                             onCancelAddAssetGeneration(
                               addAssetPlaceholderClip.id,
@@ -3372,7 +3379,13 @@ export function PreviewPane({
                         : "image"
                     }
                     onCancel={
-                      generateDualPhase === "running"
+                      generateDualPhase === "running" &&
+                      generationRemoteCancelSupported(
+                        selectedLibraryPlaceholder.addAssetDraft.generationJob
+                          ?.provider ??
+                          selectedLibraryPlaceholder.addAssetDraft.server ??
+                          selectedLibraryPlaceholder.addAssetDraft.provider,
+                      )
                         ? onCancelLibraryAssetPlaceholder
                         : undefined
                     }

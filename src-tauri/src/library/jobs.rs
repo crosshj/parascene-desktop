@@ -19,6 +19,7 @@ use super::parascene_api::{
     cover_source_id, create_media, creation_id, creation_is_terminal_status, creation_status,
     creation_gpu_wait_note, creation_is_generating, creation_line_place, delete_creation,
     get_creation, get_creation_poll, group_creations, group_member_ids, local_path_is_output,
+    sticky_line_place,
     media_url, output_media_url, wait_is_done, wait_kind_from_hints, CreateOpts, WaitKind,
 };
 use super::project_assets::{import_local_paths_for_project, library_add_project_assets};
@@ -91,10 +92,10 @@ fn parallel_inflight() -> &'static AtomicUsize {
     N.get_or_init(|| AtomicUsize::new(0))
 }
 
-/// Desktop default: two generation jobs. Acquire the slot before claim/spawn
-/// so backlog size cannot create unbounded waiting tasks.
-const GENERATION_CONCURRENCY: usize = 2;
-
+/// Generation jobs are remote GPU work: one quick create call, then pure
+/// polling while Parascene / Blue run their own queue. Never bound them
+/// locally — a video waiting 20 minutes in Blue's line must not starve an
+/// image generate (or anything else) on this machine.
 fn is_parallel_job_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -518,6 +519,7 @@ async fn wait_creation_loop(
     let kind = opts.kind;
     let timeout_ms = opts.timeout_ms;
     let mut finish_started: Option<std::time::Instant> = None;
+    let mut last_place: Option<u64> = None;
     if let Some(initial) = &opts.initial {
         if wait_is_done(initial, kind) {
             return finish_wait_creation(app, job_id, creation_id, initial, true, on_tick).await;
@@ -525,8 +527,11 @@ async fn wait_creation_loop(
         let status = creation_status(initial);
         if creation_is_generating(&status) {
             finish_started = Some(std::time::Instant::now());
+        } else {
+            finish_started = None;
         }
-        let note = creation_gpu_wait_note(&status, creation_line_place(initial));
+        let place = sticky_line_place(&status, creation_line_place(initial), &mut last_place);
+        let note = creation_gpu_wait_note(&status, place);
         let _ = with_conn(|conn| {
             update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
         });
@@ -565,7 +570,7 @@ async fn wait_creation_loop(
                     return Err(format!("Timed out waiting for creation {creation_id}"));
                 }
             }
-            let note = format!("Parascene is busy, still waiting for {creation_id}…");
+            let note = creation_gpu_wait_note("queued", last_place);
             let _ = with_conn(|conn| {
                 update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
             });
@@ -597,7 +602,7 @@ async fn wait_creation_loop(
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0)
                     .max(15_000);
-                let note = format!("Parascene is busy, still waiting for {creation_id}…");
+                let note = creation_gpu_wait_note("queued", last_place);
                 let _ = with_conn(|conn| {
                     update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
                 });
@@ -624,10 +629,15 @@ async fn wait_creation_loop(
             return finish_wait_creation(app, job_id, creation_id, &row, true, on_tick).await;
         }
         let status = creation_status(&row);
-        if creation_is_generating(&status) && finish_started.is_none() {
-            finish_started = Some(std::time::Instant::now());
+        if creation_is_generating(&status) {
+            if finish_started.is_none() {
+                finish_started = Some(std::time::Instant::now());
+            }
+        } else {
+            finish_started = None;
         }
-        let note = creation_gpu_wait_note(&status, creation_line_place(&row));
+        let place = sticky_line_place(&status, creation_line_place(&row), &mut last_place);
+        let note = creation_gpu_wait_note(&status, place);
         let _ = with_conn(|conn| {
             update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
         });
@@ -718,6 +728,11 @@ fn client_request_id_from_payload_json(payload_json: &str) -> Option<String> {
     payload_str(&payload, "clientRequestId")
 }
 
+fn wait_creation_id_from_payload_json(payload_json: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(payload_json).ok()?;
+    payload_str(&payload, "creationId")
+}
+
 fn stamp_creation_token(payload: &mut Value) {
     if payload_str(payload, "creationToken").is_some() {
         return;
@@ -768,6 +783,38 @@ fn find_latest_job_for_client_request_id(
         }
     }
     Ok(None)
+}
+
+/// Waits are idempotent per creation id — attach instead of inserting a
+/// second row. Prefer a live wait (running / waiting) over a queued one.
+fn find_attachable_wait_for_creation(
+    conn: &Connection,
+    creation_id: &str,
+) -> Result<Option<Job>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "{JOB_SELECT} WHERE kind = 'wait_creation'
+             AND status IN ('queued', 'running', 'waiting')
+             ORDER BY created_at ASC LIMIT 200"
+        ))
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let mut queued: Option<Job> = None;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let job = row_from_query(row).map_err(|e| e.to_string())?;
+        if wait_creation_id_from_payload_json(&job.payload_json).as_deref() != Some(creation_id) {
+            continue;
+        }
+        match job.status.as_str() {
+            "running" | "waiting" => return Ok(Some(job)),
+            _ => {
+                if queued.is_none() {
+                    queued = Some(job);
+                }
+            }
+        }
+    }
+    Ok(queued)
 }
 
 fn party_name(project_title: &str, kind: &str) -> String {
@@ -2701,8 +2748,7 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
             timeout_ms,
             initial,
         },
-        |row| {
-            let note = creation_gpu_wait_note(&creation_status(row), creation_line_place(row));
+        |_| {
             let cp = json!({
                 "name": "wait",
                 "pendingCreationId": id,
@@ -2713,7 +2759,7 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
                     conn,
                     &job_id,
                     Some("waiting"),
-                    Some(&note),
+                    None,
                     Some(&serde_json::to_string(&cp).unwrap_or_else(|_| "{}".into())),
                     None,
                     None,
@@ -3108,19 +3154,47 @@ fn recover_interrupted_jobs(conn: &Connection) -> Result<(), String> {
         params![now_rfc3339()],
     )
     .map_err(|e| e.to_string())?;
+    collapse_duplicate_wait_jobs(conn)
+}
+
+/// One wait row per creation. Earlier stall→retry flap loops piled duplicate
+/// queued waits; keep the oldest (the original waiter) and cancel the rest so
+/// a restart does not spawn a poller herd against the same creation.
+fn collapse_duplicate_wait_jobs(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "{JOB_SELECT} WHERE kind = 'wait_creation' AND status = 'queued'
+             ORDER BY created_at ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut dupes: Vec<String> = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let job = row_from_query(row).map_err(|e| e.to_string())?;
+        let Some(cid) = wait_creation_id_from_payload_json(&job.payload_json) else {
+            continue;
+        };
+        if !seen.insert(cid) {
+            dupes.push(job.id);
+        }
+    }
+    for id in dupes {
+        update_job_fields(
+            conn,
+            &id,
+            Some("cancelled"),
+            Some("Duplicate wait collapsed"),
+            None,
+            None,
+            None,
+        )?;
+    }
     Ok(())
 }
 
-fn claim_next_job(conn: &Connection, allow_parallel: bool) -> Result<Option<Job>, String> {
-    let sql = if allow_parallel {
-        format!("{JOB_SELECT} WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
-    } else {
-        format!(
-            "{JOB_SELECT} WHERE status = 'queued'
-             AND kind NOT IN ('blue_generate', 'replicate_generate', 'parascene_generate')
-             ORDER BY created_at ASC LIMIT 1"
-        )
-    };
+fn claim_next_job(conn: &Connection) -> Result<Option<Job>, String> {
+    let sql = format!("{JOB_SELECT} WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -3137,9 +3211,7 @@ async fn jobs_worker(app: AppHandle) {
         eprintln!("[jobs] recover failed: {err}");
     }
     loop {
-        let allow_parallel =
-            parallel_inflight().load(Ordering::SeqCst) < GENERATION_CONCURRENCY;
-        let next = with_conn(|conn| claim_next_job(conn, allow_parallel));
+        let next = with_conn(claim_next_job);
         let job = match next {
             Ok(Some(j)) => j,
             Ok(None) => {
@@ -3164,6 +3236,14 @@ async fn jobs_worker(app: AppHandle) {
             tauri::async_runtime::spawn(async move {
                 run_job(&app2, job).await;
                 parallel_inflight().fetch_sub(1, Ordering::SeqCst);
+            });
+        } else if job.kind == "wait_creation" {
+            // Pure polling, up to 20 minutes. Off the serial lane so it cannot
+            // starve syncs / renders / other waits. Bounded by the per-creation
+            // attach dedupe in jobs_enqueue.
+            let app2 = app.clone();
+            tauri::async_runtime::spawn(async move {
+                run_job(&app2, job).await;
             });
         } else {
             run_job(&app, job).await;
@@ -3213,6 +3293,20 @@ pub fn jobs_enqueue(app: AppHandle, request: EnqueueJobRequest) -> Result<Job, S
     }
 
     let mut payload = request.payload;
+    // Waits are idempotent per creation. A second wait row can only queue
+    // behind the serial runner forever, and the FE watcher then times it out
+    // as stale (20s) — stall → retry → dozens of dead rows. Attach instead.
+    if kind == "wait_creation" {
+        if let Some(creation_id) = payload_str(&payload, "creationId") {
+            let existing =
+                with_conn(|conn| find_attachable_wait_for_creation(conn, &creation_id))?;
+            if let Some(job) = existing {
+                emit_job(&app, &job);
+                start_jobs_worker(app);
+                return Ok(job);
+            }
+        }
+    }
     if kind == "parascene_generate" {
         stamp_creation_token(&mut payload);
         if let Some(cid) = payload_str(&payload, "clientRequestId") {
@@ -3392,71 +3486,146 @@ mod tests {
         assert!(!is_parallel_job_kind("publisher_render"));
     }
 
+    fn memory_jobs_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE jobs (
+              id TEXT PRIMARY KEY NOT NULL,
+              kind TEXT NOT NULL,
+              status TEXT NOT NULL,
+              project_id TEXT,
+              label TEXT,
+              payload_json TEXT NOT NULL,
+              result_json TEXT,
+              checkpoint_json TEXT,
+              progress_note TEXT,
+              error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );",
+        )
+        .expect("create jobs table");
+        conn
+    }
+
+    fn wait_job(id: &str, status: &str, creation_id: &str, created_at: &str) -> Job {
+        Job {
+            id: id.into(),
+            kind: "wait_creation".into(),
+            status: status.into(),
+            project_id: None,
+            label: Some(format!("Wait {creation_id}")),
+            payload_json: format!("{{\"creationId\":\"{creation_id}\"}}"),
+            result_json: None,
+            checkpoint_json: None,
+            progress_note: None,
+            error: None,
+            created_at: created_at.into(),
+            updated_at: created_at.into(),
+        }
+    }
+
+    #[test]
+    fn wait_attach_prefers_live_row_over_queued_duplicates() {
+        let conn = memory_jobs_conn();
+        insert_job(&conn, &wait_job("w-live", "waiting", "30205", "t1")).unwrap();
+        insert_job(&conn, &wait_job("w-dupe", "queued", "30205", "t2")).unwrap();
+        insert_job(&conn, &wait_job("w-other", "queued", "99999", "t3")).unwrap();
+        insert_job(&conn, &wait_job("w-done", "done", "30205", "t0")).unwrap();
+
+        let found = find_attachable_wait_for_creation(&conn, "30205")
+            .unwrap()
+            .expect("attachable wait");
+        assert_eq!(found.id, "w-live");
+
+        let other = find_attachable_wait_for_creation(&conn, "99999")
+            .unwrap()
+            .expect("queued wait attaches too");
+        assert_eq!(other.id, "w-other");
+
+        assert!(find_attachable_wait_for_creation(&conn, "11111")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn recover_collapses_duplicate_waits_keeping_the_oldest() {
+        let conn = memory_jobs_conn();
+        // Interrupted original plus a stall→retry pileup for the same creation.
+        insert_job(&conn, &wait_job("w-orig", "waiting", "30205", "t1")).unwrap();
+        insert_job(&conn, &wait_job("w-d1", "queued", "30205", "t2")).unwrap();
+        insert_job(&conn, &wait_job("w-d2", "queued", "30205", "t3")).unwrap();
+        insert_job(&conn, &wait_job("w-other", "queued", "99999", "t4")).unwrap();
+
+        recover_interrupted_jobs(&conn).unwrap();
+
+        let status = |id: &str| {
+            get_job_conn(&conn, id)
+                .unwrap()
+                .expect("job exists")
+                .status
+        };
+        assert_eq!(status("w-orig"), "queued"); // re-queued to resume
+        assert_eq!(status("w-d1"), "cancelled");
+        assert_eq!(status("w-d2"), "cancelled");
+        assert_eq!(status("w-other"), "queued"); // different creation survives
+    }
+
     #[derive(Clone)]
     struct JobSim {
         kind: &'static str,
         status: &'static str,
     }
 
-    fn worker_claim_index(jobs: &[JobSim], parallel_inflight: usize) -> Option<usize> {
-        let allow_parallel = parallel_inflight < GENERATION_CONCURRENCY;
-        jobs.iter().position(|job| {
-            if job.status != "queued" {
-                return false;
-            }
-            if !allow_parallel && is_parallel_job_kind(job.kind) {
-                return false;
-            }
-            true
-        })
+    fn worker_claim_index(jobs: &[JobSim]) -> Option<usize> {
+        // Mirrors claim_next_job: oldest queued job, no kind gating —
+        // generation jobs are remote GPU polls and must never starve locally.
+        jobs.iter().position(|job| job.status == "queued")
     }
 
-    fn drain_generation_claims(jobs: &mut [JobSim]) -> (usize, usize, usize) {
-        let mut inflight = 0usize;
-        loop {
-            let Some(index) = worker_claim_index(jobs, inflight) else {
-                break;
-            };
+    fn drain_generation_claims(jobs: &mut [JobSim]) -> (usize, usize) {
+        while let Some(index) = worker_claim_index(jobs) {
             jobs[index].status = "running";
-            if is_parallel_job_kind(jobs[index].kind) {
-                inflight += 1;
-            }
         }
         let running = jobs.iter().filter(|job| job.status == "running").count();
         let queued = jobs.iter().filter(|job| job.status == "queued").count();
-        (running, queued, inflight)
+        (running, queued)
     }
 
     #[test]
-    fn generation_cap_leaves_excess_queued_without_spawned_waiters() {
-        let mut jobs: Vec<JobSim> = (0..5)
-            .map(|_| JobSim {
-                kind: "blue_generate",
+    fn a_third_generation_claims_while_two_wait_in_the_gpu_line() {
+        // Two videos parked in Blue's queue must not block an image generate.
+        let mut jobs = vec![
+            JobSim {
+                kind: "parascene_generate",
+                status: "running",
+            },
+            JobSim {
+                kind: "parascene_generate",
+                status: "running",
+            },
+            JobSim {
+                kind: "parascene_generate",
                 status: "queued",
-            })
-            .collect();
-        let (running, queued, inflight) = drain_generation_claims(&mut jobs);
-        assert_eq!(running, GENERATION_CONCURRENCY);
-        assert_eq!(queued, 5 - GENERATION_CONCURRENCY);
-        assert_eq!(inflight, GENERATION_CONCURRENCY);
-        assert_eq!(running, inflight);
+            },
+        ];
+        let (running, queued) = drain_generation_claims(&mut jobs);
+        assert!(is_parallel_job_kind("parascene_generate"));
+        assert_eq!(running, 3);
+        assert_eq!(queued, 0);
     }
 
     #[test]
-    fn interrupted_generation_recovery_is_capped() {
+    fn interrupted_generation_recovery_claims_everything() {
         let mut jobs: Vec<JobSim> = (0..4)
             .map(|_| JobSim {
                 kind: "replicate_generate",
-                status: "running",
+                status: "queued",
             })
             .collect();
-        for job in &mut jobs {
-            job.status = "queued";
-        }
-        let (running, queued, inflight) = drain_generation_claims(&mut jobs);
-        assert_eq!(running, GENERATION_CONCURRENCY);
-        assert_eq!(queued, 2);
-        assert_eq!(inflight, GENERATION_CONCURRENCY);
+        let (running, queued) = drain_generation_claims(&mut jobs);
+        assert_eq!(running, 4);
+        assert_eq!(queued, 0);
     }
 
     #[test]

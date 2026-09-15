@@ -2662,6 +2662,135 @@ input[type="checkbox"].control,
   padding-top: 0.35rem;
 }
 
+.confirm-dialog.occupancy-dialog {
+  width: min(24rem, 100%);
+  padding: 1.35rem 1.35rem 1.25rem;
+}
+
+.confirm-dialog.occupancy-dialog h2 {
+  margin: 0 0 0.45rem;
+  font-size: 1.08rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.confirm-dialog.occupancy-dialog p {
+  margin: 0 0 1.05rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.confirm-dialog.occupancy-dialog .occupancy-dialog-lede {
+  color: var(--muted);
+}
+
+.occupancy-stats {
+  margin: 0 0 1.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.occupancy-stat {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.occupancy-stat dt {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.occupancy-stat dd {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.confirm-dialog.occupancy-dialog .confirm-dialog-actions {
+  margin-top: 1.25rem;
+  padding-top: 0;
+  justify-content: stretch;
+  flex-wrap: nowrap;
+  gap: 0.6rem;
+}
+
+.confirm-dialog.occupancy-dialog .confirm-dialog-actions .btn {
+  flex: 1 1 0;
+  min-height: 2.6rem;
+  padding: 0.55rem 1rem;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.occupancy-slider {
+  margin: 0.15rem 0 0;
+}
+
+.occupancy-slider-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.occupancy-slider-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.occupancy-slider input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent, #7dd3fc);
+}
+
+.occupancy-slider-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.occupancy-always-next {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0.15rem 0 0;
+  font-size: 0.92rem;
+}
+
+.occupancy-always-next input {
+  margin-top: 0.2rem;
+}
+
+.occupancy-always-next-hint {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.occupancy-line-moved {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
 .confirm-dialog.is-busy .confirm-dialog-actions {
   margin-top: 0.85rem;
 }
@@ -5059,7 +5188,8 @@ input[type="checkbox"].control,
   text-align: center;
 }
 
-.editor-add-asset-card-clip.is-generating .editor-timeline-clip-bake.is-generating {
+.editor-add-asset-card-clip.is-generating .editor-timeline-clip-bake.is-generating,
+.editor-add-asset-card-clip.is-generating .editor-timeline-clip-bake.is-queued {
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;

@@ -361,6 +361,8 @@ async fn poll_until_done(
 ) -> Result<(String, Vec<String>, Vec<String>, Option<String>), String> {
     let mut attempt = 0u32;
     let mut finish_started: Option<Instant> = None;
+    let mut last_place: Option<u64> = None;
+    let mut not_found = 0u32;
     loop {
         if is_cancelled(my_gen) {
             return Err("Cancelled".into());
@@ -375,20 +377,32 @@ async fn poll_until_done(
         sleep(wait).await;
 
         let run_dir = history::ensure_run_dir(job_id)?;
-        match client::poll_job(creds, method, job_id, &run_dir).await? {
-            client::JobPoll::InFlight {
+        match client::poll_job(creds, method, job_id, &run_dir).await {
+            Ok(client::JobPoll::InFlight {
                 status,
                 place,
                 ahead,
-            } => {
-                if is_generating_status(&status) && finish_started.is_none() {
-                    finish_started = Some(Instant::now());
+            }) => {
+                not_found = 0;
+                if is_generating_status(&status) {
+                    if finish_started.is_none() {
+                        finish_started = Some(Instant::now());
+                    }
+                } else {
+                    finish_started = None;
                 }
                 let line_place = place.or(ahead.map(|n| n.saturating_add(1)));
+                if !is_generating_status(&status) {
+                    if line_place.filter(|n| *n > 0).is_some() {
+                        last_place = line_place;
+                    }
+                } else {
+                    last_place = None;
+                }
                 let message = if is_generating_status(&status) {
                     "Generating…".into()
                 } else {
-                    match line_place {
+                    match last_place {
                         Some(n) if n > 0 => format!("QUEUED · {n}"),
                         _ => "QUEUED".into(),
                     }
@@ -408,11 +422,11 @@ async fn poll_until_done(
                 );
                 continue;
             }
-            client::JobPoll::Saved(path) => {
+            Ok(client::JobPoll::Saved(path)) => {
                 let local = path.to_string_lossy().to_string();
                 return Ok(("succeeded".into(), vec![], vec![local], None));
             }
-            client::JobPoll::Json(data) => {
+            Ok(client::JobPoll::Json(data)) => {
                 let status = data
                     .get("status")
                     .and_then(|s| s.as_str())
@@ -458,6 +472,31 @@ async fn poll_until_done(
                 };
                 return Ok((done_status, urls, local_paths, None));
             }
+            Err(err) if err.to_ascii_lowercase().contains("not found") => {
+                not_found = not_found.saturating_add(1);
+                if not_found > 8 {
+                    return Err(err);
+                }
+                let message = match last_place {
+                    Some(n) if n > 0 => format!("QUEUED · {n}"),
+                    _ => "QUEUED".into(),
+                };
+                emit_run(
+                    app,
+                    RunProgressEvent {
+                        prediction_id: Some(job_id.into()),
+                        owner: "blue".into(),
+                        name: method.into(),
+                        status: "pending".into(),
+                        message: Some(message),
+                        error: None,
+                        local_paths: vec![],
+                        done: false,
+                    },
+                );
+                continue;
+            }
+            Err(err) => return Err(err),
         }
     }
 }

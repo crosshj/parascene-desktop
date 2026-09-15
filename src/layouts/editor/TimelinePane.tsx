@@ -112,6 +112,7 @@ import {
   gpuWaitTitle,
   isGpuWaitInLine,
 } from "./gpuWait";
+import { GpuWaitBadge } from "./GpuWaitBadge";
 
 type TimelinePaneProps = {
   clips: TimelineClip[];
@@ -665,34 +666,7 @@ function MiniClip({
         </span>
       ) : null}
       {waitInLine ? (
-        <span
-          className="editor-timeline-clip-bake is-queued"
-          aria-label={
-            gpuWaitTitle("in_line") + (waitPlace ? ` · ${waitPlace}` : "")
-          }
-          title={
-            waitPlace
-              ? `${gpuWaitTitle("in_line")} · ${waitPlace}`
-              : gpuWaitTitle("in_line")
-          }
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="12"
-            height="12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <circle cx="12" cy="12" r="6" />
-            <polyline points="12 10 12 12 13.5 13" />
-            <path d="m16.13 7.66-.81-1.41a2 2 0 0 0-1.74-1h-3.16a2 2 0 0 0-1.74 1l-.81 1.41" />
-            <path d="m16.13 16.34-.81 1.41a2 2 0 0 1-1.74 1h-3.16a2 2 0 0 1-1.74-1l-.81-1.41" />
-          </svg>
-        </span>
+        <GpuWaitBadge phase="in_line" place={waitPlace} />
       ) : bakeStatus === "generating" ? (
         <span
           className="editor-timeline-clip-bake is-generating"

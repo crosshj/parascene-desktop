@@ -2377,12 +2377,7 @@ export function EditorLayout() {
     // A refused start used to be a silent no-op — the user retried into the
     // void while an old run held the clip. Say so instead.
     if (!started) {
-      void confirm({
-        title: "Generation already running",
-        message:
-          "This clip already has a generation in flight. Cancel it from the Result view (or wait for it to finish) before starting another.",
-        confirmLabel: "OK",
-      });
+      return;
     }
   };
 
@@ -2419,12 +2414,7 @@ export function EditorLayout() {
       model: draft?.blueModel?.trim() || draft?.generationJob?.model || "blue",
     });
     if (!started) {
-      void confirm({
-        title: "Generation already running",
-        message:
-          "This clip already has a generation in flight. Cancel it from the Result view (or wait for it to finish) before starting another.",
-        confirmLabel: "OK",
-      });
+      return;
     }
   };
 

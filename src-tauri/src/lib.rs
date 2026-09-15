@@ -17,7 +17,7 @@ use auth_store::{auth_ensure_access_token, keychain_delete, keychain_get, keycha
 use blue::{
     blue_capabilities, blue_credentials_clear, blue_credentials_set, blue_credentials_status,
     blue_job_delete, blue_job_download, blue_job_get, blue_job_wait, blue_jobs_list,
-    blue_method_run, blue_method_run_cancel, blue_upload_file,
+    blue_method_run, blue_method_run_cancel, blue_query, blue_upload_file,
 };
 use clipboard::clipboard_write_text;
 use help_window::{close_help_window, open_help_window};
@@ -436,6 +436,7 @@ pub fn run() {
             blue_credentials_set,
             blue_credentials_clear,
             blue_capabilities,
+            blue_query,
             blue_upload_file,
             blue_method_run,
             blue_method_run_cancel,

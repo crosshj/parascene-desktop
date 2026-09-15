@@ -3,6 +3,7 @@
  * UI watches the handle; provider progress events remain optional chrome.
  */
 import type { ReplicateRunResult } from "../replicate/replicateClient";
+import { applyGpuBid } from "../layouts/editor/gpuOccupancy";
 import {
   serviceCancel,
   serviceInvoke,
@@ -33,7 +34,11 @@ export async function invokeBlueGenerate(opts: {
   projectId?: string;
   target?: "assets" | "timeline";
   clientRequestId?: string;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
 }): Promise<ServiceHandle> {
+  const args = opts.gpuBid
+    ? applyGpuBid(opts.args, opts.gpuBid, "direct")
+    : opts.args;
   return serviceInvoke({
     service: "blue",
     operation: "generate",
@@ -43,7 +48,7 @@ export async function invokeBlueGenerate(opts: {
     label: opts.label ?? opts.method,
     payload: {
       method: opts.method,
-      args: opts.args,
+      args,
       ...(opts.localFiles && Object.keys(opts.localFiles).length
         ? { localFiles: opts.localFiles }
         : {}),
@@ -105,6 +110,7 @@ export async function runBlueGenerate(opts: {
   label?: string;
   signal?: AbortSignal;
   onJob?: (jobId: string) => void;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
 }): Promise<LabGenerateRunResult> {
   const handle = await invokeBlueGenerate(opts);
   if (handle.mode === "job") opts.onJob?.(handle.id);

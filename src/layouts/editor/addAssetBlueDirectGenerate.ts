@@ -47,6 +47,7 @@ import {
   slicePlaceholderTimelineAudio,
 } from "./timelineReferenceAudio";
 import { resolveReferenceImageStillPaths } from "./timelineReferenceImages";
+import { gpuWaitNoteFromBlueEvent } from "./gpuWait";
 
 /** Thrown when Blue succeeded remotely but local download/import failed. */
 export class BlueDirectPendingDownloadError extends Error {
@@ -57,6 +58,14 @@ export class BlueDirectPendingDownloadError extends Error {
     this.name = "BlueDirectPendingDownloadError";
     this.blueJobId = blueJobId;
   }
+}
+
+function blueWaitProgressBinder(onProgress: (note: string) => void) {
+  let last = "";
+  return (message?: string | null, status?: string | null) => {
+    last = gpuWaitNoteFromBlueEvent(message, status, last);
+    onProgress(last);
+  };
 }
 
 function setStep(
@@ -157,6 +166,7 @@ export type RunBlueDirectAddAssetGenerationOpts = {
   onBlueJobId?: (jobId: string) => void;
   /** Durable service_invoke job id for remount / restart resume. */
   onServiceJobId?: (jobId: string) => void;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
 };
 
 async function importBlueOutput(opts: {
@@ -293,10 +303,10 @@ export async function runBlueDirectAddAssetGeneration(
     });
 
     let unlistenT2v: (() => void) | undefined;
+    const bindWait = blueWaitProgressBinder(opts.onProgress);
     try {
       unlistenT2v = await listenBlueRunProgress((ev) => {
-        const note = ev.message?.trim() || ev.status?.trim();
-        if (note) opts.onProgress(note);
+        bindWait(ev.message, ev.status);
         const jobId = ev.predictionId?.trim();
         if (jobId) opts.onBlueJobId?.(jobId);
       });
@@ -312,6 +322,7 @@ export async function runBlueDirectAddAssetGeneration(
         target: "timeline",
         clientRequestId: opts.placeholder.id,
         label: model,
+        gpuBid: opts.gpuBid,
       });
       if (handle.mode === "job") {
         opts.onServiceJobId?.(handle.id);
@@ -327,7 +338,7 @@ export async function runBlueDirectAddAssetGeneration(
           ) {
             return;
           }
-          opts.onProgress(note);
+          bindWait(note, run.status);
         },
       });
       unlistenT2v?.();
@@ -453,10 +464,10 @@ export async function runBlueDirectAddAssetGeneration(
   });
 
   let unlisten: (() => void) | undefined;
+  const bindWait = blueWaitProgressBinder(opts.onProgress);
   try {
     unlisten = await listenBlueRunProgress((ev) => {
-      const note = ev.message?.trim() || ev.status?.trim();
-      if (note) opts.onProgress(note);
+      bindWait(ev.message, ev.status);
       const jobId = ev.predictionId?.trim();
       if (jobId) opts.onBlueJobId?.(jobId);
     });
@@ -474,6 +485,7 @@ export async function runBlueDirectAddAssetGeneration(
       target: "timeline",
       clientRequestId: opts.placeholder.id,
       label: model,
+      gpuBid: opts.gpuBid,
     });
     if (handle.mode === "job") {
       opts.onServiceJobId?.(handle.id);
@@ -489,7 +501,7 @@ export async function runBlueDirectAddAssetGeneration(
         ) {
           return;
         }
-        opts.onProgress(note);
+        bindWait(note, run.status);
       },
     });
   } catch (err) {
@@ -597,6 +609,7 @@ export async function resumeBlueDirectServiceJob(opts: {
   };
   pushSteps(advanceStep(steps, "generate"));
   opts.onProgress(`Resuming service job ${opts.serviceJobId}…`);
+  const bindWait = blueWaitProgressBinder(opts.onProgress);
   const result = await watchLocalGenerateStill(
     { mode: "job", id: opts.serviceJobId },
     {
@@ -610,7 +623,7 @@ export async function resumeBlueDirectServiceJob(opts: {
         ) {
           return;
         }
-        opts.onProgress(note);
+        bindWait(note, run.status);
       },
     },
   );
@@ -679,6 +692,7 @@ export async function runBlueDirectTextToImage(opts: {
   aspectRatio: string;
   projectId: string;
   model?: string;
+  gpuBid?: { maxBid: number; alwaysNext: boolean };
   onProgress?: (note: string) => void;
 }): Promise<{ creationId: string }> {
   const prompt = opts.prompt.trim();
@@ -705,6 +719,7 @@ export async function runBlueDirectTextToImage(opts: {
       projectId: opts.projectId,
       target: "assets",
       label: model,
+      gpuBid: opts.gpuBid,
     });
     result = await watchLocalGenerateStill(handle, {
       onUpdate: (run) => {
@@ -843,10 +858,10 @@ async function runBlueDirectAdvancedVideo(
   });
 
   let unlisten: (() => void) | undefined;
+  const bindWait = blueWaitProgressBinder(opts.onProgress);
   try {
     unlisten = await listenBlueRunProgress((ev) => {
-      const note = ev.message?.trim() || ev.status?.trim();
-      if (note) opts.onProgress(note);
+      bindWait(ev.message, ev.status);
       const jobId = ev.predictionId?.trim();
       if (jobId) opts.onBlueJobId?.(jobId);
     });
@@ -864,6 +879,7 @@ async function runBlueDirectAdvancedVideo(
       target: "timeline",
       clientRequestId: opts.placeholder.id,
       label: model,
+      gpuBid: opts.gpuBid,
     });
     if (handle.mode === "job") {
       opts.onServiceJobId?.(handle.id);
@@ -879,7 +895,7 @@ async function runBlueDirectAdvancedVideo(
         ) {
           return;
         }
-        opts.onProgress(note);
+        bindWait(note, run.status);
       },
     });
   } catch (err) {

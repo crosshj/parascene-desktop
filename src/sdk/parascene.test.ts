@@ -272,6 +272,38 @@ describe("ParasceneSdk", () => {
       LibraryFoldersUnavailableError,
     );
   });
+
+  it("posts create query for occupancy", async () => {
+    invoke.mockResolvedValueOnce({
+      status: 200,
+      body: JSON.stringify({
+        idle: true,
+        ahead: 0,
+        eta_s: 0,
+        cost: 1,
+        supported: true,
+      }),
+    });
+    const sdk = createParasceneSdk({
+      baseUrl: "https://www.parascene.com",
+      apiBaseUrl: "https://api.parascene.com",
+      clientId: "app",
+      redirectUri: "http://127.0.0.1:17423/oauth/callback",
+      getAccessToken: async () => "access-jwt",
+    });
+    const row = await sdk.queryCreate({
+      serverId: 6,
+      method: "text2video",
+    });
+    expect(row.idle).toBe(true);
+    expect(invoke).toHaveBeenCalledWith(
+      "http_post_bearer",
+      expect.objectContaining({
+        url: "https://api.parascene.com/api/create/query",
+        bearer: "access-jwt",
+      }),
+    );
+  });
 });
 
 describe("formatParasceneCreationFailure", () => {

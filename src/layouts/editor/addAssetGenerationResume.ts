@@ -186,6 +186,41 @@ export async function resumeParasceneAddAssetGeneration(
   setStep("generate", "active");
 
   const pendingCreationId = opts.pendingCreationId?.trim() || "";
+  const serviceJobId = opts.serviceJobId?.trim() || "";
+
+  // Prefer the durable service job: it survives restarts, already knows the
+  // queue place, and watching it never inserts another jobs row. Fall back to
+  // re-GETting the creation only when that job is gone or failed under us.
+  if (serviceJobId) {
+    opts.onProgress(`Resuming service job ${serviceJobId}…`);
+    try {
+      const result: ParasceneGenerateResult = await watchParasceneGenerate(
+        { mode: "job", id: serviceJobId },
+        {
+          onUpdate: (run) => {
+            const note = run.progressNote?.trim();
+            if (note) opts.onProgress(note);
+          },
+        },
+      );
+      setStep("generate", "done");
+      setStep("file", "done");
+      return {
+        creationId: result.creationId,
+        projectCreationIds: result.projectCreationIds,
+        videosGroupId: result.videosGroupId ?? opts.videosGroupId,
+        imagesGroupId: result.imagesGroupId ?? opts.imagesGroupId,
+        mode: opts.continuityMode,
+        model: opts.model,
+      };
+    } catch (error) {
+      if (!shouldRecheckCreationAfterServiceWait(error, pendingCreationId)) {
+        throw error;
+      }
+      // Job row lost or stalled — the creation may still be live on Parascene.
+    }
+  }
+
   if (pendingCreationId) {
     const filed = await waitAndFileParasceneCreation({
       pendingCreationId,
@@ -200,30 +235,6 @@ export async function resumeParasceneAddAssetGeneration(
     setStep("generate", "done");
     setStep("file", "done");
     return filed;
-  }
-
-  const serviceJobId = opts.serviceJobId?.trim() || "";
-  if (serviceJobId) {
-    opts.onProgress(`Resuming service job ${serviceJobId}…`);
-    const result: ParasceneGenerateResult = await watchParasceneGenerate(
-      { mode: "job", id: serviceJobId },
-      {
-        onUpdate: (run) => {
-          const note = run.progressNote?.trim();
-          if (note) opts.onProgress(note);
-        },
-      },
-    );
-    setStep("generate", "done");
-    setStep("file", "done");
-    return {
-      creationId: result.creationId,
-      projectCreationIds: result.projectCreationIds,
-      videosGroupId: result.videosGroupId ?? opts.videosGroupId,
-      imagesGroupId: result.imagesGroupId ?? opts.imagesGroupId,
-      mode: opts.continuityMode,
-      model: opts.model,
-    };
   }
 
   throw new Error("No remote job id available to resume generation.");

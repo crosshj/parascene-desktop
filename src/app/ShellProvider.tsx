@@ -12,6 +12,7 @@ import type { AddAssetDraft, LayoutMode, LyricAlignment, Project, StoryboardGene
 import type { ProjectAspectRatio } from "../project/aspectRatios";
 import type { ProjectLookId } from "../project/looks";
 import { ConfirmProvider } from "../ui/ConfirmDialog";
+import { OccupancyProvider } from "../layouts/editor/OccupancyDialog";
 import {
   createStoredProject,
   deleteStoredProjectDocument,
@@ -2729,6 +2730,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   return (
     <ShellContext.Provider value={value}>
       <ConfirmProvider>
+        <OccupancyProvider>
         {children}
         {projectFolderBlock ? (
           <div className="confirm-dialog-backdrop" role="presentation">
@@ -2999,6 +3001,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
             </div>
           </div>
         ) : null}
+        </OccupancyProvider>
       </ConfirmProvider>
     </ShellContext.Provider>
   );

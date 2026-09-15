@@ -39,6 +39,7 @@ import {
   resumeBlueDirectServiceJob,
 } from "./addAssetBlueDirectGenerate";
 import { addAssetClipDurationSec } from "./stagedClip";
+import { stickyGpuWaitNote } from "./gpuWait";
 import { cancelGenerateStillJob } from "../../services/generateStill";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 import {
@@ -294,7 +295,11 @@ function patchSession(
 ): void {
   const current = sessions.get(clipId);
   if (!current) return;
-  sessions.set(clipId, { ...current, ...patch });
+  const next = { ...current, ...patch };
+  if (next.phase !== "error" && typeof patch.progressNote === "string") {
+    next.progressNote = stickyGpuWaitNote(current.progressNote, patch.progressNote);
+  }
+  sessions.set(clipId, next);
   emit();
 }
 
@@ -570,11 +575,17 @@ export function startAddAssetGenerationJob(
     replicate: request.replicate,
     blueDirect: request.blueDirect,
     mediaRefs: request.mediaRefs,
+    gpuBid: request.gpuBid,
     onSteps: (steps) => {
       patchSession(clipId, { steps });
     },
     onProgress: (progressNote) => {
-      patchSession(clipId, { progressNote });
+      patchSession(clipId, {
+        progressNote: stickyGpuWaitNote(
+          sessions.get(clipId)?.progressNote,
+          progressNote,
+        ),
+      });
     },
     onRemoteJob: (remote) => {
       activeRemote = {
@@ -717,6 +728,7 @@ export function startAddAssetGenerationJob(
       const pendingId = activeRemote.pendingCreationId?.trim() || "";
       if (shouldRecheckCreationAfterServiceWait(error, pendingId)) {
         if (creationCheckStarted) return;
+        creationCheckStarted = true;
         try {
           patchSession(clipId, {
             progressNote: `Checking creation ${pendingId}…`,

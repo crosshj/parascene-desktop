@@ -34,6 +34,7 @@ import {
   type ReplicateTextToImageModelOption,
 } from "./replicateTextToImageModels";
 import { CloneButton, GenerateTargetButton } from "./AddAssetIntentFooter";
+import { useConfirmGpuOccupancy } from "./confirmGpuOccupancy";
 
 export type TextToImageFormParts = {
   fields: ReactNode;
@@ -89,6 +90,7 @@ export function useTextToImageForm(
   } = opts;
 
   const { project } = useShell();
+  const confirmGpuOccupancy = useConfirmGpuOccupancy();
   const aspectRatio = project.aspectRatio ?? DEFAULT_PROJECT_ASPECT_RATIO;
 
   const parasceneFamilies = useMemo(() => {
@@ -308,49 +310,63 @@ export function useTextToImageForm(
     const modelKey = selectedModelId.trim();
     if (!modelKey) return;
 
-    if (server === "parascene_blue") {
-      const route =
-        parasceneRoutes?.find((m) => m.id === modelKey) ??
-        parasceneResolveStillModel("text_to_image", modelKey);
-      if (!route) return;
-      startLibraryParasceneTextToImage({
+    void (async () => {
+      let gpuBid: { maxBid: number; alwaysNext: boolean } | undefined;
+      if (server !== "replicate") {
+        const occupancy = await confirmGpuOccupancy({
+          lane: server === "blue_direct" ? "direct" : "product",
+          method: "text2image",
+        });
+        if (!occupancy.ok) return;
+        gpuBid = occupancy.bid;
+      }
+
+      if (server === "parascene_blue") {
+        const route =
+          parasceneRoutes?.find((m) => m.id === modelKey) ??
+          parasceneResolveStillModel("text_to_image", modelKey);
+        if (!route) return;
+        startLibraryParasceneTextToImage({
+          projectId: project.id,
+          projectTitle: project.title,
+          imagesGroupId: project.imagesGroupId,
+          videosGroupId: project.videosGroupId,
+          aspectRatio,
+          prompt,
+          modelId: route.id,
+          route,
+          placeholderId,
+          destination: "assets",
+          gpuBid,
+        });
+        return;
+      }
+
+      if (server === "replicate") {
+        const model =
+          replicateModels?.find((m) => m.id === modelKey) ?? null;
+        if (!model) return;
+        startLibraryReplicateTextToImage({
+          projectId: project.id,
+          aspectRatio,
+          prompt,
+          model,
+          placeholderId,
+          destination: "assets",
+        });
+        return;
+      }
+
+      startLibraryBlueDirectTextToImage({
         projectId: project.id,
-        projectTitle: project.title,
-        imagesGroupId: project.imagesGroupId,
-        videosGroupId: project.videosGroupId,
         aspectRatio,
         prompt,
-        modelId: route.id,
-        route,
+        modelId: modelKey,
         placeholderId,
         destination: "assets",
+        gpuBid,
       });
-      return;
-    }
-
-    if (server === "replicate") {
-      const model =
-        replicateModels?.find((m) => m.id === modelKey) ?? null;
-      if (!model) return;
-      startLibraryReplicateTextToImage({
-        projectId: project.id,
-        aspectRatio,
-        prompt,
-        model,
-        placeholderId,
-        destination: "assets",
-      });
-      return;
-    }
-
-    startLibraryBlueDirectTextToImage({
-      projectId: project.id,
-      aspectRatio,
-      prompt,
-      modelId: modelKey,
-      placeholderId,
-      destination: "assets",
-    });
+    })();
   };
 
   const onFieldChange = (name: string, value: string) => {
