@@ -4,6 +4,7 @@ import {
   draftAudioMode,
   draftContinuityMode,
   findResumableAddAssetPlaceholders,
+  shouldRecheckCreationAfterServiceWait,
 } from "./addAssetGenerationResume";
 import type { TimelineClip } from "../../project/types";
 
@@ -51,7 +52,7 @@ describe("findResumableAddAssetPlaceholders", () => {
     expect(found[0]?.job.replicatePredictionId).toBe("pred-1");
   });
 
-  it("skips timed-out waits so they do not auto-resume", () => {
+  it("skips timed-out waits on app restart (Result Check again handles those)", () => {
     const timeline = [
       placeholder("t", {
         lastError: "Timed out waiting for creation 27660",
@@ -88,6 +89,29 @@ describe("creationIdFromWaitTimeoutError", () => {
     expect(creationIdFromWaitTimeoutError("Video generation failed (27651)")).toBe(
       null,
     );
+  });
+});
+
+describe("shouldRecheckCreationAfterServiceWait", () => {
+  it("rechecks when the rust waiter is gone or stalled", () => {
+    expect(
+      shouldRecheckCreationAfterServiceWait(
+        new Error("Service run abc stalled"),
+        "30086",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRecheckCreationAfterServiceWait(
+        new Error("Job abc not found"),
+        "30086",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRecheckCreationAfterServiceWait(new Error("Cancelled"), "30086"),
+    ).toBe(false);
+    expect(
+      shouldRecheckCreationAfterServiceWait(new Error("Job stalled"), ""),
+    ).toBe(false);
   });
 });
 

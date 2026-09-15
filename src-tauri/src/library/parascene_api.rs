@@ -260,6 +260,81 @@ pub fn creation_status(value: &Value) -> String {
         .to_lowercase()
 }
 
+/// GPU line vs generate. `processing`/`running` are on the machine.
+pub fn creation_is_generating(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "processing" | "running"
+    )
+}
+
+pub fn creation_gpu_wait_note(status: &str, place: Option<u64>) -> String {
+    if creation_is_generating(status) {
+        return "Generating…".into();
+    }
+    match place {
+        Some(n) if n > 0 => format!("QUEUED · {n}"),
+        _ => "QUEUED".into(),
+    }
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(num) => num
+            .as_u64()
+            .or_else(|| num.as_i64().and_then(|i| u64::try_from(i).ok()))
+            .or_else(|| num.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64)),
+        Value::String(s) => s
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|f| *f >= 0.0)
+            .map(|f| f as u64),
+        _ => None,
+    }
+}
+
+fn json_positive_u64(value: &Value) -> Option<u64> {
+    json_u64(value).filter(|n| *n > 0)
+}
+
+fn meta_object(meta: &Value) -> Option<Value> {
+    if let Some(s) = meta.as_str() {
+        serde_json::from_str::<Value>(s).ok()
+    } else if meta.is_object() {
+        Some(meta.clone())
+    } else {
+        None
+    }
+}
+
+pub fn creation_line_place(value: &Value) -> Option<u64> {
+    let row = creation_row(value);
+    if let Some(n) = row.get("place").and_then(json_positive_u64) {
+        return Some(n);
+    }
+    if let Some(n) = row.get("line_place").and_then(json_positive_u64) {
+        return Some(n);
+    }
+    let meta = row.get("meta").and_then(meta_object)?;
+    if let Some(n) = meta.get("line_place").and_then(json_positive_u64) {
+        return Some(n);
+    }
+    if let Some(n) = meta
+        .get("provider_last_payload")
+        .and_then(|payload| payload.get("place"))
+        .and_then(json_positive_u64)
+    {
+        return Some(n);
+    }
+    let ahead = meta.get("line_ahead").and_then(json_u64).or_else(|| {
+        meta.get("provider_last_payload")
+            .and_then(|payload| payload.get("ahead"))
+            .and_then(json_u64)
+    });
+    ahead.map(|n| n.saturating_add(1)).filter(|n| *n > 0)
+}
+
 /// `GET /api/create/images/:id` sometimes wraps the row (`creation` / `image` / `data`).
 pub fn creation_row(value: &Value) -> &Value {
     for key in ["creation", "image", "data"] {
@@ -487,12 +562,43 @@ pub fn creation_is_terminal_status(value: &Value) -> bool {
     )
 }
 
+fn creation_media_type(value: &Value) -> String {
+    let row = creation_row(value);
+    row.get("media_type")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            row.get("meta")
+                .and_then(|m| m.get("media_type"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn creation_is_completed(value: &Value) -> bool {
+    matches!(
+        creation_status(value).as_str(),
+        "completed" | "complete" | "succeeded" | "success" | "done"
+    )
+}
+
+fn meta_video_url(row: &Value) -> Option<String> {
+    let video = row.get("meta").and_then(|m| m.get("video"))?;
+    json_url_field(video, "file_path")
+        .or_else(|| json_url_field(video, "url"))
+        .or_else(|| json_url_field(video, "video_url"))
+}
+
 /// Output URL of the expected type. Thumbs, posters, and input stills do not count.
 pub fn output_media_url(value: &Value, kind: WaitKind) -> Option<String> {
     let row = creation_row(value);
     match kind {
         WaitKind::Video => {
             if let Some(url) = json_url_field(row, "video_url") {
+                return Some(url);
+            }
+            if let Some(url) = meta_video_url(row) {
                 return Some(url);
             }
             for key in ["url", "file_path"] {
@@ -533,7 +639,24 @@ pub fn output_media_url(value: &Value, kind: WaitKind) -> Option<String> {
 }
 
 pub fn wait_is_done(value: &Value, kind: WaitKind) -> bool {
-    creation_is_terminal_status(value) || output_media_url(value, kind).is_some()
+    if creation_is_terminal_status(value) {
+        return true;
+    }
+    if output_media_url(value, kind).is_some() {
+        return true;
+    }
+    // www finished the row; do not sit on Generating because the URL was nested.
+    if creation_is_completed(value) {
+        return match kind {
+            WaitKind::Video => {
+                let mt = creation_media_type(value);
+                mt == "video" || mt.is_empty()
+            }
+            WaitKind::Image => creation_media_type(value) != "video",
+            WaitKind::Audio => creation_media_type(value) == "audio",
+        };
+    }
+    false
 }
 
 pub fn local_path_is_output(kind: WaitKind, local_path: Option<&str>, media_type: &str) -> bool {
@@ -1089,6 +1212,24 @@ mod tests {
             &json!({ "id": 2, "status": "" }),
             WaitKind::Video,
         ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "completed",
+                "media_type": "video",
+                "url": "https://www.parascene.com/api/images/created/poster.png",
+                "meta": { "video": { "file_path": "/api/videos/created/video/x.mp4" } },
+            }),
+            WaitKind::Video,
+        ));
+        assert!(wait_is_done(
+            &json!({
+                "id": 2,
+                "status": "completed",
+                "media_type": "video",
+            }),
+            WaitKind::Video,
+        ));
     }
 
     #[test]
@@ -1165,5 +1306,52 @@ mod tests {
         ));
         assert!(!is_rate_limited(403, &json!({ "error": "forbidden" }),));
         assert!(is_rate_limited(429, &json!({})));
+    }
+
+    #[test]
+    fn gpu_wait_maps_queued_vs_processing() {
+        assert!(!creation_is_generating("queued"));
+        assert!(!creation_is_generating("creating"));
+        assert!(!creation_is_generating("pending"));
+        assert!(creation_is_generating("processing"));
+        assert!(creation_is_generating("running"));
+        assert_eq!(creation_gpu_wait_note("queued", None), "QUEUED");
+        assert_eq!(creation_gpu_wait_note("queued", Some(3)), "QUEUED · 3");
+        assert_eq!(creation_gpu_wait_note("processing", None), "Generating…");
+        let row = json!({
+            "status": "queued",
+            "meta": { "line_place": 2 }
+        });
+        assert_eq!(creation_line_place(&row), Some(2));
+        assert_eq!(
+            creation_line_place(&json!({
+                "status": "queued",
+                "meta": { "line_place": "3" }
+            })),
+            Some(3)
+        );
+        assert_eq!(
+            creation_line_place(&json!({
+                "creation": {
+                    "status": "queued",
+                    "meta": { "provider_last_payload": { "place": 4 } }
+                }
+            })),
+            Some(4)
+        );
+        assert_eq!(
+            creation_line_place(&json!({
+                "status": "queued",
+                "meta": { "line_ahead": 2 }
+            })),
+            Some(3)
+        );
+        assert_eq!(
+            creation_line_place(&json!({
+                "status": "queued",
+                "meta": { "provider_last_payload": { "ahead": 0 } }
+            })),
+            Some(1)
+        );
     }
 }

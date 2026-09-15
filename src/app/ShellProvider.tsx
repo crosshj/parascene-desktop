@@ -899,6 +899,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
               if (err) draft.lastError = err;
               else delete draft.lastError;
               const keepWaitingId = result.pendingCreationId?.trim();
+              const keepRemote =
+                /not found|stalled|timed out waiting for creation/i.test(err);
               if (keepWaitingId) {
                 draft.generationJob = {
                   status: "timed_out",
@@ -909,6 +911,17 @@ export function ShellProvider({ children }: { children: ReactNode }) {
                   serviceJobId: existingJob?.serviceJobId,
                   model: existingJob?.model,
                 };
+              } else if (
+                existingJob &&
+                keepRemote &&
+                (existingJob.pendingCreationId?.trim() ||
+                  existingJob.serviceJobId?.trim())
+              ) {
+                draft.generationJob = {
+                  ...existingJob,
+                  status: "waiting",
+                };
+                delete draft.lastError;
               } else {
                 delete draft.generationJob;
               }

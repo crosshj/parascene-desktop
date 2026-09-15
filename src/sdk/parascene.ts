@@ -1020,7 +1020,13 @@ export class ParasceneSdk {
         const row = await this.getCreation(id);
         opts?.onTick?.(row);
         const status = String(row.status || "").toLowerCase();
-        if (status !== "creating" && status !== "pending") {
+        if (
+          status !== "creating" &&
+          status !== "pending" &&
+          status !== "queued" &&
+          status !== "processing" &&
+          status !== "running"
+        ) {
           return row;
         }
       } catch (err) {

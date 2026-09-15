@@ -22,6 +22,8 @@ import {
   initialResumeSessionSteps,
   resumeParasceneAddAssetGeneration,
   resumeReplicateWaitForPlaceholder,
+  shouldRecheckCreationAfterServiceWait,
+  waitAndFileParasceneCreation,
 } from "./addAssetGenerationResume";
 import {
   initialReplicateDownloadRetrySteps,
@@ -497,10 +499,63 @@ export function startAddAssetGenerationJob(
     blueJobId?: string;
     serviceJobId?: string;
   } = {};
+  let settled = false;
+  let creationCheckStarted = false;
   // Do not persist `starting` with no remote id. Reload during ref upload
   // used to leave that marker, and reconcile treated it as a hard failure
   // ("interrupted before a remote job was created"). In-memory session
   // covers the live UI; persist only once onRemoteJob has an id.
+
+  const finishFromWaitedCreation = async (waited: {
+    creationId: string;
+    projectCreationIds: string[];
+    videosGroupId: string | null;
+    imagesGroupId: string | null;
+    mode: AddAssetContinuityMode;
+    model: string;
+  }) => {
+    if (settled || cancelRequestedClips.has(clipId)) return;
+    settled = true;
+    const success: AddAssetGenerationSuccess = {
+      projectId,
+      clipId,
+      creationId: waited.creationId,
+      projectCreationIds: generateFolderIdsToFile({
+        projectCreationIds: waited.projectCreationIds,
+        videosGroupId: waited.videosGroupId,
+        imagesGroupId: waited.imagesGroupId,
+      }),
+      videosGroupId: waited.videosGroupId,
+      imagesGroupId: waited.imagesGroupId,
+      prompt: request.prompt,
+      lyricsText: request.lyricsText,
+      audioMode: request.audioMode,
+      mode: waited.mode,
+      model: waited.model,
+    };
+    markRemoteJobConsumed(activeRemote);
+    await applier?.applySuccess(success);
+    setClipSession(clipId, null);
+  };
+
+  const startCreationCheck = (pendingId: string) => {
+    if (creationCheckStarted || !pendingId.trim()) return;
+    creationCheckStarted = true;
+    void waitAndFileParasceneCreation({
+      pendingCreationId: pendingId.trim(),
+      projectId,
+      projectTitle: runOpts.projectTitle,
+      imagesGroupId: runOpts.imagesGroupId ?? null,
+      videosGroupId: runOpts.videosGroupId ?? null,
+      continuityMode,
+      model: request.blueModel?.trim() || "parascene_blue",
+      onProgress: (progressNote) => patchSession(clipId, { progressNote }),
+    })
+      .then(finishFromWaitedCreation)
+      .catch(() => {
+        // Generate job may still finish the clip.
+      });
+  };
 
   void runAddAssetGeneration({
     ...runOpts,
@@ -545,9 +600,14 @@ export function startAddAssetGenerationJob(
         serviceJobId: activeRemote.serviceJobId,
         model: remote.model ?? modelHint,
       });
+      if (remote.provider === "parascene_blue") {
+        startCreationCheck(activeRemote.pendingCreationId ?? "");
+      }
     },
   })
     .then(async (result) => {
+      if (settled) return;
+      settled = true;
       const draftFirst =
         resolveFirstFrameSource({
           firstFrameSource: request.clip.addAssetDraft?.firstFrameSource,
@@ -644,7 +704,8 @@ export function startAddAssetGenerationJob(
       await applier?.applySuccess(success);
       setClipSession(clipId, null);
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      if (settled) return;
       const message = error instanceof Error ? error.message : String(error);
       // User-cancelled runs return to the form — no error card, no stale
       // generationJob marker to resume on restart.
@@ -652,6 +713,38 @@ export function startAddAssetGenerationJob(
         applier?.clearFailure(projectId, clipId);
         setClipSession(clipId, null);
         return;
+      }
+      const pendingId = activeRemote.pendingCreationId?.trim() || "";
+      if (shouldRecheckCreationAfterServiceWait(error, pendingId)) {
+        if (creationCheckStarted) return;
+        try {
+          patchSession(clipId, {
+            progressNote: `Checking creation ${pendingId}…`,
+          });
+          const waited = await waitAndFileParasceneCreation({
+            pendingCreationId: pendingId,
+            projectId,
+            projectTitle: runOpts.projectTitle,
+            imagesGroupId: runOpts.imagesGroupId ?? null,
+            videosGroupId: runOpts.videosGroupId ?? null,
+            continuityMode,
+            model: request.blueModel?.trim() || "parascene_blue",
+            onProgress: (progressNote) =>
+              patchSession(clipId, { progressNote }),
+          });
+          await finishFromWaitedCreation(waited);
+          return;
+        } catch (retryErr) {
+          applyJobFailure(
+            projectId,
+            clipId,
+            request.audioMode,
+            addAssetClipDurationSec(request.clip),
+            continuityMode,
+            retryErr,
+          );
+          return;
+        }
       }
       applyJobFailure(
         projectId,

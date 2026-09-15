@@ -1667,6 +1667,26 @@ export function PreviewPane({
           },
         }
       : undefined;
+  const autoTimeoutRecheckRef = useRef<Set<string>>(new Set());
+  const timeoutAutoRecheckKey =
+    generateDualPhase === "error" && showAddAssetGenerate
+      ? `${addAssetPlaceholderClip?.id?.trim() ?? ""}:${
+          creationIdFromWaitTimeoutError(generateDualErrorMessage) ??
+          addAssetPlaceholderClip?.addAssetDraft?.generationJob?.pendingCreationId?.trim() ??
+          ""
+        }`
+      : "";
+  useEffect(() => {
+    const sep = timeoutAutoRecheckKey.indexOf(":");
+    if (sep < 1) return;
+    const clipId = timeoutAutoRecheckKey.slice(0, sep);
+    const creationId = timeoutAutoRecheckKey.slice(sep + 1);
+    if (!clipId || !creationId || !onResumeTimedOutWait) return;
+    if (autoTimeoutRecheckRef.current.has(timeoutAutoRecheckKey)) return;
+    autoTimeoutRecheckRef.current.add(timeoutAutoRecheckKey);
+    onResumeTimedOutWait();
+    setGenerateDualView("result");
+  }, [timeoutAutoRecheckKey, onResumeTimedOutWait]);
   const generateDualSelectionSettled =
     Boolean(assetId?.trim()) && creationMatchesAsset && !selectionLoading;
   // Form sticky across gen→gen: while the next creation loads, dual host is

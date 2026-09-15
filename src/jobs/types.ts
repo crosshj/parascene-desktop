@@ -70,6 +70,20 @@ export function isTerminalJobStatus(status: string): boolean {
   return status === "done" || status === "failed" || status === "cancelled";
 }
 
+/** Rust waiter died or stopped touching the row — FE should re-GET. */
+export const OPEN_JOB_STALE_MS = 20_000;
+
+export function isStaleOpenJob(
+  job: { status: string; updatedAt?: string | null },
+  now = Date.now(),
+  staleMs = OPEN_JOB_STALE_MS,
+): boolean {
+  if (isTerminalJobStatus(String(job.status))) return false;
+  const updated = Date.parse(String(job.updatedAt ?? ""));
+  if (!Number.isFinite(updated)) return false;
+  return now - updated > staleMs;
+}
+
 export function parseJobJson<T>(raw: string | null | undefined): T | null {
   if (!raw) return null;
   try {

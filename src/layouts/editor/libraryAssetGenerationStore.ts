@@ -31,6 +31,7 @@ import {
   watchLocalGenerateStill,
   watchParasceneGenerate,
   watchParasceneGenerateStill,
+  runParasceneWaitCreation,
 } from "../../services/generateStill";
 import {
   invokeReplicateGenerate,
@@ -43,6 +44,7 @@ import {
   parasceneStillModelFamilies,
   type ParasceneStillModelOption,
 } from "./parasceneProductCaps";
+import { shouldRecheckCreationAfterServiceWait } from "./addAssetGenerationResume";
 import { runParasceneImageToImage } from "./runParasceneImageToImage";
 import {
   loadReplicateTextToImageModels,
@@ -1018,7 +1020,7 @@ async function runLibraryParasceneImageToImage(
       projectTitle: opts.projectTitle,
       imagesGroupId: opts.imagesGroupId,
       videosGroupId: opts.videosGroupId,
-      onProgress: (note) => {
+      onProgress: (note: string) => {
         const lower = note.toLowerCase();
         const status: AddAssetGenerationJob["status"] = lower.includes(
           "syncing",
@@ -1978,6 +1980,31 @@ export function reconcileLibraryAssetGenerations(opts: {
             });
             return;
           } catch (err) {
+            const pendingCreationId = job?.pendingCreationId?.trim() || "";
+            if (
+              provider === "parascene_blue" &&
+              shouldRecheckCreationAfterServiceWait(err, pendingCreationId)
+            ) {
+              const waited = await runParasceneWaitCreation({
+                creationId: pendingCreationId,
+                projectId: opts.projectId,
+                mediaType: placeholder.kind === "audio" ? "audio" : "image",
+                onProgress: (note) => patchJob(note, "waiting"),
+              });
+              if (String(waited.status).toLowerCase() === "failed") {
+                throw new Error(`Generation failed (${waited.creationId})`);
+              }
+              await finishLibraryTextToImagePlaceholder({
+                placeholderId: placeholder.id,
+                creationId: waited.creationId,
+                prompt: placeholder.addAssetDraft.prompt?.trim() || "",
+                destination:
+                  placeholder.addAssetDraft.generateDestination === "timeline"
+                    ? "timeline"
+                    : "assets",
+              });
+              return;
+            }
             if (!predictionId) throw err;
           }
         }

@@ -55,7 +55,12 @@ const POLL_JSON_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_MEDIA_BODY_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub enum JobPoll {
-    Pending,
+    /// 202 (or busy). `status` is Blue `pending` | `running` when the body parsed.
+    InFlight {
+        status: String,
+        place: Option<u64>,
+        ahead: Option<u64>,
+    },
     Saved(PathBuf),
     Json(Value),
 }
@@ -91,8 +96,25 @@ async fn write_response_body(res: reqwest::Response, dest: &Path) -> Result<(), 
     Ok(())
 }
 
-/// One Blue job poll. Does not buffer a 202 body — that is what hung timeline
-/// generate after Blue itself had already finished.
+const POLL_202_BODY_TIMEOUT: Duration = Duration::from_millis(400);
+
+fn inflight_from_202_json(data: &Value) -> JobPoll {
+    let status = data
+        .get("status")
+        .and_then(|s| s.as_str())
+        .unwrap_or("pending")
+        .to_ascii_lowercase();
+    let place = data.get("place").and_then(|v| v.as_u64());
+    let ahead = data.get("ahead").and_then(|v| v.as_u64());
+    JobPoll::InFlight {
+        status,
+        place,
+        ahead,
+    }
+}
+
+/// One Blue job poll. Reads a short 202 JSON `{ status, job_id }` (and optional
+/// `place` / `ahead`). Does not wait out an open stream — that hung generate.
 pub async fn poll_job(
     creds: &BlueCredentials,
     method: &str,
@@ -118,7 +140,13 @@ pub async fn poll_job(
     let res = match timeout(POLL_HEADERS_TIMEOUT, send).await {
         Ok(Ok(res)) => res,
         Ok(Err(e)) => return Err(format!("Blue poll failed: {e}")),
-        Err(_) => return Ok(JobPoll::Pending),
+        Err(_) => {
+            return Ok(JobPoll::InFlight {
+                status: "pending".into(),
+                place: None,
+                ahead: None,
+            })
+        }
     };
     let status = res.status().as_u16();
     let content_type = res
@@ -128,9 +156,28 @@ pub async fn poll_job(
         .unwrap_or("")
         .to_string();
 
-    if status == 202 || status == 429 || status == 503 {
+    if status == 202 {
+        let text = timeout(POLL_202_BODY_TIMEOUT, res.text())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        if let Ok(data) = serde_json::from_str::<Value>(&text) {
+            return Ok(inflight_from_202_json(&data));
+        }
+        return Ok(JobPoll::InFlight {
+            status: "pending".into(),
+            place: None,
+            ahead: None,
+        });
+    }
+    if status == 429 || status == 503 {
         let _ = timeout(Duration::from_millis(250), res.bytes()).await;
-        return Ok(JobPoll::Pending);
+        return Ok(JobPoll::InFlight {
+            status: "pending".into(),
+            place: None,
+            ahead: None,
+        });
     }
     if status == 404 {
         return Err(format!("Blue job not found: {job_id}"));

@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  isStaleOpenJob,
   isTerminalJobStatus,
   parseJobJson,
   type CleanupGroupsJobResult,
@@ -80,6 +81,9 @@ export async function watchJob(
   if (isTerminalJobStatus(String(current.status))) {
     return current;
   }
+  if (isStaleOpenJob(current)) {
+    throw new Error(`Job ${jobId} stalled`);
+  }
 
   return new Promise<Job>((resolve, reject) => {
     let settled = false;
@@ -151,7 +155,15 @@ export async function watchJob(
     timer = setInterval(() => {
       void getJob(jobId)
         .then((job) => {
-          if (job) apply(job);
+          if (!job) {
+            fail(new Error(`Job ${jobId} not found`));
+            return;
+          }
+          if (isStaleOpenJob(job)) {
+            fail(new Error(`Job ${jobId} stalled`));
+            return;
+          }
+          apply(job);
         })
         .catch(() => {
           /* transient */

@@ -33,6 +33,7 @@ import {
 } from "../../project/aspectRatios";
 import type { LibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
 import { isActiveLibraryAssetPlaceholder } from "../../project/libraryAssetPlaceholder";
+import { gpuWaitPhaseFromNote, gpuWaitTitle, isGpuWaitInLine } from "./gpuWait";
 import type { ProjectAsset } from "../../project/types";
 import {
   compositionInternalCreationIds,
@@ -240,7 +241,15 @@ function PlaceholderAssetTile({
           ) : null}
           {!previewUrl ? (
             <span className="editor-add-asset-card-generating-label">
-              {placeholder.status === "error" ? "Error" : "Generating…"}
+              {placeholder.status === "error"
+                ? gpuWaitPhaseFromNote(placeholder.progressNote) ===
+                    "timed_out" ||
+                  /timed out/i.test(placeholder.progressNote || "")
+                  ? gpuWaitTitle("timed_out")
+                  : "Error"
+                : isGpuWaitInLine(placeholder.progressNote)
+                  ? gpuWaitTitle("in_line")
+                  : gpuWaitTitle("generating")}
             </span>
           ) : null}
           {generating ? (

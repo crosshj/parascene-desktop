@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import type { TimelinePlacementState } from "./addAssetTimelinePlacement";
 import { ClipDragHandle, ClipPlaceHandle } from "./PreviewStaging";
+import { gpuWaitTitle } from "./gpuWait";
 
 export function GenerateTargetButton({
   action = "Generate",
   target = "Assets",
   running = false,
+  inLine = false,
   disabled,
   unavailableTitle,
   onClick,
@@ -13,6 +15,7 @@ export function GenerateTargetButton({
   action?: string;
   target?: string;
   running?: boolean;
+  inLine?: boolean;
   disabled?: boolean;
   unavailableTitle?: string;
   onClick?: () => void;
@@ -27,7 +30,9 @@ export function GenerateTargetButton({
       onClick={onClick}
     >
       {running ? (
-        <span className="editor-cartridge-grip-label">Generating…</span>
+        <span className="editor-cartridge-grip-label">
+          {inLine ? gpuWaitTitle("in_line") : gpuWaitTitle("generating")}
+        </span>
       ) : (
         <>
           <span className="editor-cartridge-grip-label">{action}</span>
@@ -102,7 +107,7 @@ export function KeepWaitingButton({ onClick }: { onClick?: () => void }) {
       className="editor-cartridge-grip is-action editor-add-asset-generate"
       onClick={onClick}
     >
-      <span className="editor-cartridge-grip-label">Keep waiting</span>
+      <span className="editor-cartridge-grip-label">Check again</span>
     </button>
   );
 }

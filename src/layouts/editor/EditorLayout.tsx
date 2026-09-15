@@ -2352,6 +2352,7 @@ export function EditorLayout() {
       map.set(addAssetGenerationSession.clipId, {
         status,
         error: addAssetGenerationSession.errorMessage,
+        waitNote: addAssetGenerationSession.progressNote,
       });
     }
     return map;

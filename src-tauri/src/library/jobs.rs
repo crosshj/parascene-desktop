@@ -17,9 +17,9 @@ use super::looks::RenderLooks;
 use super::merge::{run_merge, MergeTimelineClipInput};
 use super::parascene_api::{
     cover_source_id, create_media, creation_id, creation_is_terminal_status, creation_status,
-    delete_creation, get_creation, get_creation_poll, group_creations, group_member_ids,
-    local_path_is_output, media_url, output_media_url, wait_is_done, wait_kind_from_hints,
-    CreateOpts, WaitKind,
+    creation_gpu_wait_note, creation_is_generating, creation_line_place, delete_creation,
+    get_creation, get_creation_poll, group_creations, group_member_ids, local_path_is_output,
+    media_url, output_media_url, wait_is_done, wait_kind_from_hints, CreateOpts, WaitKind,
 };
 use super::project_assets::{import_local_paths_for_project, library_add_project_assets};
 use super::project_documents::load_project_document_json;
@@ -449,7 +449,7 @@ async fn wait_sleep_cancellable(
     creation_id: &str,
     kind: WaitKind,
     duration_ms: u64,
-    started: std::time::Instant,
+    finish_started: Option<std::time::Instant>,
     timeout_ms: u64,
 ) -> Result<Option<Value>, String> {
     let until = std::time::Instant::now() + Duration::from_millis(duration_ms);
@@ -461,8 +461,10 @@ async fn wait_sleep_cancellable(
         if let Some(row) = catalog_wait_done_json(creation_id, kind) {
             return Ok(Some(row));
         }
-        if started.elapsed() > Duration::from_millis(timeout_ms) {
-            return Err(format!("Timed out waiting for creation {creation_id}"));
+        if let Some(t0) = finish_started {
+            if t0.elapsed() > Duration::from_millis(timeout_ms) {
+                return Err(format!("Timed out waiting for creation {creation_id}"));
+            }
         }
         let now = std::time::Instant::now();
         if now >= until {
@@ -513,15 +515,25 @@ async fn wait_creation_loop(
     opts: WaitOpts,
     on_tick: impl Fn(&Value) -> Result<(), String>,
 ) -> Result<Value, String> {
-    let started = std::time::Instant::now();
     let kind = opts.kind;
     let timeout_ms = opts.timeout_ms;
+    let mut finish_started: Option<std::time::Instant> = None;
     if let Some(initial) = &opts.initial {
         if wait_is_done(initial, kind) {
             return finish_wait_creation(app, job_id, creation_id, initial, true, on_tick).await;
         }
+        let status = creation_status(initial);
+        if creation_is_generating(&status) {
+            finish_started = Some(std::time::Instant::now());
+        }
+        let note = creation_gpu_wait_note(&status, creation_line_place(initial));
+        let _ = with_conn(|conn| {
+            update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
+        });
+        let _ = load_and_emit(app, job_id);
     }
     let mut need_silence = opts.silence;
+
     loop {
         throw_if_cancelled(job_id)?;
         if let Some(row) = local_output_ready_json(creation_id, kind) {
@@ -536,7 +548,7 @@ async fn wait_creation_loop(
                 creation_id,
                 kind,
                 wait_silence_ms(kind),
-                started,
+                finish_started,
                 timeout_ms,
             )
             .await?;
@@ -548,8 +560,10 @@ async fn wait_creation_loop(
             continue;
         }
         if let Some(cool) = super::parascene_api::api_cooling_down() {
-            if started.elapsed() > Duration::from_millis(timeout_ms) {
-                return Err(format!("Timed out waiting for creation {creation_id}"));
+            if let Some(t0) = finish_started {
+                if t0.elapsed() > Duration::from_millis(timeout_ms) {
+                    return Err(format!("Timed out waiting for creation {creation_id}"));
+                }
             }
             let note = format!("Parascene is busy, still waiting for {creation_id}…");
             let _ = with_conn(|conn| {
@@ -561,7 +575,7 @@ async fn wait_creation_loop(
                 creation_id,
                 kind,
                 cool.as_millis() as u64,
-                started,
+                finish_started,
                 timeout_ms,
             )
             .await?;
@@ -574,8 +588,10 @@ async fn wait_creation_loop(
         let row = match get_creation_poll(creation_id).await {
             Ok(row) => row,
             Err(err) if is_transient_poll_error(&err) => {
-                if started.elapsed() > Duration::from_millis(timeout_ms) {
-                    return Err(format!("Timed out waiting for creation {creation_id}"));
+                if let Some(t0) = finish_started {
+                    if t0.elapsed() > Duration::from_millis(timeout_ms) {
+                        return Err(format!("Timed out waiting for creation {creation_id}"));
+                    }
                 }
                 let cool_ms = super::parascene_api::api_cooling_down()
                     .map(|d| d.as_millis() as u64)
@@ -586,9 +602,15 @@ async fn wait_creation_loop(
                     update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
                 });
                 let _ = load_and_emit(app, job_id);
-                let slept =
-                    wait_sleep_cancellable(job_id, creation_id, kind, cool_ms, started, timeout_ms)
-                        .await?;
+                let slept = wait_sleep_cancellable(
+                    job_id,
+                    creation_id,
+                    kind,
+                    cool_ms,
+                    finish_started,
+                    timeout_ms,
+                )
+                .await?;
                 if let Some(row) = slept {
                     let ingest = local_output_ready_json(creation_id, kind).is_none();
                     return finish_wait_creation(app, job_id, creation_id, &row, ingest, on_tick)
@@ -601,16 +623,27 @@ async fn wait_creation_loop(
         if wait_is_done(&row, kind) {
             return finish_wait_creation(app, job_id, creation_id, &row, true, on_tick).await;
         }
+        let status = creation_status(&row);
+        if creation_is_generating(&status) && finish_started.is_none() {
+            finish_started = Some(std::time::Instant::now());
+        }
+        let note = creation_gpu_wait_note(&status, creation_line_place(&row));
+        let _ = with_conn(|conn| {
+            update_job_fields(conn, job_id, Some("waiting"), Some(&note), None, None, None)
+        });
+        let _ = load_and_emit(app, job_id);
         on_tick(&row)?;
-        if started.elapsed() > Duration::from_millis(timeout_ms) {
-            return Err(format!("Timed out waiting for creation {creation_id}"));
+        if let Some(t0) = finish_started {
+            if t0.elapsed() > Duration::from_millis(timeout_ms) {
+                return Err(format!("Timed out waiting for creation {creation_id}"));
+            }
         }
         let slept = wait_sleep_cancellable(
             job_id,
             creation_id,
             kind,
             wait_poll_ms(kind),
-            started,
+            finish_started,
             timeout_ms,
         )
         .await?;
@@ -2159,7 +2192,7 @@ async fn run_wait_creation(app: &AppHandle, job: &Job) -> Result<Value, String> 
         app,
         &job.id,
         Some("waiting"),
-        Some(&format!("Waiting for {id}…")),
+        Some("QUEUED"),
         Some(&checkpoint),
         None,
         None,
@@ -2643,11 +2676,15 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
         "pendingCreationId": id,
         "creationId": id,
     });
+    let wait_note = initial
+        .as_ref()
+        .map(|row| creation_gpu_wait_note(&creation_status(row), creation_line_place(row)))
+        .unwrap_or_else(|| "QUEUED".into());
     patch_job(
         app,
         &job.id,
         Some("waiting"),
-        Some(&format!("Waiting for {id}…")),
+        Some(&wait_note),
         Some(&checkpoint),
         None,
         None,
@@ -2665,8 +2702,7 @@ async fn run_parascene_generate(app: &AppHandle, job: &Job) -> Result<Value, Str
             initial,
         },
         |row| {
-            let status = creation_status(row);
-            let note = format!("Waiting for {id} ({status})");
+            let note = creation_gpu_wait_note(&creation_status(row), creation_line_place(row));
             let cp = json!({
                 "name": "wait",
                 "pendingCreationId": id,
@@ -3461,6 +3497,13 @@ mod tests {
         assert!(is_transient_poll_error("get creation failed (403)"));
         assert!(is_transient_poll_error("HTTP 403 (rate limited)"));
         assert!(!is_transient_poll_error("Insufficient credits"));
+    }
+
+    #[test]
+    fn wait_finish_clock_ignores_in_line_status() {
+        assert!(!creation_is_generating("queued"));
+        assert!(!creation_is_generating("creating"));
+        assert!(creation_is_generating("processing"));
     }
 
     #[test]

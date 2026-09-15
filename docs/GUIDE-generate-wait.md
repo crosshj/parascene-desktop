@@ -4,7 +4,7 @@ How Desktop waits after `POST /api/create`. Code: `wait_creation_loop` in `src-t
 
 Hard rules
 
-- Rust owns the wait. FE listens to `jobs-updated`. Safety-net may poll SQLite job rows, not `/api/create/images/:id`.
+- If we have a Parascene creation id, GET that row. Do not sit on a local service job while the creation is already done.
 - One GET per tick. No inner retry. 403 is not 401. Honor `api_cooling_down`.
 - Do not start a second URL poll after wait (`wait_for_url`).
 - Blue / Replicate use their own pollers (they already sleep first). They must not GET Parascene to learn that status.
@@ -23,7 +23,7 @@ Silence (fresh in-flight create only)
 
 Then keep a fixed interval until done. Image 8s. Video 15s. Do not speed up for a `processing` status we do not actually see. Clip duration does not change this.
 
-Timeout starts at create (or resume attach), not at first GET. Image 10 min. Video 20 min. Callers may pass shorter. Cadence saves the rate gate; a short timeout does not. Line-wait (Blue `pending`) is a different phase: [PLAN-blue-capacity-priority.md](./PLAN-blue-capacity-priority.md). When that lands, this finish clock starts at `running`, not create.
+Timeout starts at first `running` / `processing` (on the GPU), not at create or resume attach. Image 10 min. Video 20 min. Callers may pass shorter. Cadence saves the rate gate; a short timeout does not. Line-wait is Blue `pending` / www `queued` (and `creating` until the first generating poll). Status lines match www: **QUEUED**, **Generating…**, **TIMED OUT**. Do not expire line-wait on this finish clock. See [PLAN-blue-capacity-priority.md](./PLAN-blue-capacity-priority.md). After a local timeout, Result auto-checks the same creation once; **Check again** peeks again (does not POST a new create).
 
 Done
 

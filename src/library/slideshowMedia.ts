@@ -36,6 +36,8 @@ export type BakeInfo = {
   status: BakeStatus;
   /** Present when status is "failed". */
   error?: string | null;
+  /** GPU wait copy for add-asset placeholders (QUEUED · N). */
+  waitNote?: string | null;
 };
 
 export function formatBakeError(error: unknown): string {

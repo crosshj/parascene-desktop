@@ -6,6 +6,13 @@ import {
 } from "./addAssetGenerate";
 import type { GenerateDualPhase } from "./generateDualView";
 import { GenerationErrorStatus } from "./GenerationErrorAlert";
+import {
+  gpuWaitPlaceFromNote,
+  gpuWaitPlaceLine,
+  gpuWaitTitle,
+  isGpuWaitInLine,
+} from "./gpuWait";
+import { creationIdFromWaitTimeoutError } from "./addAssetGenerationResume";
 
 type GenerateResultPaneProps = {
   phase: GenerateDualPhase;
@@ -82,13 +89,19 @@ export function GenerateResultPane({
       session?.progressNote?.trim() ||
       progressNote?.trim() ||
       "Working…";
+    const inLine = isGpuWaitInLine(note);
+    const placeLine = gpuWaitPlaceLine(gpuWaitPlaceFromNote(note));
     const progress = addAssetGenerationProgress(
       Math.max(0, tickMs - started),
       expected,
     );
     return (
       <div className="generate-result-pane" aria-live="polite">
-        <h3 className="generate-result-title">Generating…</h3>
+        <h3 className="generate-result-title">{gpuWaitTitle(inLine ? "in_line" : "generating")}</h3>
+        {inLine && placeLine ? (
+          <p className="muted generate-result-place">{placeLine}</p>
+        ) : null}
+        {inLine ? null : (
         <div
           className={`add-asset-generate-progress${
             progress.indeterminate ? " is-indeterminate" : ""
@@ -103,7 +116,10 @@ export function GenerateResultPane({
             }
           />
         </div>
-        <p className="muted generate-result-note">{note}</p>
+        )}
+        {inLine ? null : (
+          <p className="muted generate-result-note">{note}</p>
+        )}
         {session?.steps?.length ? (
           <ul className="generate-result-steps">
             {session.steps.map((step) => (
@@ -139,9 +155,15 @@ export function GenerateResultPane({
       session?.errorMessage?.trim() ||
       errorMessage?.trim() ||
       "Generation failed.";
+    const timedOut =
+      Boolean(creationIdFromWaitTimeoutError(message)) ||
+      /^timed out/i.test(message);
     return (
       <div className="generate-result-pane generate-result-pane--error">
-        <GenerationErrorStatus message={message} />
+        <GenerationErrorStatus
+          message={message}
+          title={timedOut ? gpuWaitTitle("timed_out") : "Generation failed"}
+        />
         {session?.steps?.length ? (
           <ul className="generate-result-steps">
             {session.steps.map((step) => (

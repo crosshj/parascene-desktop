@@ -6,6 +6,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isStaleOpenJob } from "../jobs/types";
 import {
   dualPhaseFromActivity,
   isTerminalActivityState,
@@ -102,6 +103,9 @@ export async function watchServiceRun(
   if (isTerminalActivityState(String(current.status))) {
     return current;
   }
+  if (isStaleOpenJob(current)) {
+    throw new Error(`Service run ${runId} stalled`);
+  }
 
   return new Promise<ServiceRun>((resolve, reject) => {
     let settled = false;
@@ -172,7 +176,15 @@ export async function watchServiceRun(
     timer = setInterval(() => {
       void serviceGet(runId)
         .then((run) => {
-          if (run) apply(run);
+          if (!run) {
+            fail(new Error(`Service run ${runId} not found`));
+            return;
+          }
+          if (isStaleOpenJob(run)) {
+            fail(new Error(`Service run ${runId} stalled`));
+            return;
+          }
+          apply(run);
         })
         .catch(() => {
           /* transient */

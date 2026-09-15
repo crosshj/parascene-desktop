@@ -43,6 +43,17 @@ export function creationIdFromWaitTimeoutError(
   return m?.[1] ?? null;
 }
 
+/** Rust waiter gone/stalled/timed out — GET the creation again. */
+export function shouldRecheckCreationAfterServiceWait(
+  error: unknown,
+  pendingCreationId?: string,
+): boolean {
+  if (!pendingCreationId?.trim()) return false;
+  const msg = error instanceof Error ? error.message : String(error);
+  if (msg === "Cancelled" || msg === "Detached") return false;
+  return true;
+}
+
 /** Placeholders with a persisted remote job that can be reattached. */
 export function findResumableAddAssetPlaceholders(
   timeline: readonly TimelineClip[],
@@ -52,7 +63,7 @@ export function findResumableAddAssetPlaceholders(
     if (!clip.isAddAssetPlaceholder) continue;
     const job = clip.addAssetDraft?.generationJob;
     if (!job) continue;
-    // Timed-out waits stay on the error card until the user clicks Keep waiting.
+    // Timed-out waits stay on the error card until Check again (auto once when Result shows).
     if (job.status === "timed_out") continue;
     const hasRemote =
       Boolean(job.replicatePredictionId?.trim()) ||
@@ -76,6 +87,63 @@ export function draftContinuityMode(
   draft: AddAssetDraft | undefined,
 ): AddAssetContinuityMode {
   return draft?.continuityMode ?? "start_frame";
+}
+
+export type WaitAndFileParasceneCreationOpts = {
+  pendingCreationId: string;
+  projectId: string;
+  projectTitle: string;
+  imagesGroupId: string | null;
+  videosGroupId: string | null;
+  continuityMode: AddAssetContinuityMode;
+  model: string;
+  mediaType?: "image" | "video" | "audio";
+  onProgress: (note: string) => void;
+};
+
+export async function waitAndFileParasceneCreation(
+  opts: WaitAndFileParasceneCreationOpts,
+): Promise<{
+  creationId: string;
+  projectCreationIds: string[];
+  videosGroupId: string | null;
+  imagesGroupId: string | null;
+  mode: AddAssetContinuityMode;
+  model: string;
+}> {
+  const pendingCreationId = opts.pendingCreationId.trim();
+  const waitMedia = opts.mediaType ?? "video";
+  opts.onProgress(`Checking creation ${pendingCreationId}…`);
+  const waited = await runParasceneWaitCreation({
+    creationId: pendingCreationId,
+    projectId: opts.projectId,
+    mediaType: waitMedia,
+    onProgress: opts.onProgress,
+  });
+  if (String(waited.status).toLowerCase() === "failed") {
+    throw new Error(`Video generation failed (${waited.creationId})`);
+  }
+  opts.onProgress("Syncing video to library…");
+  const creationId = await ingestRemoteCreation(
+    waited.creation as Parameters<typeof ingestRemoteCreation>[0],
+  );
+  opts.onProgress("Filing video into project…");
+  const filed = await fileCreationIntoProjectGroup({
+    creationId,
+    mediaType: waitMedia === "image" ? "image" : "video",
+    projectId: opts.projectId,
+    projectTitle: opts.projectTitle,
+    imagesGroupId: opts.imagesGroupId,
+    videosGroupId: opts.videosGroupId,
+  });
+  return {
+    creationId,
+    projectCreationIds: filed.projectCreationIds,
+    videosGroupId: filed.groupId,
+    imagesGroupId: opts.imagesGroupId,
+    mode: opts.continuityMode,
+    model: opts.model,
+  };
 }
 
 export type ResumeParasceneAddAssetOpts = {
@@ -117,6 +185,23 @@ export async function resumeParasceneAddAssetGeneration(
   };
   setStep("generate", "active");
 
+  const pendingCreationId = opts.pendingCreationId?.trim() || "";
+  if (pendingCreationId) {
+    const filed = await waitAndFileParasceneCreation({
+      pendingCreationId,
+      projectId: opts.projectId,
+      projectTitle: opts.projectTitle,
+      imagesGroupId: opts.imagesGroupId,
+      videosGroupId: opts.videosGroupId,
+      continuityMode: opts.continuityMode,
+      model: opts.model,
+      onProgress: opts.onProgress,
+    });
+    setStep("generate", "done");
+    setStep("file", "done");
+    return filed;
+  }
+
   const serviceJobId = opts.serviceJobId?.trim() || "";
   if (serviceJobId) {
     opts.onProgress(`Resuming service job ${serviceJobId}…`);
@@ -141,45 +226,7 @@ export async function resumeParasceneAddAssetGeneration(
     };
   }
 
-  const pendingCreationId = opts.pendingCreationId?.trim() || "";
-  if (!pendingCreationId) {
-    throw new Error("No remote job id available to resume generation.");
-  }
-
-  opts.onProgress(`Resuming wait for ${pendingCreationId}…`);
-  const waited = await runParasceneWaitCreation({
-    creationId: pendingCreationId,
-    projectId: opts.projectId,
-    mediaType: "video",
-    onProgress: opts.onProgress,
-  });
-  if (String(waited.status).toLowerCase() === "failed") {
-    throw new Error(`Video generation failed (${waited.creationId})`);
-  }
-  setStep("generate", "done");
-  setStep("file", "active");
-  opts.onProgress("Syncing video to library…");
-  const creationId = await ingestRemoteCreation(
-    waited.creation as Parameters<typeof ingestRemoteCreation>[0],
-  );
-  opts.onProgress("Filing video into project…");
-  const filed = await fileCreationIntoProjectGroup({
-    creationId,
-    mediaType: "video",
-    projectId: opts.projectId,
-    projectTitle: opts.projectTitle,
-    imagesGroupId: opts.imagesGroupId,
-    videosGroupId: opts.videosGroupId,
-  });
-  setStep("file", "done");
-  return {
-    creationId,
-    projectCreationIds: filed.projectCreationIds,
-    videosGroupId: filed.groupId,
-    imagesGroupId: opts.imagesGroupId,
-    mode: opts.continuityMode,
-    model: opts.model,
-  };
+  throw new Error("No remote job id available to resume generation.");
 }
 
 export type ResumeReplicateWaitContext = {

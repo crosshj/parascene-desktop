@@ -107,6 +107,11 @@ import {
 import { clipVolumePercent } from "../../project/clipVolume";
 import { EditorClipAudioWaveform } from "./EditorClipAudioWaveform";
 import { useLabMainAudioPaths } from "../../lab/useLabMainAudioPaths";
+import {
+  gpuWaitPlaceFromNote,
+  gpuWaitTitle,
+  isGpuWaitInLine,
+} from "./gpuWait";
 
 type TimelinePaneProps = {
   clips: TimelineClip[];
@@ -509,6 +514,7 @@ function MiniClip({
   outsideFolder = false,
   volume = 100,
   audioModel = null,
+  waitNote = null,
   onPointerDown,
   onResizePointerDown,
 }: {
@@ -552,11 +558,15 @@ function MiniClip({
   volume?: number;
   /** Lyria / Flash / MiniMax Speech — tints the clip body only. */
   audioModel?: AudioModelChipLabel | null;
+  /** GPU wait copy — clock on the clip while queued. */
+  waitNote?: string | null;
   onPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const [bakeErrorOpen, setBakeErrorOpen] = useState(false);
   const bakeErrorMessage = bakeError?.trim() || "Bake failed";
+  const waitInLine = isGpuWaitInLine(waitNote);
+  const waitPlace = gpuWaitPlaceFromNote(waitNote);
   const safeDuration =
     Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 1;
   const resolvedClipOutSec =
@@ -654,7 +664,36 @@ function MiniClip({
           </svg>
         </span>
       ) : null}
-      {bakeStatus === "generating" ? (
+      {waitInLine ? (
+        <span
+          className="editor-timeline-clip-bake is-queued"
+          aria-label={
+            gpuWaitTitle("in_line") + (waitPlace ? ` · ${waitPlace}` : "")
+          }
+          title={
+            waitPlace
+              ? `${gpuWaitTitle("in_line")} · ${waitPlace}`
+              : gpuWaitTitle("in_line")
+          }
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="12"
+            height="12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <circle cx="12" cy="12" r="6" />
+            <polyline points="12 10 12 12 13.5 13" />
+            <path d="m16.13 7.66-.81-1.41a2 2 0 0 0-1.74-1h-3.16a2 2 0 0 0-1.74 1l-.81 1.41" />
+            <path d="m16.13 16.34-.81 1.41a2 2 0 0 1-1.74 1h-3.16a2 2 0 0 1-1.74-1l-.81-1.41" />
+          </svg>
+        </span>
+      ) : bakeStatus === "generating" ? (
         <span
           className="editor-timeline-clip-bake is-generating"
           aria-label="Rendering slideshow"
@@ -2553,6 +2592,11 @@ export function TimelinePane({
                   const generating =
                     addAssetGenerationByClipId?.get(clip.id)?.status ===
                     "generating";
+                  const addAssetWaitNote = isAddAssetPlaceholderClip(clip)
+                    ? addAssetGenerationByClipId?.get(clip.id)?.waitNote
+                    : null;
+                  const addAssetWaitPlace =
+                    gpuWaitPlaceFromNote(addAssetWaitNote);
                   return (
                   <MiniClip
                     key={clip.id}
@@ -2570,11 +2614,16 @@ export function TimelinePane({
                         ? `${clip.label} · ${clip.slideshow?.imageAssetIds.length ?? 0} images`
                         : clip.label
                     }
+                    waitNote={addAssetWaitNote}
                     title={
                       isAddAssetPlaceholderClip(clip)
-                        ? addAssetGenerationByClipId?.get(clip.id)?.status ===
-                          "generating"
-                          ? "Generating video…"
+                        ? isGpuWaitInLine(addAssetWaitNote)
+                          ? addAssetWaitPlace
+                            ? `${gpuWaitTitle("in_line")} · ${addAssetWaitPlace}`
+                            : gpuWaitTitle("in_line")
+                          : addAssetGenerationByClipId?.get(clip.id)?.status ===
+                            "generating"
+                          ? gpuWaitTitle("generating")
                           : addAssetGenerationByClipId?.get(clip.id)?.status ===
                               "failed"
                             ? addAssetGenerationByClipId

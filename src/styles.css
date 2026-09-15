@@ -5584,6 +5584,14 @@ input[type="checkbox"].control,
   animation: editor-bake-spin 0.7s linear infinite;
 }
 
+.editor-timeline-clip-bake.is-queued {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  opacity: 0.85;
+}
+
 .editor-generated-clip-badge {
   position: relative;
   display: inline-flex;
@@ -7660,6 +7668,12 @@ body.is-timeline-clip-resizing .editor-timeline-clip.is-resizing .editor-timelin
 }
 
 .generate-result-note {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.generate-result-place {
   margin: 0;
   font-size: 0.86rem;
   line-height: 1.45;

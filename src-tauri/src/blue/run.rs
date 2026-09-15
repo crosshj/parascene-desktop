@@ -346,6 +346,10 @@ fn collect_output_urls(data: &Value) -> Vec<String> {
     urls
 }
 
+fn is_generating_status(status: &str) -> bool {
+    matches!(status, "running" | "processing" | "in_progress")
+}
+
 const POLL_MAX: Duration = Duration::from_secs(30 * 60);
 
 async fn poll_until_done(
@@ -354,37 +358,56 @@ async fn poll_until_done(
     job_id: &str,
     app: &AppHandle,
     my_gen: u64,
-    started: Instant,
 ) -> Result<(String, Vec<String>, Vec<String>, Option<String>), String> {
     let mut attempt = 0u32;
+    let mut finish_started: Option<Instant> = None;
     loop {
         if is_cancelled(my_gen) {
             return Err("Cancelled".into());
         }
-        if started.elapsed() > POLL_MAX {
-            return Err("Blue job timed out after 30 minutes.".into());
+        if let Some(t0) = finish_started {
+            if t0.elapsed() > POLL_MAX {
+                return Err("Blue job timed out after 30 minutes.".into());
+            }
         }
         attempt += 1;
         let wait = Duration::from_millis((800u64).saturating_mul(attempt.min(8) as u64));
         sleep(wait).await;
 
-        emit_run(
-            app,
-            RunProgressEvent {
-                prediction_id: Some(job_id.into()),
-                owner: "blue".into(),
-                name: method.into(),
-                status: "processing".into(),
-                message: Some(format!("Polling job ({attempt})…")),
-                error: None,
-                local_paths: vec![],
-                done: false,
-            },
-        );
-
         let run_dir = history::ensure_run_dir(job_id)?;
         match client::poll_job(creds, method, job_id, &run_dir).await? {
-            client::JobPoll::Pending => continue,
+            client::JobPoll::InFlight {
+                status,
+                place,
+                ahead,
+            } => {
+                if is_generating_status(&status) && finish_started.is_none() {
+                    finish_started = Some(Instant::now());
+                }
+                let line_place = place.or(ahead.map(|n| n.saturating_add(1)));
+                let message = if is_generating_status(&status) {
+                    "Generating…".into()
+                } else {
+                    match line_place {
+                        Some(n) if n > 0 => format!("QUEUED · {n}"),
+                        _ => "QUEUED".into(),
+                    }
+                };
+                emit_run(
+                    app,
+                    RunProgressEvent {
+                        prediction_id: Some(job_id.into()),
+                        owner: "blue".into(),
+                        name: method.into(),
+                        status: status.clone(),
+                        message: Some(message),
+                        error: None,
+                        local_paths: vec![],
+                        done: false,
+                    },
+                );
+                continue;
+            }
             client::JobPoll::Saved(path) => {
                 let local = path.to_string_lossy().to_string();
                 return Ok(("succeeded".into(), vec![], vec![local], None));
@@ -614,15 +637,15 @@ pub async fn run_method_with_hook(
             prediction_id: Some(job_id.clone()),
             owner: "blue".into(),
             name: method.clone(),
-            status: "processing".into(),
-            message: Some(format!("Job {job_id} queued")),
+            status: "pending".into(),
+            message: Some("QUEUED".into()),
             error: None,
             local_paths: vec![],
             done: false,
         },
     );
 
-    let poll_result = poll_until_done(&creds, &method, &job_id, &app, my_gen, started).await;
+    let poll_result = poll_until_done(&creds, &method, &job_id, &app, my_gen).await;
     match poll_result {
         Ok((status, urls, local_paths, preview)) => {
             let elapsed = started.elapsed().as_secs_f64();
@@ -726,7 +749,7 @@ pub async fn wait_job(app: AppHandle, job_id: String) -> Result<RunResult, Strin
     let method = detail.record.name.clone();
     let started = Instant::now();
     let (status, urls, local_paths, preview) =
-        poll_until_done(&creds, &method, &job_id, &app, my_gen, started).await?;
+        poll_until_done(&creds, &method, &job_id, &app, my_gen).await?;
     let elapsed = started.elapsed().as_secs_f64();
     let mut record = detail.record;
     record.status = status.clone();
@@ -772,7 +795,7 @@ pub async fn redownload_job(app: AppHandle, job_id: String) -> Result<RunResult,
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_output_urls, is_in_flight_status};
+    use super::{collect_output_urls, is_generating_status, is_in_flight_status};
     use serde_json::json;
 
     #[test]
@@ -782,6 +805,8 @@ mod tests {
         assert!(is_in_flight_status("starting"));
         assert!(!is_in_flight_status("succeeded"));
         assert!(!is_in_flight_status("failed"));
+        assert!(is_generating_status("running"));
+        assert!(!is_generating_status("pending"));
     }
 
     #[test]
