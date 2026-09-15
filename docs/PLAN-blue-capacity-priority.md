@@ -2,12 +2,10 @@
 
 Blue is one GPU. Desktop, www, Lab, and Direct to Blue all share it. Today that looks like an API that failed. It is a scarce machine. Illustrated: [blue-capacity-scenarios.html](./blue-capacity-scenarios.html) (order + wait). Related: [GUIDE-generation-lanes.md](./GUIDE-generation-lanes.md), [GUIDE-generate-wait.md](./GUIDE-generate-wait.md). Product copy must not brand the credits path “Blue.”
 
-Execute this file in order. Do not start occupancy or bids until in-line vs generating is honest. No per-person: Blue does not get `person`, does not fair-share by account, and does not wait on identity. One line, numbers only.
+Execute this file in order. In-line vs generating is done. Occupancy next. No per-person: Blue does not get `person`, does not fair-share by account, and does not wait on identity. One line, numbers only.
 
 What is wrong now
 - Scheduler: one job at a time, global FIFO, model stickiness. No person. No occupancy.
-- Poll is `202 { status, job_id }`. Blue has `pending` vs `running`; clients lump them. www maps `creating` / `queued` / `processing` the same.
-- Callers expire on their own clocks (www ~10 min of polls; desktop product 10/20 min from create; Direct 30 min) and mark `failed`. Busy looks broken.
 - Desktop cancel stops the local waiter. It does not pull the job off Blue. No per-job dequeue (operator Comfy interrupt is everyone).
 - Stickiness can run a Lab still before a waiting video if the checkpoint is already loaded.
 
@@ -17,18 +15,16 @@ Product slider min is this method’s Blue `cost` from query. They cannot name o
 Direct/Lab: no slider, no credits, no list floor. Boolean always-next: off = max 0; on = max > 50. Sticky off. FIFO among ons. Off sits behind anyone paying list. Can starve the credits path when on — say so.
 
 Execute
-- First (www + desktop): paint in line vs generating from poll. Finish timeout only once `running`.
-- Then (Blue + Parascene query + clients): occupancy before decide. Just wait, Replicate, or don’t start. No slider yet.
+- Done (www + desktop): paint in line vs generating from poll. Finish timeout only once `running`.
+- Next (Blue + Parascene query + clients): occupancy before decide. Just wait, Replicate, or don’t start. No slider yet.
 - Then (Blue order + Parascene charge + clients): max slider, first price, sticky image/video, Direct/Lab always-next.
 - Later: pending dequeue. Not per-person.
 
-First — in line vs generating
-Hard client work. Occupancy and bids are lies after send until this exists.
-Today Result is “Generating…” for all in-flight. Desktop `waiting` means the job, not the GPU. GUIDE-generate-wait is the finish wait (clock starts at create). Line-wait is a different phase — update that guide when the clock moves.
-After enqueue, two states:
-- In line — `pending`, not on the GPU. Place + eta if we have them. Not a gen timer. Do not expire this on the finish clock.
-- Generating — `running`. Then the finish clock and “Generating…” are honest.
-Poll must keep `pending` vs `running` all the way to the UI. Fail only for real breakage. Do not convert 202-busy into a failed Creation.
+Done — in line vs generating
+After enqueue, two states. Poll keeps them all the way to the UI. Fail only for real breakage. Do not convert 202-busy into a failed Creation.
+- In line — `pending` / www `queued` (and `creating` until the first generating poll). Place if we have it. Not a gen timer. Do not expire this on the finish clock.
+- Generating — `running` / `processing`. Then the finish clock and “Generating…” are honest.
+Status lines match www: QUEUED, Generating…, TIMED OUT. GUIDE-generate-wait: finish clock starts at first `running` / `processing`.
 
 Then — occupancy (easy win)
 Peek is a read of the live line before there is a job. No `job_id`. Nothing enters the line. No Creation. No credits. Not a reservation — the line can move; enqueue peeks again.
@@ -53,7 +49,7 @@ Contract (Blue)
 - Pending dequeue by `job_id` (later).
 
 Done when
-- In line vs generating is visible after send. A pending video does not hit the gen-finish timeout and show failed. GUIDE-generate-wait matches: finish clock starts at `running`.
+- Done: in line vs generating is visible after send. A pending video does not hit the gen-finish timeout and show failed. GUIDE-generate-wait matches: finish clock starts at `running`.
 - Occupancy before decide; just wait, Replicate, or don’t start.
 - Product slider from method `cost` to 50, sticky image max and sticky video max, charge that named price at done. Cannot undercut list. Direct/Lab always-next (beats 50), no credit bid. Later higher max can jump pending.
 - Don’t start / dequeue is not `failed`.
