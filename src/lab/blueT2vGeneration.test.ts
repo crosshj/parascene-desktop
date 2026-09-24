@@ -45,4 +45,14 @@ describe("buildBlueT2vCreateArgs", () => {
     });
     expect(args.duration_seconds).toBeUndefined();
   });
+
+  it("passes through newly advertised model ids", () => {
+    const args = buildBlueT2vCreateArgs({
+      prompt: "a quick tracking shot",
+      aspectRatio: "16:9",
+      model: "fasth3_t2v",
+      durationSeconds: 5,
+    });
+    expect(args.model).toBe("fasth3_t2v");
+  });
 });

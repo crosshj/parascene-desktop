@@ -1117,7 +1117,7 @@ export function AddAssetGeneratePanel({
     let cancelled = false;
     void (async () => {
       try {
-        const models = await loadBlueVideoModels();
+        const models = await loadBlueVideoModels({ blueDirect: isBlueDirect });
         if (cancelled) return;
         setBlueModels(models);
         setBlueModelsError(null);
@@ -1132,7 +1132,7 @@ export function AddAssetGeneratePanel({
     return () => {
       cancelled = true;
     };
-  }, [isReplicate, phase, clip.id, fieldsInteractive]);
+  }, [isReplicate, isBlueDirect, phase, clip.id, fieldsInteractive]);
 
   // Keep selected Blue model compatible with continuity / audio method.
   useEffect(() => {
@@ -2172,7 +2172,7 @@ export function AddAssetGeneratePanel({
               <p className="muted">
                 No Blue models for this mode
                 {!isBlueDirect
-                  ? " (Parascene Creation supports Wan/LTX only — use Direct to Blue for MiniMax and more)."
+                  ? " on the current Parascene capability snapshot."
                   : "."}
               </p>
             ) : null}

@@ -5,13 +5,14 @@ import {
   groupSourceCreationIds,
   isGroupCreation,
 } from "../library/creationFlags";
-import { removeFromFolder } from "../library/folderClient";
+import { deleteFolder, removeFromFolder } from "../library/folderClient";
 import { isSeedLibraryCreationId } from "../library/seedLibraryCreations";
 import {
   deleteCreationViaService,
   getRemoteCreation,
   ungroupCreationsViaService,
 } from "../services/parasceneCatalog";
+import { deleteProjectNative } from "./projectFolderClient";
 import { isParasceneCreationId } from "./projectV2";
 import { getProjectV2, patchProjectV2 } from "./projectV2Client";
 
@@ -243,4 +244,38 @@ export async function wipeProjectChildren(opts: {
     await assertWwwChildrenCleared(para);
   }
   return members;
+}
+
+/**
+ * Release native project references before deleting any media.
+ *
+ * Cabinet covers are both project-folder members and usage-index owners. Trying
+ * to delete them while those references are live deadlocks the wipe: generic
+ * unfile refuses project folders and local deletion correctly refuses active
+ * usage. Keep the stored project document until the caller finishes so a
+ * partial remote failure still has a complete retry list.
+ */
+export async function prepareAndWipeProjectChildren(opts: {
+  projectId: string;
+  parasceneProjectId?: string | null;
+  storedCreationIds?: readonly string[];
+  folderMemberIds?: readonly string[];
+  onProgress?: ProjectWipeProgress;
+}): Promise<string[]> {
+  report(opts.onProgress, "Releasing project files…");
+  const released = await deleteProjectNative(opts.projectId);
+  if (released.folderId) {
+    // The release already made this a regular folder, so per-item unfile below
+    // remains safe if the now-redundant folder cleanup races with sync.
+    await deleteFolder(released.folderId).catch(() => {});
+  }
+  return wipeProjectChildren({
+    parasceneProjectId: opts.parasceneProjectId,
+    storedCreationIds: opts.storedCreationIds,
+    folderMemberIds: [
+      ...(opts.folderMemberIds ?? []),
+      ...released.releasedMemberIds,
+    ],
+    onProgress: opts.onProgress,
+  });
 }

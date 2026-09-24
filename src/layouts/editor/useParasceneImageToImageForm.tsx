@@ -19,6 +19,7 @@ import type { AddAssetGeneration } from "../../project/types";
 import {
   parasceneStillModelFamilies,
   parasceneResolveStillModel,
+  parasceneStillRouteUsesBlueQueue,
 } from "./parasceneProductCaps";
 import { startLibraryParasceneImageToImage } from "./libraryAssetGenerationStore";
 import { GenerateFrameSourcePicker } from "./GenerateFrameSourcePicker";
@@ -224,11 +225,15 @@ export function useParasceneImageToImageForm(
       return;
     }
     void (async () => {
-      const occupancy = await confirmGpuOccupancy({
-        lane: "product",
-        method: "image2image",
-      });
-      if (!occupancy.ok) return;
+      let gpuBid: { maxBid: number; alwaysNext: boolean } | undefined;
+      if (parasceneStillRouteUsesBlueQueue(selected)) {
+        const occupancy = await confirmGpuOccupancy({
+          lane: "product",
+          method: "image2image",
+        });
+        if (!occupancy.ok) return;
+        gpuBid = occupancy.bid;
+      }
       startLibraryParasceneImageToImage({
         projectId: project.id,
         projectTitle: project.title,
@@ -240,7 +245,7 @@ export function useParasceneImageToImageForm(
         route: selected,
         sourceCreationId: sourceAssetId,
         placeholderId,
-        gpuBid: occupancy.bid,
+        gpuBid,
       });
     })();
   };

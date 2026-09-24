@@ -10,6 +10,7 @@ import {
   parasceneServerIdForIntent,
   parasceneStillModelEnumGroups,
   parasceneStillModelFamilies,
+  parasceneStillRouteUsesBlueQueue,
   parasceneStillModelsForIntent,
   parasceneAudioModelsForIntent,
   parasceneFieldIsVisible,
@@ -17,6 +18,7 @@ import {
   parasceneResolveAudioModel,
   parasceneVideoModels,
   parasceneVideoModelsForIntent,
+  parasceneProductVideoModelIds,
   parasceneVoiceTrainMethod,
   productCapsServerIds,
 } from "./parasceneProductCaps";
@@ -121,6 +123,8 @@ describe("parasceneProductCaps", () => {
     expect(
       parasceneResolveStillModel("text_to_image", replicate!.id)?.method,
     ).toBe("replicate");
+    expect(parasceneStillRouteUsesBlueQueue(replicate!)).toBe(false);
+    expect(parasceneStillRouteUsesBlueQueue(blue!)).toBe(true);
   });
 
   it("lists legacy helpers", () => {
@@ -131,12 +135,16 @@ describe("parasceneProductCaps", () => {
   it("lists video models per intent", () => {
     const t2v = parasceneVideoModelsForIntent("text_to_video");
     expect(t2v.some((m) => m.id === "wan_t2v")).toBe(true);
+    expect(t2v.some((m) => m.id === "ltx25_t2v")).toBe(true);
+    expect(t2v.some((m) => m.id === "fasth3_t2v")).toBe(true);
     const v2v = parasceneVideoModelsForIntent("video_to_video");
     expect(v2v.some((m) => m.id === "bernini_r_v2v" || m.id === "wan_animate")).toBe(
       true,
     );
     const r2v = parasceneVideoModelsForIntent("reference_to_video");
     expect(r2v.some((m) => m.id === "minimax_r2v")).toBe(true);
+    expect(r2v.some((m) => m.id === "minimax_r2v_turbo")).toBe(true);
+    expect(parasceneProductVideoModelIds()).toContain("ltx25_i2v");
     expect(parasceneVideoModels().length).toBeGreaterThan(3);
   });
 

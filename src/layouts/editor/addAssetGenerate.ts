@@ -5,7 +5,6 @@ import {
 import {
   buildBlueT2vCreateArgs,
   LTX_T2V_MODEL,
-  WAN_T2V_MODEL,
 } from "../../lab/blueT2vGeneration";
 import {
   buildFlf2vCreateArgs,
@@ -60,7 +59,10 @@ import { runReplicateAddAssetGeneration } from "./addAssetReplicateGenerate";
 import { runBlueDirectAddAssetGeneration } from "./addAssetBlueDirectGenerate";
 import { runParasceneProductVideoGeneration } from "./runParasceneProductVideo";
 import { resolveAddAssetIntent, type GenerateIntentId } from "./previewIntent";
-import { isWanFamilyBlueModel } from "./blueVideoModels";
+import {
+  expandLegacyBlueModelId,
+  isWanFamilyBlueModel,
+} from "./blueVideoModels";
 import type { ReplicateVideoContinuity } from "./replicateRunConstraints";
 import type { GenerateMediaRefs } from "./generateMediaRefs";
 
@@ -872,9 +874,7 @@ async function runTextToVideoAddAssetGeneration(
   );
 
   const model =
-    isWanFamilyBlueModel(opts.blueModel ?? "")
-      ? WAN_T2V_MODEL
-      : LTX_T2V_MODEL;
+    expandLegacyBlueModelId(opts.blueModel, "text2video") ?? LTX_T2V_MODEL;
 
   pushSteps(advanceStep(steps, "generate"));
   const args = buildBlueT2vCreateArgs({
@@ -979,6 +979,8 @@ async function runFirstLastAddAssetGeneration(
   pushSteps(completeStep(steps, "end-still"));
 
   const fullPrompt = buildAddAssetGenerationPrompt(opts.prompt);
+  const model =
+    expandLegacyBlueModelId(opts.blueModel, "image2video") ?? FLF2V_MODEL;
 
   pushSteps(advanceStep(steps, "generate"));
   const args = buildFlf2vCreateArgs({
@@ -987,7 +989,8 @@ async function runFirstLastAddAssetGeneration(
     firstImageUrl: firstStill.imageUrl,
     lastImageUrl: lastStill.imageUrl,
     durationSeconds,
-  });
+  }) as unknown as Record<string, unknown>;
+  args.model = model;
   const result = await runParasceneVideoViaService({
     projectId: opts.projectId,
     projectTitle: opts.projectTitle,
@@ -997,7 +1000,7 @@ async function runFirstLastAddAssetGeneration(
     method: "image2video",
     args: args as unknown as Record<string, unknown>,
     intent: "image_to_video",
-    model: FLF2V_MODEL,
+    model,
     onProgress: opts.onProgress,
     onRemoteJob: opts.onRemoteJob,
     gpuBid: opts.gpuBid,
@@ -1020,7 +1023,7 @@ async function runFirstLastAddAssetGeneration(
     startFrameCreationId: firstStill.creationId,
     endFrameCreationId: lastStill.creationId,
     mode: "first_last",
-    model: FLF2V_MODEL,
+    model,
   };
 }
 
@@ -1162,7 +1165,8 @@ async function runStartFrameAddAssetGeneration(
   let filedProjectCreationIds: string[] = [];
   let videosGroupId: string | null = opts.videosGroupId;
   if (audioMode === "none" || (!audioClipId && audioCreationId == null)) {
-    model = useWan ? FLF2V_MODEL : LTX_I2V_MODEL;
+    model =
+      expandLegacyBlueModelId(opts.blueModel, "image2video") ?? LTX_I2V_MODEL;
     const args = useWan
       ? (buildFlf2vCreateArgs({
           prompt: fullPrompt,
@@ -1176,6 +1180,7 @@ async function runStartFrameAddAssetGeneration(
           imageUrl,
           durationSeconds,
         }) as unknown as Record<string, unknown>);
+    args.model = model;
     const result = await runParasceneVideoViaService({
       projectId: opts.projectId,
       projectTitle: opts.projectTitle,
@@ -1198,7 +1203,8 @@ async function runStartFrameAddAssetGeneration(
     if (useWan) {
       throw new Error("WAN has no audio processing — choose Source audio None.");
     }
-    model = "ltx_a2v";
+    model =
+      expandLegacyBlueModelId(opts.blueModel, "audio2video") ?? "ltx_a2v";
     const args: Record<string, unknown> = {
       prompt: fullPrompt.trim(),
       model,

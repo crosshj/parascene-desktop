@@ -34,6 +34,13 @@ export type ParasceneStillModelOption = ParasceneMethodOption & {
   supportsInputImages: boolean;
 };
 
+/** Only server 6 still routes share Blue's GPU occupancy queue. */
+export function parasceneStillRouteUsesBlueQueue(
+  route: Pick<ParasceneStillModelOption, "serverId">,
+): boolean {
+  return route.serverId === 6;
+}
+
 export type ParasceneFieldShowWhen = {
   field: string;
   equals: string;
@@ -620,15 +627,11 @@ export function parasceneVideoModelsForMethod(
   return parasceneVideoModels().filter((m) => m.method === method);
 }
 
-/** Core Creation-path video models historically used on desktop. */
+/** Video models advertised by Parascene's server-6 Creation path. */
 export function parasceneProductVideoModelIds(): Set<string> {
-  const preferred = [
-    "wan_t2v",
-    "ltx_t2v",
-    "wan_i2v",
-    "ltx_i2v",
-    "ltx_a2v",
-  ];
-  const fromCaps = new Set(parasceneVideoModels().map((m) => m.id));
-  return new Set(preferred.filter((id) => fromCaps.has(id)));
+  return new Set(
+    parasceneVideoModels()
+      .filter((model) => model.serverId === 6 && Boolean(METHOD_TO_INTENT[model.method]))
+      .map((model) => model.id),
+  );
 }

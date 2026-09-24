@@ -1,7 +1,7 @@
 {
   "_meta": {
     "endpoint": "GET https://api.parascene.com/api/servers",
-    "refreshed_at": "2026-09-02",
+    "refreshed_at": "2026-09-22",
     "probe_paths": [
       "/api/servers",
       "/api/servers/1",
@@ -305,6 +305,57 @@
           "credits": 0.2,
           "description": "Generate pixel art with PixelLab's Pixflux and Bitforge"
         },
+        "replicateMusic": {
+          "name": "Replicate Music",
+          "async": true,
+          "fields": {
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "default": "google/lyria-3",
+              "options": [
+                {
+                  "hint": "Dramatic background score · 30s",
+                  "label": "Lyria 3",
+                  "value": "google/lyria-3"
+                },
+                {
+                  "hint": "Song / MV track",
+                  "label": "MiniMax Music 2.6",
+                  "value": "minimax/music-2.6",
+                  "fields": {
+                    "lyrics": {
+                      "type": "text",
+                      "label": "Lyrics",
+                      "required": false
+                    },
+                    "is_instrumental": {
+                      "type": "boolean",
+                      "label": "Instrumental",
+                      "default": false,
+                      "required": false
+                    },
+                    "lyrics_optimizer": {
+                      "type": "boolean",
+                      "label": "Lyrics optimizer",
+                      "default": false,
+                      "required": false
+                    }
+                  }
+                }
+              ],
+              "required": true
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            }
+          },
+          "intent": "audio_generate",
+          "credits": 10,
+          "description": "Run a Replicate text-to-music model."
+        },
         "replicateVideo": {
           "name": "Replicate Video",
           "async": true,
@@ -340,335 +391,314 @@
         "replicateSpeech": {
           "name": "Replicate Speech",
           "async": true,
-          "intent": "audio_generate",
-          "credits": 2,
-          "description": "Run a Replicate text-to-speech model.",
           "fields": {
             "model": {
               "type": "select",
               "label": "Model",
-              "required": true,
               "default": "google/gemini-3.1-flash-tts",
               "options": [
                 {
+                  "hint": "Narration",
                   "label": "MiniMax Speech 2.8 Turbo",
                   "value": "minimax/speech-2.8-turbo",
-                  "hint": "Narration",
                   "fields": {
                     "voice": {
-                      "label": "Voice",
                       "type": "select",
-                      "required": false,
+                      "label": "Voice",
                       "options": [
                         {
-                          "value": "English_expressive_narrator",
-                          "label": "Expressive narrator"
+                          "label": "Expressive narrator",
+                          "value": "English_expressive_narrator"
                         },
                         {
-                          "value": "English_radiant_girl",
-                          "label": "Radiant girl"
+                          "label": "Radiant girl",
+                          "value": "English_radiant_girl"
                         },
                         {
-                          "value": "English_magnetic_voiced_man",
-                          "label": "Magnetic man"
+                          "label": "Magnetic man",
+                          "value": "English_magnetic_voiced_man"
                         },
                         {
-                          "value": "English_compelling_lady1",
-                          "label": "Compelling lady"
+                          "label": "Compelling lady",
+                          "value": "English_compelling_lady1"
                         },
                         {
-                          "value": "English_Aussie_Bloke",
-                          "label": "Aussie bloke"
+                          "label": "Aussie bloke",
+                          "value": "English_Aussie_Bloke"
                         },
                         {
-                          "value": "English_captivating_female1",
-                          "label": "Captivating female"
+                          "label": "Captivating female",
+                          "value": "English_captivating_female1"
                         },
                         {
-                          "value": "English_Upbeat_Woman",
-                          "label": "Upbeat woman"
+                          "label": "Upbeat woman",
+                          "value": "English_Upbeat_Woman"
                         },
                         {
-                          "value": "English_Trustworth_Man",
-                          "label": "Trustworthy man"
+                          "label": "Trustworthy man",
+                          "value": "English_Trustworth_Man"
                         },
                         {
-                          "value": "English_CalmWoman",
-                          "label": "Calm woman"
+                          "label": "Calm woman",
+                          "value": "English_CalmWoman"
                         },
                         {
-                          "value": "English_ReservedYoungMan",
-                          "label": "Reserved young man"
+                          "label": "Reserved young man",
+                          "value": "English_ReservedYoungMan"
                         },
                         {
-                          "value": "English_PlayfulGirl",
-                          "label": "Playful girl"
+                          "label": "Playful girl",
+                          "value": "English_PlayfulGirl"
                         },
                         {
-                          "value": "English_ManWithDeepVoice",
-                          "label": "Deep-voiced man"
+                          "label": "Deep-voiced man",
+                          "value": "English_ManWithDeepVoice"
                         },
                         {
-                          "value": "English_Graceful_Lady",
-                          "label": "Graceful lady"
+                          "label": "Graceful lady",
+                          "value": "English_Graceful_Lady"
                         },
                         {
-                          "value": "English_CasualMan",
-                          "label": "Casual man"
+                          "label": "Casual man",
+                          "value": "English_CasualMan"
                         },
                         {
-                          "value": "custom",
-                          "label": "Custom"
+                          "label": "Custom",
+                          "value": "custom"
                         }
-                      ]
+                      ],
+                      "required": false
+                    },
+                    "emotion": {
+                      "type": "select",
+                      "label": "Emotion",
+                      "options": [
+                        {
+                          "label": "Auto",
+                          "value": "auto"
+                        },
+                        {
+                          "label": "Happy",
+                          "value": "happy"
+                        },
+                        {
+                          "label": "Sad",
+                          "value": "sad"
+                        },
+                        {
+                          "label": "Angry",
+                          "value": "angry"
+                        },
+                        {
+                          "label": "Fearful",
+                          "value": "fearful"
+                        },
+                        {
+                          "label": "Disgusted",
+                          "value": "disgusted"
+                        },
+                        {
+                          "label": "Surprised",
+                          "value": "surprised"
+                        },
+                        {
+                          "label": "Calm",
+                          "value": "calm"
+                        },
+                        {
+                          "label": "Fluent",
+                          "value": "fluent"
+                        },
+                        {
+                          "label": "Neutral",
+                          "value": "neutral"
+                        }
+                      ],
+                      "required": false
                     },
                     "voice_id": {
-                      "label": "Voice ID",
                       "type": "text",
+                      "label": "Voice ID",
                       "hidden": true,
                       "required": false,
                       "show_when": {
                         "field": "voice",
                         "equals": "custom"
                       }
-                    },
-                    "emotion": {
-                      "label": "Emotion",
-                      "type": "select",
-                      "required": false,
-                      "options": [
-                        { "value": "auto", "label": "Auto" },
-                        { "value": "happy", "label": "Happy" },
-                        { "value": "sad", "label": "Sad" },
-                        { "value": "angry", "label": "Angry" },
-                        { "value": "fearful", "label": "Fearful" },
-                        { "value": "disgusted", "label": "Disgusted" },
-                        { "value": "surprised", "label": "Surprised" },
-                        { "value": "calm", "label": "Calm" },
-                        { "value": "fluent", "label": "Fluent" },
-                        { "value": "neutral", "label": "Neutral" }
-                      ]
                     }
                   }
                 },
                 {
+                  "hint": "Narration / replacement line",
                   "label": "Gemini 3.1 Flash TTS",
                   "value": "google/gemini-3.1-flash-tts",
-                  "hint": "Narration / replacement line",
                   "fields": {
+                    "style": {
+                      "type": "text",
+                      "label": "Style",
+                      "required": false
+                    },
                     "voice": {
-                      "label": "Voice",
                       "type": "select",
-                      "required": false,
+                      "label": "Voice",
                       "options": [
                         {
-                          "value": "Achernar",
-                          "label": "Achernar — Female; soft and understated"
+                          "label": "Achernar — Female; soft and understated",
+                          "value": "Achernar"
                         },
                         {
-                          "value": "Achird",
-                          "label": "Achird — Male; friendly and approachable"
+                          "label": "Achird — Male; friendly and approachable",
+                          "value": "Achird"
                         },
                         {
-                          "value": "Algenib",
-                          "label": "Algenib — Male; gravelly and textured"
+                          "label": "Algenib — Male; gravelly and textured",
+                          "value": "Algenib"
                         },
                         {
-                          "value": "Algieba",
-                          "label": "Algieba — Male; smooth and polished"
+                          "label": "Algieba — Male; smooth and polished",
+                          "value": "Algieba"
                         },
                         {
-                          "value": "Alnilam",
-                          "label": "Alnilam — Male; firm and authoritative"
+                          "label": "Alnilam — Male; firm and authoritative",
+                          "value": "Alnilam"
                         },
                         {
-                          "value": "Aoede",
-                          "label": "Aoede — Female; breezy and relaxed"
+                          "label": "Aoede — Female; breezy and relaxed",
+                          "value": "Aoede"
                         },
                         {
-                          "value": "Autonoe",
-                          "label": "Autonoe — Female; bright and energetic"
+                          "label": "Autonoe — Female; bright and energetic",
+                          "value": "Autonoe"
                         },
                         {
-                          "value": "Callirrhoe",
-                          "label": "Callirrhoe — Female; easygoing and unforced"
+                          "label": "Callirrhoe — Female; easygoing and unforced",
+                          "value": "Callirrhoe"
                         },
                         {
-                          "value": "Charon",
-                          "label": "Charon — Male; informative and composed"
+                          "label": "Charon — Male; informative and composed",
+                          "value": "Charon"
                         },
                         {
-                          "value": "Despina",
-                          "label": "Despina — Female; smooth and controlled"
+                          "label": "Despina — Female; smooth and controlled",
+                          "value": "Despina"
                         },
                         {
-                          "value": "Enceladus",
-                          "label": "Enceladus — Male; breathy and intimate"
+                          "label": "Enceladus — Male; breathy and intimate",
+                          "value": "Enceladus"
                         },
                         {
-                          "value": "Erinome",
-                          "label": "Erinome — Female; clear and articulate"
+                          "label": "Erinome — Female; clear and articulate",
+                          "value": "Erinome"
                         },
                         {
-                          "value": "Fenrir",
-                          "label": "Fenrir — Male; excitable and energetic"
+                          "label": "Fenrir — Male; excitable and energetic",
+                          "value": "Fenrir"
                         },
                         {
-                          "value": "Gacrux",
-                          "label": "Gacrux — Mature female; grounded and experienced"
+                          "label": "Gacrux — Mature female; grounded and experienced",
+                          "value": "Gacrux"
                         },
                         {
-                          "value": "Iapetus",
-                          "label": "Iapetus — Male; clear and steady"
+                          "label": "Iapetus — Male; clear and steady",
+                          "value": "Iapetus"
                         },
                         {
-                          "value": "Kore",
-                          "label": "Kore — Female; firm and confident"
+                          "label": "Kore — Female; firm and confident",
+                          "value": "Kore"
                         },
                         {
-                          "value": "Laomedeia",
-                          "label": "Laomedeia — Female; upbeat and cheerful"
+                          "label": "Laomedeia — Female; upbeat and cheerful",
+                          "value": "Laomedeia"
                         },
                         {
-                          "value": "Leda",
-                          "label": "Leda — Young female; youthful and light"
+                          "label": "Leda — Young female; youthful and light",
+                          "value": "Leda"
                         },
                         {
-                          "value": "Orus",
-                          "label": "Orus — Male; firm and direct"
+                          "label": "Orus — Male; firm and direct",
+                          "value": "Orus"
                         },
                         {
-                          "value": "Pulcherrima",
-                          "label": "Pulcherrima — Female; forward and assertive"
+                          "label": "Pulcherrima — Female; forward and assertive",
+                          "value": "Pulcherrima"
                         },
                         {
-                          "value": "Puck",
-                          "label": "Puck — Male; upbeat and playful"
+                          "label": "Puck — Male; upbeat and playful",
+                          "value": "Puck"
                         },
                         {
-                          "value": "Rasalgethi",
-                          "label": "Rasalgethi — Male; informative and measured"
+                          "label": "Rasalgethi — Male; informative and measured",
+                          "value": "Rasalgethi"
                         },
                         {
-                          "value": "Sadachbia",
-                          "label": "Sadachbia — Male; lively and animated"
+                          "label": "Sadachbia — Male; lively and animated",
+                          "value": "Sadachbia"
                         },
                         {
-                          "value": "Sadaltager",
-                          "label": "Sadaltager — Male; knowledgeable and assured"
+                          "label": "Sadaltager — Male; knowledgeable and assured",
+                          "value": "Sadaltager"
                         },
                         {
-                          "value": "Schedar",
-                          "label": "Schedar — Male; even and balanced"
+                          "label": "Schedar — Male; even and balanced",
+                          "value": "Schedar"
                         },
                         {
-                          "value": "Sulafat",
-                          "label": "Sulafat — Female; warm and welcoming"
+                          "label": "Sulafat — Female; warm and welcoming",
+                          "value": "Sulafat"
                         },
                         {
-                          "value": "Umbriel",
-                          "label": "Umbriel — Male; easygoing and calm"
+                          "label": "Umbriel — Male; easygoing and calm",
+                          "value": "Umbriel"
                         },
                         {
-                          "value": "Vindemiatrix",
-                          "label": "Vindemiatrix — Female; gentle and tender"
+                          "label": "Vindemiatrix — Female; gentle and tender",
+                          "value": "Vindemiatrix"
                         },
                         {
-                          "value": "Zephyr",
-                          "label": "Zephyr — Female; bright and airy"
+                          "label": "Zephyr — Female; bright and airy",
+                          "value": "Zephyr"
                         },
                         {
-                          "value": "Zubenelgenubi",
-                          "label": "Zubenelgenubi — Male; casual and conversational"
+                          "label": "Zubenelgenubi — Male; casual and conversational",
+                          "value": "Zubenelgenubi"
                         }
-                      ]
-                    },
-                    "style": {
-                      "label": "Style",
-                      "type": "text",
+                      ],
                       "required": false
                     }
                   }
                 }
-              ]
-            },
-            "prompt": {
-              "type": "text",
-              "label": "Prompt",
-              "required": true,
-              "max_length": 400,
-              "hint": "Max 400 characters"
-            }
-          }
-        },
-        "replicateMusic": {
-          "name": "Replicate Music",
-          "async": true,
-          "intent": "audio_generate",
-          "credits": 10,
-          "description": "Run a Replicate text-to-music model.",
-          "fields": {
-            "model": {
-              "type": "select",
-              "label": "Model",
-              "required": true,
-              "default": "google/lyria-3",
-              "options": [
-                {
-                  "label": "Lyria 3",
-                  "value": "google/lyria-3",
-                  "hint": "Dramatic background score · 30s"
-                },
-                {
-                  "label": "MiniMax Music 2.6",
-                  "value": "minimax/music-2.6",
-                  "hint": "Song / MV track",
-                  "fields": {
-                    "lyrics": {
-                      "label": "Lyrics",
-                      "type": "text",
-                      "required": false
-                    },
-                    "is_instrumental": {
-                      "label": "Instrumental",
-                      "type": "boolean",
-                      "required": false,
-                      "default": false
-                    },
-                    "lyrics_optimizer": {
-                      "label": "Lyrics optimizer",
-                      "type": "boolean",
-                      "required": false,
-                      "default": false
-                    }
-                  }
-                }
-              ]
-            },
-            "prompt": {
-              "type": "text",
-              "label": "Prompt",
+              ],
               "required": true
+            },
+            "prompt": {
+              "hint": "Max 400 characters",
+              "type": "text",
+              "label": "Prompt",
+              "required": true,
+              "max_length": 400
             }
-          }
+          },
+          "intent": "audio_generate",
+          "credits": 2,
+          "description": "Run a Replicate text-to-speech model."
         },
         "replicateVoiceTrain": {
           "name": "Replicate Voice Train",
           "async": true,
-          "intent": "voice_train",
-          "credits": 175,
-          "description": "Train a custom voice from an audio file via Replicate. Returns voice_id plus a short preview clip.",
           "fields": {
             "voice_file": {
               "type": "audio_url",
               "label": "Voice file",
               "required": true
             }
-          }
+          },
+          "intent": "voice_train",
+          "credits": 175,
+          "description": "Train a custom voice from an audio file via Replicate. Returns voice_id plus a short preview clip."
         }
       },
       "capability_matrix": [],
-      "last_check_at": "2026-07-25T16:52:22.017Z"
+      "last_check_at": "2026-09-09T05:42:41.032Z"
     },
     "6": {
       "id": 6,
@@ -677,6 +707,66 @@
       "status": "active",
       "server_url": "https://blue.parascene.com/api",
       "methods": {
+        "text2audio": {
+          "id": "text2audio",
+          "name": "Text To Audio",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "YuE2 style prompt; optional lyrics. Length is model-capped (300s).",
+                  "label": "YuE2 — text-to-music",
+                  "value": "yue2"
+                },
+                {
+                  "hint": "MiniMax Music 3 caption + optional lyrics. Length is model-capped (300s).",
+                  "label": "MiniMax Music 3",
+                  "value": "minimax_music3"
+                },
+                {
+                  "hint": "LTX 2.5 soundscape / SFX (no lyrics). Optional duration and prompt magic.",
+                  "label": "LTX 2.5 — text-to-audio",
+                  "value": "ltx25_t2a"
+                }
+              ],
+              "required": true
+            },
+            "lyrics": {
+              "type": "text",
+              "label": "Lyrics",
+              "required": false,
+              "description": "Optional lyrics for YuE2 / MiniMax Music 3. Ignored by LTX T2A."
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "prompt_magic": {
+              "type": "boolean",
+              "label": "Prompt Magic",
+              "default": false,
+              "required": false,
+              "description": "LTX T2A only: expand the prompt with on-box Gemma. Ignored by YuE2 / MiniMax. Default off (matches the graph)."
+            }
+          },
+          "intent": "audio_generate",
+          "credits": 1,
+          "default": false,
+          "description": "Generate audio from a text prompt."
+        },
         "text2image": {
           "id": "text2image",
           "name": "Text To Image",
@@ -834,6 +924,14 @@
                 {
                   "label": "z-image: z_image_turbo_bf16",
                   "value": "diffusion_models/z-image/z_image_turbo_bf16.safetensors"
+                },
+                {
+                  "label": "krea2: krea2_turbo_fp8_scaled",
+                  "value": "diffusion_models/krea2/krea2_turbo_fp8_scaled.safetensors"
+                },
+                {
+                  "label": "krea2: krea2_turbo_int8_convrot",
+                  "value": "diffusion_models/krea2/krea2_turbo_int8_convrot.safetensors"
                 }
               ],
               "required": true
@@ -899,13 +997,23 @@
                 },
                 {
                   "hint": "LTX 2.3 t2v checkpoint (ltx-2.3-22b-dev-fp8.safetensors).",
-                  "label": "LTX — text-to-video",
+                  "label": "LTX 2.3 — text-to-video",
                   "value": "ltx_t2v"
+                },
+                {
+                  "hint": "LTX 2.5 t2v (local distilled int8 transformer).",
+                  "label": "LTX 2.5 — text-to-video",
+                  "value": "ltx25_t2v"
                 },
                 {
                   "hint": "MiniMax H3 FL2VA with native stereo audio.",
                   "label": "MiniMax H3 — text-to-video (FL2VA)",
                   "value": "minimax_t2v"
+                },
+                {
+                  "hint": "FastH3 8-step distill, same graph as i2v with no start frame. Experimental.",
+                  "label": "FastH3 — text-to-video",
+                  "value": "fasth3_t2v"
                 }
               ],
               "required": true
@@ -947,14 +1055,64 @@
               "type": "number",
               "label": "Duration (seconds)",
               "hidden": true,
+              "default": 5,
               "required": false,
-              "description": "Output video length in seconds (default ~5–9 depending on model)."
+              "description": "Output video length in seconds (default 5)."
             }
           },
           "intent": "video_generate",
-          "credits": 1,
+          "credits": 20,
           "default": false,
           "description": "Generate a video from a text prompt."
+        },
+        "audio2audio": {
+          "id": "audio2audio",
+          "name": "Audio To Audio",
+          "async": true,
+          "fields": {
+            "seed": {
+              "min": 0,
+              "step": 1,
+              "type": "number",
+              "label": "Seed",
+              "hidden": true,
+              "required": false,
+              "description": "Optional deterministic seed. If not provided, a random seed is used."
+            },
+            "model": {
+              "type": "select",
+              "label": "Model",
+              "options": [
+                {
+                  "hint": "YuE2 cover from input audio + style prompt; optional lyrics. Length is model-capped (300s).",
+                  "label": "YuE2 — music cover",
+                  "value": "yue2_cover"
+                }
+              ],
+              "required": true
+            },
+            "lyrics": {
+              "type": "text",
+              "label": "Lyrics",
+              "required": false,
+              "description": "Optional lyrics for the cover."
+            },
+            "prompt": {
+              "type": "text",
+              "label": "Prompt",
+              "required": true
+            },
+            "input_audio_urls": {
+              "type": "audio_url_array",
+              "label": "Input Audio",
+              "required": true,
+              "description": "https URL, small data URI (≤256KB), or /api/files/… upload ref."
+            }
+          },
+          "intent": "audio_generate",
+          "credits": 1,
+          "default": false,
+          "description": "Generate a cover or variation from input audio and a prompt."
         },
         "audio2video": {
           "id": "audio2video",
@@ -976,13 +1134,18 @@
               "options": [
                 {
                   "hint": "LTX 2.3 ia2v checkpoint with user-supplied audio (ltx-2.3-22b-dev-fp8.safetensors).",
-                  "label": "LTX — audio-to-video (ia2v)",
+                  "label": "LTX 2.3 — audio-to-video (ia2v)",
                   "value": "ltx_a2v"
                 },
                 {
                   "hint": "Identity lock + user audio (requires start image).",
-                  "label": "LTX — ID-LoRA talkvid",
+                  "label": "LTX 2.3 — ID-LoRA talkvid",
                   "value": "ltx_id_lora"
+                },
+                {
+                  "hint": "LTX 2.5 LOCAL_ONLY ia2v with user-supplied audio.",
+                  "label": "LTX 2.5 — audio-to-video (ia2v)",
+                  "value": "ltx25_a2v"
                 }
               ],
               "required": true
@@ -1037,8 +1200,9 @@
               "type": "number",
               "label": "Duration (seconds)",
               "hidden": true,
+              "default": 5,
               "required": false,
-              "description": "Output video length in seconds (default 9). Audio is trimmed to match."
+              "description": "Output video length in seconds (default 5). Audio is trimmed to match."
             },
             "input_audio_urls": {
               "type": "audio_url_array",
@@ -1048,7 +1212,7 @@
             }
           },
           "intent": "video_generate",
-          "credits": 1,
+          "credits": 20,
           "default": false,
           "description": "Generate a video from audio and prompt; optional start image."
         },
@@ -1094,6 +1258,11 @@
                   "hint": "Bernini-R image editing (high/low noise fp8 pair).",
                   "label": "Wan — Bernini-R image edit",
                   "value": "bernini_r_i2i"
+                },
+                {
+                  "hint": "Krea2 turbo style-reference image-to-image.",
+                  "label": "Krea2 — style reference",
+                  "value": "krea2_style_ref"
                 },
                 {
                   "hint": "Supports single image input. Low censorship.",
@@ -1232,6 +1401,16 @@
                   "value": "minimax_i2v"
                 },
                 {
+                  "hint": "FastH3 i2v (first frame only, native audio).",
+                  "label": "FastH3 — image-to-video",
+                  "value": "fasth3_i2v"
+                },
+                {
+                  "hint": "LTX 2.5 i2v; second image enables first/last-frame.",
+                  "label": "LTX 2.5 — image-to-video",
+                  "value": "ltx25_i2v"
+                },
+                {
                   "hint": "First/last frame style morph with ltx2.3-transition LoRA.",
                   "label": "LTX — style transition (flf + LoRA)",
                   "value": "ltx_style_transition"
@@ -1289,12 +1468,13 @@
               "type": "number",
               "label": "Duration (seconds)",
               "hidden": true,
+              "default": 5,
               "required": false,
-              "description": "Output video length in seconds (default ~5–9 depending on model)."
+              "description": "Output video length in seconds (default 5)."
             }
           },
           "intent": "video_generate",
-          "credits": 1,
+          "credits": 20,
           "default": false,
           "description": "Generate a video from a start image and prompt (local Comfy workflows)."
         },
@@ -1320,6 +1500,11 @@
                   "hint": "Structure/control from video + start image (IC-LoRA).",
                   "label": "LTX — IC-LoRA video control",
                   "value": "ltx_ic_lora"
+                },
+                {
+                  "hint": "LTX 2.5 IC-LoRA structure/control from video + start image.",
+                  "label": "LTX 2.5 — IC-LoRA video control",
+                  "value": "ltx25_ic_lora"
                 },
                 {
                   "hint": "Wan-Animate-2: reference character + driving video @ 16 fps (81-frame block chain).",
@@ -1387,8 +1572,9 @@
               "type": "number",
               "label": "Duration (seconds)",
               "hidden": true,
+              "default": 5,
               "required": false,
-              "description": "Clip length in seconds from the source window (default ~5). Clamped to 1–30."
+              "description": "Clip length in seconds from the source window (default 5). Clamped to 1–30."
             },
             "input_video_urls": {
               "type": "video_url_array",
@@ -1408,7 +1594,7 @@
             }
           },
           "intent": "video_generate",
-          "credits": 1,
+          "credits": 60,
           "default": false,
           "description": "Video control / edit / character transfer (LTX IC-LoRA, Wan Animate 2, Bernini-R, SCAIL2). Wan Fun VACE is parked — see video-capability-notes.md."
         },
@@ -1431,14 +1617,29 @@
               "label": "Model",
               "options": [
                 {
-                  "hint": "Omni-ref: ≤9 images, ≤3 videos, ≤3 audios; native stereo AV out.",
+                  "hint": "Omni-ref: ≤9 images, ≤3 videos, ≤3 audios; native stereo AV out. 20-step quality.",
                   "label": "MiniMax H3 — reference-to-video (Ref2VA)",
                   "value": "minimax_r2v"
                 },
                 {
+                  "hint": "LightX2V turbo LoRA. Same refs as Ref2VA. Do not stack with PDD Acc.",
+                  "label": "MiniMax H3 — r2v turbo 4-step",
+                  "value": "minimax_r2v_turbo"
+                },
+                {
+                  "hint": "Alibaba PDD Acc distill. Same refs as Ref2VA. Do not stack with turbo LoRA.",
+                  "label": "MiniMax H3 — r2v PDD Acc 8-step",
+                  "value": "minimax_r2v_pdd"
+                },
+                {
                   "hint": "Character/prop sheet image → video (IC-LoRA ingredients).",
-                  "label": "LTX — IC-LoRA ingredients",
+                  "label": "LTX 2.3 — IC-LoRA ingredients",
                   "value": "ltx_ingredients"
+                },
+                {
+                  "hint": "LTX 2.5 character/prop sheet image → video.",
+                  "label": "LTX 2.5 — IC-LoRA ingredients",
+                  "value": "ltx25_ingredients"
                 }
               ],
               "required": true
@@ -1486,8 +1687,9 @@
               "step": 0.5,
               "type": "number",
               "label": "Duration (seconds)",
+              "default": 5,
               "required": false,
-              "description": "Output length in seconds (MiniMax typically 4–15)."
+              "description": "Output video length in seconds (default 5). MiniMax clamps to 4–15."
             },
             "input_audio_urls": {
               "type": "audio_url_array",
@@ -1503,7 +1705,7 @@
             }
           },
           "intent": "video_generate",
-          "credits": 1,
+          "credits": 60,
           "default": false,
           "description": "Generate video from multimodal references (images, videos, and/or audio)."
         }
@@ -1531,8 +1733,28 @@
         },
         {
           "flf": false,
+          "model": "ltx25_t2v",
+          "family": "ltx25-t2v",
+          "method": "text2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "t2v"
+          ]
+        },
+        {
+          "flf": false,
           "model": "minimax_t2v",
           "family": "minimax-t2v",
+          "method": "text2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "t2v"
+          ]
+        },
+        {
+          "flf": false,
+          "model": "fasth3_t2v",
+          "family": "fasth3-t2v",
           "method": "text2video",
           "nativeAudio": true,
           "capabilities": [
@@ -1585,6 +1807,27 @@
         },
         {
           "flf": false,
+          "model": "fasth3_i2v",
+          "family": "fasth3-i2v",
+          "method": "image2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "i2v"
+          ]
+        },
+        {
+          "flf": true,
+          "model": "ltx25_i2v",
+          "family": "ltx25-i2v",
+          "method": "image2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "i2v",
+            "flf"
+          ]
+        },
+        {
+          "flf": false,
           "model": "ltx_a2v",
           "family": "ltx-a2v",
           "method": "audio2video",
@@ -1608,8 +1851,31 @@
         },
         {
           "flf": false,
+          "model": "ltx25_a2v",
+          "family": "ltx25-a2v",
+          "method": "audio2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "a2v",
+            "userAudio"
+          ]
+        },
+        {
+          "flf": false,
           "model": "ltx_ic_lora",
           "family": "ltx-ic",
+          "method": "video2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "v2v",
+            "control",
+            "refVideo"
+          ]
+        },
+        {
+          "flf": false,
+          "model": "ltx25_ic_lora",
+          "family": "ltx25-ic",
           "method": "video2video",
           "nativeAudio": true,
           "capabilities": [
@@ -1683,6 +1949,38 @@
         },
         {
           "flf": false,
+          "model": "minimax_r2v_turbo",
+          "family": "minimax-r2v",
+          "method": "reference2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "r2v",
+            "multiRefImages",
+            "refVideo",
+            "refAudio"
+          ],
+          "maxRefAudios": 3,
+          "maxRefImages": 9,
+          "maxRefVideos": 3
+        },
+        {
+          "flf": false,
+          "model": "minimax_r2v_pdd",
+          "family": "minimax-r2v",
+          "method": "reference2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "r2v",
+            "multiRefImages",
+            "refVideo",
+            "refAudio"
+          ],
+          "maxRefAudios": 3,
+          "maxRefImages": 9,
+          "maxRefVideos": 3
+        },
+        {
+          "flf": false,
           "model": "ltx_ingredients",
           "family": "ltx-ingredients",
           "method": "reference2video",
@@ -1694,9 +1992,54 @@
           "maxRefAudios": 0,
           "maxRefImages": 1,
           "maxRefVideos": 0
+        },
+        {
+          "flf": false,
+          "model": "ltx25_ingredients",
+          "family": "ltx25-ingredients",
+          "method": "reference2video",
+          "nativeAudio": true,
+          "capabilities": [
+            "r2v",
+            "multiRefImages"
+          ],
+          "maxRefAudios": 0,
+          "maxRefImages": 1,
+          "maxRefVideos": 0
+        },
+        {
+          "flf": false,
+          "model": "yue2",
+          "family": "yue2",
+          "method": "text2audio",
+          "nativeAudio": true,
+          "capabilities": [
+            "t2a"
+          ]
+        },
+        {
+          "flf": false,
+          "model": "minimax_music3",
+          "family": "minimax-music3",
+          "method": "text2audio",
+          "nativeAudio": true,
+          "capabilities": [
+            "t2a"
+          ]
+        },
+        {
+          "flf": false,
+          "model": "yue2_cover",
+          "family": "yue2-cover",
+          "method": "audio2audio",
+          "nativeAudio": true,
+          "capabilities": [
+            "a2a",
+            "userAudio"
+          ]
         }
       ],
-      "last_check_at": "2026-09-02T18:30:51.529Z"
+      "last_check_at": "2026-09-20T02:03:55.443Z"
     }
   }
 }

@@ -154,6 +154,14 @@
             {
               "label": "z-image: z_image_turbo_bf16",
               "value": "diffusion_models/z-image/z_image_turbo_bf16.safetensors"
+            },
+            {
+              "label": "krea2: krea2_turbo_fp8_scaled",
+              "value": "diffusion_models/krea2/krea2_turbo_fp8_scaled.safetensors"
+            },
+            {
+              "label": "krea2: krea2_turbo_int8_convrot",
+              "value": "diffusion_models/krea2/krea2_turbo_int8_convrot.safetensors"
             }
           ]
         },
@@ -236,6 +244,11 @@
               "label": "Wan — Bernini-R image edit",
               "value": "bernini_r_i2i",
               "hint": "Bernini-R image editing (high/low noise fp8 pair)."
+            },
+            {
+              "label": "Krea2 — style reference",
+              "value": "krea2_style_ref",
+              "hint": "Krea2 turbo style-reference image-to-image."
             },
             {
               "label": "sdxl: dreamshaperXL_turboDpmppSDE",
@@ -351,7 +364,7 @@
       "name": "Text To Video",
       "description": "Generate a video from a text prompt.",
       "intent": "video_generate",
-      "credits": 1,
+      "credits": 20,
       "fields": {
         "model": {
           "label": "Model",
@@ -364,14 +377,24 @@
               "hint": "Wan 2.2 t2v rapid-AIO checkpoint (WAN\\wan2.2-t2v-rapid-aio-v10.safetensors)."
             },
             {
-              "label": "LTX — text-to-video",
+              "label": "LTX 2.3 — text-to-video",
               "value": "ltx_t2v",
               "hint": "LTX 2.3 t2v checkpoint (ltx-2.3-22b-dev-fp8.safetensors)."
+            },
+            {
+              "label": "LTX 2.5 — text-to-video",
+              "value": "ltx25_t2v",
+              "hint": "LTX 2.5 t2v (local distilled int8 transformer)."
             },
             {
               "label": "MiniMax H3 — text-to-video (FL2VA)",
               "value": "minimax_t2v",
               "hint": "MiniMax H3 FL2VA with native stereo audio."
+            },
+            {
+              "label": "FastH3 — text-to-video",
+              "value": "fasth3_t2v",
+              "hint": "FastH3 8-step distill, same graph as i2v with no start frame. Experimental."
             }
           ]
         },
@@ -413,7 +436,8 @@
           "min": 1,
           "max": 15,
           "step": 0.5,
-          "description": "Output video length in seconds (default ~5–9 depending on model)."
+          "default": 5,
+          "description": "Output video length in seconds (default 5)."
         },
         "seed": {
           "label": "Seed",
@@ -433,7 +457,7 @@
       "name": "Image To Video",
       "description": "Generate a video from a start image and prompt (local Comfy workflows).",
       "intent": "video_generate",
-      "credits": 1,
+      "credits": 20,
       "fields": {
         "model": {
           "label": "Model",
@@ -454,6 +478,16 @@
               "label": "MiniMax H3 — image-to-video (FL2VA)",
               "value": "minimax_i2v",
               "hint": "MiniMax H3 FL2VA; second image enables flf2va with native audio."
+            },
+            {
+              "label": "FastH3 — image-to-video",
+              "value": "fasth3_i2v",
+              "hint": "FastH3 i2v (first frame only, native audio)."
+            },
+            {
+              "label": "LTX 2.5 — image-to-video",
+              "value": "ltx25_i2v",
+              "hint": "LTX 2.5 i2v; second image enables first/last-frame."
             },
             {
               "label": "LTX — style transition (flf + LoRA)",
@@ -513,7 +547,8 @@
           "min": 1,
           "max": 15,
           "step": 0.5,
-          "description": "Output video length in seconds (default ~5–9 depending on model)."
+          "default": 5,
+          "description": "Output video length in seconds (default 5)."
         },
         "seed": {
           "label": "Seed",
@@ -533,7 +568,7 @@
       "name": "Audio To Video",
       "description": "Generate a video from audio and prompt; optional start image.",
       "intent": "video_generate",
-      "credits": 1,
+      "credits": 20,
       "fields": {
         "model": {
           "label": "Model",
@@ -541,14 +576,19 @@
           "required": true,
           "options": [
             {
-              "label": "LTX — audio-to-video (ia2v)",
+              "label": "LTX 2.3 — audio-to-video (ia2v)",
               "value": "ltx_a2v",
               "hint": "LTX 2.3 ia2v checkpoint with user-supplied audio (ltx-2.3-22b-dev-fp8.safetensors)."
             },
             {
-              "label": "LTX — ID-LoRA talkvid",
+              "label": "LTX 2.3 — ID-LoRA talkvid",
               "value": "ltx_id_lora",
               "hint": "Identity lock + user audio (requires start image)."
+            },
+            {
+              "label": "LTX 2.5 — audio-to-video (ia2v)",
+              "value": "ltx25_a2v",
+              "hint": "LTX 2.5 LOCAL_ONLY ia2v with user-supplied audio."
             }
           ]
         },
@@ -609,7 +649,8 @@
           "min": 1,
           "max": 15,
           "step": 0.5,
-          "description": "Output video length in seconds (default 9). Audio is trimmed to match."
+          "default": 5,
+          "description": "Output video length in seconds (default 5). Audio is trimmed to match."
         },
         "seed": {
           "label": "Seed",
@@ -629,7 +670,7 @@
       "name": "Video To Video",
       "description": "Video control / edit / character transfer (LTX IC-LoRA, Wan Animate 2, Bernini-R, SCAIL2). Wan Fun VACE is parked — see video-capability-notes.md.",
       "intent": "video_generate",
-      "credits": 1,
+      "credits": 60,
       "fields": {
         "model": {
           "label": "Model",
@@ -640,6 +681,11 @@
               "label": "LTX — IC-LoRA video control",
               "value": "ltx_ic_lora",
               "hint": "Structure/control from video + start image (IC-LoRA)."
+            },
+            {
+              "label": "LTX 2.5 — IC-LoRA video control",
+              "value": "ltx25_ic_lora",
+              "hint": "LTX 2.5 IC-LoRA structure/control from video + start image."
             },
             {
               "label": "Wan — Animate 2",
@@ -713,7 +759,8 @@
           "min": 1,
           "max": 30,
           "step": 0.5,
-          "description": "Clip length in seconds from the source window (default ~5). Clamped to 1–30."
+          "default": 5,
+          "description": "Clip length in seconds from the source window (default 5). Clamped to 1–30."
         },
         "start_offset_seconds": {
           "label": "Start offset (seconds)",
@@ -743,7 +790,7 @@
       "name": "Reference To Video",
       "description": "Generate video from multimodal references (images, videos, and/or audio).",
       "intent": "video_generate",
-      "credits": 1,
+      "credits": 60,
       "fields": {
         "model": {
           "label": "Model",
@@ -753,12 +800,27 @@
             {
               "label": "MiniMax H3 — reference-to-video (Ref2VA)",
               "value": "minimax_r2v",
-              "hint": "Omni-ref: ≤9 images, ≤3 videos, ≤3 audios; native stereo AV out."
+              "hint": "Omni-ref: ≤9 images, ≤3 videos, ≤3 audios; native stereo AV out. 20-step quality."
             },
             {
-              "label": "LTX — IC-LoRA ingredients",
+              "label": "MiniMax H3 — r2v turbo 4-step",
+              "value": "minimax_r2v_turbo",
+              "hint": "LightX2V turbo LoRA. Same refs as Ref2VA. Do not stack with PDD Acc."
+            },
+            {
+              "label": "MiniMax H3 — r2v PDD Acc 8-step",
+              "value": "minimax_r2v_pdd",
+              "hint": "Alibaba PDD Acc distill. Same refs as Ref2VA. Do not stack with turbo LoRA."
+            },
+            {
+              "label": "LTX 2.3 — IC-LoRA ingredients",
               "value": "ltx_ingredients",
               "hint": "Character/prop sheet image → video (IC-LoRA ingredients)."
+            },
+            {
+              "label": "LTX 2.5 — IC-LoRA ingredients",
+              "value": "ltx25_ingredients",
+              "hint": "LTX 2.5 character/prop sheet image → video."
             }
           ]
         },
@@ -818,7 +880,117 @@
           "min": 1,
           "max": 15,
           "step": 0.5,
-          "description": "Output length in seconds (MiniMax typically 4–15)."
+          "default": 5,
+          "description": "Output video length in seconds (default 5). MiniMax clamps to 4–15."
+        },
+        "seed": {
+          "label": "Seed",
+          "type": "number",
+          "required": false,
+          "hidden": true,
+          "min": 0,
+          "step": 1,
+          "description": "Optional deterministic seed. If not provided, a random seed is used."
+        }
+      }
+    },
+    "text2audio": {
+      "id": "text2audio",
+      "default": false,
+      "async": true,
+      "name": "Text To Audio",
+      "description": "Generate audio from a text prompt.",
+      "intent": "audio_generate",
+      "credits": 1,
+      "fields": {
+        "model": {
+          "label": "Model",
+          "type": "select",
+          "required": true,
+          "options": [
+            {
+              "label": "YuE2 — text-to-music",
+              "value": "yue2",
+              "hint": "YuE2 style prompt; optional lyrics. Length is model-capped (300s)."
+            },
+            {
+              "label": "MiniMax Music 3",
+              "value": "minimax_music3",
+              "hint": "MiniMax Music 3 caption + optional lyrics. Length is model-capped (300s)."
+            },
+            {
+              "label": "LTX 2.5 — text-to-audio",
+              "value": "ltx25_t2a",
+              "hint": "LTX 2.5 soundscape / SFX (no lyrics). Optional duration and prompt magic."
+            }
+          ]
+        },
+        "prompt": {
+          "label": "Prompt",
+          "type": "text",
+          "required": true
+        },
+        "lyrics": {
+          "label": "Lyrics",
+          "type": "text",
+          "required": false,
+          "description": "Optional lyrics for YuE2 / MiniMax Music 3. Ignored by LTX T2A."
+        },
+        "prompt_magic": {
+          "label": "Prompt Magic",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "LTX T2A only: expand the prompt with on-box Gemma. Ignored by YuE2 / MiniMax. Default off (matches the graph)."
+        },
+        "seed": {
+          "label": "Seed",
+          "type": "number",
+          "required": false,
+          "hidden": true,
+          "min": 0,
+          "step": 1,
+          "description": "Optional deterministic seed. If not provided, a random seed is used."
+        }
+      }
+    },
+    "audio2audio": {
+      "id": "audio2audio",
+      "default": false,
+      "async": true,
+      "name": "Audio To Audio",
+      "description": "Generate a cover or variation from input audio and a prompt.",
+      "intent": "audio_generate",
+      "credits": 1,
+      "fields": {
+        "model": {
+          "label": "Model",
+          "type": "select",
+          "required": true,
+          "options": [
+            {
+              "label": "YuE2 — music cover",
+              "value": "yue2_cover",
+              "hint": "YuE2 cover from input audio + style prompt; optional lyrics. Length is model-capped (300s)."
+            }
+          ]
+        },
+        "prompt": {
+          "label": "Prompt",
+          "type": "text",
+          "required": true
+        },
+        "lyrics": {
+          "label": "Lyrics",
+          "type": "text",
+          "required": false,
+          "description": "Optional lyrics for the cover."
+        },
+        "input_audio_urls": {
+          "label": "Input Audio",
+          "type": "audio_url_array",
+          "required": true,
+          "description": "https URL, small data URI (≤256KB), or /api/files/… upload ref."
         },
         "seed": {
           "label": "Seed",
@@ -832,7 +1004,7 @@
       }
     }
   },
-  "last_check_at": "2026-09-02T18:36:20.064Z",
+  "last_check_at": "2026-09-22T03:27:21.672Z",
   "capability_matrix": [
     {
       "method": "text2video",
@@ -856,8 +1028,28 @@
     },
     {
       "method": "text2video",
+      "model": "ltx25_t2v",
+      "family": "ltx25-t2v",
+      "capabilities": [
+        "t2v"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
+      "method": "text2video",
       "model": "minimax_t2v",
       "family": "minimax-t2v",
+      "capabilities": [
+        "t2v"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
+      "method": "text2video",
+      "model": "fasth3_t2v",
+      "family": "fasth3-t2v",
       "capabilities": [
         "t2v"
       ],
@@ -909,6 +1101,27 @@
       "flf": true
     },
     {
+      "method": "image2video",
+      "model": "fasth3_i2v",
+      "family": "fasth3-i2v",
+      "capabilities": [
+        "i2v"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
+      "method": "image2video",
+      "model": "ltx25_i2v",
+      "family": "ltx25-i2v",
+      "capabilities": [
+        "i2v",
+        "flf"
+      ],
+      "nativeAudio": true,
+      "flf": true
+    },
+    {
       "method": "audio2video",
       "model": "ltx_a2v",
       "family": "ltx-a2v",
@@ -932,9 +1145,32 @@
       "flf": false
     },
     {
+      "method": "audio2video",
+      "model": "ltx25_a2v",
+      "family": "ltx25-a2v",
+      "capabilities": [
+        "a2v",
+        "userAudio"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
       "method": "video2video",
       "model": "ltx_ic_lora",
       "family": "ltx-ic",
+      "capabilities": [
+        "v2v",
+        "control",
+        "refVideo"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
+      "method": "video2video",
+      "model": "ltx25_ic_lora",
+      "family": "ltx25-ic",
       "capabilities": [
         "v2v",
         "control",
@@ -1008,6 +1244,38 @@
     },
     {
       "method": "reference2video",
+      "model": "minimax_r2v_turbo",
+      "family": "minimax-r2v",
+      "capabilities": [
+        "r2v",
+        "multiRefImages",
+        "refVideo",
+        "refAudio"
+      ],
+      "nativeAudio": true,
+      "flf": false,
+      "maxRefImages": 9,
+      "maxRefVideos": 3,
+      "maxRefAudios": 3
+    },
+    {
+      "method": "reference2video",
+      "model": "minimax_r2v_pdd",
+      "family": "minimax-r2v",
+      "capabilities": [
+        "r2v",
+        "multiRefImages",
+        "refVideo",
+        "refAudio"
+      ],
+      "nativeAudio": true,
+      "flf": false,
+      "maxRefImages": 9,
+      "maxRefVideos": 3,
+      "maxRefAudios": 3
+    },
+    {
+      "method": "reference2video",
       "model": "ltx_ingredients",
       "family": "ltx-ingredients",
       "capabilities": [
@@ -1019,6 +1287,51 @@
       "maxRefImages": 1,
       "maxRefVideos": 0,
       "maxRefAudios": 0
+    },
+    {
+      "method": "reference2video",
+      "model": "ltx25_ingredients",
+      "family": "ltx25-ingredients",
+      "capabilities": [
+        "r2v",
+        "multiRefImages"
+      ],
+      "nativeAudio": true,
+      "flf": false,
+      "maxRefImages": 1,
+      "maxRefVideos": 0,
+      "maxRefAudios": 0
+    },
+    {
+      "method": "text2audio",
+      "model": "yue2",
+      "family": "yue2",
+      "capabilities": [
+        "t2a"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
+      "method": "text2audio",
+      "model": "minimax_music3",
+      "family": "minimax-music3",
+      "capabilities": [
+        "t2a"
+      ],
+      "nativeAudio": true,
+      "flf": false
+    },
+    {
+      "method": "audio2audio",
+      "model": "yue2_cover",
+      "family": "yue2-cover",
+      "capabilities": [
+        "a2a",
+        "userAudio"
+      ],
+      "nativeAudio": true,
+      "flf": false
     }
   ],
   "retention": {

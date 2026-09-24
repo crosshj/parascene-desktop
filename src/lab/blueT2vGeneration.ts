@@ -1,7 +1,8 @@
 export const WAN_T2V_MODEL = "wan_t2v";
 export const LTX_T2V_MODEL = "ltx_t2v";
 
-export type BlueT2vModel = typeof WAN_T2V_MODEL | typeof LTX_T2V_MODEL;
+/** Capability-advertised text2video model id. */
+export type BlueT2vModel = string;
 
 export type BlueT2vCreateArgs = {
   prompt: string;
@@ -10,7 +11,7 @@ export type BlueT2vCreateArgs = {
   duration_seconds?: number;
 };
 
-/** Pure builder for Parascene Blue text2video create args (WAN or LTX). */
+/** Pure builder for Parascene Blue text2video create args. */
 export function buildBlueT2vCreateArgs(opts: {
   prompt: string;
   aspectRatio: string;

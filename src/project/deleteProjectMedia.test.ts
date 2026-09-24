@@ -6,6 +6,8 @@ const patchProjectV2 = vi.fn();
 const getCreation = vi.fn();
 const deleteLocal = vi.fn();
 const removeFromFolder = vi.fn();
+const deleteFolder = vi.fn();
+const deleteProjectNative = vi.fn();
 const deleteCreationViaService = vi.fn();
 const ungroupCreationsViaService = vi.fn();
 
@@ -29,12 +31,18 @@ vi.mock("../library/catalogClient", () => ({
 
 vi.mock("../library/folderClient", () => ({
   removeFromFolder: (...args: unknown[]) => removeFromFolder(...args),
+  deleteFolder: (...args: unknown[]) => deleteFolder(...args),
+}));
+
+vi.mock("./projectFolderClient", () => ({
+  deleteProjectNative: (...args: unknown[]) => deleteProjectNative(...args),
 }));
 
 import {
   assertWwwChildrenCleared,
   collectProjectWipeChildIds,
   isGoneError,
+  prepareAndWipeProjectChildren,
   projectWipeChildIds,
   wipeProjectChildren,
 } from "./deleteProjectMedia";
@@ -168,11 +176,19 @@ describe("wipeProjectChildren", () => {
     getCreation.mockReset();
     deleteLocal.mockReset();
     removeFromFolder.mockReset();
+    deleteFolder.mockReset();
+    deleteProjectNative.mockReset();
     deleteCreationViaService.mockReset();
     ungroupCreationsViaService.mockReset();
     getCreation.mockRejectedValue(new Error("Creation 11 not found"));
     deleteLocal.mockResolvedValue({});
     removeFromFolder.mockResolvedValue(undefined);
+    deleteFolder.mockResolvedValue(undefined);
+    deleteProjectNative.mockResolvedValue({
+      projectId: "project-1",
+      folderId: null,
+      releasedMemberIds: [],
+    });
     deleteCreationViaService.mockResolvedValue(undefined);
     patchProjectV2.mockResolvedValue({ id: "99", items: [] });
   });
@@ -217,5 +233,39 @@ describe("wipeProjectChildren", () => {
     await expect(
       wipeProjectChildren({ parasceneProjectId: "99" }),
     ).rejects.toThrow("Deleted 0 of 1");
+  });
+
+  it("releases cabinet references and the project folder before purging children", async () => {
+    const order: string[] = [];
+    const cabinetIds = ["31145", "31146", "31147", "31148"];
+    deleteProjectNative.mockImplementation(async () => {
+      order.push("release-project");
+      return {
+        projectId: "project-1",
+        folderId: "folder-1",
+        releasedMemberIds: cabinetIds,
+      };
+    });
+    deleteFolder.mockImplementation(async () => {
+      order.push("delete-folder");
+    });
+    deleteCreationViaService.mockImplementation(async (id: string) => {
+      order.push(`delete-remote:${id}`);
+    });
+
+    await expect(
+      prepareAndWipeProjectChildren({
+        projectId: "project-1",
+        storedCreationIds: cabinetIds,
+      }),
+    ).resolves.toEqual(cabinetIds);
+
+    expect(deleteProjectNative).toHaveBeenCalledWith("project-1");
+    expect(deleteFolder).toHaveBeenCalledWith("folder-1");
+    expect(order.slice(0, 3)).toEqual([
+      "release-project",
+      "delete-folder",
+      "delete-remote:31145",
+    ]);
   });
 });

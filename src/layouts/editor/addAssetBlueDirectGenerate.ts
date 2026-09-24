@@ -290,10 +290,9 @@ export async function runBlueDirectAddAssetGeneration(
     args = buildBlueT2vCreateArgs({
       prompt: fullPrompt,
       aspectRatio: opts.aspectRatio,
-      model: model as "wan_t2v" | "ltx_t2v",
+      model,
       durationSeconds,
     }) as unknown as Record<string, unknown>;
-    args.model = model;
 
     pushSteps(advanceStep(steps, "generate"));
     opts.onProgress("Running on Direct to Blue…");

@@ -1,10 +1,10 @@
 /**
  * One-shot probe for Parascene Blue GET /api capabilities.
- * Reads Blue creds from the local catalog DB (debug auth store) or env.
+ * Reads Blue creds from the machine session DB (debug auth store) or env.
  *
  * Usage: npx tsx scripts/probe-blue-api.mts
  *
- * Env fallback (when Settings/catalog is empty):
+ * Env fallback (when Settings/session is empty):
  *   PARASCENE_BLUE_TOKEN
  *   PARASCENE_BLUE_CF_ACCESS_CLIENT_ID
  *   PARASCENE_BLUE_CF_ACCESS_CLIENT_SECRET
@@ -16,12 +16,11 @@ import os from "node:os";
 import path from "node:path";
 
 const BLUE_BASE = "https://blue.parascene.com";
-const CATALOG_DB = path.join(
+const SESSION_DB = path.join(
   os.homedir(),
   "Movies",
   "Parascene",
-  "Library",
-  "catalog.sqlite",
+  "session.sqlite",
 );
 const OUT_PATH = path.join(
   import.meta.dirname,
@@ -36,12 +35,12 @@ type BlueCreds = {
   cfAccessClientSecret: string;
 };
 
-function loadCredsFromCatalog(): BlueCreds | null {
-  if (!fs.existsSync(CATALOG_DB)) return null;
+function loadCredsFromSession(): BlueCreds | null {
+  if (!fs.existsSync(SESSION_DB)) return null;
   const raw = execFileSync(
     "/usr/bin/sqlite3",
     [
-      CATALOG_DB,
+      SESSION_DB,
       "SELECT value FROM sync_meta WHERE key = 'auth_store:blue_provider_credentials' LIMIT 1;",
     ],
     { encoding: "utf8" },
@@ -66,7 +65,7 @@ function loadCredsFromEnv(): BlueCreds | null {
 }
 
 async function main() {
-  const creds = loadCredsFromCatalog() ?? loadCredsFromEnv();
+  const creds = loadCredsFromSession() ?? loadCredsFromEnv();
   if (!creds) {
     console.error(
       "No Blue credentials — set them in Settings or PARASCENE_BLUE_* env.",

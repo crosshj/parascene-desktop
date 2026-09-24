@@ -7,6 +7,7 @@ import {
   blueCapabilities,
   type BlueCapabilities,
 } from "../../blue/blueClient";
+import blueCapabilitiesSnapshot from "../../../docs/parascene-blue-api-capabilities.json";
 
 export type BlueStillMethod = "text2image" | "image2image";
 
@@ -15,26 +16,6 @@ export type BlueStillModelOption = {
   label: string;
   hint?: string;
 };
-
-/** Sensible defaults from the checked-in capabilities snapshot. */
-const TEXT2IMAGE_SNAPSHOT: BlueStillModelOption[] = [
-  {
-    id: "diffusion_models/flux/flux1-dev.safetensors",
-    label: "flux: flux1-dev",
-  },
-  {
-    id: "checkpoints/FLUX1/flux1-dev-fp8.safetensors",
-    label: "flux: flux1-dev-fp8",
-  },
-  {
-    id: "diffusion_models/flux/flux1-schnell.safetensors",
-    label: "flux: flux1-schnell",
-  },
-  {
-    id: "diffusion_models/flux/flux1-krea-dev_fp8_scaled.safetensors",
-    label: "flux: flux1-krea-dev_fp8_scaled",
-  },
-];
 
 function parseStillModels(
   caps: BlueCapabilities,
@@ -69,7 +50,10 @@ export async function loadBlueStillModels(
   } catch {
     /* offline / not configured */
   }
-  return method === "text2image" ? TEXT2IMAGE_SNAPSHOT : [];
+  return parseStillModels(
+    blueCapabilitiesSnapshot as unknown as BlueCapabilities,
+    method,
+  );
 }
 
 export function pickBlueStillModel(

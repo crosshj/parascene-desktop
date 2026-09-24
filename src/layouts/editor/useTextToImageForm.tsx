@@ -25,6 +25,7 @@ import {
 } from "./libraryAssetGenerationStore";
 import {
   parasceneResolveStillModel,
+  parasceneStillRouteUsesBlueQueue,
   parasceneStillModelEnumGroups,
   parasceneStillModelFamilies,
 } from "./parasceneProductCaps";
@@ -311,8 +312,17 @@ export function useTextToImageForm(
     if (!modelKey) return;
 
     void (async () => {
+      const parasceneRoute =
+        server === "parascene_blue"
+          ? (parasceneRoutes?.find((m) => m.id === modelKey) ??
+            parasceneResolveStillModel("text_to_image", modelKey))
+          : null;
       let gpuBid: { maxBid: number; alwaysNext: boolean } | undefined;
-      if (server !== "replicate") {
+      const usesBlueQueue =
+        server === "blue_direct" ||
+        (parasceneRoute != null &&
+          parasceneStillRouteUsesBlueQueue(parasceneRoute));
+      if (usesBlueQueue) {
         const occupancy = await confirmGpuOccupancy({
           lane: server === "blue_direct" ? "direct" : "product",
           method: "text2image",
@@ -322,10 +332,7 @@ export function useTextToImageForm(
       }
 
       if (server === "parascene_blue") {
-        const route =
-          parasceneRoutes?.find((m) => m.id === modelKey) ??
-          parasceneResolveStillModel("text_to_image", modelKey);
-        if (!route) return;
+        if (!parasceneRoute) return;
         startLibraryParasceneTextToImage({
           projectId: project.id,
           projectTitle: project.title,
@@ -333,8 +340,8 @@ export function useTextToImageForm(
           videosGroupId: project.videosGroupId,
           aspectRatio,
           prompt,
-          modelId: route.id,
-          route,
+          modelId: parasceneRoute.id,
+          route: parasceneRoute,
           placeholderId,
           destination: "assets",
           gpuBid,

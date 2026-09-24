@@ -8,12 +8,17 @@ import {
   type BlueCapabilities,
   type BlueCapabilityRow,
 } from "../../blue/blueClient";
+import blueCapabilitiesSnapshot from "../../../docs/parascene-blue-api-capabilities.json";
 import type { GenerateIntentId } from "./previewIntent";
 import type { AddAssetAudioMode, AddAssetContinuityMode } from "./addAssetGenerate";
 import {
   DEFAULT_R2V_MODEL_ID,
   DEFAULT_V2V_MODEL_ID,
 } from "./generateMediaRefs";
+import {
+  parasceneProductVideoModelIds,
+  parasceneVideoModels,
+} from "./parasceneProductCaps";
 
 export type BlueVideoMethod =
   | "text2video"
@@ -31,115 +36,8 @@ export type BlueVideoModelOption = {
   hint?: string;
 };
 
-/** Parascene Creation path only runs these method models today. */
-export const PARASCENE_BLUE_VIDEO_MODELS = new Set([
-  "wan_t2v",
-  "ltx_t2v",
-  "wan_i2v",
-  "ltx_i2v",
-  "ltx_a2v",
-]);
-
-const SNAPSHOT: BlueVideoModelOption[] = [
-  {
-    id: "wan_t2v",
-    label: "Wan — text-to-video (rapid AIO)",
-    method: "text2video",
-    flf: false,
-    nativeAudio: false,
-  },
-  {
-    id: "ltx_t2v",
-    label: "LTX — text-to-video",
-    method: "text2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "minimax_t2v",
-    label: "MiniMax H3 — text-to-video (FL2VA)",
-    method: "text2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "wan_i2v",
-    label: "Wan — image-to-video",
-    method: "image2video",
-    flf: true,
-    nativeAudio: false,
-  },
-  {
-    id: "ltx_i2v",
-    label: "LTX — image-to-video",
-    method: "image2video",
-    flf: true,
-    nativeAudio: true,
-  },
-  {
-    id: "minimax_i2v",
-    label: "MiniMax H3 — image-to-video (FL2VA)",
-    method: "image2video",
-    flf: true,
-    nativeAudio: true,
-  },
-  {
-    id: "ltx_style_transition",
-    label: "LTX — style transition (flf + LoRA)",
-    method: "image2video",
-    flf: true,
-    nativeAudio: true,
-  },
-  {
-    id: "ltx_a2v",
-    label: "LTX — audio-to-video (ia2v)",
-    method: "audio2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "ltx_id_lora",
-    label: "LTX — ID-LoRA talkvid",
-    method: "audio2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "bernini_r_v2v",
-    label: "Wan — Bernini-R video edit",
-    method: "video2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "wan_animate",
-    label: "Wan — Animate 2",
-    method: "video2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "ltx_ic_lora",
-    label: "LTX — IC-LoRA video control",
-    method: "video2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "minimax_r2v",
-    label: "MiniMax H3 — reference-to-video (Ref2VA)",
-    method: "reference2video",
-    flf: false,
-    nativeAudio: true,
-  },
-  {
-    id: "ltx_ingredients",
-    label: "LTX — IC-LoRA ingredients",
-    method: "reference2video",
-    flf: false,
-    nativeAudio: true,
-  },
-];
+/** Parascene Creation support follows the refreshed server-6 capability snapshot. */
+export const PARASCENE_BLUE_VIDEO_MODELS = parasceneProductVideoModelIds();
 
 function isBlueVideoMethod(value: string): value is BlueVideoMethod {
   return (
@@ -222,7 +120,26 @@ function parseFromCapabilities(caps: BlueCapabilities): BlueVideoModelOption[] {
   });
 }
 
-export async function loadBlueVideoModels(): Promise<BlueVideoModelOption[]> {
+function productSnapshotVideoModels(): BlueVideoModelOption[] {
+  return parasceneVideoModels()
+    .filter(
+      (model): model is typeof model & { method: BlueVideoMethod } =>
+        model.serverId === 6 && isBlueVideoMethod(model.method),
+    )
+    .map((model) => ({
+      id: model.id,
+      label: model.label,
+      method: model.method,
+      flf: model.flf,
+      nativeAudio: model.nativeAudio,
+      hint: model.hint,
+    }));
+}
+
+export async function loadBlueVideoModels(opts?: {
+  blueDirect?: boolean;
+}): Promise<BlueVideoModelOption[]> {
+  if (opts?.blueDirect === false) return productSnapshotVideoModels();
   try {
     const caps = await blueCapabilities();
     const parsed = parseFromCapabilities(caps);
@@ -230,7 +147,9 @@ export async function loadBlueVideoModels(): Promise<BlueVideoModelOption[]> {
   } catch {
     /* offline / not configured — use snapshot */
   }
-  return SNAPSHOT;
+  return parseFromCapabilities(
+    blueCapabilitiesSnapshot as unknown as BlueCapabilities,
+  );
 }
 
 export function blueMethodForIntent(
@@ -345,7 +264,11 @@ export function resolveBlueVideoModelId(opts: {
   models?: readonly BlueVideoModelOption[] | null;
 }): string {
   const picked = pickCompatibleBlueModel({
-    models: opts.models?.length ? opts.models : SNAPSHOT,
+    models: opts.models?.length
+      ? opts.models
+      : parseFromCapabilities(
+          blueCapabilitiesSnapshot as unknown as BlueCapabilities,
+        ),
     method: opts.method,
     continuity: opts.continuity,
     blueDirect: opts.blueDirect,

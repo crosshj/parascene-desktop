@@ -3,6 +3,7 @@ import {
   blueMethodForTimelineFill,
   expandLegacyBlueModelId,
   filterBlueVideoModels,
+  loadBlueVideoModels,
   pickCompatibleBlueModel,
   resolveBlueVideoModelId,
   type BlueVideoModelOption,
@@ -132,14 +133,35 @@ describe("blueVideoModels", () => {
     expect(list.map((m) => m.id)).not.toContain("ltx_style_transition");
   });
 
-  it("hides MiniMax on Parascene Creation path", () => {
+  it("shows every model advertised by the Parascene Creation path", () => {
     const list = filterBlueVideoModels({
       models: MODELS,
       method: "image2video",
       continuity: "start_frame",
       blueDirect: false,
     });
-    expect(list.map((m) => m.id)).toEqual(["wan_i2v", "ltx_i2v"]);
+    expect(list.map((m) => m.id)).toEqual([
+      "wan_i2v",
+      "ltx_i2v",
+      "minimax_i2v",
+    ]);
+  });
+
+  it("loads newly pulled video models for Parascene", async () => {
+    const models = await loadBlueVideoModels({ blueDirect: false });
+    expect(models.map((model) => model.id)).toEqual(
+      expect.arrayContaining([
+        "ltx25_t2v",
+        "fasth3_t2v",
+        "fasth3_i2v",
+        "ltx25_i2v",
+        "ltx25_a2v",
+        "ltx25_ic_lora",
+        "minimax_r2v_turbo",
+        "minimax_r2v_pdd",
+        "ltx25_ingredients",
+      ]),
+    );
   });
 
   it("keeps flf models for first+last", () => {

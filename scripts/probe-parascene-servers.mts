@@ -1,6 +1,6 @@
 /**
  * One-shot probe for Parascene product server capabilities.
- * Reads OAuth session from the local catalog DB (debug auth store) and calls
+ * Reads OAuth session from the machine session DB (debug auth store) and calls
  * GET https://api.parascene.com/api/servers (+ per-server paths).
  *
  * Usage: npx tsx scripts/probe-parascene-servers.mts
@@ -12,12 +12,11 @@ import os from "node:os";
 import path from "node:path";
 
 const API_BASE = "https://api.parascene.com";
-const CATALOG_DB = path.join(
+const SESSION_DB = path.join(
   os.homedir(),
   "Movies",
   "Parascene",
-  "Library",
-  "catalog.sqlite",
+  "session.sqlite",
 );
 const OUT_PATH = path.join(
   import.meta.dirname,
@@ -29,20 +28,20 @@ const OUT_PATH = path.join(
 type Json = Record<string, unknown>;
 
 function loadAccessToken(): string {
-  if (!fs.existsSync(CATALOG_DB)) {
-    throw new Error(`Catalog DB not found at ${CATALOG_DB}`);
+  if (!fs.existsSync(SESSION_DB)) {
+    throw new Error(`Session DB not found at ${SESSION_DB}`);
   }
   const raw = execFileSync(
     "/usr/bin/sqlite3",
     [
-      CATALOG_DB,
+      SESSION_DB,
       "SELECT value FROM sync_meta WHERE key = 'auth_store:parascene_session' LIMIT 1;",
     ],
     { encoding: "utf8" },
   ).trim();
   if (!raw) {
     throw new Error(
-      "No parascene_session in catalog DB — sign in via the app first",
+      "No parascene_session in session DB — sign in via the app first",
     );
   }
   const session = JSON.parse(raw) as { accessToken?: string };

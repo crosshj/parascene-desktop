@@ -72,7 +72,6 @@ import {
 } from "../project/projectUsage";
 import {
   addProjectAssets,
-  deleteProjectNative,
   getProjectFolder,
   reconcileLegacyProjectFolder,
   releaseOrphanProjectFolder,
@@ -93,7 +92,6 @@ import { cabinetPersistPatch } from "../project/cabinetPersist";
 import { collapseCabinetMembersFromProjectFolder } from "../project/cabinetFolderCollapse";
 import {
   createFolder,
-  deleteFolder,
   listFolders,
   type LibraryFolder,
 } from "../library/folderClient";
@@ -159,7 +157,7 @@ import {
 import { deleteCreationViaService } from "../services/parasceneCatalog";
 import {
   isGoneError,
-  wipeProjectChildren,
+  prepareAndWipeProjectChildren,
 } from "../project/deleteProjectMedia";
 import {
   isParasceneCreationId,
@@ -1802,7 +1800,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       try {
         if (stored && isStoredProjectV2(stored)) {
           const para = stored.parasceneProjectId?.trim() ?? "";
-          const members = await wipeProjectChildren({
+          const members = await prepareAndWipeProjectChildren({
+            projectId: stored.id,
             parasceneProjectId: para,
             storedCreationIds: stored.creationIds,
             onProgress,
@@ -1832,23 +1831,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
           );
           return true;
         }
-        let folderId: string | null = null;
-        let folderMembers: string[] = [];
-        try {
-          const folder = await getProjectFolder(target);
-          folderId = folder.id;
-          folderMembers = folder.memberIds;
-        } catch {
-          /* already released */
-        }
-        const members = await wipeProjectChildren({
+        const members = await prepareAndWipeProjectChildren({
+          projectId: target,
           storedCreationIds: stored?.creationIds,
-          folderMemberIds: folderMembers,
           onProgress,
         });
         onProgress?.("Deleting the project…");
-        await deleteProjectNative(target);
-        if (folderId) await deleteFolder(folderId).catch(() => {});
         deleteStoredProjectDocument(target);
         await flushProjectStore();
         clearOpen(target);
