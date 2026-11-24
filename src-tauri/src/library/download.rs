@@ -65,6 +65,54 @@ fn is_systemic_download_err(err: &str) -> bool {
         || err.contains("Not signed in")
 }
 
+/// Sentinel for a catalog row removed because Parascene no longer has it.
+const DELETED_REMOTE: &str = "deleted on parascene";
+
+fn download_err_is_missing(err: &str) -> bool {
+    err.contains("HTTP 404") || err.contains("HTTP 410")
+}
+
+/// Deleted creations stay in the local catalog and 404 on every file URL.
+/// Confirm the creation itself is gone, then drop the row so it is not retried.
+async fn drop_deleted_creation(
+    app: &AppHandle,
+    paths: &super::paths::ParascenePaths,
+    id: &str,
+) -> bool {
+    let err = match super::parascene_api::get_creation(id).await {
+        Ok(_) => return false,
+        Err(err) => err,
+    };
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("rate limit")
+        || lower.contains("cooling")
+        || lower.contains("403")
+        || lower.contains("429")
+        || lower.contains("401")
+        || lower.contains("sign in")
+        || lower.contains("session")
+    {
+        return false;
+    }
+    if !(lower.contains("not found") || lower.contains("404") || lower.contains("410")) {
+        return false;
+    }
+    let Ok(conn) = ready_connection(paths) else {
+        return false;
+    };
+    match delete_creation_local(&conn, paths, id) {
+        Ok(()) => {
+            let _ = app.emit("library-creation-deleted", id.to_string());
+            eprintln!("[library] removed deleted creation {id}");
+            true
+        }
+        Err(err) => {
+            eprintln!("[library] kept deleted creation {id}: {err}");
+            false
+        }
+    }
+}
+
 fn media_fail_should_abort(streak: u32, err: &str) -> bool {
     if is_systemic_download_err(err) {
         streak >= MEDIA_SYSTEMIC_FAIL_ABORT
@@ -367,6 +415,38 @@ fn url_content_token(url: &str) -> String {
 
 fn download_stem(id: &str, url: &str) -> String {
     format!("{}_{}", safe_id(id), url_content_token(url))
+}
+
+/// The media route requires `creation_id`. Older catalog rows stored the bare
+/// filename URL, so stamp the id this row already has before the GET.
+fn media_url_with_creation_id(url: &str, creation_id: &str) -> String {
+    let id = creation_id.trim();
+    let Ok(n) = id.parse::<u64>() else {
+        return url.to_string();
+    };
+    if n == 0 {
+        return url.to_string();
+    }
+    let (base, hash) = match url.split_once('#') {
+        Some((base, hash)) => (base, Some(hash)),
+        None => (url, None),
+    };
+    let is_created_media = base.contains("/api/images/created/")
+        || base.contains("/api/videos/created/")
+        || base.contains("/api/creations/media/");
+    if !is_created_media {
+        return url.to_string();
+    }
+    let query = base.split_once('?').map(|(_, q)| q).unwrap_or("");
+    if query.split('&').any(|part| part.starts_with("creation_id=")) {
+        return url.to_string();
+    }
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let stamped = format!("{base}{sep}creation_id={id}");
+    match hash {
+        Some(h) => format!("{stamped}#{h}"),
+        None => stamped,
+    }
 }
 
 #[derive(Debug)]
@@ -1078,6 +1158,7 @@ async fn download_thumbs_only(
                 let n = urls.len();
                 for (i, url) in urls.into_iter().enumerate() {
                     let last = i + 1 == n;
+                    let url = media_url_with_creation_id(&url, &id);
                     let stem = download_stem(&id, &url);
                     match download_url_with_ext(&url, "image", &thumbs_dir, &stem).await {
                         Ok(path) => {
@@ -1099,6 +1180,11 @@ async fn download_thumbs_only(
                         }
                     }
                 }
+                if download_err_is_missing(&last_err)
+                    && drop_deleted_creation(&app, &paths, &id).await
+                {
+                    return (id, title, Err(DELETED_REMOTE.into()));
+                }
                 eprintln!("[library] thumb fail {id}: {last_err}");
                 (id, title, Err(last_err))
             }
@@ -1108,6 +1194,7 @@ async fn download_thumbs_only(
     let mut downloaded = 0u32;
     let mut done = 0u32;
     let mut failed = 0u32;
+    let mut removed = 0u32;
     let mut auth_fail_streak = 0u32;
     // Commit + progress as each fetch finishes — never wait for the whole batch.
     while let Some((id, title, result)) = stream.next().await {
@@ -1130,6 +1217,21 @@ async fn download_thumbs_only(
                         kind: "thumb".into(),
                         state: "done".into(),
                         detail: None,
+                    },
+                );
+                emit_progress(app, done, total, Some(id), failed, "thumbs");
+            }
+            Err(err) if err == DELETED_REMOTE => {
+                auth_fail_streak = 0;
+                removed += 1;
+                let _ = app.emit(
+                    "library-sync-item",
+                    SyncItemEvent {
+                        id: id.clone(),
+                        title,
+                        kind: "thumb".into(),
+                        state: "skipped".into(),
+                        detail: Some("Deleted".into()),
                     },
                 );
                 emit_progress(app, done, total, Some(id), failed, "thumbs");
@@ -1167,7 +1269,9 @@ async fn download_thumbs_only(
     if downloaded > 0 {
         invalidate_disk_size_cache();
     }
-    eprintln!("[library] thumb batch done: {downloaded}/{total} ok, {failed} failed");
+    eprintln!(
+        "[library] thumb batch done: {downloaded}/{total} ok, {failed} failed, {removed} deleted"
+    );
     Ok((downloaded, thumb_paths))
 }
 
@@ -1219,8 +1323,9 @@ async fn download_batch(
             let _ = set_download_state(&conn, &creation.id, "downloading");
         }
 
-        let stem = download_stem(&creation.id, remote);
-        match download_media_file(remote, &creation.media_type, &paths.media, &stem).await {
+        let remote = media_url_with_creation_id(remote, &creation.id);
+        let stem = download_stem(&creation.id, &remote);
+        match download_media_file(&remote, &creation.media_type, &paths.media, &stem).await {
             Ok(media_path) => {
                 fail_streak = 0;
                 let thumb = thumb_paths.get(&creation.id).cloned().or_else(|| {
@@ -1240,6 +1345,22 @@ async fn download_batch(
                 downloaded += 1;
             }
             Err(err) => {
+                if download_err_is_missing(&err)
+                    && drop_deleted_creation(app, paths, &creation.id).await
+                {
+                    fail_streak = 0;
+                    skipped += 1;
+                    emit_sync_item_detail(
+                        app,
+                        &creation,
+                        "media",
+                        "skipped",
+                        Some("Deleted".into()),
+                    );
+                    done += 1;
+                    emit_progress(app, done, total, Some(creation.id.clone()), failed, "media");
+                    continue;
+                }
                 fail_streak = fail_streak.saturating_add(1);
                 // Media miss is retryable. Don't paint the board as hard-failed when
                 // a local thumb already exists (or can still be fetched later).
@@ -1318,8 +1439,9 @@ async fn download_media_only(
         let _ = set_download_state(&conn, &creation.id, "downloading");
     }
 
-    let stem = download_stem(&creation.id, remote);
-    match download_media_file(remote, &creation.media_type, &paths.media, &stem).await {
+    let remote = media_url_with_creation_id(remote, &creation.id);
+    let stem = download_stem(&creation.id, &remote);
+    match download_media_file(&remote, &creation.media_type, &paths.media, &stem).await {
         Ok(media_path) => {
             let thumb = if creation.media_type == "image"
                 && creation
@@ -1343,6 +1465,19 @@ async fn download_media_only(
             Ok(())
         }
         Err(err) => {
+            if download_err_is_missing(&err)
+                && drop_deleted_creation(app, paths, &creation.id).await
+            {
+                emit_sync_item_detail(
+                    app,
+                    &creation,
+                    "media",
+                    "skipped",
+                    Some("Deleted".into()),
+                );
+                emit_progress(app, 1, 1, Some(creation.id.clone()), 0, "media");
+                return Ok(());
+            }
             let has_preview = creation
                 .local_thumb_path
                 .as_ref()
@@ -1443,8 +1578,9 @@ async fn download_media_batch(
             let _ = set_download_state(&conn, &creation.id, "downloading");
         }
 
-        let stem = download_stem(&creation.id, remote);
-        match download_media_file(remote, &creation.media_type, &paths.media, &stem).await {
+        let remote = media_url_with_creation_id(remote, &creation.id);
+        let stem = download_stem(&creation.id, &remote);
+        match download_media_file(&remote, &creation.media_type, &paths.media, &stem).await {
             Ok(media_path) => {
                 fail_streak = 0;
                 let thumb = if creation.media_type == "image"
@@ -1468,6 +1604,28 @@ async fn download_media_batch(
                 downloaded += 1;
             }
             Err(err) => {
+                if download_err_is_missing(&err)
+                    && drop_deleted_creation(app, paths, &creation.id).await
+                {
+                    fail_streak = 0;
+                    skipped += 1;
+                    emit_sync_item_detail(
+                        app,
+                        &creation,
+                        "media",
+                        "skipped",
+                        Some("Deleted".into()),
+                    );
+                    emit_progress(
+                        app,
+                        done + 1,
+                        total,
+                        Some(creation.id.clone()),
+                        failed,
+                        "media",
+                    );
+                    continue;
+                }
                 fail_streak = fail_streak.saturating_add(1);
                 let has_preview = creation
                     .local_thumb_path
@@ -2054,4 +2212,57 @@ pub fn library_delete_local(app: AppHandle, id: String) -> Result<SyncStatus, St
     }
     let _ = app.emit("library-creation-deleted", id);
     sync_status_for(&paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::media_url_with_creation_id;
+
+    #[test]
+    fn stamps_a_bare_created_image_url() {
+        assert_eq!(
+            media_url_with_creation_id(
+                "https://www.parascene.com/api/images/created/26_18905_x.png",
+                "18905"
+            ),
+            "https://www.parascene.com/api/images/created/26_18905_x.png?creation_id=18905"
+        );
+        assert_eq!(
+            media_url_with_creation_id(
+                "https://www.parascene.com/api/videos/created/video/x.mp4",
+                "7"
+            ),
+            "https://www.parascene.com/api/videos/created/video/x.mp4?creation_id=7"
+        );
+    }
+
+    #[test]
+    fn keeps_an_existing_query_and_does_not_replace_creation_id() {
+        assert_eq!(
+            media_url_with_creation_id(
+                "https://www.parascene.com/api/images/created/x.png?variant=thumbnail",
+                "12"
+            ),
+            "https://www.parascene.com/api/images/created/x.png?variant=thumbnail&creation_id=12"
+        );
+        let stamped =
+            "https://www.parascene.com/api/creations/media/x.png?creation_id=12&variant=thumbnail";
+        assert_eq!(media_url_with_creation_id(stamped, "99"), stamped);
+    }
+
+    #[test]
+    fn missing_http_is_not_a_rate_limit() {
+        assert!(super::download_err_is_missing("HTTP 404"));
+        assert!(super::download_err_is_missing("HTTP 410"));
+        assert!(!super::download_err_is_missing("HTTP 403 (rate limited)"));
+        assert!(!super::download_err_is_missing("HTTP 429 (rate limited)"));
+    }
+
+    #[test]
+    fn leaves_non_media_urls_unchanged() {
+        let cover = "https://cdn.example/a.png";
+        assert_eq!(media_url_with_creation_id(cover, "5"), cover);
+        let audio = "https://www.parascene.com/api/create/images/5/audio";
+        assert_eq!(media_url_with_creation_id(audio, "5"), audio);
+    }
 }
